@@ -1844,9 +1844,7 @@ class DashboardAuthException implements Exception {
 }
 
 enum DashboardWebSocketAuthFailureCode {
-  unavailable('dashboard_ws_ticket_unavailable'),
-  timeout('dashboard_ws_ticket_timeout'),
-  malformedResponse('dashboard_ws_ticket_malformed_response');
+  unavailable('dashboard_ws_ticket_unavailable');
 
   const DashboardWebSocketAuthFailureCode(this.stableCode);
 
@@ -2327,35 +2325,17 @@ class DashboardClient {
       final ticket = res['ticket'];
       if (ticket is String && ticket.trim().isNotEmpty) return ticket;
       throw const DashboardWebSocketAuthException(
-        DashboardWebSocketAuthFailureCode.malformedResponse,
+        DashboardWebSocketAuthFailureCode.unavailable,
       );
     } on DashboardHttpException catch (error) {
       if (error.statusCode == 404 || error.statusCode == 405) return null;
-      if (error.statusCode == 401 || error.statusCode == 403) {
-        throw DashboardAuthException(
-          (_hasPasswordCreds || (_manualToken?.isNotEmpty ?? false))
-              ? DashboardAuthFailureCode.invalidCredentials
-              : DashboardAuthFailureCode.loginRequired,
-          statusCode: error.statusCode,
-        );
-      }
-      if (error.statusCode == 429) {
-        throw DashboardAuthException(
-          DashboardAuthFailureCode.rateLimited,
-          statusCode: error.statusCode,
-        );
-      }
       throw DashboardWebSocketAuthException(
         DashboardWebSocketAuthFailureCode.unavailable,
         statusCode: error.statusCode,
       );
-    } on TimeoutException {
+    } on Exception {
       throw const DashboardWebSocketAuthException(
-        DashboardWebSocketAuthFailureCode.timeout,
-      );
-    } on FormatException {
-      throw const DashboardWebSocketAuthException(
-        DashboardWebSocketAuthFailureCode.malformedResponse,
+        DashboardWebSocketAuthFailureCode.unavailable,
       );
     }
   }
@@ -2364,22 +2344,30 @@ class DashboardClient {
   /// por Hermes Desktop. Prefiere tickets de 30 s en Dashboards con login y
   /// degrada al token de sesión únicamente para instalaciones heredadas.
   Future<DashboardWebSocketAuth> webSocketAuth() async {
-    final ticket = await mintWsTicket();
-    final basic = _basicAuthHeader;
-    final headers = <String, dynamic>{};
-    if (basic != null) headers['Authorization'] = basic;
-    if (ticket != null && ticket.isNotEmpty) {
+    try {
+      final ticket = await mintWsTicket();
+      final basic = _basicAuthHeader;
+      final headers = <String, dynamic>{};
+      if (basic != null) headers['Authorization'] = basic;
+      if (ticket != null && ticket.isNotEmpty) {
+        return DashboardWebSocketAuth(
+          queryName: 'ticket',
+          credential: ticket,
+          headers: headers,
+        );
+      }
       return DashboardWebSocketAuth(
-        queryName: 'ticket',
-        credential: ticket,
+        queryName: 'token',
+        credential: await _getToken(),
         headers: headers,
       );
+    } on DashboardWebSocketAuthException {
+      rethrow;
+    } on Exception {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+      );
     }
-    return DashboardWebSocketAuth(
-      queryName: 'token',
-      credential: await _getToken(),
-      headers: headers,
-    );
   }
 
   Map<String, dynamic> _decodeMapResponse(http.Response res) {

@@ -76,7 +76,7 @@ void main() {
       }
     });
 
-    test('401 and 403 never fall back to the legacy token', () async {
+    test('401 and 403 become unavailable and never token-fallback', () async {
       for (final status in const [401, 403]) {
         final client = DashboardClient(
           host: 'hermes.local',
@@ -90,11 +90,11 @@ void main() {
         await expectLater(
           client.webSocketAuth(),
           throwsA(
-            isA<DashboardAuthException>()
+            isA<DashboardWebSocketAuthException>()
                 .having(
                   (error) => error.code,
                   'code',
-                  DashboardAuthFailureCode.invalidCredentials,
+                  DashboardWebSocketAuthFailureCode.unavailable,
                 )
                 .having((error) => error.statusCode, 'statusCode', status),
           ),
@@ -102,7 +102,7 @@ void main() {
       }
     });
 
-    test('429 and 5xx propagate classified safe failures', () async {
+    test('429 and 5xx become the same safe unavailable failure', () async {
       final limited = DashboardClient(
         host: 'hermes.local',
         manualToken: 'legacy-test-token',
@@ -123,10 +123,10 @@ void main() {
       await expectLater(
         limited.webSocketAuth(),
         throwsA(
-          isA<DashboardAuthException>().having(
+          isA<DashboardWebSocketAuthException>().having(
             (error) => error.code,
             'code',
-            DashboardAuthFailureCode.rateLimited,
+            DashboardWebSocketAuthFailureCode.unavailable,
           ),
         ),
       );
@@ -145,7 +145,124 @@ void main() {
     });
 
     test(
-      'timeouts and malformed successful payloads never token-fallback',
+      'client exceptions become unavailable without leaking details',
+      () async {
+        const secret = 'ws-client-secret';
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((request) async {
+            throw http.ClientException(
+              'transport leaked $secret and a raw response body',
+              request.url,
+            );
+          }),
+        );
+        addTearDown(client.close);
+
+        await expectLater(
+          client.webSocketAuth(),
+          throwsA(
+            isA<DashboardWebSocketAuthException>()
+                .having(
+                  (error) => error.code,
+                  'code',
+                  DashboardWebSocketAuthFailureCode.unavailable,
+                )
+                .having(
+                  (error) => error.toString(),
+                  'safe message',
+                  DashboardWebSocketAuthFailureCode.unavailable.stableCode,
+                )
+                .having(
+                  (error) => error.toString(),
+                  'no secret',
+                  isNot(contains(secret)),
+                )
+                .having(
+                  (error) => error.toString(),
+                  'no base URL',
+                  isNot(contains('hermes.local')),
+                ),
+          ),
+        );
+      },
+    );
+
+    test('token discovery failures become unavailable without leaks', () async {
+      const secret = 'legacy-token-discovery-secret';
+      final client = DashboardClient(
+        host: 'hermes.local',
+        basicUser: 'admin',
+        basicPass: 'password',
+        httpClientOverride: MockClient((request) async {
+          if (request.url.path == '/auth/password-login') {
+            return http.Response(
+              '{"ok":true}',
+              200,
+              headers: {
+                'set-cookie': 'hermes_session_at=session-cookie; Path=/',
+              },
+            );
+          }
+          if (request.url.path == '/api/auth/ws-ticket') {
+            return http.Response('unsupported body', 404);
+          }
+          expect(request.url.path, '/');
+          throw http.ClientException(
+            'token discovery leaked $secret and raw body',
+            request.url,
+          );
+        }),
+      );
+      addTearDown(client.close);
+
+      await expectLater(
+        client.webSocketAuth(),
+        throwsA(
+          isA<DashboardWebSocketAuthException>()
+              .having(
+                (error) => error.code,
+                'code',
+                DashboardWebSocketAuthFailureCode.unavailable,
+              )
+              .having(
+                (error) => error.toString(),
+                'safe message',
+                DashboardWebSocketAuthFailureCode.unavailable.stableCode,
+              )
+              .having(
+                (error) => error.toString(),
+                'no secret',
+                isNot(contains(secret)),
+              )
+              .having(
+                (error) => error.toString(),
+                'no base URL',
+                isNot(contains('hermes.local')),
+              ),
+        ),
+      );
+    });
+
+    test(
+      'programmer StateError is not reclassified as transport failure',
+      () async {
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((_) async {
+            throw StateError('programmer invariant');
+          }),
+        );
+        addTearDown(client.close);
+
+        await expectLater(client.webSocketAuth(), throwsA(isA<StateError>()));
+      },
+    );
+
+    test(
+      'timeouts and malformed responses become unavailable without fallback',
       () async {
         final timedOut = DashboardClient(
           host: 'hermes.local',
@@ -168,7 +285,7 @@ void main() {
             isA<DashboardWebSocketAuthException>().having(
               (error) => error.code,
               'code',
-              DashboardWebSocketAuthFailureCode.timeout,
+              DashboardWebSocketAuthFailureCode.unavailable,
             ),
           ),
         );
@@ -178,7 +295,7 @@ void main() {
             isA<DashboardWebSocketAuthException>().having(
               (error) => error.code,
               'code',
-              DashboardWebSocketAuthFailureCode.malformedResponse,
+              DashboardWebSocketAuthFailureCode.unavailable,
             ),
           ),
         );
