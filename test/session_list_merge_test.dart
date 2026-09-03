@@ -47,7 +47,10 @@ class _SessionListApiClient extends ApiClient {
   Future<bool> healthCheck() async => healthy;
 
   @override
-  Future<List<Session>> getSessions({bool includeChildren = false}) async {
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async {
     return remoteSessions;
   }
 }

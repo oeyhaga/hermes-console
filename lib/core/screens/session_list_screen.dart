@@ -637,7 +637,8 @@ class _SessionListScreenState extends State<SessionListScreen>
           ? null
           : await repository.refresh(scope, keepIds: _sessionKeepIds);
       final rawRemoteSessions =
-          library?.sessions ?? await _client.getSessions();
+          library?.sessions ??
+          await _client.getSessions(profile: scope.profile);
       final requestedOwner = Session.profileOwner(scope.profile);
       final remoteSessions = library != null
           ? rawRemoteSessions
@@ -864,22 +865,27 @@ class _SessionListScreenState extends State<SessionListScreen>
   Future<LinkedSessionDeleteResult> _deleteSessionAndLinkedCron(
     Session session,
     LinkedCronDeletionMode cronDeletion,
-  ) => deleteSessionWithResolvedLineage(
-    session,
-    loadSessions: ({bool includeChildren = false}) =>
-        _client.getSessions(includeChildren: includeChildren),
-    deleteSession: (sessionId) =>
-        _client.deleteSession(sessionId, profile: session.profile),
-    cronDeletion: cronDeletion,
-    deleteCronJob:
-        !session.isJob || cronDeletion == LinkedCronDeletionMode.keepSchedule
-        ? null
-        : (jobId) => widget.connManager.deleteLinkedCronJob(
-            widget.connection,
-            jobId,
-            profile: session.profile,
-          ),
-  );
+  ) {
+    final ownerProfile = Session.profileOwner(session.profile);
+    return deleteSessionWithResolvedLineage(
+      session,
+      loadSessions: ({bool includeChildren = false}) => _client.getSessions(
+        includeChildren: includeChildren,
+        profile: ownerProfile,
+      ),
+      deleteSession: (sessionId) =>
+          _client.deleteSession(sessionId, profile: ownerProfile),
+      cronDeletion: cronDeletion,
+      deleteCronJob:
+          !session.isJob || cronDeletion == LinkedCronDeletionMode.keepSchedule
+          ? null
+          : (jobId) => widget.connManager.deleteLinkedCronJob(
+              widget.connection,
+              jobId,
+              profile: ownerProfile,
+            ),
+    );
+  }
 
   Future<bool> _confirmAndDeleteSession(Session session) async {
     if (widget.connection.readOnly) {

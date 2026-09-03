@@ -320,13 +320,13 @@ void main() {
         'https://hermes.example',
         const WatchedRun(
           connId: 'conn-a',
-          profile: 'team alpha',
+          profile: 'team_alpha',
           base: 'https://hermes.example',
           runId: 'run/1',
           prompt: '',
         ),
       ).toString(),
-      'https://hermes.example/p/team%20alpha/v1/runs/run%2F1',
+      'https://hermes.example/p/team_alpha/v1/runs/run%2F1',
     );
     expect(
       backgroundRunStatusUri(

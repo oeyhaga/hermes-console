@@ -27,9 +27,10 @@ class _RecentHomeClient extends ApiClient {
   Future<bool> healthCheck() async => true;
 
   @override
-  Future<List<Session>> getSessions({bool includeChildren = false}) async => [
-    session,
-  ];
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async => [session];
 
   @override
   void close() {}
@@ -50,7 +51,10 @@ class _MutableRecentHomeClient extends ApiClient {
   Future<bool> healthCheck() async => true;
 
   @override
-  Future<List<Session>> getSessions({bool includeChildren = false}) async {
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async {
     sessionReads++;
     return List<Session>.of(sessions);
   }
@@ -73,7 +77,10 @@ class _DeferredRecentHomeClient extends ApiClient {
   Future<bool> healthCheck() async => true;
 
   @override
-  Future<List<Session>> getSessions({bool includeChildren = false}) {
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) {
     final load = Completer<List<Session>>();
     sessionLoads.add(load);
     return load.future;

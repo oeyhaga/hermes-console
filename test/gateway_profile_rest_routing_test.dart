@@ -25,13 +25,13 @@ void main() {
       }),
     );
 
-    final runId = await client.startRun(input: 'do it', profile: 'team alpha');
-    await client.getRun(runId, profile: 'team alpha');
-    await client.resolveRunApproval(runId, 'once', profile: 'team alpha');
-    await client.stopRun(runId, profile: 'team alpha');
+    final runId = await client.startRun(input: 'do it', profile: 'team_alpha');
+    await client.getRun(runId, profile: 'team_alpha');
+    await client.resolveRunApproval(runId, 'once', profile: 'team_alpha');
+    await client.stopRun(runId, profile: 'team_alpha');
     await client.streamRunEvents(
       runId,
-      profile: 'team alpha',
+      profile: 'team_alpha',
       onEvent: (_) {},
       onDone: () {},
       onError: fail,
@@ -39,7 +39,7 @@ void main() {
 
     expect(
       requests.map((request) => request.url.toString()),
-      everyElement(contains('/p/team%20alpha/')),
+      everyElement(contains('/p/team_alpha/')),
     );
     final createBody = jsonDecode(requests.first.body) as Map<String, dynamic>;
     expect(createBody.containsKey('profile'), isFalse);
@@ -74,19 +74,54 @@ void main() {
         }),
       );
 
-      await client.getSession('session/1', profile: 'team alpha');
-      await client.getMessages('session/1', profile: 'team alpha');
-      await client.getMessagesPage('session/1', profile: 'team alpha');
-      await client.deleteSession('session/1', profile: 'team alpha');
-      await client.forkSession('session/1', profile: 'team alpha');
+      await client.getSession('session/1', profile: 'team_alpha');
+      await client.getMessages('session/1', profile: 'team_alpha');
+      await client.getMessagesPage('session/1', profile: 'team_alpha');
+      await client.deleteSession('session/1', profile: 'team_alpha');
+      await client.forkSession('session/1', profile: 'team_alpha');
 
       expect(
         requests.map((request) => request.url.toString()),
-        everyElement(contains('/p/team%20alpha/api/sessions/session%2F1')),
+        everyElement(contains('/p/team_alpha/api/sessions/session%2F1')),
       );
       client.close();
     },
   );
+
+  test('named profile prefixes the Gateway session inventory route', () async {
+    late Uri requested;
+    final client = ApiClient(
+      baseUrl: 'https://hermes.example',
+      apiKey: 'test-key',
+      httpClient: MockClient((request) async {
+        requested = request.url;
+        return http.Response(jsonEncode({'data': <Object>[]}), 200);
+      }),
+    );
+
+    await client.getSessions(includeChildren: true, profile: 'team_alpha');
+
+    expect(requested.path, '/p/team_alpha/api/sessions');
+    expect(requested.queryParameters, {
+      'limit': '200',
+      'include_children': 'true',
+    });
+    client.close();
+  });
+
+  test('Gateway profile routing uses the upstream profile-name grammar', () {
+    expect(
+      ApiClient.profileEndpoint('api/sessions', profile: 'ops-2_alpha'),
+      'p/ops-2_alpha/api/sessions',
+    );
+    for (final invalid in const ['../other', 'team alpha', 'UPPER', 'a.b']) {
+      expect(
+        () => ApiClient.profileEndpoint('api/sessions', profile: invalid),
+        throwsArgumentError,
+        reason: invalid,
+      );
+    }
+  });
 
   test(
     'default and empty profiles preserve unprefixed Gateway routes',

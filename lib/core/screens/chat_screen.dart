@@ -7421,12 +7421,16 @@ class _ChatScreenState extends State<ChatScreen>
             app == null
         ? DashboardClient.lazy(widget.connection)
         : null;
+    final ownerProfile = _chat.sessionProfile;
     try {
       final result = await deleteSessionWithResolvedLineage(
         widget.session,
-        loadSessions: ({bool includeChildren = false}) =>
-            client.getSessions(includeChildren: includeChildren),
-        deleteSession: client.deleteSession,
+        loadSessions: ({bool includeChildren = false}) => client.getSessions(
+          includeChildren: includeChildren,
+          profile: ownerProfile,
+        ),
+        deleteSession: (sessionId) =>
+            client.deleteSession(sessionId, profile: ownerProfile),
         remoteSessionId: _chat.serverSessionId,
         localRecoverySessionId: widget.session.id,
         clearLocalRecovery: _clearDeletedChatRecovery,
@@ -7439,11 +7443,9 @@ class _ChatScreenState extends State<ChatScreen>
                   ? app.connManager.deleteLinkedCronJob(
                       widget.connection,
                       jobId,
-                      profile: app.connManager.activeProfileFor(
-                        widget.connection.id,
-                      ),
+                      profile: ownerProfile,
                     )
-                  : dashboard!.deleteCronJob(jobId),
+                  : dashboard!.deleteCronJob(jobId, profile: ownerProfile),
       );
       if (!mounted) return;
       switch (result.status) {

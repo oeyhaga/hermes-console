@@ -206,6 +206,7 @@ final class SessionRepository {
       }
       final fallback = await _gateway.getSessions(
         includeChildren: query.includeChildren,
+        profile: query.profile,
       );
       if (!_isCurrent(epoch, fingerprint)) return _snapshot();
       if (previousFingerprint != fingerprint) _sessions = const [];

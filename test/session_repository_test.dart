@@ -987,6 +987,40 @@ void main() {
   });
 
   test(
+    'Dashboard fallback reads the requested named-profile Gateway inventory',
+    () async {
+      final dashboard = _dashboard(
+        MockClient((_) async => http.Response('{}', 404)),
+      );
+      late Uri gatewayRequest;
+      final gateway = _gateway(
+        MockClient((request) async {
+          gatewayRequest = request.url;
+          return http.Response(
+            jsonEncode({
+              'data': [_row(1)],
+            }),
+            200,
+          );
+        }),
+      );
+      final repository = SessionRepository(dashboard, gateway);
+      addTearDown(() {
+        repository.close();
+        dashboard.close();
+        gateway.close();
+      });
+
+      final snapshot = await repository.refresh(
+        const SessionLibraryQuery(profile: 'team_alpha'),
+      );
+
+      expect(snapshot.source, SessionLibrarySource.gateway);
+      expect(gatewayRequest.path, '/p/team_alpha/api/sessions');
+    },
+  );
+
+  test(
     'Dashboard 404 degrada a Gateway limitado; 403 nunca cambia de host',
     () async {
       var dashboardStatus = 404;

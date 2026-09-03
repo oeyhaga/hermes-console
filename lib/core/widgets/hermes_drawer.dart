@@ -526,6 +526,7 @@ class HermesDrawer extends StatelessWidget {
                   if (conn != null && supports(capabilities.sessionsRead))
                     _DrawerRecentSessions(
                       connection: conn,
+                      profile: connManager.activeProfileFor(conn.id),
                       clientFactory: recentSessionsClientFactory,
                       onOpen: (session) {
                         Navigator.pop(context);
@@ -605,11 +606,13 @@ class HermesDrawer extends StatelessWidget {
 class _DrawerRecentSessions extends StatefulWidget {
   const _DrawerRecentSessions({
     required this.connection,
+    required this.profile,
     required this.onOpen,
     this.clientFactory,
   });
 
   final SavedConnection connection;
+  final String profile;
   final ValueChanged<Session> onOpen;
   final ApiClient Function(SavedConnection connection)? clientFactory;
 
@@ -629,7 +632,8 @@ class _DrawerRecentSessionsState extends State<_DrawerRecentSessions> {
   @override
   void didUpdateWidget(covariant _DrawerRecentSessions oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.connection.id != widget.connection.id) {
+    if (oldWidget.connection.id != widget.connection.id ||
+        oldWidget.profile != widget.profile) {
       _sessions = const [];
       _load();
     }
@@ -644,7 +648,7 @@ class _DrawerRecentSessionsState extends State<_DrawerRecentSessions> {
           apiKey: widget.connection.apiKey,
         );
     try {
-      final sessions = await client.getSessions();
+      final sessions = await client.getSessions(profile: widget.profile);
       sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
       final visible = sessions
           .where(

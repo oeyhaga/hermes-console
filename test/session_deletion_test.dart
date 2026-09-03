@@ -60,10 +60,58 @@ void main() {
     }
 
     final chat = File('lib/core/screens/chat_screen.dart').readAsStringSync();
-    expect(chat, contains('deleteSession: client.deleteSession'));
+    expect(chat, isNot(contains('deleteSession: client.deleteSession')));
+    expect(chat, contains('final ownerProfile = _chat.sessionProfile;'));
+    expect(
+      chat,
+      matches(
+        RegExp(
+          r'client\.getSessions\(\s*includeChildren: includeChildren,\s*profile: ownerProfile,',
+        ),
+      ),
+    );
+    expect(
+      chat,
+      contains('client.deleteSession(sessionId, profile: ownerProfile)'),
+    );
     expect(chat, contains('remoteSessionId: _chat.serverSessionId'));
     expect(chat, contains('localRecoverySessionId: widget.session.id'));
     expect(chat, contains('clearLocalRecovery: _clearDeletedChatRecovery'));
+
+    final home = File(
+      'lib/core/screens/home_dashboard_screen.dart',
+    ).readAsStringSync();
+    expect(home, isNot(contains('deleteSession: client.deleteSession')));
+    expect(
+      home,
+      contains('final ownerProfile = Session.profileOwner(session.profile);'),
+    );
+    expect(
+      home,
+      contains('client.deleteSession(sessionId, profile: ownerProfile)'),
+    );
+    expect(home, contains('profile: ownerProfile'));
+
+    final detail = File(
+      'lib/core/screens/session_detail_screen.dart',
+    ).readAsStringSync();
+    expect(
+      detail,
+      contains('final ownerProfile = Session.profileOwner(_session.profile);'),
+    );
+    expect(detail, contains('profile: ownerProfile'));
+
+    final list = File(
+      'lib/core/screens/session_list_screen.dart',
+    ).readAsStringSync();
+    expect(
+      list,
+      matches(
+        RegExp(
+          r'_client\.getSessions\(\s*includeChildren: includeChildren,\s*profile: ownerProfile,',
+        ),
+      ),
+    );
 
     final service = File(
       'lib/core/services/session_deletion.dart',

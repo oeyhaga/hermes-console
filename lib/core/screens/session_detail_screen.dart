@@ -637,13 +637,16 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
             app == null
         ? DashboardClient.lazy(widget.connection)
         : null;
+    final ownerProfile = Session.profileOwner(_session.profile);
     try {
       final result = await deleteSessionWithResolvedLineage(
         _session,
-        loadSessions: ({bool includeChildren = false}) =>
-            _client.getSessions(includeChildren: includeChildren),
+        loadSessions: ({bool includeChildren = false}) => _client.getSessions(
+          includeChildren: includeChildren,
+          profile: ownerProfile,
+        ),
         deleteSession: (sessionId) =>
-            _client.deleteSession(sessionId, profile: _session.profile),
+            _client.deleteSession(sessionId, profile: ownerProfile),
         cronDeletion: cronDeletion,
         deleteCronJob:
             !_session.isJob ||
@@ -653,11 +656,9 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
                   ? app.connManager.deleteLinkedCronJob(
                       widget.connection,
                       jobId,
-                      profile: app.connManager.activeProfileFor(
-                        widget.connection.id,
-                      ),
+                      profile: ownerProfile,
                     )
-                  : dashboard!.deleteCronJob(jobId, profile: _session.profile),
+                  : dashboard!.deleteCronJob(jobId, profile: ownerProfile),
       );
       if (!mounted) return;
       switch (result.status) {

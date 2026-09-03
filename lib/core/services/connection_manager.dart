@@ -1009,8 +1009,8 @@ class ApiClient {
   /// Hermes selects a non-default runtime profile from the URL namespace.
   /// Empty/default preserve the historical unprefixed API surface.
   static String profileEndpoint(String endpoint, {String? profile}) {
-    final owner = profile?.trim() ?? '';
-    if (owner.isEmpty || owner == 'default') return endpoint;
+    final owner = validateCronProfile(profile);
+    if (owner == null) return endpoint;
     return 'p/${Uri.encodeComponent(owner)}/$endpoint';
   }
 
@@ -1021,11 +1021,15 @@ class ApiClient {
   /// quedan ocultas y no se pueden borrar desde la app. [includeChildren] pide
   /// `?include_children=true` para ver TODAS (necesario para limpiar de verdad).
   /// `limit=200` evita el tope por defecto de 50 del servidor.
-  Future<List<Session>> getSessions({bool includeChildren = false}) async {
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async {
+    final endpoint = profileEndpoint('api/sessions', profile: profile);
     final res = await _http
         .get(
           Uri.parse(
-            '$baseUrl/api/sessions?limit=200'
+            '$baseUrl/$endpoint?limit=200'
             '${includeChildren ? '&include_children=true' : ''}',
           ),
           headers: _headers,
@@ -1262,7 +1266,7 @@ class ApiClient {
         .delete(Uri.parse('$baseUrl/$endpoint'), headers: _headers)
         .timeout(_requestTimeout);
     if (res.statusCode == 404) {
-      await _clearSessionRecovery(sessionId);
+      await _clearSessionRecovery(sessionId, profile: profile);
       return true;
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -1276,17 +1280,27 @@ class ApiClient {
       debugPrint('[connection] excepción silenciada (se asume true): $e');
       deleted = true;
     }
-    if (deleted) await _clearSessionRecovery(sessionId);
+    if (deleted) await _clearSessionRecovery(sessionId, profile: profile);
     return deleted;
   }
 
-  Future<void> _clearSessionRecovery(String sessionId) async {
+  Future<void> _clearSessionRecovery(
+    String sessionId, {
+    required String? profile,
+  }) async {
     final connectionId = _connectionId;
     if (connectionId == null || connectionId.isEmpty) return;
+    final ownerProfile = Session.profileOwner(profile);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await ChatDraftStore(prefs).clearForSession(connectionId, sessionId);
-      await TurnOutboxStore().deleteForChat(connectionId, sessionId);
+      await ChatDraftStore(
+        prefs,
+      ).clear(connectionId, sessionId, profile: ownerProfile);
+      await TurnOutboxStore().deleteForChat(
+        connectionId,
+        sessionId,
+        profile: ownerProfile,
+      );
     } catch (error) {
       // El servidor ya confirmó el borrado: un fallo local de Keystore no debe
       // convertir esa operación remota correcta en un falso error de UI.

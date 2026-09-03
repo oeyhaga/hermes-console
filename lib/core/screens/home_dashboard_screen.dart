@@ -274,6 +274,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   Future<void> _deleteRecent(Session session) async {
     final conn = _active;
     if (conn == null) return;
+    final ownerProfile = Session.profileOwner(session.profile);
     if (conn.readOnly) {
       showReadOnlyNotice(context);
       return;
@@ -326,9 +327,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       try {
         result = await deleteSessionWithResolvedLineage(
           session,
-          loadSessions: ({bool includeChildren = false}) =>
-              client.getSessions(includeChildren: includeChildren),
-          deleteSession: client.deleteSession,
+          loadSessions: ({bool includeChildren = false}) => client.getSessions(
+            includeChildren: includeChildren,
+            profile: ownerProfile,
+          ),
+          deleteSession: (sessionId) =>
+              client.deleteSession(sessionId, profile: ownerProfile),
           cronDeletion: cronDeletion,
           deleteCronJob:
               !session.isJob ||
@@ -337,7 +341,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               : (jobId) => widget.connManager.deleteLinkedCronJob(
                   conn,
                   jobId,
-                  profile: widget.connManager.activeProfileFor(conn.id),
+                  profile: ownerProfile,
                 ),
         );
       } finally {
@@ -377,8 +381,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (!mounted || !removed) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await ChatDraftStore(prefs).clear(conn.id, session.id);
-      await TurnOutboxStore().deleteForChat(conn.id, session.id);
+      await ChatDraftStore(
+        prefs,
+      ).clear(conn.id, session.id, profile: ownerProfile);
+      await TurnOutboxStore().deleteForChat(
+        conn.id,
+        session.id,
+        profile: ownerProfile,
+      );
     } catch (error) {
       debugPrint(
         '[home-dashboard] recovery cleanup failed (${error.runtimeType})',
@@ -604,6 +614,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final client =
         widget.clientFactory?.call(conn) ??
         ApiClient(baseUrl: conn.baseUrl, apiKey: conn.apiKey);
+    final ownerProfile = widget.connManager.activeProfileFor(conn.id);
     try {
       if (conn.kind == InstanceKind.localhost) {
         // El agente local sirve dashboard en :9119; su health es /api/status,
@@ -629,7 +640,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         ok = await client.healthCheck();
         if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
         if (ok) {
-          sessions = await client.getSessions();
+          sessions = await client.getSessions(profile: ownerProfile);
           if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
           sessions.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
           // La comprobación del bridge ya no depende de abrir Chat/Ajustes.
