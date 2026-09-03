@@ -794,11 +794,21 @@ class TuiGatewayClient
   /// A truncated replay proves a gap. Quarantine that runtime until ActiveChat
   /// commits an authoritative recovery snapshot.
   final Set<String> _replayQuarantinedSessions = <String>{};
+  final Set<String> _replayRecoveryExceptions = <String>{};
+  bool _quarantineAllReplaySessions = false;
 
   /// Live events are parked until the replay gap is dispatched in order.
   Map<String, List<TuiGatewayEvent>>? _replayHold;
   bool _replayInFlight = false;
+  // Replay state is LRU-bounded. Four workers drain at most 32 runtimes, so a
+  // reconnect cannot exceed eight request-timeout windows. Each worker creates
+  // a hold only for its current runtime instead of preallocating every queue.
   static const int _maxConcurrentReplayRequests = 4;
+  static const int _maxTrackedReplayRuntimes = 32;
+  static const int _maxReplayRuntimesPerConnect = _maxTrackedReplayRuntimes;
+  static const int _maxReplayQuarantineEntries = 64;
+  static const int _maxRecoveryExceptions = 32;
+  static const int _maxHeldLiveEventsPerRuntime = 64;
   String? _replayEpoch;
   String? _legacyEventRuntimeId;
   bool _legacyEventRuntimeAmbiguous = false;
@@ -904,6 +914,12 @@ class TuiGatewayClient
       // Drain the server's sequence gap first so replayed deltas/tools cannot
       // race the new snapshot or be delivered out of order with live frames.
       await _fetchReplay();
+      if (_closed ||
+          generation != _socketGeneration ||
+          !identical(_channel, channel) ||
+          !_connected) {
+        throw StateError('Hermes Desktop disconnected during replay');
+      }
     } catch (error) {
       debugPrint(
         '[tui-gateway] WebSocket connection failed '
@@ -1023,7 +1039,7 @@ class TuiGatewayClient
       );
       if (event.sequence != null &&
           event.sessionId.isNotEmpty &&
-          _replayQuarantinedSessions.contains(event.sessionId)) {
+          _isReplayQuarantined(event.sessionId)) {
         return;
       }
       final hold = _replayHold;
@@ -1031,7 +1047,12 @@ class TuiGatewayClient
           event.sequence != null &&
           event.sessionId.isNotEmpty &&
           hold.containsKey(event.sessionId)) {
-        hold[event.sessionId]!.add(event);
+        final heldEvents = hold[event.sessionId]!;
+        if (heldEvents.length >= _maxHeldLiveEventsPerRuntime) {
+          _quarantineReplay(event.sessionId);
+        } else {
+          heldEvents.add(event);
+        }
         return;
       }
       _dispatchIfNewer(event);
@@ -1044,15 +1065,24 @@ class TuiGatewayClient
     if (_replayInFlight || _lastSeenSequence.isEmpty || !_connected) return;
     _replayInFlight = true;
     final replayFrom = Map<String, int>.from(_lastSeenSequence);
-    _replayHold = <String, List<TuiGatewayEvent>>{
-      for (final sessionId in replayFrom.keys) sessionId: <TuiGatewayEvent>[],
-    };
+    _replayHold = <String, List<TuiGatewayEvent>>{};
     try {
-      final entries = replayFrom.entries.toList(growable: false);
+      final allEntries = replayFrom.entries.toList(growable: false);
+      final overflowCount = allEntries.length - _maxReplayRuntimesPerConnect;
+      if (overflowCount > 0) {
+        for (final entry in allEntries.take(overflowCount)) {
+          _quarantineReplay(entry.key);
+        }
+      }
+      final entries = allEntries
+          .skip(overflowCount.clamp(0, allEntries.length))
+          .toList(growable: false);
       var nextEntry = 0;
       Future<void> replayWorker() async {
         while (nextEntry < entries.length) {
           final entry = entries[nextEntry++];
+          if (_isReplayQuarantined(entry.key)) continue;
+          _replayHold?[entry.key] = <TuiGatewayEvent>[];
           try {
             final result = await _requestConnected(
               'session.events.since',
@@ -1071,7 +1101,7 @@ class TuiGatewayClient
                 rawEvents is! List ||
                 _replayEpoch == null ||
                 _replayEpoch != rawEpoch.trim() ||
-                _replayQuarantinedSessions.contains(entry.key) ||
+                _isReplayQuarantined(entry.key) ||
                 _replayHold?.containsKey(entry.key) != true) {
               _quarantineReplay(entry.key);
               continue;
@@ -1084,21 +1114,32 @@ class TuiGatewayClient
               continue;
             }
             final replayEvents = <TuiGatewayEvent>[];
+            var replayIsValid = true;
             for (final rawEvent in rawEvents) {
-              if (rawEvent is! Map) continue;
+              if (rawEvent is! Map) {
+                replayIsValid = false;
+                break;
+              }
               final event = _eventFromReplay(
                 Map<String, dynamic>.from(rawEvent),
                 fallbackSessionId: entry.key,
               );
-              if (event != null) replayEvents.add(event);
+              if (event == null) {
+                replayIsValid = false;
+                break;
+              }
+              replayEvents.add(event);
+            }
+            if (!replayIsValid) {
+              _quarantineReplay(entry.key);
+              continue;
             }
             // Keep the server's relative order for legacy/unsequenced frames, but
             // never let one of them break ordering of the valid monotonic stream.
             final sequenced =
                 replayEvents.where((event) => event.sequence != null).toList()
                   ..sort(
-                    (left, right) =>
-                        left.sequence!.compareTo(right.sequence!),
+                    (left, right) => left.sequence!.compareTo(right.sequence!),
                   );
             final unsequenced = replayEvents
                 .where((event) => event.sequence == null)
@@ -1127,8 +1168,7 @@ class TuiGatewayClient
       _replayInFlight = false;
       if (held != null) {
         for (final sessionId in held.keys) {
-          _lastSeenSequence.remove(sessionId);
-          _replayQuarantinedSessions.add(sessionId);
+          _quarantineReplay(sessionId);
         }
       }
     }
@@ -1136,9 +1176,25 @@ class TuiGatewayClient
 
   void _quarantineReplay(String sessionId) {
     _lastSeenSequence.remove(sessionId);
-    _replayQuarantinedSessions.add(sessionId);
     _replayHold?.remove(sessionId);
+    if (_quarantineAllReplaySessions) {
+      _replayRecoveryExceptions.remove(sessionId);
+      return;
+    }
+    _replayQuarantinedSessions.add(sessionId);
+    if (_replayQuarantinedSessions.length > _maxReplayQuarantineEntries) {
+      // A finite deny-list cannot safely forget an uncertain runtime. Collapse
+      // to fail-closed mode; bounded recovery exceptions are explicit opt-ins.
+      _quarantineAllReplaySessions = true;
+      _replayQuarantinedSessions.clear();
+      _replayRecoveryExceptions.clear();
+    }
   }
+
+  bool _isReplayQuarantined(String sessionId) =>
+      (_quarantineAllReplaySessions &&
+          !_replayRecoveryExceptions.contains(sessionId)) ||
+      _replayQuarantinedSessions.contains(sessionId);
 
   void _releaseReplayHold(String sessionId) {
     final events = _replayHold?.remove(sessionId);
@@ -1155,6 +1211,11 @@ class TuiGatewayClient
     final type = (raw['type'] ?? '').toString().trim();
     if (type.isEmpty) return null;
     final rawSessionId = raw['session_id'];
+    if (rawSessionId is String &&
+        rawSessionId.trim().isNotEmpty &&
+        rawSessionId.trim() != fallbackSessionId) {
+      return null;
+    }
     final sessionId = rawSessionId is String && rawSessionId.trim().isNotEmpty
         ? rawSessionId.trim()
         : fallbackSessionId;
@@ -1180,8 +1241,15 @@ class TuiGatewayClient
   void _dispatchIfNewer(TuiGatewayEvent event) {
     final sequence = event.sequence;
     if (sequence != null && event.sessionId.isNotEmpty) {
+      if (_isReplayQuarantined(event.sessionId)) return;
       final previous = _lastSeenSequence[event.sessionId] ?? 0;
       if (sequence <= previous) return;
+      if (_lastSeenSequence.containsKey(event.sessionId)) {
+        _lastSeenSequence.remove(event.sessionId);
+      } else if (_lastSeenSequence.length >= _maxTrackedReplayRuntimes) {
+        _quarantineReplay(_lastSeenSequence.keys.first);
+        if (_isReplayQuarantined(event.sessionId)) return;
+      }
       _lastSeenSequence[event.sessionId] = sequence;
     }
     if (!_events.isClosed) _events.add(event);
@@ -2172,6 +2240,15 @@ class TuiGatewayClient
   @override
   void commitRecoveryRuntime(String runtimeSessionId) {
     _replayQuarantinedSessions.remove(runtimeSessionId);
+    if (_quarantineAllReplaySessions) {
+      _replayRecoveryExceptions.remove(runtimeSessionId);
+      _replayRecoveryExceptions.add(runtimeSessionId);
+      if (_replayRecoveryExceptions.length > _maxRecoveryExceptions) {
+        // Evicting the oldest exception re-quarantines it; uncertainty is never
+        // converted into permission merely to enforce a memory bound.
+        _replayRecoveryExceptions.remove(_replayRecoveryExceptions.first);
+      }
+    }
     _rememberLegacyEventRuntime(runtimeSessionId);
   }
 
