@@ -640,4 +640,87 @@ void main() {
 
     expect(sessionsSafeForBulkDelete([normal, cron, tool]), [normal]);
   });
+
+  test('vaciar un perfil nombra cada operación remota y local', () async {
+    final calls = <String>[];
+    final summary = await clearProfileConversationsAndLocalState(
+      profile: 'team_alpha',
+      loadSessions:
+          ({bool includeChildren = false, required String profile}) async {
+            calls.add('list:$profile:$includeChildren');
+            return [
+              Session.fromJson({
+                'id': 'chat-1',
+                'title': 'Scoped',
+                'source': 'mobile',
+              }),
+            ];
+          },
+      deleteSession: (sessionId, {required String profile}) async {
+        calls.add('delete:$profile:$sessionId');
+        return true;
+      },
+      clearDraft: (sessionId, {required String profile}) async {
+        calls.add('draft:$profile:$sessionId');
+        return 1;
+      },
+      clearTranscript: (sessionId, {required String profile}) async {
+        calls.add('transcript:$profile:$sessionId');
+        return 1;
+      },
+      clearOutbox: (sessionId, {required String profile}) async {
+        calls.add('outbox:$profile:$sessionId');
+        return 1;
+      },
+    );
+
+    expect(calls, [
+      'list:team_alpha:true',
+      'delete:team_alpha:chat-1',
+      'draft:team_alpha:chat-1',
+      'transcript:team_alpha:chat-1',
+      'outbox:team_alpha:chat-1',
+    ]);
+    expect(summary.remote?.deleted, 1);
+    expect(summary.drafts.removed, 1);
+    expect(summary.transcripts.removed, 1);
+    expect(summary.outbox.removed, 1);
+  });
+
+  test('vaciar el perfil vacío conserva el owner default', () async {
+    final owners = <String>[];
+    final summary = await clearProfileConversationsAndLocalState(
+      profile: '',
+      loadSessions:
+          ({bool includeChildren = false, required String profile}) async {
+            owners.add(profile);
+            return [
+              Session.fromJson({
+                'id': 'default-chat',
+                'title': 'Default',
+                'source': 'mobile',
+              }),
+            ];
+          },
+      deleteSession: (_, {required String profile}) async {
+        owners.add(profile);
+        return true;
+      },
+      clearDraft: (_, {required String profile}) async {
+        owners.add(profile);
+        return 0;
+      },
+      clearTranscript: (_, {required String profile}) async {
+        owners.add(profile);
+        return 0;
+      },
+      clearOutbox: (_, {required String profile}) async {
+        owners.add(profile);
+        return 0;
+      },
+    );
+
+    expect(owners, List.filled(5, 'default'));
+    expect(summary.allSucceeded, isTrue);
+  });
 }

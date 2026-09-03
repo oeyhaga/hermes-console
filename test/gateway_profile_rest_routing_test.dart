@@ -109,6 +109,34 @@ void main() {
     client.close();
   });
 
+  test('named profile rejects a conflicting Gateway session owner', () async {
+    final client = ApiClient(
+      baseUrl: 'https://hermes.example',
+      apiKey: 'fixture-token',
+      httpClient: MockClient((_) async {
+        return http.Response(
+          jsonEncode({
+            'data': [
+              {
+                'id': 'session-1',
+                'title': 'Wrong owner',
+                'started_at': 1,
+                'profile': 'other_team',
+              },
+            ],
+          }),
+          200,
+        );
+      }),
+    );
+    addTearDown(client.close);
+
+    await expectLater(
+      client.getSessions(profile: 'team_alpha'),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('Gateway profile routing uses the upstream profile-name grammar', () {
     expect(
       ApiClient.profileEndpoint('api/sessions', profile: 'ops-2_alpha'),

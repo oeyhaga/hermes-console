@@ -9,6 +9,15 @@ typedef LoadSessionsForDeletion =
     Future<List<Session>> Function({bool includeChildren});
 typedef ClearLocalSessionRecovery = Future<void> Function(String sessionId);
 typedef ClearConnectionConversationState = Future<int> Function();
+typedef LoadProfileSessionsForDeletion =
+    Future<List<Session>> Function({
+      bool includeChildren,
+      required String profile,
+    });
+typedef DeleteProfileSession =
+    Future<bool> Function(String sessionId, {required String profile});
+typedef ClearProfileSessionState =
+    Future<int> Function(String sessionId, {required String profile});
 
 enum HistoryCleanupScope { normalConversations, cronResults }
 
@@ -341,6 +350,75 @@ Future<ClearConversationsSummary> clearConversationsAndLocalState({
   final drafts = await _clearLocalConversationState(clearDrafts);
   final transcripts = await _clearLocalConversationState(clearTranscripts);
   final outbox = await _clearLocalConversationState(clearOutbox);
+  return ClearConversationsSummary(
+    remote: remote,
+    remoteListError: remoteListError,
+    drafts: drafts,
+    transcripts: transcripts,
+    outbox: outbox,
+  );
+}
+
+Future<LocalConversationClearResult> _clearProfileSessionState(
+  Iterable<Session> sessions,
+  String profile,
+  ClearProfileSessionState clear,
+) async {
+  var removed = 0;
+  Object? firstError;
+  for (final session in sessions) {
+    try {
+      removed += await clear(session.id, profile: profile);
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  return LocalConversationClearResult(removed: removed, error: firstError);
+}
+
+/// Clears one profile inventory without crossing owner boundaries in local
+/// recovery stores. Every mutation receives the same route-authoritative owner.
+Future<ClearConversationsSummary> clearProfileConversationsAndLocalState({
+  required String profile,
+  required LoadProfileSessionsForDeletion loadSessions,
+  required DeleteProfileSession deleteSession,
+  required ClearProfileSessionState clearDraft,
+  required ClearProfileSessionState clearTranscript,
+  required ClearProfileSessionState clearOutbox,
+  Future<void> Function(String sessionId)? onRemoteSessionDeleted,
+}) async {
+  final ownerProfile = Session.profileOwner(profile);
+  RemoteSessionDeleteSummary? remote;
+  Object? remoteListError;
+  var sessions = const <Session>[];
+  try {
+    sessions = sessionsSafeForBulkDelete(
+      await loadSessions(includeChildren: true, profile: ownerProfile),
+    );
+    remote = await deleteRemoteSessions(
+      sessions.map((session) => session.id),
+      delete: (sessionId) => deleteSession(sessionId, profile: ownerProfile),
+      onDeleted: onRemoteSessionDeleted,
+    );
+  } catch (error) {
+    remoteListError = error;
+  }
+
+  final drafts = await _clearProfileSessionState(
+    sessions,
+    ownerProfile,
+    clearDraft,
+  );
+  final transcripts = await _clearProfileSessionState(
+    sessions,
+    ownerProfile,
+    clearTranscript,
+  );
+  final outbox = await _clearProfileSessionState(
+    sessions,
+    ownerProfile,
+    clearOutbox,
+  );
   return ClearConversationsSummary(
     remote: remote,
     remoteListError: remoteListError,

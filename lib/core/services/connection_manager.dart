@@ -1025,7 +1025,8 @@ class ApiClient {
     bool includeChildren = false,
     String? profile,
   }) async {
-    final endpoint = profileEndpoint('api/sessions', profile: profile);
+    final owner = validateCronProfile(profile);
+    final endpoint = profileEndpoint('api/sessions', profile: owner);
     final res = await _http
         .get(
           Uri.parse(
@@ -1042,7 +1043,21 @@ class ApiClient {
     final list = data['data'] as List? ?? [];
     return list
         .whereType<Map<String, dynamic>>()
-        .map((s) => Session.fromJson(s))
+        .map((row) {
+          final session = Session.fromJson(row);
+          final publishedOwner = session.profile?.trim();
+          if (owner != null &&
+              publishedOwner != null &&
+              publishedOwner.isNotEmpty &&
+              publishedOwner != owner) {
+            throw const FormatException(
+              'Gateway session owner conflicts with the requested profile',
+            );
+          }
+          return owner != null && publishedOwner?.isNotEmpty != true
+              ? session.copyWith(profile: owner)
+              : session;
+        })
         // Compatibilidad de limpieza: versiones experimentales antiguas crearon
         // sesiones internas con este prefijo. Nunca fueron chats del usuario.
         .where((s) => !s.id.startsWith('mob-aux-'))

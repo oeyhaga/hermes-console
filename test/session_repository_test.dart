@@ -1011,11 +1011,14 @@ void main() {
         gateway.close();
       });
 
+      final gatewayRows = await gateway.getSessions(profile: 'team_alpha');
       final snapshot = await repository.refresh(
         const SessionLibraryQuery(profile: 'team_alpha'),
       );
 
+      expect(gatewayRows.single.profile, 'team_alpha');
       expect(snapshot.source, SessionLibrarySource.gateway);
+      expect(snapshot.sessions.single.profile, 'team_alpha');
       expect(gatewayRequest.path, '/p/team_alpha/api/sessions');
     },
   );

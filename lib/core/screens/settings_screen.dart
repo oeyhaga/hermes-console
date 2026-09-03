@@ -1022,6 +1022,9 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
   Future<void> _clearNormal() async {
     if (_clearingNormal || _clearingCron) return;
     final targetConnection = widget.connection;
+    final targetProfile = Session.profileOwner(
+      widget.connManager.activeProfileFor(targetConnection.id),
+    );
     final verifier = _captureHistoryCleanupVerifier();
     final activeChats = context
         .findAncestorStateOfType<HermesAppState>()
@@ -1029,7 +1032,6 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
     setState(() => _clearingNormal = true);
 
     ApiClient? client;
-    var normalSessions = <Session>[];
     try {
       if (!await _authorizeHistoryCleanup(
         targetConnection: targetConnection,
@@ -1071,33 +1073,33 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
         connectionId: targetConnection.id,
       );
       final prefs = await SharedPreferences.getInstance();
-      final result = await clearConversationsAndLocalState(
-        loadSessions: ({bool includeChildren = false}) async {
-          final sessions = await client!.getSessions(
-            includeChildren: includeChildren,
-          );
-          normalSessions = sessionsSafeForBulkDelete(sessions);
-          return sessions;
+      final result = await clearProfileConversationsAndLocalState(
+        profile: targetProfile,
+        loadSessions:
+            ({bool includeChildren = false, required String profile}) =>
+                client!.getSessions(
+                  includeChildren: includeChildren,
+                  profile: profile,
+                ),
+        deleteSession: (sessionId, {required String profile}) =>
+            client!.deleteSession(sessionId, profile: profile),
+        clearDraft: (sessionId, {required String profile}) async {
+          await ChatDraftStore(
+            prefs,
+          ).clear(targetConnection.id, sessionId, profile: profile);
+          return 1;
         },
-        deleteSession: client.deleteSession,
-        clearDrafts: () =>
-            ChatDraftStore(prefs).deleteForConnection(targetConnection.id),
-        clearTranscripts: () =>
-            LocalTranscriptStore.deleteForConnection(targetConnection.id),
-        clearOutbox: () =>
-            TurnOutboxStore().deleteForConnection(targetConnection.id),
+        clearTranscript: (sessionId, {required String profile}) async {
+          await LocalTranscriptStore.clear(targetConnection.id, sessionId);
+          return 1;
+        },
+        clearOutbox: (sessionId, {required String profile}) => TurnOutboxStore()
+            .deleteForChat(targetConnection.id, sessionId, profile: profile),
         onRemoteSessionDeleted: (sessionId) async {
           if (activeChats == null) return;
-          var profile = '';
-          for (final session in normalSessions) {
-            if (session.id == sessionId) {
-              profile = session.profile ?? '';
-              break;
-            }
-          }
           await activeChats.clearCancelledTurnsForSession(
             connectionId: targetConnection.id,
-            profile: profile,
+            profile: targetProfile,
             sessionId: sessionId,
           );
         },

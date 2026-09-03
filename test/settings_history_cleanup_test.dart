@@ -197,4 +197,24 @@ void main() {
     expect(source, contains('scope: HistoryCleanupScope.normalConversations'));
     expect(source, contains('scope: HistoryCleanupScope.cronResults'));
   });
+
+  test('vaciar conversaciones enlaza el perfil activo en cada scope', () {
+    final source = File(
+      'lib/core/screens/settings_screen.dart',
+    ).readAsStringSync();
+    final normalCleanup = source.substring(
+      source.indexOf('Future<void> _clearNormal()'),
+      source.indexOf('Future<void> _clearCron()'),
+    );
+
+    expect(normalCleanup, contains('activeProfileFor('));
+    expect(normalCleanup, contains('clearProfileConversationsAndLocalState('));
+    expect(normalCleanup, contains('profile: targetProfile'));
+    expect(normalCleanup, contains('profile: profile'));
+    expect(normalCleanup, contains('ChatDraftStore('));
+    expect(normalCleanup, contains(').clear(targetConnection.id, sessionId'));
+    expect(normalCleanup, contains('LocalTranscriptStore.clear('));
+    expect(normalCleanup, contains('.deleteForChat('));
+    expect(normalCleanup, isNot(contains('deleteForConnection(')));
+  });
 }
