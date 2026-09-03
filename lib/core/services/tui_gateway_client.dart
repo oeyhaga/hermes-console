@@ -801,8 +801,9 @@ class TuiGatewayClient
   Map<String, List<TuiGatewayEvent>>? _replayHold;
   bool _replayInFlight = false;
   // Replay state is LRU-bounded. Four workers drain at most 32 runtimes, so a
-  // reconnect cannot exceed eight request-timeout windows. Each worker creates
-  // a hold only for its current runtime instead of preallocating every queue.
+  // reconnect cannot exceed eight request-timeout windows. All admitted
+  // runtimes receive a bounded hold before workers start, including runtimes
+  // queued behind the active four requests.
   static const int _maxConcurrentReplayRequests = 4;
   static const int _maxTrackedReplayRuntimes = 32;
   static const int _maxReplayRuntimesPerConnect = _maxTrackedReplayRuntimes;
@@ -1065,7 +1066,9 @@ class TuiGatewayClient
     if (_replayInFlight || _lastSeenSequence.isEmpty || !_connected) return;
     _replayInFlight = true;
     final replayFrom = Map<String, int>.from(_lastSeenSequence);
-    _replayHold = <String, List<TuiGatewayEvent>>{};
+    _replayHold = <String, List<TuiGatewayEvent>>{
+      for (final sessionId in replayFrom.keys) sessionId: <TuiGatewayEvent>[],
+    };
     try {
       final allEntries = replayFrom.entries.toList(growable: false);
       final overflowCount = allEntries.length - _maxReplayRuntimesPerConnect;
@@ -1082,7 +1085,6 @@ class TuiGatewayClient
         while (nextEntry < entries.length) {
           final entry = entries[nextEntry++];
           if (_isReplayQuarantined(entry.key)) continue;
-          _replayHold?[entry.key] = <TuiGatewayEvent>[];
           try {
             final result = await _requestConnected(
               'session.events.since',
@@ -1210,14 +1212,14 @@ class TuiGatewayClient
   }) {
     final type = (raw['type'] ?? '').toString().trim();
     if (type.isEmpty) return null;
+    final hasExplicitSessionId = raw.containsKey('session_id');
     final rawSessionId = raw['session_id'];
-    if (rawSessionId is String &&
-        rawSessionId.trim().isNotEmpty &&
-        rawSessionId.trim() != fallbackSessionId) {
+    if (hasExplicitSessionId &&
+        (rawSessionId is! String || rawSessionId.trim() != fallbackSessionId)) {
       return null;
     }
-    final sessionId = rawSessionId is String && rawSessionId.trim().isNotEmpty
-        ? rawSessionId.trim()
+    final sessionId = hasExplicitSessionId
+        ? (rawSessionId as String).trim()
         : fallbackSessionId;
     final rawSequence = raw['seq'];
     if (rawSequence is num &&

@@ -1361,6 +1361,139 @@ void main() {
     },
   );
 
+  test('holds live events for runtimes queued behind replay workers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    const runtimeIds = <String>[
+      'runtime-1',
+      'runtime-2',
+      'runtime-3',
+      'runtime-4',
+      'runtime-queued',
+    ];
+    var connections = 0;
+    var initialEventsReceived = 0;
+    final initialReceived = Completer<void>();
+    final disconnected = Completer<void>();
+    server.listen((request) async {
+      final socket = await WebSocketTransformer.upgrade(request);
+      connections++;
+      if (connections == 1) {
+        for (final runtimeId in runtimeIds) {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'gateway.ready',
+                'session_id': runtimeId,
+                'seq': 1,
+                'payload': {'replay_epoch': 'epoch-queued'},
+              },
+            }),
+          );
+        }
+        await initialReceived.future.timeout(const Duration(seconds: 2));
+        await socket.close();
+        return;
+      }
+
+      final activeRequests = <Map<String, dynamic>>[];
+      await for (final raw in socket) {
+        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (frame['method'] != 'session.events.since') continue;
+        final params = Map<String, dynamic>.from(frame['params'] as Map);
+        final runtimeId = params['session_id'] as String;
+        if (runtimeId == 'runtime-queued') {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': frame['id'],
+              'result': {
+                'epoch': 'epoch-queued',
+                'truncated': false,
+                'events': [
+                  {
+                    'type': 'message.delta',
+                    'session_id': runtimeId,
+                    'seq': 2,
+                    'payload': {'text': 'replayed-queued'},
+                  },
+                ],
+              },
+            }),
+          );
+          continue;
+        }
+
+        activeRequests.add(frame);
+        if (activeRequests.length != 4) continue;
+        socket.add(
+          jsonEncode({
+            'jsonrpc': '2.0',
+            'method': 'event',
+            'params': {
+              'type': 'message.delta',
+              'session_id': 'runtime-queued',
+              'seq': 3,
+              'payload': {'text': 'live-queued'},
+            },
+          }),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        for (final pending in activeRequests) {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': pending['id'],
+              'result': {
+                'epoch': 'epoch-queued',
+                'truncated': false,
+                'events': const [],
+              },
+            }),
+          );
+        }
+      }
+    });
+
+    final client = TuiGatewayClient(
+      SavedConnection(
+        id: 'conn-queued-replay',
+        label: 'Queued replay',
+        host: '127.0.0.1',
+        port: 8642,
+        apiKey: String.fromCharCodes(const [113, 97]),
+        dashboardUrl: 'http://127.0.0.1:${server.port}',
+      ),
+      dashboard: _TicketDashboardClient(),
+    );
+    addTearDown(client.close);
+    final texts = <String>[];
+    final subscription = client.events.listen(
+      (event) {
+        if (runtimeIds.contains(event.sessionId) &&
+            event.sequence == 1 &&
+            ++initialEventsReceived == runtimeIds.length &&
+            !initialReceived.isCompleted) {
+          initialReceived.complete();
+        }
+        if (event.payload['text'] case final String text) texts.add(text);
+      },
+      onError: (Object _, StackTrace _) {
+        if (!disconnected.isCompleted) disconnected.complete();
+      },
+    );
+    addTearDown(subscription.cancel);
+
+    await client.connect();
+    await disconnected.future.timeout(const Duration(seconds: 2));
+    await client.connect();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(texts, ['replayed-queued', 'live-queued']);
+  });
+
   test(
     'a failed replay quarantines only that runtime and continues others',
     () async {
@@ -1476,6 +1609,7 @@ void main() {
     const badRuntimeIds = <String>[
       'runtime-bad-events',
       'runtime-invalid-row',
+      'runtime-invalid-identity',
       'runtime-bad-epoch',
       'runtime-bad-truncated',
       'runtime-truncated',
@@ -1535,6 +1669,18 @@ void main() {
             'epoch': 'epoch-validation',
             'truncated': false,
             'events': const ['invalid-row'],
+          },
+          'runtime-invalid-identity' => <String, dynamic>{
+            'epoch': 'epoch-validation',
+            'truncated': false,
+            'events': const [
+              {
+                'type': 'message.delta',
+                'session_id': 7,
+                'seq': 2,
+                'payload': {'text': 'invalid-explicit-runtime'},
+              },
+            ],
           },
           'runtime-bad-epoch' => <String, dynamic>{
             'epoch': '   ',
