@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -51,6 +52,139 @@ Widget localizedFailureHost(Locale locale, List<Object> errors) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  group('Dashboard WebSocket ticket fallback', () {
+    test('falls back to a legacy token only for 404 and 405', () async {
+      for (final status in const [404, 405]) {
+        var ticketRequests = 0;
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((request) async {
+            expect(request.url.path, '/api/auth/ws-ticket');
+            ticketRequests++;
+            return http.Response('unsupported', status);
+          }),
+        );
+        addTearDown(client.close);
+
+        final auth = await client.webSocketAuth();
+
+        expect(auth.queryName, 'token');
+        expect(auth.credential, 'legacy-test-token');
+        expect(ticketRequests, 1);
+      }
+    });
+
+    test('401 and 403 never fall back to the legacy token', () async {
+      for (final status in const [401, 403]) {
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient(
+            (_) async => http.Response('credentials rejected', status),
+          ),
+        );
+        addTearDown(client.close);
+
+        await expectLater(
+          client.webSocketAuth(),
+          throwsA(
+            isA<DashboardAuthException>()
+                .having(
+                  (error) => error.code,
+                  'code',
+                  DashboardAuthFailureCode.invalidCredentials,
+                )
+                .having((error) => error.statusCode, 'statusCode', status),
+          ),
+        );
+      }
+    });
+
+    test('429 and 5xx propagate classified safe failures', () async {
+      final limited = DashboardClient(
+        host: 'hermes.local',
+        manualToken: 'legacy-test-token',
+        httpClientOverride: MockClient(
+          (_) async => http.Response('rate-limited detail', 429),
+        ),
+      );
+      final unavailable = DashboardClient(
+        host: 'hermes.local',
+        manualToken: 'legacy-test-token',
+        httpClientOverride: MockClient(
+          (_) async => http.Response('internal detail', 503),
+        ),
+      );
+      addTearDown(limited.close);
+      addTearDown(unavailable.close);
+
+      await expectLater(
+        limited.webSocketAuth(),
+        throwsA(
+          isA<DashboardAuthException>().having(
+            (error) => error.code,
+            'code',
+            DashboardAuthFailureCode.rateLimited,
+          ),
+        ),
+      );
+      await expectLater(
+        unavailable.webSocketAuth(),
+        throwsA(
+          isA<DashboardWebSocketAuthException>()
+              .having(
+                (error) => error.code,
+                'code',
+                DashboardWebSocketAuthFailureCode.unavailable,
+              )
+              .having((error) => error.statusCode, 'statusCode', 503),
+        ),
+      );
+    });
+
+    test(
+      'timeouts and malformed successful payloads never token-fallback',
+      () async {
+        final timedOut = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient(
+            (_) async => throw TimeoutException('synthetic timeout detail'),
+          ),
+        );
+        final malformed = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((_) async => http.Response('{}', 200)),
+        );
+        addTearDown(timedOut.close);
+        addTearDown(malformed.close);
+
+        await expectLater(
+          timedOut.webSocketAuth(),
+          throwsA(
+            isA<DashboardWebSocketAuthException>().having(
+              (error) => error.code,
+              'code',
+              DashboardWebSocketAuthFailureCode.timeout,
+            ),
+          ),
+        );
+        await expectLater(
+          malformed.webSocketAuth(),
+          throwsA(
+            isA<DashboardWebSocketAuthException>().having(
+              (error) => error.code,
+              'code',
+              DashboardWebSocketAuthFailureCode.malformedResponse,
+            ),
+          ),
+        );
+      },
+    );
+  });
 
   test('loginRequired se produce por señal real del Dashboard', () async {
     final client = DashboardClient(
@@ -136,6 +270,32 @@ void main() {
     expect(find.textContaining('HTTP 503'), findsOneWidget);
     expect(find.textContaining('did not create a session'), findsOneWidget);
     expect(find.textContaining('DashboardAuthException'), findsNothing);
+  });
+
+  testWidgets('el aviso de auth del chat está localizado en ES y EN', (
+    tester,
+  ) async {
+    Widget host(Locale locale) => MaterialApp(
+      locale: locale,
+      localizationsDelegates: Strings.localizationsDelegates,
+      supportedLocales: Strings.supportedLocales,
+      home: Builder(
+        builder: (context) =>
+            Text(Strings.of(context).chaDesktopAuthRequiredBanner),
+      ),
+    );
+
+    await tester.pumpWidget(host(const Locale('es')));
+    expect(
+      find.textContaining('Tu historial sigue disponible'),
+      findsOneWidget,
+    );
+
+    await tester.pumpWidget(host(const Locale('en')));
+    expect(
+      find.textContaining('Your transcript remains available'),
+      findsOneWidget,
+    );
   });
 
   testWidgets(

@@ -387,6 +387,27 @@ class _AttachmentDesktopGateway
   Future<void> close() => _events.close();
 }
 
+class _AuthWarmGateway extends _AttachmentDesktopGateway {
+  Object? connectError;
+  bool connected = false;
+  final List<Future<void> Function()> connectAttempts = [];
+
+  @override
+  bool get isConnected => connected;
+
+  @override
+  Future<void> connect() async {
+    if (connectAttempts.isNotEmpty) {
+      await connectAttempts.removeAt(0)();
+      connected = true;
+      return;
+    }
+    final error = connectError;
+    if (error != null) throw error;
+    connected = true;
+  }
+}
+
 class _AttachmentBridgeClient extends BridgeClient {
   _AttachmentBridgeClient()
     : super(baseUrl: 'http://127.0.0.1:9131', token: 'bridge-token');
@@ -506,6 +527,100 @@ Session _widgetSession() => const Session(
 );
 
 void main() {
+  test(
+    'Desktop warm-up publishes auth-required and clears only after recovery',
+    () async {
+      final gateway = _AuthWarmGateway()
+        ..connectError = const DashboardAuthException(
+          DashboardAuthFailureCode.loginRequired,
+        );
+      final chat = ActiveChat(
+        connection: _conn(id: 'conn-dashboard-auth-warm'),
+        sessionId: 'sess-dashboard-auth-warm',
+        sessionTitle: 'Auth warm-up',
+        notifications: null,
+        onTerminal: () {},
+        desktopGateway: gateway,
+      );
+      addTearDown(chat.dispose);
+      final events = <ActiveChatEvent>[];
+      final subscription = chat.changes.listen(events.add);
+      addTearDown(subscription.cancel);
+      chat.messages = [
+        {'role': 'assistant', 'content': 'durable REST transcript'},
+      ];
+
+      await chat.warmDesktopGateway();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(chat.dashboardAuthRequired, isTrue);
+      expect(chat.messages.single['content'], 'durable REST transcript');
+
+      gateway.connectError = const SocketException('temporary outage');
+      await chat.warmDesktopGateway();
+      expect(
+        chat.dashboardAuthRequired,
+        isTrue,
+        reason: 'only a successful reconnect proves auth recovered',
+      );
+
+      gateway.connectError = null;
+      await chat.warmDesktopGateway();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(chat.dashboardAuthRequired, isFalse);
+      expect(
+        events.where((event) => event == ActiveChatEvent.dashboardAuthChanged),
+        hasLength(2),
+      );
+      expect(chat.messages.single['content'], 'durable REST transcript');
+    },
+  );
+
+  test(
+    'a stale auth failure cannot replace a newer successful recovery',
+    () async {
+      final gateway = _AuthWarmGateway()
+        ..connectError = const DashboardAuthException(
+          DashboardAuthFailureCode.loginRequired,
+        );
+      final chat = ActiveChat(
+        connection: _conn(id: 'conn-dashboard-auth-race'),
+        sessionId: 'sess-dashboard-auth-race',
+        sessionTitle: 'Auth recovery race',
+        notifications: null,
+        onTerminal: () {},
+        desktopGateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.warmDesktopGateway();
+      expect(chat.dashboardAuthRequired, isTrue);
+
+      final releaseStaleFailure = Completer<void>();
+      gateway
+        ..connectError = null
+        ..connectAttempts.addAll([
+          () async {
+            await releaseStaleFailure.future;
+            throw const DashboardAuthException(
+              DashboardAuthFailureCode.loginRequired,
+            );
+          },
+          () async {},
+        ]);
+      final staleAttempt = chat.warmDesktopGateway();
+      final recoveredAttempt = chat.warmDesktopGateway();
+      await recoveredAttempt;
+      expect(chat.dashboardAuthRequired, isFalse);
+
+      releaseStaleFailure.complete();
+      await staleAttempt;
+
+      expect(chat.dashboardAuthRequired, isFalse);
+    },
+  );
+
   test('desktop recovery never exposes technical errors in UI', () {
     final secrets = <Object>[
       StateError('state-secret'),

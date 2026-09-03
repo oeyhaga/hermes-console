@@ -440,6 +440,7 @@
   "chaVoiceFullResponse": "FULL RESPONSE",
   "chaVoiceFooter": "voice mode · {model}",
   "chaMessagesError": "Couldn't load messages",
+  "chaDesktopAuthRequiredBanner": "Sign in to the Dashboard to reconnect live chat. Your transcript remains available.",
   "chaRetry": "↺ retry",
   "chaGalleryError": "Couldn't open the gallery.",
   "chaFilesError": "Couldn't open the file picker.",

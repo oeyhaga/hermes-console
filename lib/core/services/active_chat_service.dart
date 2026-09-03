@@ -1900,6 +1900,7 @@ enum ActiveChatEvent {
   error,
   cancelled,
   queueChanged,
+  dashboardAuthChanged,
 }
 
 Future<({Object? error, T? value})> _captureAsync<T>(
@@ -2592,6 +2593,27 @@ class ActiveChat {
   int? _rewind4018FallbackOrdinal;
   bool _rewindRestoredOnError = false;
   bool _rewindDashboardAuthRequired = false;
+  bool _dashboardAuthRequired = false;
+  int _dashboardAuthAttemptEpoch = 0;
+
+  /// El transcript puede seguir siendo legible por REST aunque el Dashboard no
+  /// permita reanudar el canal vivo. La UI observa esta señal no destructiva.
+  bool get dashboardAuthRequired => _dashboardAuthRequired;
+
+  void _setDashboardAuthRequired(bool value, {required int attemptEpoch}) {
+    if (attemptEpoch != _dashboardAuthAttemptEpoch) return;
+    if (_dashboardAuthRequired == value) return;
+    _dashboardAuthRequired = value;
+    _emit(ActiveChatEvent.dashboardAuthChanged);
+  }
+
+  static bool _isDashboardAuthRequired(Object error) =>
+      error is DashboardAuthException &&
+      const {
+        DashboardAuthFailureCode.loginRequired,
+        DashboardAuthFailureCode.invalidCredentials,
+        DashboardAuthFailureCode.sessionCookieMissing,
+      }.contains(error.code);
 
   /// La pantalla consume esta señal para explicar que la edición falló pero la
   /// línea temporal original ya fue restaurada.
@@ -3433,6 +3455,7 @@ class ActiveChat {
 
     if (gateway != null && lifecycleGateway != null) {
       _listenToDesktopGateway(gateway);
+      final dashboardAuthAttempt = ++_dashboardAuthAttemptEpoch;
 
       // Hermes Desktop no serializa estas dos lecturas. El transcript REST y
       // session.resume son independientes: REST puede pintar el historial
@@ -3800,8 +3823,12 @@ class ActiveChat {
         if (_disposed || loadEpoch != _messageLoadEpoch) return;
         resumeError = resumed.error;
         if (resumed.value case final snapshot?) {
+          _setDashboardAuthRequired(false, attemptEpoch: dashboardAuthAttempt);
           resumedSnapshot = snapshot;
           publishSnapshot(snapshot);
+        } else if (resumed.error case final error?
+            when _isDashboardAuthRequired(error)) {
+          _setDashboardAuthRequired(true, attemptEpoch: dashboardAuthAttempt);
         }
       }();
 
@@ -6287,14 +6314,20 @@ class ActiveChat {
   /// Dashboard antes de que un seguimiento pueda caer al fallback de cola.
   Future<void> warmDesktopGateway() async {
     if (connection.kind == InstanceKind.localhost) return;
+    final dashboardAuthAttempt = ++_dashboardAuthAttemptEpoch;
     try {
       if (_desktopRuntimeSessionId != null &&
           _desktopGateway?.isConnected != true) {
         await ensureDesktopRuntime();
+        _setDashboardAuthRequired(false, attemptEpoch: dashboardAuthAttempt);
         return;
       }
       await _desktopGateway?.connect();
+      _setDashboardAuthRequired(false, attemptEpoch: dashboardAuthAttempt);
     } catch (error) {
+      if (_isDashboardAuthRequired(error)) {
+        _setDashboardAuthRequired(true, attemptEpoch: dashboardAuthAttempt);
+      }
       debugPrint(
         '[active-chat] Desktop gateway warm-up failed '
         '(${error.runtimeType})',

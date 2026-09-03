@@ -6177,6 +6177,72 @@ void main() {
     },
   );
 
+  testWidgets(
+    'auth Dashboard muestra banner sin tapar historial o snackbar y se limpia',
+    (tester) async {
+      final gateway = _UiRewindGateway()
+        ..connected = false
+        ..connectError = const DashboardAuthException(
+          DashboardAuthFailureCode.loginRequired,
+        );
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-auth-banner'),
+        messages: const [
+          {'role': 'assistant', 'content': 'Respuesta REST conservada'},
+          {
+            'role': 'user',
+            'content': 'pregunta REST conservada',
+            '_desktopRowId': 73,
+          },
+        ],
+      );
+      await tester.pump(const Duration(milliseconds: 200));
+
+      final banner = find.byKey(const ValueKey('chat-dashboard-auth-required'));
+      expect(banner, findsOneWidget);
+      expect(find.textContaining('Respuesta REST conservada'), findsOneWidget);
+      expect(find.textContaining('pregunta REST conservada'), findsOneWidget);
+      expect(
+        find.text(
+          'Inicia sesión en el Dashboard para reconectar el chat en vivo. '
+          'Tu historial sigue disponible.',
+        ),
+        findsOneWidget,
+      );
+      final semantics = tester.getSemantics(banner);
+      expect(semantics.flagsCollection.isLiveRegion, isTrue);
+      expect(find.textContaining('DashboardAuthException'), findsNothing);
+
+      await tester.tap(find.byIcon(Icons.edit_outlined));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('edit-message-composer')),
+        'texto que no se enviará',
+      );
+      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+
+      expect(banner, findsOneWidget);
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.textContaining('pregunta REST conservada'), findsOneWidget);
+
+      gateway.connectError = null;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump();
+
+      expect(chat.dashboardAuthRequired, isFalse);
+      expect(banner, findsNothing);
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(find.textContaining('Respuesta REST conservada'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('editar en reposo rebobina y reenvía desde el mensaje elegido', (
     tester,
   ) async {

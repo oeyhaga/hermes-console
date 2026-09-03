@@ -1051,7 +1051,10 @@ class LocalVoiceConversationController extends ChangeNotifier
   void _onChatEvent(ActiveChatEvent event) {
     if (!active) return;
     // A context-metrics refresh has no conversational or audio meaning.
-    if (event == ActiveChatEvent.responseMetrics) return;
+    if (event == ActiveChatEvent.responseMetrics ||
+        event == ActiveChatEvent.dashboardAuthChanged) {
+      return;
+    }
     final chat = _chat;
     final narration = _narration;
     if (chat == null || narration == null) return;
@@ -1224,6 +1227,7 @@ class LocalVoiceConversationController extends ChangeNotifier
       case ActiveChatEvent.earlierMessagesLoaded:
       case ActiveChatEvent.responseMetrics:
       case ActiveChatEvent.sessionInfo:
+      case ActiveChatEvent.dashboardAuthChanged:
         break;
     }
     _notify();

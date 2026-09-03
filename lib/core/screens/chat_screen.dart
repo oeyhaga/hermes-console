@@ -3813,6 +3813,7 @@ class _ChatScreenState extends State<ChatScreen>
       case ActiveChatEvent.responseMetrics:
       case ActiveChatEvent.queueChanged:
       case ActiveChatEvent.sessionInfo:
+      case ActiveChatEvent.dashboardAuthChanged:
         break;
     }
   }
@@ -4307,6 +4308,7 @@ class _ChatScreenState extends State<ChatScreen>
     // Al volver a primer plano, repinta la configuración conocida sin mutarla.
     if (state == AppLifecycleState.resumed) {
       _loadActiveModel();
+      if (_chatBound) unawaited(_chat.warmDesktopGateway());
     }
   }
 
@@ -8353,6 +8355,10 @@ class _ChatScreenState extends State<ChatScreen>
                     ),
                     child: Column(
                       children: [
+                        if (_chat.dashboardAuthRequired)
+                          _DesktopAuthRequiredBanner(
+                            message: str.chaDesktopAuthRequiredBanner,
+                          ),
                         Expanded(
                           child: Stack(
                             children: [
@@ -11552,6 +11558,52 @@ class _ChatScreenState extends State<ChatScreen>
         (candidate, _) => !live.contains(candidate),
       );
     }
+  }
+}
+
+class _DesktopAuthRequiredBanner extends StatelessWidget {
+  const _DesktopAuthRequiredBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Semantics(
+      key: const ValueKey('chat-dashboard-auth-required'),
+      container: true,
+      liveRegion: true,
+      label: message,
+      child: ExcludeSemantics(
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            color: colors.warning.withValues(alpha: 0.1),
+            border: Border(
+              bottom: BorderSide(color: colors.warning.withValues(alpha: 0.28)),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.lock_outline_rounded, size: 18, color: colors.warning),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  message,
+                  style: TextStyle(
+                    color: colors.textPrimary,
+                    fontSize: 12.5,
+                    height: 1.3,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

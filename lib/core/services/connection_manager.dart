@@ -1829,6 +1829,32 @@ class DashboardAuthException implements Exception {
       : '${code.stableCode} (HTTP $statusCode)';
 }
 
+enum DashboardWebSocketAuthFailureCode {
+  unavailable('dashboard_ws_ticket_unavailable'),
+  timeout('dashboard_ws_ticket_timeout'),
+  malformedResponse('dashboard_ws_ticket_malformed_response');
+
+  const DashboardWebSocketAuthFailureCode(this.stableCode);
+
+  final String stableCode;
+}
+
+/// Fallo seguro y clasificable al obtener la credencial efímera del socket.
+///
+/// Nunca conserva el body ni la excepción de transporte: esos valores pueden
+/// contener detalles privados del proxy o del Dashboard.
+class DashboardWebSocketAuthException implements Exception {
+  final DashboardWebSocketAuthFailureCode code;
+  final int? statusCode;
+
+  const DashboardWebSocketAuthException(this.code, {this.statusCode});
+
+  @override
+  String toString() => statusCode == null
+      ? code.stableCode
+      : '${code.stableCode} (HTTP $statusCode)';
+}
+
 /// Fallo HTTP estructural de una ruta autenticada del Dashboard.
 ///
 /// Conserva el formato textual histórico para diagnóstico, pero permite que la
@@ -2279,15 +2305,44 @@ class DashboardClient {
   /// Mintea un ticket de un solo uso (30s) para autenticar un WebSocket.
   /// Los sockets no pueden mandar la cookie/Authorization en el upgrade, así
   /// que en dashboards con login por cookie hay que pasar `?ticket=`. Devuelve
-  /// null si el endpoint no existe (modo token/loopback → se usa `?token=`).
+  /// null solo si el endpoint no existe (modo token/loopback → `?token=`).
+  /// Cualquier otro fallo se propaga con una clasificación sin body remoto.
   Future<String?> mintWsTicket() async {
     try {
       final res = await apiPost('auth/ws-ticket');
-      final t = res['ticket'];
-      return (t is String && t.isNotEmpty) ? t : null;
-    } catch (e) {
-      debugPrint('[connection] excepción silenciada (se devuelve null): $e');
-      return null;
+      final ticket = res['ticket'];
+      if (ticket is String && ticket.trim().isNotEmpty) return ticket;
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.malformedResponse,
+      );
+    } on DashboardHttpException catch (error) {
+      if (error.statusCode == 404 || error.statusCode == 405) return null;
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        throw DashboardAuthException(
+          (_hasPasswordCreds || (_manualToken?.isNotEmpty ?? false))
+              ? DashboardAuthFailureCode.invalidCredentials
+              : DashboardAuthFailureCode.loginRequired,
+          statusCode: error.statusCode,
+        );
+      }
+      if (error.statusCode == 429) {
+        throw DashboardAuthException(
+          DashboardAuthFailureCode.rateLimited,
+          statusCode: error.statusCode,
+        );
+      }
+      throw DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        statusCode: error.statusCode,
+      );
+    } on TimeoutException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.timeout,
+      );
+    } on FormatException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.malformedResponse,
+      );
     }
   }
 

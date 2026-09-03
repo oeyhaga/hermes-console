@@ -770,6 +770,7 @@
     }
   },
   "chaMessagesError": "No se pudieron cargar los mensajes",
+  "chaDesktopAuthRequiredBanner": "Inicia sesión en el Dashboard para reconectar el chat en vivo. Tu historial sigue disponible.",
   "chaRetry": "↺ reintentar",
   "chaGalleryError": "No se pudo acceder a la galería.",
   "chaFilesError": "No se pudo abrir el selector de archivos.",
