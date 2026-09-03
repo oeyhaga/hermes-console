@@ -537,7 +537,7 @@
   "chaSteerTextOnly": "While Hermes is working you can only add text. Attachments are kept for the next turn.",
   "chaSteerSupplementsLabel": "Added while Hermes was working",
   "chaSteerUnsupported": "The Hermes Desktop chat channel is unavailable on this instance. The current response was not cancelled and your text is still in the composer.",
-  "chaSteerFailed": "The instruction could not be added to the current run. It was not cancelled; you can try again.",
+  "chaSteerFailed": "Delivery to the current run was not confirmed. Your text is preserved as a draft; after reconnecting, review it and retry to avoid duplicates.",
   "chaSteerQueued": "Message queued: it will be sent as the next turn when Hermes finishes.",
   "commonAdd": "Add",
   "commonEdit": "Edit",

@@ -262,6 +262,7 @@ class _UiRewindGateway
   Object? slashError;
   Object? dispatchError;
   Object? rewindError;
+  Object? steerError;
   Object? resumeExistingError;
   Object? connectError;
   bool connected = true;
@@ -438,6 +439,8 @@ class _UiRewindGateway
   @override
   Future<void> steer(String runtimeSessionId, String text) async {
     steers.add(text);
+    final error = steerError;
+    if (error != null) throw error;
   }
 
   @override
@@ -647,6 +650,7 @@ class _SubmissionGateway
   final List<String> steers = [];
   Completer<void>? submitGate;
   Object? submitError;
+  Object? steerError;
   int connectCalls = 0;
   int resumeCalls = 0;
   int imageAttachCalls = 0;
@@ -726,6 +730,8 @@ class _SubmissionGateway
   @override
   Future<void> steer(String runtimeSessionId, String text) async {
     steers.add(text);
+    final error = steerError;
+    if (error != null) throw error;
   }
 
   @override
@@ -4612,6 +4618,52 @@ void main() {
   });
 
   testWidgets(
+    'Reintentar reconcilia un fallo durable sin reenviar el prompt',
+    (tester) async {
+      const prompt = 'espera y responde';
+      var sendAttempts = 0;
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-recovery-retry'),
+        messages: const [
+          {
+            'role': 'assistant_error',
+            'content': 'No se pudo recuperar el turno. Inténtalo de nuevo.',
+            '_prompt': prompt,
+            '_awaitingDurableTurnRecovery': true,
+          },
+          {'role': 'user', 'content': prompt},
+        ],
+        chatState: ChatPipelineState.failed,
+        storedMessageLoader: (_, _) async => const [
+          {'role': 'user', 'content': prompt},
+          {'role': 'assistant', 'content': 'respuesta durable final'},
+        ],
+        sendAttemptObserver: () => sendAttempts += 1,
+      );
+      chat.lastPrompt = prompt;
+      await tester.pump();
+
+      await tester.tap(find.text('↺ reintentar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(sendAttempts, 0);
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.messages.first['content'], 'respuesta durable final');
+      expect(
+        chat.messages.where(
+          (message) => message['role'] == 'assistant_error',
+        ),
+        isEmpty,
+      );
+      expect(find.text('respuesta durable final'), findsOneWidget);
+      expect(find.byType(ErrorWidget), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'un error owner guardado por una build anterior nunca revela el RPC',
     (tester) async {
       const prompt = 'continúa esta conversación desde el móvil';
@@ -8472,6 +8524,47 @@ void main() {
     final removeQueued = find.byTooltip('Quitar mensaje de la cola');
     expect(removeQueued, findsOneWidget);
     expect(tester.getSize(removeQueued), const Size(48, 48));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('un StateError ambiguo de socket no encola ni borra el borrador', (
+    tester,
+  ) async {
+    final gateway = _UiRewindGateway()
+      ..steerError = StateError('Hermes Desktop WebSocket is not connected');
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-steer-socket'),
+      messagesLoaded: false,
+    );
+
+    await tester.enterText(find.byType(TextField), 'Primera petición');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(gateway.submissions, ['Primera petición']);
+
+    await tester.enterText(find.byType(TextField), 'corrección ambigua');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gateway.steers, ['corrección ambigua']);
+    expect(chat.queuedMessages, isEmpty);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      'corrección ambigua',
+    );
+    expect(
+      find.text(
+        'No se confirmó el envío al run actual. Tu texto se conserva como borrador; cuando reconecte, revísalo y reintenta para evitar duplicados.',
+      ),
+      findsOneWidget,
+    );
+
+    gateway.emit('message.complete', {'text': 'hecho'});
+    await tester.pump(const Duration(milliseconds: 350));
     expect(tester.takeException(), isNull);
   });
 

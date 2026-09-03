@@ -145,7 +145,7 @@ void main() {
       ]);
       expect(requests[0]['params'], {
         'session_id': 'stored-qa',
-        'source': 'mobile',
+        'source': 'desktop',
       });
       expect(requests[1]['params'], {
         'session_id': 'runtime-qa',
@@ -412,8 +412,13 @@ void main() {
         profile: 'default',
         omitMessages: true,
       );
+      final recoverySnapshot = await client.resumeExistingForRecovery(
+        '20260720_101500_fixture',
+        profile: 'default',
+      );
 
       expect(snapshot.runtimeSessionId, 'runtime019');
+      expect(recoverySnapshot.runtimeSessionId, 'runtime019');
       expect(snapshot.storedSessionId, '20260720_101500_fixture');
       expect(snapshot.created, isFalse);
       expect(snapshot.messageCount, 3);
@@ -445,10 +450,22 @@ void main() {
       expect(snapshot.info.raw, isNot(contains('system_prompt')));
       expect(snapshot.raw, isNot(contains('messages')));
       expect(snapshot.raw, isNot(contains('info')));
-      expect(requests.map((request) => request['method']), ['session.resume']);
-      expect(requests.single['params'], {
+      expect(requests.map((request) => request['method']), [
+        'session.resume',
+        'session.resume',
+      ]);
+      expect(requests[0]['params'], {
         'session_id': '20260720_101500_fixture',
-        'source': 'mobile',
+        'source': 'desktop',
+        'profile': 'default',
+        'omit_messages': true,
+      });
+      // Recovery only needs an authoritative runtime binding and inflight
+      // snapshot. On current Gateway a full lineage resume can reject a safely
+      // compacted chat with 4130; REST/history remains transcript authority.
+      expect(requests[1]['params'], {
+        'session_id': '20260720_101500_fixture',
+        'source': 'desktop',
         'profile': 'default',
         'omit_messages': true,
       });
@@ -639,7 +656,7 @@ void main() {
     expect(snapshot.storedSessionId, 'stored-created-directly');
     expect(requests.map((request) => request['method']), ['session.create']);
     expect(requests.single['params'], {
-      'source': 'mobile',
+      'source': 'desktop',
       'profile': 'coding',
       'model': 'provider/model',
       'messages': const [
@@ -705,7 +722,7 @@ void main() {
       'session.create',
     ]);
     expect(requests[1]['params'], {
-      'source': 'mobile',
+      'source': 'desktop',
       'messages': const [
         {'role': 'user', 'content': 'anterior'},
         {'role': 'assistant', 'content': 'respuesta'},
@@ -1231,6 +1248,305 @@ void main() {
       expect(focused.afterMessages, 2);
       expect(focused.info.storedSessionId, 'stored-compressed');
       expect(focused.messages.last.text, 'Continuación');
+    },
+  );
+
+  test(
+    'un replay truncado descarta tanto el tail como frames vivos retenidos',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      var connections = 0;
+      final firstLiveSent = Completer<void>();
+      final firstLiveReceived = Completer<void>();
+      final replayRequested = Completer<void>();
+      final recoveryCommitted = Completer<void>();
+      server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        connections++;
+        if (connections == 1) {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'gateway.ready',
+                'session_id': 'runtime-replay',
+                'seq': 1,
+                'payload': {'replay_epoch': 'epoch-qa'},
+              },
+            }),
+          );
+          firstLiveSent.complete();
+          await firstLiveReceived.future.timeout(const Duration(seconds: 2));
+          await socket.close();
+          return;
+        }
+        await for (final raw in socket) {
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (frame['method'] != 'session.events.since') continue;
+          replayRequested.complete();
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'message.delta',
+                'session_id': 'runtime-replay',
+                'seq': 3,
+                'payload': {'text': 'live-after-replay-request'},
+              },
+            }),
+          );
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': frame['id'],
+              'result': {
+                'epoch': 'epoch-qa',
+                'truncated': true,
+                'latest_seq': 3,
+                'events': [
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-replay',
+                    'seq': 2,
+                    'payload': {'text': 'replayed-gap'},
+                  },
+                ],
+              },
+            }),
+          );
+          // This frame arrives after the truncation answer, when the local
+          // replay hold has already been released. It is still unsafe until an
+          // authoritative session recovery re-establishes this runtime.
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'message.delta',
+                'session_id': 'runtime-replay',
+                'seq': 4,
+                'payload': {'text': 'live-after-truncation'},
+              },
+            }),
+          );
+          await recoveryCommitted.future.timeout(const Duration(seconds: 2));
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'message.delta',
+                'session_id': 'runtime-replay',
+                'seq': 5,
+                'payload': {'text': 'live-after-authoritative-recovery'},
+              },
+            }),
+          );
+        }
+      });
+
+      final client = TuiGatewayClient(
+        SavedConnection(
+          id: 'conn-replay',
+          label: 'Replay',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'unused',
+          dashboardUrl: 'http://127.0.0.1:${server.port}',
+        ),
+        dashboard: _TicketDashboardClient(),
+      );
+      addTearDown(client.close);
+      final events = <TuiGatewayEvent>[];
+      final disconnected = Completer<void>();
+      final subscription = client.events.listen(
+        (event) {
+          events.add(event);
+          if (event.sessionId == 'runtime-replay' &&
+              event.payload['replay_epoch'] == 'epoch-qa' &&
+              !firstLiveReceived.isCompleted) {
+            firstLiveReceived.complete();
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!disconnected.isCompleted) disconnected.complete();
+        },
+      );
+      addTearDown(subscription.cancel);
+
+      await client.connect();
+      await firstLiveSent.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('initial event was not emitted'),
+      );
+      await firstLiveReceived.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('initial event was not dispatched'),
+      );
+      await disconnected.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('first transport did not close'),
+      );
+      await client.connect();
+      await replayRequested.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => throw StateError('replay RPC was not requested'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(
+        events.map((event) => event.payload['text']).whereType<String>(),
+        isEmpty,
+      );
+      // The app only releases this runtime after applying a recovery snapshot.
+      client.commitRecoveryRuntime('runtime-replay');
+      recoveryCommitted.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(events.map((event) => event.payload['text']).whereType<String>(), [
+        'live-after-authoritative-recovery',
+      ]);
+    },
+  );
+
+  test(
+    'ordena el replay secuenciado antes de liberar frames vivos retenidos',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      var connections = 0;
+      final initialReceived = Completer<void>();
+      server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        connections++;
+        if (connections == 1) {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'gateway.ready',
+                'session_id': 'runtime-ordered-replay',
+                'seq': 1,
+                'payload': {'replay_epoch': 'epoch-ordered'},
+              },
+            }),
+          );
+          await initialReceived.future.timeout(const Duration(seconds: 2));
+          await socket.close();
+          return;
+        }
+        await for (final raw in socket) {
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (frame['method'] != 'session.events.since') continue;
+          // A defensive client must not lose seq=2 merely because a corrupt
+          // relay returned the otherwise valid replay entries out of order.
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'message.delta',
+                'session_id': 'runtime-ordered-replay',
+                'seq': 4,
+                'payload': {'text': 'live-fourth'},
+              },
+            }),
+          );
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': frame['id'],
+              'result': {
+                'epoch': 'epoch-ordered',
+                'truncated': false,
+                'latest_seq': 4,
+                'events': [
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-ordered-replay',
+                    'seq': 3,
+                    'payload': {'text': 'replayed-third'},
+                  },
+                  // Protocol seq is an integer. A fractional value must not
+                  // collapse onto seq=2 and steal the real frame's watermark.
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-ordered-replay',
+                    'seq': 2.5,
+                    'payload': {'text': 'replayed-fractional'},
+                  },
+                  // Zero is not a valid monotonic replay sequence either.
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-ordered-replay',
+                    'seq': 0,
+                    'payload': {'text': 'replayed-zero'},
+                  },
+                  // A malformed unsequenced entry must not prevent valid
+                  // sequenced entries on either side from being ordered.
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-ordered-replay',
+                    'payload': {'text': 'replayed-unsequenced'},
+                  },
+                  {
+                    'type': 'message.delta',
+                    'session_id': 'runtime-ordered-replay',
+                    'seq': 2,
+                    'payload': {'text': 'replayed-second'},
+                  },
+                ],
+              },
+            }),
+          );
+        }
+      });
+
+      final client = TuiGatewayClient(
+        SavedConnection(
+          id: 'conn-ordered-replay',
+          label: 'Ordered replay',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'test-key',
+          dashboardUrl: 'http://127.0.0.1:${server.port}',
+        ),
+        dashboard: _TicketDashboardClient(),
+      );
+      addTearDown(client.close);
+      final texts = <String>[];
+      final disconnected = Completer<void>();
+      final subscription = client.events.listen(
+        (event) {
+          if (event.sessionId == 'runtime-ordered-replay' &&
+              event.payload['replay_epoch'] == 'epoch-ordered' &&
+              !initialReceived.isCompleted) {
+            initialReceived.complete();
+          }
+          final text = event.payload['text'];
+          if (text is String) texts.add(text);
+        },
+        onError: (Object _, StackTrace _) {
+          if (!disconnected.isCompleted) disconnected.complete();
+        },
+      );
+      addTearDown(subscription.cancel);
+
+      await client.connect();
+      await initialReceived.future.timeout(const Duration(seconds: 2));
+      await disconnected.future.timeout(const Duration(seconds: 2));
+      await client.connect();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(texts, [
+        'replayed-second',
+        'replayed-third',
+        'replayed-unsequenced',
+        'live-fourth',
+      ]);
     },
   );
 

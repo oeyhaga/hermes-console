@@ -6,7 +6,7 @@ Hermes Console has three Android flavors built from the same source:
 |---|---|---|---|
 | Google Play | `play` | AAB | Store distribution |
 | Direct | `full` | APK | GitHub Releases and Obtainium |
-| Physical QA | `qa` | profile APK | Internal testing only |
+| Emulator QA | `qa` | profile APK | Internal testing only |
 
 The `qa` flavor uses a separate application ID and must never be attached to a
 public release. Debug and profile artifacts are not release artifacts.
@@ -24,12 +24,13 @@ flutter build appbundle --release --flavor play \
 
 # Direct APKs for GitHub Releases and Obtainium
 flutter build apk --release --flavor full --split-per-abi \
-  --dart-define=HERMES_FLAVOR=full
+  --dart-define=HERMES_FLAVOR=full \
+  --dart-define=HERMES_LOCAL_AGENT=true
 ```
 
-These commands build the complete current product; no hidden release flag is
-required to remove an unsupported feature. Voice mode, dictation and read-aloud
-are included in both public flavors.
+These commands build the complete current product. The documented
+`HERMES_LOCAL_AGENT=true` flag enables the direct-only Termux integration;
+Voice mode, dictation and read-aloud are included in both public flavors.
 
 ## Signing
 
@@ -58,7 +59,7 @@ Direct-release CI must archive, beside the GitHub/Obtainium APKs:
 - `apksigner --print-certs` reports for the direct APKs;
 - the exact source commit and source timestamp embedded by the SBOM generator.
 
-These files prove what CI built; they do not replace physical installation,
+These files prove what CI built; they do not replace emulator installation,
 Google Play inspection, dependency-license review or owner approval. No hash or
 certificate is documented as final until it is produced from the signed release
 job for the selected commit.
@@ -74,7 +75,7 @@ Before tagging a version:
    substitute a `full` APK for Play or a `play` AAB for GitHub/Obtainium.
 5. Scan the clone and Git history for secrets.
 6. Verify package ID, version, signing certificate and SHA-256 digest.
-7. Install the exact APK on a physical Android device and test chat, images,
+7. Install the exact APK on an Android emulator and test chat, images,
    QR pairing, voice, background behavior and cleanup.
 8. Publish only the signed release files; never publish QA/debug/profile builds,
    mappings, keystores or diagnostic bundles.

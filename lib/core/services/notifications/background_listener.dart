@@ -532,7 +532,7 @@ class CronExecutionSnapshot {
         .toLowerCase();
     final status = switch (rawStatus) {
       'ok' || 'success' || 'completed' => 'completed',
-      'error' || 'failure' || 'failed' => 'failed',
+      'error' || 'failure' || 'failed' || 'delivery_failed' => 'failed',
       'running' || 'started' || 'queued' => rawStatus,
       'unknown' => 'unknown',
       _ => '',
@@ -1022,7 +1022,9 @@ class KanbanDiscoveryEntry {
 /// primer plano, de modo que una transición no se duplica al volver al fondo.
 class BackgroundKanbanWatch {
   static const int _maxTasksPerConnection = 500;
-  static const Set<String> _notifiableStatuses = {'done', 'blocked', 'triage'};
+  // Done is audit/activity, not an interruption. Only a task that is blocked
+  // or explicitly triaged needs an owner-facing notification.
+  static const Set<String> _notifiableStatuses = {'blocked', 'triage'};
 
   @visibleForTesting
   static List<KanbanDiscoveryEntry> discoveryEntriesForTest({
@@ -1830,7 +1832,7 @@ class _HermesTaskHandler extends TaskHandler {
         BackgroundDiscoveryCapability.kanban,
       );
       try {
-        const materialStatuses = <String>{'done', 'blocked', 'triage'};
+        const materialStatuses = <String>{'blocked', 'triage'};
         final t = NotifL10n.of(prefs);
         final entries = BackgroundKanbanWatch.discoveryEntriesForTest(
           connId: connection.id,

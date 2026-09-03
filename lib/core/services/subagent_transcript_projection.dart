@@ -83,39 +83,116 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
           (callId == null ? null : delegateNamesByCallId[callId]);
       if (name != 'delegate_task' || callId == null) continue;
       final result = _decodedMap(message['content']);
-      final event = SubagentActivityEvent.tryParseLegacyDelegateTool(
-        type: 'tool.complete',
-        scope: scope,
-        payload: {'name': name, 'tool_id': callId, 'result': ?result},
-        toolName: name,
-        toolCallId: callId,
-        eventId: _eventIdentity(message, 'delegate-complete', callId),
-      );
-      if (event == null) continue;
-      state = SubagentActivityReducer.reduce(state, event);
-      observed = true;
+      // The durable `delegate_task` result is the only recovery source that
+      // carries every child identity. A single aggregate legacy event loses
+      // N-1 rows after Console reopens, so replay one event per opaque id.
+      final dispatchedIds = _list(result?['subagent_ids'])
+          .map(_opaque)
+          .whereType<String>()
+          .toSet()
+          .toList(growable: false);
+      final resultStatus = result?['status']?.toString().trim().toLowerCase();
+      final isAcceptedDispatch =
+          resultStatus == 'dispatched' && dispatchedIds.isNotEmpty;
+      final perChildResults = dispatchedIds.isEmpty
+          ? <Map<String, dynamic>?>[result]
+          : dispatchedIds
+              .map(
+                (subagentId) => <String, dynamic>{
+                  ...?result,
+                  'subagent_ids': [subagentId],
+                },
+              )
+              .toList(growable: false);
+      for (var index = 0; index < perChildResults.length; index += 1) {
+        final childResult = perChildResults[index];
+        final eventStableId = dispatchedIds.isEmpty
+            ? callId
+            : dispatchedIds[index];
+        final event = SubagentActivityEvent.tryParseLegacyDelegateTool(
+          // Only a confirmed dispatch with a durable child id is a start. A
+          // rejected tool result must close the earlier aggregate tool.start;
+          // otherwise rehydration leaves a failed delegation running forever.
+          type: isAcceptedDispatch ? 'tool.start' : 'tool.complete',
+          scope: scope,
+          payload: {'name': name, 'tool_id': callId, 'result': ?childResult},
+          toolName: name,
+          toolCallId: callId,
+          eventId: _eventIdentity(
+            message,
+            'delegate-complete',
+            eventStableId,
+          ),
+        );
+        if (event == null) continue;
+        state = SubagentActivityReducer.reduce(state, event);
+        observed = true;
+      }
       continue;
     }
 
     if (effectiveUserDisplayKind(message) == 'async_delegation_complete') {
       final metadata = _decodedMap(message['display_metadata']);
-      final delegationId = _opaque(metadata?['delegation_id']);
+      // Some persisted Gateway rows carry the authoritative batch id only in
+      // the reserved sentinel, not in display_metadata. The sentinel grammar
+      // is already fail-closed by effectiveUserDisplayKind; use that exact id
+      // before falling back to an aggregate event.
+      final delegationId =
+          _opaque(metadata?['delegation_id']) ?? _delegationIdFromMarker(message);
       if (delegationId == null) continue;
       final failedCount = _nonNegativeInt(metadata?['failed_count']) ?? 0;
-      final event = SubagentActivityEvent.tryParseNative(
-        type: 'subagent.complete',
-        scope: scope,
-        payload: {
-          'delegation_id': delegationId,
-          'status': failedCount > 0 ? 'failed' : 'completed',
-          'task_count': _positiveInt(metadata?['task_count']),
-          'duration_seconds': metadata?['duration_seconds'],
-        },
-        eventId: _eventIdentity(message, 'delegation-complete', delegationId),
-      );
-      if (event == null) continue;
-      state = SubagentActivityReducer.reduce(state, event);
-      observed = true;
+      final taskCount = _positiveInt(metadata?['task_count']);
+      // Completion metadata is aggregate. A partial failed_count does not name
+      // the child, so never paint every row as failed. Each known child is only
+      // known to have finished; the aggregate failure remains represented by
+      // the editorial completion card rather than fabricated per-child blame.
+      final terminalStatus =
+          taskCount != null && failedCount >= taskCount && failedCount > 0
+          ? 'failed'
+          : 'completed';
+      // children. Fan it out only across the durable child ids already proven
+      // by this same transcript; otherwise retain the aggregate event.
+      final childIds = state.activities
+          .where((activity) => activity.delegationId == delegationId)
+          .map((activity) => activity.subagentId)
+          .whereType<String>()
+          .toSet()
+          .toList(growable: false);
+      final terminalPayloads = childIds.isEmpty
+          ? <Map<String, Object?>>[
+              {
+                'delegation_id': delegationId,
+                'status': terminalStatus,
+                'task_count': _positiveInt(metadata?['task_count']),
+                'duration_seconds': metadata?['duration_seconds'],
+              },
+            ]
+          : childIds
+              .map(
+                (subagentId) => <String, Object?>{
+                  'subagent_id': subagentId,
+                  'delegation_id': delegationId,
+                  'status': terminalStatus,
+                  'task_count': _positiveInt(metadata?['task_count']),
+                  'duration_seconds': metadata?['duration_seconds'],
+                },
+              )
+              .toList(growable: false);
+      for (final payload in terminalPayloads) {
+        final event = SubagentActivityEvent.tryParseNative(
+          type: 'subagent.complete',
+          scope: scope,
+          payload: payload,
+          eventId: _eventIdentity(
+            message,
+            'delegation-complete',
+            payload['subagent_id']?.toString() ?? delegationId,
+          ),
+        );
+        if (event == null) continue;
+        state = SubagentActivityReducer.reduce(state, event);
+        observed = true;
+      }
     }
   }
 
@@ -127,6 +204,14 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
 
 bool _isToolRole(String role) =>
     const {'tool', 'tool_result', 'function', 'function_call'}.contains(role);
+
+String? _delegationIdFromMarker(Map<String, dynamic> message) {
+  final content = (message['content'] ?? message['text'] ?? '').toString();
+  final match = RegExp(
+    r'^\[ASYNC DELEGATION (?:BATCH )?COMPLETE — (deleg_[0-9a-f]{8})\](?:\r?\n|$)',
+  ).firstMatch(content);
+  return match == null ? null : _opaque(match.group(1));
+}
 
 String? _normalizedToolName(Object? value) {
   final text = value?.toString().trim().toLowerCase() ?? '';

@@ -59,11 +59,13 @@ class TuiGatewayRpcError implements Exception {
 class TuiGatewayEvent {
   final String type;
   final String sessionId;
+  final int? sequence;
   final Map<String, dynamic> payload;
 
   const TuiGatewayEvent({
     required this.type,
     required this.sessionId,
+    this.sequence,
     required this.payload,
   });
 }
@@ -785,6 +787,18 @@ class TuiGatewayClient
   DateTime? _lastHeartbeatTickAt;
   Timer? _heartbeatTimer;
   Future<void>? _connecting;
+
+  /// Last observed monotonic event sequence per runtime session.
+  final Map<String, int> _lastSeenSequence = <String, int>{};
+
+  /// A truncated replay proves a gap. Quarantine that runtime until ActiveChat
+  /// commits an authoritative recovery snapshot.
+  final Set<String> _replayQuarantinedSessions = <String>{};
+
+  /// Live events are parked until the replay gap is dispatched in order.
+  Map<String, List<TuiGatewayEvent>>? _replayHold;
+  bool _replayInFlight = false;
+  String? _replayEpoch;
   String? _legacyEventRuntimeId;
   bool _legacyEventRuntimeAmbiguous = false;
 
@@ -885,6 +899,10 @@ class TuiGatewayClient
       }
       _capabilityCache.resetForReconnect();
       _connected = true;
+      // A recovery caller resumes its stored session only after connect() ends.
+      // Drain the server's sequence gap first so replayed deltas/tools cannot
+      // race the new snapshot or be delivered out of order with live frames.
+      await _fetchReplay();
     } catch (error) {
       debugPrint(
         '[tui-gateway] WebSocket connection failed '
@@ -963,10 +981,14 @@ class TuiGatewayClient
       final params = Map<String, dynamic>.from(rawParams);
       final rawPayload = params['payload'];
       final type = (params['type'] ?? '').toString().trim();
-      if (type == 'gateway.ready' &&
-          rawPayload is Map &&
-          rawPayload['heartbeat'] == true) {
-        _startHeartbeat(generation, channel);
+      if (type == 'gateway.ready' && rawPayload is Map) {
+        final epoch = rawPayload['replay_epoch'];
+        if (epoch is String && epoch.trim().isNotEmpty) {
+          _adoptReplayEpoch(epoch.trim());
+        }
+        if (rawPayload['heartbeat'] == true) {
+          _startHeartbeat(generation, channel);
+        }
       }
       final rawSessionId = params['session_id'];
       final explicitSessionId = rawSessionId is String
@@ -982,18 +1004,162 @@ class TuiGatewayClient
                 !type.startsWith('subagent.')
           ? legacyRuntimeId
           : '';
-      _events.add(
-        TuiGatewayEvent(
-          type: type,
-          sessionId: sessionId,
-          payload: rawPayload is Map
-              ? Map<String, dynamic>.from(rawPayload)
-              : const <String, dynamic>{},
-        ),
+      final rawSequence = params['seq'];
+      if (rawSequence is num &&
+          (!rawSequence.isFinite ||
+              rawSequence <= 0 ||
+              rawSequence != rawSequence.toInt())) {
+        return;
+      }
+      final sequence = rawSequence is num ? rawSequence.toInt() : null;
+      final event = TuiGatewayEvent(
+        type: type,
+        sessionId: sessionId,
+        sequence: sequence != null && sequence > 0 ? sequence : null,
+        payload: rawPayload is Map
+            ? Map<String, dynamic>.from(rawPayload)
+            : const <String, dynamic>{},
       );
+      if (event.sequence != null &&
+          event.sessionId.isNotEmpty &&
+          _replayQuarantinedSessions.contains(event.sessionId)) {
+        return;
+      }
+      final hold = _replayHold;
+      if (hold != null &&
+          event.sequence != null &&
+          event.sessionId.isNotEmpty &&
+          hold.containsKey(event.sessionId)) {
+        hold[event.sessionId]!.add(event);
+        return;
+      }
+      _dispatchIfNewer(event);
     } catch (_) {
       // Un frame ajeno o malformado no debe derribar el stream del chat.
     }
+  }
+
+  Future<void> _fetchReplay() async {
+    if (_replayInFlight || _lastSeenSequence.isEmpty || !_connected) return;
+    _replayInFlight = true;
+    final replayFrom = Map<String, int>.from(_lastSeenSequence);
+    _replayHold = <String, List<TuiGatewayEvent>>{
+      for (final sessionId in replayFrom.keys) sessionId: <TuiGatewayEvent>[],
+    };
+    try {
+      for (final entry in replayFrom.entries) {
+        final result = await _requestConnected(
+          'session.events.since',
+          <String, dynamic>{'session_id': entry.key, 'last_seen': entry.value},
+          timeout: const Duration(seconds: 10),
+        );
+        final epoch = result['epoch'];
+        if (epoch is String && epoch.trim().isNotEmpty) {
+          final normalizedEpoch = epoch.trim();
+          if (_replayEpoch != null && _replayEpoch != normalizedEpoch) {
+            _adoptReplayEpoch(normalizedEpoch);
+            // Sequence values from a prior Gateway process are incomparable.
+            // session.resume immediately following reconnect is the durable
+            // recovery authority for that session.
+            continue;
+          }
+          _adoptReplayEpoch(normalizedEpoch);
+        }
+        if (result['truncated'] == true) {
+          // A bounded replay cannot prove that the retained tail follows the
+          // last delivered event. Drop both it and held live frames; the caller
+          // must obtain the authoritative session.resume/history backfill.
+          _lastSeenSequence.remove(entry.key);
+          _replayQuarantinedSessions.add(entry.key);
+          _replayHold?.remove(entry.key);
+          continue;
+        }
+        final rawEvents = result['events'];
+        if (rawEvents is List) {
+          final replayEvents = <TuiGatewayEvent>[];
+          for (final rawEvent in rawEvents) {
+            if (rawEvent is! Map) continue;
+            final event = _eventFromReplay(
+              Map<String, dynamic>.from(rawEvent),
+              fallbackSessionId: entry.key,
+            );
+            if (event != null) replayEvents.add(event);
+          }
+          // Keep the server's relative order for legacy/unsequenced frames, but
+          // never let one of them break ordering of the valid monotonic stream.
+          final sequenced =
+              replayEvents.where((event) => event.sequence != null).toList()
+                ..sort(
+                  (left, right) => left.sequence!.compareTo(right.sequence!),
+                );
+          final unsequenced = replayEvents
+              .where((event) => event.sequence == null)
+              .toList();
+          for (final event in [...sequenced, ...unsequenced]) {
+            _dispatchIfNewer(event);
+          }
+        }
+      }
+    } catch (_) {
+      // A replay request is transport recovery, not a second terminal state.
+      // ActiveChat will resume the durable session after connect() returns.
+    } finally {
+      final held = _replayHold;
+      _replayHold = null;
+      _replayInFlight = false;
+      if (held != null) {
+        for (final events in held.values) {
+          for (final event in events) {
+            _dispatchIfNewer(event);
+          }
+        }
+      }
+    }
+  }
+
+  TuiGatewayEvent? _eventFromReplay(
+    Map<String, dynamic> raw, {
+    required String fallbackSessionId,
+  }) {
+    final type = (raw['type'] ?? '').toString().trim();
+    if (type.isEmpty) return null;
+    final rawSessionId = raw['session_id'];
+    final sessionId = rawSessionId is String && rawSessionId.trim().isNotEmpty
+        ? rawSessionId.trim()
+        : fallbackSessionId;
+    final rawSequence = raw['seq'];
+    if (rawSequence is num &&
+        (!rawSequence.isFinite ||
+            rawSequence <= 0 ||
+            rawSequence != rawSequence.toInt())) {
+      return null;
+    }
+    final sequence = rawSequence is num ? rawSequence.toInt() : null;
+    final payload = raw['payload'];
+    return TuiGatewayEvent(
+      type: type,
+      sessionId: sessionId,
+      sequence: sequence != null && sequence > 0 ? sequence : null,
+      payload: payload is Map
+          ? Map<String, dynamic>.from(payload)
+          : const <String, dynamic>{},
+    );
+  }
+
+  void _dispatchIfNewer(TuiGatewayEvent event) {
+    final sequence = event.sequence;
+    if (sequence != null && event.sessionId.isNotEmpty) {
+      final previous = _lastSeenSequence[event.sessionId] ?? 0;
+      if (sequence <= previous) return;
+      _lastSeenSequence[event.sessionId] = sequence;
+    }
+    if (!_events.isClosed) _events.add(event);
+  }
+
+  void _adoptReplayEpoch(String epoch) {
+    if (_replayEpoch == epoch) return;
+    if (_replayEpoch != null) _lastSeenSequence.clear();
+    _replayEpoch = epoch;
   }
 
   void _handleSocketError(
@@ -1929,7 +2095,7 @@ class TuiGatewayClient
   }) async {
     final result = await _request('session.resume', {
       'session_id': storedSessionId,
-      'source': 'mobile',
+      'source': 'desktop',
       if (profile.trim().isNotEmpty) 'profile': profile.trim(),
       if (omitMessages) 'omit_messages': true,
       if (deferHistory) 'defer_history': true,
@@ -1949,7 +2115,11 @@ class TuiGatewayClient
   }) async {
     final result = await _request('session.resume', {
       'session_id': storedSessionId,
-      'source': 'mobile',
+      'source': 'desktop',
+      // Recovery rebinds a durable session after a rejected live runtime. Its
+      // transcript is already REST/snapshot authority; omitting it keeps a
+      // heavily-compacted lineage on Gateway's bounded tip-only resume path.
+      'omit_messages': true,
       if (profile.trim().isNotEmpty) 'profile': profile.trim(),
     });
     return _parseSessionSnapshot(
@@ -1963,6 +2133,7 @@ class TuiGatewayClient
 
   @override
   void commitRecoveryRuntime(String runtimeSessionId) {
+    _replayQuarantinedSessions.remove(runtimeSessionId);
     _rememberLegacyEventRuntime(runtimeSessionId);
   }
 
@@ -1983,7 +2154,7 @@ class TuiGatewayClient
         ? requestedModel
         : null;
     final result = await _request('session.create', {
-      'source': 'mobile',
+      'source': 'desktop',
       if (profile.trim().isNotEmpty) 'profile': profile.trim(),
       'model': ?explicitModel,
       if (seedMessages.isNotEmpty) 'messages': seedMessages,
@@ -2012,7 +2183,7 @@ class TuiGatewayClient
         ? requestedTitle
         : null;
     final result = await _request('session.create', {
-      'source': 'mobile',
+      'source': 'desktop',
       if (profile.trim().isNotEmpty) 'profile': profile.trim(),
       'title': ?safeTitle,
       if (config.hidden) 'hidden': true,
@@ -2993,11 +3164,9 @@ class TuiGatewayClient
 
   @override
   Future<ProjectNode?> projectSessions(String projectId) async {
-    final result = await _controlRequest(
-      'projects.project_sessions',
-      {'project_id': _validatedControlValue(projectId, maxLength: 2048)},
-      capability: DesktopGatewayCapability.projectsCenter,
-    );
+    final result = await _controlRequest('projects.project_sessions', {
+      'project_id': _validatedControlValue(projectId, maxLength: 2048),
+    }, capability: DesktopGatewayCapability.projectsCenter);
     final rawProject = result['project'];
     if (rawProject == null) return null;
     if (rawProject is! Map) {

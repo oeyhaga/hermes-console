@@ -524,6 +524,57 @@ class _FakeRewindGateway extends _FakeDesktopGateway
   }
 }
 
+class _RecoveringRewindGateway extends _FakeRewindGateway
+    implements HermesDesktopSessionLifecycleGateway {
+  int resumeExistingCalls = 0;
+
+  @override
+  Future<DesktopSessionBinding> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) async {
+    resumeExistingCalls += 1;
+    return DesktopSessionBinding(
+      runtimeSessionId: 'runtime-2',
+      storedSessionId: storedSessionId,
+      created: false,
+    );
+  }
+
+  @override
+  Future<DesktopSessionBinding> createForFirstSubmit({
+    String profile = '',
+    List<Map<String, dynamic>> seedMessages = const [],
+    String model = '',
+  }) => throw StateError('rewind ownership recovery must not create a session');
+
+  @override
+  Future<DesktopRewindAck> submitDurableRewindPrompt(
+    String runtimeSessionId,
+    String text,
+    int truncateBeforeUserOrdinal, {
+    required int truncateBeforeRowId,
+  }) async {
+    final ack = await super.submitDurableRewindPrompt(
+      runtimeSessionId,
+      text,
+      truncateBeforeUserOrdinal,
+      truncateBeforeRowId: truncateBeforeRowId,
+    );
+    if (rewinds.length == 1) {
+      throw const TuiGatewayRpcError(
+        'prompt.submit',
+        'session is owned by another runtime',
+        code: 4090,
+        data: {'reason': 'SESSION_NOT_OWNED'},
+      );
+    }
+    return ack;
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -2257,6 +2308,46 @@ void main() {
         {'role': 'user', 'content': 'pregunta original', '_desktopRowId': 73},
       ]);
       await subscription.cancel();
+      service.dispose();
+    },
+  );
+
+  test(
+    'editar reconcilia SESSION_NOT_OWNED y reintenta una sola vez',
+    () async {
+      final desktop = _RecoveringRewindGateway();
+      final service = ActiveChatService();
+      final connection = _remoteConn();
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 'sess-rewind-ownership',
+        sessionTitle: 'Rewind ownership',
+        api: ApiClient(
+          baseUrl: connection.baseUrl,
+          apiKey: 'test-key',
+          httpClient: MockClient((_) async => http.Response('not found', 404)),
+        ),
+        desktopGateway: desktop,
+      );
+      chat.messages = [
+        {'role': 'assistant', 'content': 'respuesta original'},
+        {'role': 'user', 'content': 'pregunta original', '_desktopRowId': 73},
+      ];
+      chat.state = ChatPipelineState.completed;
+
+      await chat.rewrite(
+        userOrdinal: 0,
+        text: 'pregunta corregida',
+        model: 'hermes-agent',
+      );
+
+      expect(desktop.resumeExistingCalls, 1);
+      expect(desktop.rewinds, [
+        (sessionId: 'runtime-1', text: 'pregunta corregida', ordinal: 0),
+        (sessionId: 'runtime-2', text: 'pregunta corregida', ordinal: 0),
+      ]);
+      expect(chat.takeRewindRestoredOnError(), isFalse);
+      expect(chat.messages[1]['content'], 'pregunta corregida');
       service.dispose();
     },
   );

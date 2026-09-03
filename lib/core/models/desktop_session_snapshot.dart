@@ -244,6 +244,7 @@ class DesktopInflightTurn {
   final String? status;
   final bool? recoverable;
   final List<DesktopInflightCorrection> corrections;
+  final List<int?> correctionOffsets;
   final DateTime? startedAt;
   final DateTime? updatedAt;
   final Map<String, dynamic> raw;
@@ -256,10 +257,12 @@ class DesktopInflightTurn {
     this.status,
     this.recoverable,
     List<DesktopInflightCorrection> corrections = const [],
+    List<int?> correctionOffsets = const [],
     this.startedAt,
     this.updatedAt,
     this.raw = const {},
-  }) : corrections = List<DesktopInflightCorrection>.unmodifiable(corrections);
+  })  : corrections = List<DesktopInflightCorrection>.unmodifiable(corrections),
+        correctionOffsets = List<int?>.unmodifiable(correctionOffsets);
 
   static DesktopInflightTurn? tryParse(Object? value) {
     final json = _stringKeyedMap(value);
@@ -282,6 +285,13 @@ class DesktopInflightTurn {
         if (correction != null) corrections.add(correction);
       }
     }
+    final correctionOffsets = <int?>[];
+    final rawOffsets = json['correction_offsets'];
+    if (rawOffsets is List) {
+      for (final value in rawOffsets) {
+        correctionOffsets.add(_nonNegativeInt(value));
+      }
+    }
     final terminalStatus = status?.toLowerCase() == 'error';
     if (assistant == null &&
         streaming == null &&
@@ -299,6 +309,7 @@ class DesktopInflightTurn {
       status: status,
       recoverable: recoverable,
       corrections: corrections,
+      correctionOffsets: correctionOffsets,
       startedAt: _epochSeconds(json['started_at']),
       updatedAt: _epochSeconds(json['updated_at']),
       raw: _freezeExtras(json, _inflightParsedKeys),

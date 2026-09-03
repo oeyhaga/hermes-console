@@ -58,6 +58,17 @@ void main() {
       expect(requests.single.path, '/api/cron/jobs/legacy-off/resume');
     });
 
+    test('preserves scheduler delivery failure as an operator-visible error', () {
+      final job = CronJob.fromJson({
+        'id': 'delivery-failure',
+        'last_status': 'delivery_failed',
+        'last_delivery_error': 'destination unavailable',
+      });
+
+      expect(job.lastStatus, 'delivery_failed');
+      expect(job.lastError, 'destination unavailable');
+    });
+
     test('title follows name, prompt, script and id priority', () {
       expect(
         CronJob.fromJson({

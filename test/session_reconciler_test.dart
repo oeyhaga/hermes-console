@@ -456,6 +456,35 @@ void main() {
     expect(second.messagesNewestFirst, first.messagesNewestFirst);
   });
 
+  test('intercala correcciones por los offsets autoritativos del Gateway', () {
+    final result = reconciler.project(
+      snapshot({
+        'session_id': 'runtime-correction-offsets',
+        'session_key': 'stored-1',
+        'inflight': {
+          'user': 'p',
+          'assistant': 'Moving.Still.Done soon.',
+          'streaming': true,
+          'corrections': ['hurry up', 'and the worktree ones'],
+          'correction_offsets': [7, 13],
+        },
+        'running': true,
+      }),
+    );
+
+    final chronological = result.messagesNewestFirst.reversed.toList();
+    expect(chronological.map((message) => message['content']), [
+      'p',
+      'Moving.',
+      'hurry up',
+      'Still.',
+      'and the worktree ones',
+      'Done soon.',
+    ]);
+    expect(chronological.last['_pipeline'], isTrue);
+    expect(chronological[1]['_pipeline'], isFalse);
+  });
+
   test('proyecta prompt, correcciones y assistant en orden cronológico', () {
     final result = reconciler.project(
       snapshot({
@@ -474,9 +503,9 @@ void main() {
     final chronological = result.messagesNewestFirst.reversed.toList();
     expect(chronological.map((message) => message['content']), [
       'haz la auditoría',
+      'trabajando',
       'y documéntala',
       'incluye ejemplos',
-      'trabajando',
     ]);
     expect(
       chronological
@@ -517,9 +546,9 @@ void main() {
       'turno actual',
       'ya persistida',
       'turno actual',
+      'parcial',
       'ya persistida',
       'repetida',
-      'parcial',
     ]);
     expect(
       chronological
@@ -585,7 +614,7 @@ void main() {
     expect(second.messagesNewestFirst, first.messagesNewestFirst);
   });
 
-  test('no identifica por texto el user inflight y la cola durable', () {
+  test('retains inflight without a durable turn identity', () {
     final result = reconciler.project(
       snapshot({
         'session_id': 'runtime-dedup',
@@ -606,9 +635,12 @@ void main() {
     );
     expect(
       result.messagesNewestFirst
-          .where((message) => message['role'] == 'user')
-          .map((message) => message['_desktopSnapshotKind']),
-      ['inflight', 'persisted'],
+          .where(
+            (message) =>
+                message['role'] == 'user' &&
+                message['_desktopSnapshotKind'] == 'inflight',
+          ),
+      isNotEmpty,
     );
   });
 
@@ -650,7 +682,7 @@ void main() {
     },
   );
 
-  test('no deduplica inflight contra un user cancelado con el mismo texto', () {
+  test('preserva un reenvío idéntico sin identidad de turno inflight', () {
     final result = reconciler.project(
       snapshot({
         'session_id': 'runtime-repeated-cancelled-prompt',

@@ -58,6 +58,277 @@ void main() {
     expect(activity.legacyToolCallId, 'call-1');
   });
 
+  test('rehydrates failed delegate_task dispatch as terminal', () {
+    final projection = projectSubagentsFromTranscript(
+      messagesNewestFirst: [
+        {
+          'message_id': 'failed-result',
+          'role': 'tool',
+          'tool_call_id': 'call-failed',
+          'tool_name': 'delegate_task',
+          'content': jsonEncode({
+            'status': 'error',
+            'error': 'worker unavailable',
+          }),
+        },
+        {
+          'message_id': 'failed-call',
+          'role': 'assistant',
+          'content': '',
+          'tool_calls': [
+            {
+              'id': 'call-failed',
+              'function': {'name': 'delegate_task', 'arguments': '{}'},
+            },
+          ],
+        },
+        {
+          'message_id': 'failed-user',
+          'role': 'user',
+          'content': 'Delega la revisión.',
+        },
+      ],
+      scope: scope,
+    );
+
+    expect(projection.state?.activities, hasLength(1));
+    expect(
+      projection.state?.activities.single.phase,
+      SubagentActivityPhase.failed,
+    );
+  });
+
+  test('rehydrates every dispatched child from a multi-subagent delegate_task', () {
+    final messagesNewestFirst = <Map<String, dynamic>>[
+      {
+        'message_id': 'message-3',
+        'role': 'tool',
+        'tool_call_id': 'call-many',
+        'tool_name': 'delegate_task',
+        'content': jsonEncode({
+          'status': 'dispatched',
+          'delegation_id': 'deleg_many',
+          'subagent_ids': ['sa-alpha', 'sa-beta', 'sa-gamma'],
+        }),
+      },
+      {
+        'message_id': 'message-2',
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-many',
+            'function': {'name': 'delegate_task', 'arguments': '{}'},
+          },
+        ],
+      },
+      {'message_id': 'message-1', 'role': 'user', 'content': 'Haz tres.'},
+    ];
+
+    final projection = projectSubagentsFromTranscript(
+      messagesNewestFirst: messagesNewestFirst,
+      scope: scope,
+    );
+
+    expect(projection.state?.activities, hasLength(3));
+    expect(
+      projection.state?.activities.map((activity) => activity.subagentId),
+      containsAll(['sa-alpha', 'sa-beta', 'sa-gamma']),
+    );
+    expect(
+      projection.state?.activities.map((activity) => activity.phase),
+      everyElement(SubagentActivityPhase.running),
+    );
+  });
+
+  test('ignores malformed multi-child ids without crashing recovery', () {
+    final messagesNewestFirst = <Map<String, dynamic>>[
+      {
+        'message_id': 'malformed-result',
+        'role': 'tool',
+        'tool_call_id': 'call-malformed',
+        'tool_name': 'delegate_task',
+        'content': jsonEncode({
+          'status': 'dispatched',
+          'delegation_id': 'deleg_malformed',
+          'subagent_ids': ['', 'not valid id', 'x' * 181],
+        }),
+      },
+      {
+        'message_id': 'malformed-assistant',
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-malformed',
+            'function': {'name': 'delegate_task', 'arguments': '{}'},
+          },
+        ],
+      },
+      {'message_id': 'malformed-user', 'role': 'user', 'content': 'Haz tres.'},
+    ];
+
+    expect(
+      () => projectSubagentsFromTranscript(
+        messagesNewestFirst: messagesNewestFirst,
+        scope: scope,
+      ),
+      returnsNormally,
+    );
+  });
+
+  test('legacy batch completion without delegation id closes its only durable batch', () {
+    final messagesNewestFirst = <Map<String, dynamic>>[
+      {
+        'message_id': 'legacy-completion',
+        'role': 'user',
+        'display_kind': 'async_delegation_complete',
+        'display_metadata': jsonEncode({
+          'task_count': 3,
+          'completed_count': 3,
+          'failed_count': 0,
+        }),
+        'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_12345678]',
+      },
+      {
+        'message_id': 'legacy-result',
+        'role': 'tool',
+        'tool_call_id': 'call-legacy',
+        'tool_name': 'delegate_task',
+        'content': jsonEncode({
+          'status': 'dispatched',
+          'delegation_id': 'deleg_12345678',
+          'subagent_ids': ['sa-legacy-one', 'sa-legacy-two', 'sa-legacy-three'],
+        }),
+      },
+      {
+        'message_id': 'legacy-assistant',
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-legacy',
+            'function': {'name': 'delegate_task', 'arguments': '{}'},
+          },
+        ],
+      },
+      {'message_id': 'legacy-user', 'role': 'user', 'content': 'Haz tres.'},
+    ];
+
+    final projection = projectSubagentsFromTranscript(
+      messagesNewestFirst: messagesNewestFirst,
+      scope: scope,
+    );
+
+    expect(projection.state?.activities, hasLength(3));
+    expect(
+      projection.state?.activities.map((activity) => activity.phase),
+      everyElement(SubagentActivityPhase.completed),
+    );
+  });
+
+  test('partial batch failure never attributes the failure to every child', () {
+    final messagesNewestFirst = <Map<String, dynamic>>[
+      {
+        'message_id': 'partial-completion',
+        'role': 'user',
+        'display_kind': 'async_delegation_complete',
+        'display_metadata': jsonEncode({
+          'delegation_id': 'deleg_partial',
+          'task_count': 3,
+          'completed_count': 2,
+          'failed_count': 1,
+        }),
+        'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_partial]',
+      },
+      {
+        'message_id': 'partial-result',
+        'role': 'tool',
+        'tool_call_id': 'call-partial',
+        'tool_name': 'delegate_task',
+        'content': jsonEncode({
+          'status': 'dispatched',
+          'delegation_id': 'deleg_partial',
+          'subagent_ids': ['sa-partial-one', 'sa-partial-two', 'sa-partial-three'],
+        }),
+      },
+      {
+        'message_id': 'partial-assistant',
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-partial',
+            'function': {'name': 'delegate_task', 'arguments': '{}'},
+          },
+        ],
+      },
+      {'message_id': 'partial-user', 'role': 'user', 'content': 'Haz tres.'},
+    ];
+
+    final projection = projectSubagentsFromTranscript(
+      messagesNewestFirst: messagesNewestFirst,
+      scope: scope,
+    );
+
+    expect(projection.state?.activities, hasLength(3));
+    expect(
+      projection.state?.activities.map((activity) => activity.phase),
+      everyElement(SubagentActivityPhase.completed),
+    );
+  });
+
+  test('async completion closes every child in the durable delegation', () {
+    final messagesNewestFirst = <Map<String, dynamic>>[
+      {
+        'message_id': 'message-4',
+        'role': 'user',
+        'display_kind': 'async_delegation_complete',
+        'display_metadata': jsonEncode({
+          'delegation_id': 'deleg_many_complete',
+          'task_count': 3,
+          'completed_count': 3,
+          'failed_count': 0,
+        }),
+        'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_many_complete]',
+      },
+      {
+        'message_id': 'message-3',
+        'role': 'tool',
+        'tool_call_id': 'call-many-complete',
+        'tool_name': 'delegate_task',
+        'content': jsonEncode({
+          'status': 'dispatched',
+          'delegation_id': 'deleg_many_complete',
+          'subagent_ids': ['sa-one', 'sa-two', 'sa-three'],
+        }),
+      },
+      {
+        'message_id': 'message-2',
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-many-complete',
+            'function': {'name': 'delegate_task', 'arguments': '{}'},
+          },
+        ],
+      },
+      {'message_id': 'message-1', 'role': 'user', 'content': 'Haz tres.'},
+    ];
+
+    final projection = projectSubagentsFromTranscript(
+      messagesNewestFirst: messagesNewestFirst,
+      scope: scope,
+    );
+
+    expect(projection.state?.activities, hasLength(3));
+    expect(
+      projection.state?.activities.map((activity) => activity.phase),
+      everyElement(SubagentActivityPhase.completed),
+    );
+  });
+
   test('async completion closes the matching durable delegation once', () {
     final messagesNewestFirst = <Map<String, dynamic>>[
       {

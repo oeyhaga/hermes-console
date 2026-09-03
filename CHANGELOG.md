@@ -3,6 +3,24 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## 1.2.10 (4965) — candidate, not distributed
+
+- Restored safe Desktop↔Console ownership recovery for compacted conversation
+  lineages without reloading a duplicate transcript.
+- Made WebSocket reconnect replay sequence-aware: ordered replay, live-frame
+  fencing, epoch isolation and fail-closed recovery when replay is truncated.
+- Kept malformed replay sequence values from corrupting the monotonic watermark.
+- Improved durable recovery of redirected/queued turns and background
+  subagent completion projection.
+- Preserved unconfirmed steer drafts across network loss without resubmitting
+  them, and allowed a later durable transcript to replace the temporary error.
+- Kept ownership recovery fenced to the exact Desktop binding generation and
+  preserved authoritative correction offsets during replay.
+- Added native `/compress` progress/results and projected subagent activity as
+  editorial cards without exposing internal transport markers in chat or lists.
+- Separated Cron, Kanban and subagent activity from user chats; Cron delivery
+  failures remain visible while no-op runs and completed Kanban items stay quiet.
+
 ## 1.2.9 (4964)
 
 - Replaced raw Desktop session-owner rejections with private, actionable UI,
@@ -79,8 +97,8 @@ are not releases.
 - Prepared the project for publication under GPL-3.0-only with a fresh public
   history and preserved upstream notices.
 
-Final signed artifacts are published only after physical-device QA and the
-release gate in [the distribution guide](docs/RELEASE_DISTRIBUTION.md).
+Final signed artifacts are published only after the emulator/Desktop E2E matrix
+and the release gate in [the distribution guide](docs/RELEASE_DISTRIBUTION.md).
 
 ## 1.2.6 (913)
 

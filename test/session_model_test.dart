@@ -341,29 +341,65 @@ void main() {
       expect(s.displayTitle, 'Conversación');
     });
 
-    test('displayTitle conserva una consulta que empieza citando la cabecera', () {
-      const title =
-          '[Your active task list was preserved across context compression] ¿qué significa?';
-      final s = Session.fromJson({
-        'id': '20260828_question',
-        'title': title,
-        'preview': 'Explícame esa cabecera',
-        'source': 'mobile',
-      });
-      expect(s.displayTitle, title);
+    test('oculta el carrier async completo y su preview truncado', () {
+      for (final marker in const [
+        '[ASYNC DELEGATION BATCH COMPLETE — deleg_deadbeef]',
+        '[ASYNC DELEGATION COMPLETE — deleg_deadbeef]...',
+      ]) {
+        final s = Session.fromJson({
+          'id': 'async-marker-$marker',
+          'title': marker,
+          'preview': marker,
+          'source': 'mobile',
+        });
+        expect(s.cleanPreview, '', reason: marker);
+        expect(s.displayTitle, 'Conversación', reason: marker);
+      }
     });
 
-    test('displayTitle oculta el snapshot con preview truncado por SessionDB', () {
+    test('conserva una cita humana del carrier async en la misma línea', () {
+      const quoted =
+          '[ASYNC DELEGATION BATCH COMPLETE — deleg_deadbeef] ¿qué significa?';
       final s = Session.fromJson({
-        'id': '20260828_todo_truncated',
-        'title':
-            '[Your active task list was preserved across context compression]',
-        'preview':
-            '[Your active task list was preserved across context compress...',
+        'id': 'async-marker-quote',
+        'title': quoted,
+        'preview': quoted,
         'source': 'mobile',
       });
-      expect(s.displayTitle, 'Conversación');
+
+      expect(s.cleanPreview, quoted);
+      expect(s.displayTitle, quoted);
     });
+
+    test(
+      'displayTitle conserva una consulta que empieza citando la cabecera',
+      () {
+        const title =
+            '[Your active task list was preserved across context compression] ¿qué significa?';
+        final s = Session.fromJson({
+          'id': '20260828_question',
+          'title': title,
+          'preview': 'Explícame esa cabecera',
+          'source': 'mobile',
+        });
+        expect(s.displayTitle, title);
+      },
+    );
+
+    test(
+      'displayTitle oculta el snapshot con preview truncado por SessionDB',
+      () {
+        final s = Session.fromJson({
+          'id': '20260828_todo_truncated',
+          'title':
+              '[Your active task list was preserved across context compression]',
+          'preview':
+              '[Your active task list was preserved across context compress...',
+          'source': 'mobile',
+        });
+        expect(s.displayTitle, 'Conversación');
+      },
+    );
 
     test('displayTitle de job sin contenido legible → "Tarea programada"', () {
       final s = Session.fromJson({
@@ -436,13 +472,16 @@ void main() {
       expect(Session.stripTodoContinuation(raw), 'Pregunta visible');
     });
 
-    test('no oculta una cita seguida de una etiqueta que no es un estado todo', () {
-      const raw =
-          'Texto real\n\n'
-          '[Your active task list was preserved across context compression]\n'
-          '- [question] ¿qué significa?';
-      expect(Session.stripTodoContinuation(raw), raw);
-    });
+    test(
+      'no oculta una cita seguida de una etiqueta que no es un estado todo',
+      () {
+        const raw =
+            'Texto real\n\n'
+            '[Your active task list was preserved across context compression]\n'
+            '- [question] ¿qué significa?';
+        expect(Session.stripTodoContinuation(raw), raw);
+      },
+    );
 
     test('resumen de compactación de contexto se quita entero', () {
       const raw =

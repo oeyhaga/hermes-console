@@ -986,6 +986,36 @@ void main() {
     },
   );
 
+  test('cron conserva delivery_failed como fallo terminal notificable', () async {
+    final executions = await BackgroundCronWatch.loadExecutions((_) async {
+      return {
+        'jobs': [
+          {
+            'id': 'job-delivery',
+            'name': 'Entrega crítica',
+            'profile': 'default',
+            'last_run_at': '2026-09-02T17:36:53+01:00',
+            'last_status': 'delivery_failed',
+            'last_delivery_error': 'timed out',
+          },
+        ],
+      };
+    });
+
+    expect(executions, hasLength(1));
+    final execution = executions!.single;
+    expect(execution.status, 'failed');
+    expect(execution.terminal, isTrue);
+    expect(
+      BackgroundCronWatch.shouldNotifyResult(
+        execution,
+        session: null,
+        preview: null,
+      ),
+      isTrue,
+    );
+  });
+
   test('cron modern and legacy execution ids cannot collide durably', () {
     const opaqueId =
         'e437ea2e9a36d2c99bdc53649913c440cab390549314077e3476527b3346dde7';
@@ -1282,7 +1312,7 @@ void main() {
         previous: previous,
         current: List<KanbanTask>.generate(
           count,
-          (index) => _kanbanTask('task-$index', 'done'),
+          (index) => _kanbanTask('task-$index', 'blocked'),
         ),
       );
       expect(claimed.fresh, hasLength(count));
@@ -1331,24 +1361,15 @@ void main() {
     expect(seeded.statuses, {'old-done': 'done'});
   });
 
-  test('kanban avisa una sola vez al pasar de running a done', () {
+  test('kanban registra done sin convertirlo en una notificación', () {
     final completed = BackgroundKanbanWatch.claimForTest(
       initialized: true,
       previous: const {'task-1': 'running'},
       current: [_kanbanTask('task-1', 'done')],
     );
 
-    expect(completed.fresh, hasLength(1));
-    expect(completed.fresh.single.taskId, 'task-1');
-    expect(completed.fresh.single.previousStatus, 'running');
-    expect(completed.fresh.single.status, 'done');
-
-    final repeated = BackgroundKanbanWatch.claimForTest(
-      initialized: true,
-      previous: completed.statuses,
-      current: [_kanbanTask('task-1', 'done')],
-    );
-    expect(repeated.fresh, isEmpty);
+    expect(completed.fresh, isEmpty);
+    expect(completed.statuses, {'task-1': 'done'});
   });
 
   test('kanban avisa al pasar de running a blocked o triage', () {

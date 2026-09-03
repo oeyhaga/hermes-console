@@ -77,7 +77,7 @@ void main() {
     expect(snapshot.runtimeSessionId, 'runtime-created-configured');
     expect(requests.single['method'], 'session.create');
     expect(requests.single['params'], {
-      'source': 'mobile',
+      'source': 'desktop',
       'profile': 'coding',
       'title': 'Bot Chat',
       'hidden': true,

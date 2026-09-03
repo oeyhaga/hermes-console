@@ -34,7 +34,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
-          flutter-version: '3.44.1'
+          flutter-version: '3.47.1'
           channel: 'stable'
 
       - name: Install dependencies
@@ -105,7 +105,8 @@ jobs:
       - name: Build APK (full release)
         run: |
           flutter build apk --release --flavor full --split-per-abi \
-            --dart-define=HERMES_FLAVOR=full
+            --dart-define=HERMES_FLAVOR=full \
+            --dart-define=HERMES_LOCAL_AGENT=true
 
       - name: Generate release evidence
         shell: bash

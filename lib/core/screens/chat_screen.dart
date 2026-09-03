@@ -5750,12 +5750,7 @@ class _ChatScreenState extends State<ChatScreen>
             ),
           );
       } catch (error) {
-        final safeToQueue =
-            error is StateError ||
-            (error is TuiGatewayRpcError &&
-                (error.code == -32601 ||
-                    error.code == 4007 ||
-                    error.code == 4009));
+        final safeToQueue = activeChatSteerFailureIsSafeToQueue(error);
         if (safeToQueue) {
           _chat.enqueue(fullText);
           if (ownsComposerBatch()) _textController.clear();
@@ -6056,6 +6051,10 @@ class _ChatScreenState extends State<ChatScreen>
 
   /// Retry the last failed send.
   void _retryLastPrompt() {
+    if (_chat.awaitingDurableTurnRecovery) {
+      unawaited(_chat.reconcileAfterResume());
+      return;
+    }
     if (_lastPrompt.isEmpty) return;
     _removeLatestFailedPromptProjection(
       _lastPrompt,

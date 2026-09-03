@@ -874,7 +874,7 @@
   "chaSteerTextOnly": "Mientras Hermes trabaja solo puedes añadir texto. Los adjuntos se conservan para el siguiente turno.",
   "chaSteerSupplementsLabel": "Añadido mientras Hermes trabajaba",
   "chaSteerUnsupported": "El canal de chat de Hermes Desktop no está disponible en esta instancia. La respuesta actual no se ha cancelado y tu texto sigue en el campo.",
-  "chaSteerFailed": "No se pudo añadir la indicación al run actual. No se ha cancelado; puedes reintentar.",
+  "chaSteerFailed": "No se confirmó el envío al run actual. Tu texto se conserva como borrador; cuando reconecte, revísalo y reintenta para evitar duplicados.",
   "chaSteerQueued": "Mensaje en cola: se enviará como siguiente turno cuando Hermes termine.",
   "commonAdd": "Añadir",
   "commonEdit": "Editar",

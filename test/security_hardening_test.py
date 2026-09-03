@@ -159,6 +159,7 @@ class ReleaseWorkflowBoundaryTest(unittest.TestCase):
     def test_direct_release_builds_only_full_apks(self):
         self.assertIn("flutter build apk --release --flavor full", self.workflow)
         self.assertIn("--split-per-abi", self.workflow)
+        self.assertIn("--dart-define=HERMES_LOCAL_AGENT=true", self.workflow)
         self.assertNotIn("flutter build appbundle", self.workflow)
         self.assertNotIn("--flavor play", self.workflow)
         self.assertNotIn("--flavor qa", self.workflow)

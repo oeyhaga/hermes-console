@@ -2983,6 +2983,75 @@ void main() {
     });
   });
 
+  test('redacta errores de socket persistidos antes de proyectarlos en chat', () {
+    const raw =
+        'ClientException with SocketException: Connection failed '
+        '(OS Error: Network is unreachable, errno = 101)';
+    expect(
+      activeChatStoredErrorUiMessage(raw),
+      'Se perdió la conexión con Hermes. El mensaje no se confirmó; revisa el borrador y reintenta.',
+    );
+  });
+
+  group('activeChatSteerFailureIsSafeToQueue', () {
+    test('solo encola rechazos RPC que prueban que steering no existe', () {
+      expect(
+        activeChatSteerFailureIsSafeToQueue(
+          const TuiGatewayRpcError(
+            'session.redirect',
+            'method not found',
+            code: -32601,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        activeChatSteerFailureIsSafeToQueue(
+          const TuiGatewayRpcError(
+            'session.redirect',
+            'session not found',
+            code: 4007,
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        activeChatSteerFailureIsSafeToQueue(
+          const TuiGatewayRpcError('session.redirect', 'timeout'),
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'encola únicamente la ausencia determinista de transporte steering',
+      () {
+        expect(
+          activeChatSteerFailureIsSafeToQueue(
+            StateError('steer_desktop_gateway_unavailable'),
+          ),
+          isTrue,
+        );
+        expect(
+          activeChatSteerFailureIsSafeToQueue(
+            StateError('steer_not_available_for_local_bridge'),
+          ),
+          isTrue,
+        );
+        expect(
+          activeChatSteerFailureIsSafeToQueue(
+            StateError('Hermes Desktop WebSocket is not connected'),
+          ),
+          isFalse,
+        );
+        expect(
+          activeChatSteerFailureIsSafeToQueue(Exception('network down')),
+          isFalse,
+        );
+      },
+    );
+  });
+
   group('ActiveChat.historyWithSoul (inyección de personalidad)', () {
     final history = <Map<String, dynamic>>[
       {'role': 'user', 'content': 'hola'},

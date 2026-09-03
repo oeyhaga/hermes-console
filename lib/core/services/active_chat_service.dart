@@ -80,12 +80,54 @@ const _sessionNotOwnedReason = 'SESSION_NOT_OWNED';
 const _maxConcurrentSessionsReason = 'MAX_CONCURRENT_SESSIONS';
 const _sessionCoordinationUnavailableReason =
     'SESSION_COORDINATION_UNAVAILABLE';
+const _awaitingDurableTurnRecoveryKey = '_awaitingDurableTurnRecovery';
+
+bool _isRecoverablePromptSessionRejection(Object error) =>
+    error is TuiGatewayRpcError &&
+    error.method == 'prompt.submit' &&
+    (error.code == 4001 ||
+        (error.code == 4090 && error.reason == _sessionNotOwnedReason));
+
+bool _isKnownPromptAdmissionRejection(Object error) =>
+    error is TuiGatewayRpcError &&
+    error.method == 'prompt.submit' &&
+    (error.code == 4001 ||
+        (error.code == 4090 &&
+            (error.reason == _sessionNotOwnedReason ||
+                error.reason == _maxConcurrentSessionsReason ||
+                error.reason == _sessionCoordinationUnavailableReason)));
 
 @visibleForTesting
 bool activeChatPromptWasRejectedBeforeAcceptance(Object error) =>
-    error is TuiGatewayRpcError &&
-    error.method == 'prompt.submit' &&
-    error.code == 4090;
+    _isKnownPromptAdmissionRejection(error);
+
+bool activeChatSteerFailureIsSafeToQueue(Object error) {
+  if (error is TuiGatewayRpcError) {
+    // The transport proved steering is unsupported or the session cannot be
+    // redirected, so a next-turn queue cannot duplicate an accepted steer.
+    return error.code == -32601 || error.code == 4007 || error.code == 4009;
+  }
+  if (error is StateError) {
+    // Only deterministic "there is no steering transport" failures are safe.
+    // Socket/reconnect StateErrors stay ambiguous and must remain a draft.
+    return error.message == 'steer_not_available_for_local_bridge' ||
+        error.message == 'steer_desktop_gateway_unavailable';
+  }
+  return false;
+}
+
+@visibleForTesting
+bool activeChatRejectedRuntimeStillCurrent({
+  required int expectedSessionEpoch,
+  required int currentSessionEpoch,
+  required int expectedBindEpoch,
+  required int currentBindEpoch,
+  required String rejectedRuntimeId,
+  required String? currentRuntimeId,
+}) =>
+    expectedSessionEpoch == currentSessionEpoch &&
+    expectedBindEpoch == currentBindEpoch &&
+    rejectedRuntimeId == currentRuntimeId;
 
 @visibleForTesting
 String activeChatPromptFailureUiMessage(Object error) {
@@ -110,9 +152,17 @@ String activeChatPromptFailureUiMessage(Object error) {
 /// en el transcript local. No se usa para decidir entrega ni reintentos: esas
 /// decisiones dependen del código y `error.data.reason` estructurados.
 String activeChatStoredErrorUiMessage(String error) {
-  if (error.trimLeft().startsWith('TuiGatewayRpcError(prompt.submit, 4090):')) {
+  final normalized = error.trimLeft();
+  if (normalized.startsWith('TuiGatewayRpcError(prompt.submit, 4090):')) {
     return 'Hermes no pudo reservar esta conversación. '
         'Revisa otras sesiones activas y vuelve a intentarlo.';
+  }
+  final lower = normalized.toLowerCase();
+  if (lower.contains('socketexception') ||
+      lower.contains('clientexception with socketexception') ||
+      lower.contains('websocket closed')) {
+    return 'Se perdió la conexión con Hermes. El mensaje no se confirmó; '
+        'revisa el borrador y reintenta.';
   }
   return error;
 }
@@ -1750,13 +1800,40 @@ class ActiveTurnDelivery {
   /// inició el turno. Aunque el request cruzó el transporte, conservarlo como
   /// `ambiguous` sería falso y obligaría a tratar un retry seguro como posible
   /// duplicado.
-  Future<void> markRejectedBeforeAcceptance() => _serializeMutation(() async {
+  Future<void> markRejectedBeforeAcceptance({
+    String? invalidateRemoteSessionId,
+    AttachmentRemoteTransport? invalidateTransport,
+  }) => _serializeMutation(() async {
     if (_acknowledged) return;
+    var attachmentsChanged = false;
+    final remoteSessionId = invalidateRemoteSessionId?.trim() ?? '';
+    final attachments = remoteSessionId.isEmpty || invalidateTransport == null
+        ? _current.attachments
+        : _current.attachments
+              .map<AttachmentDraft>((attachment) {
+                if (attachment.uploadState == AttachmentUploadState.removed ||
+                    attachment.remoteSessionId != remoteSessionId ||
+                    attachment.remoteTransport != invalidateTransport) {
+                  return attachment;
+                }
+                attachmentsChanged = true;
+                return attachment.copyWith(
+                  uploadState: AttachmentUploadState.pending,
+                  errorKind: null,
+                  remoteRef: null,
+                  remoteSessionId: null,
+                  remoteTransport: null,
+                );
+              })
+              .toList(growable: false);
     final next = _current.copyWith(
       updatedAtMs: _nowMs(),
       state: PreparedTurnState.failedBeforeAcceptance,
+      attachments: attachments,
     );
     _current = next;
+    _transportStarted = false;
+    if (attachmentsChanged) _notifyAttachments();
     try {
       await _store.save(next);
     } catch (_) {
@@ -2970,6 +3047,12 @@ class ActiveChat {
       state != ChatPipelineState.completed &&
       state != ChatPipelineState.failed &&
       state != ChatPipelineState.cancelled;
+
+  bool get awaitingDurableTurnRecovery =>
+      state == ChatPipelineState.failed &&
+      messages.isNotEmpty &&
+      messages.first['role'] == 'assistant_error' &&
+      messages.first[_awaitingDurableTurnRecoveryKey] == true;
 
   /// Texto del último mensaje del asistente (index 0 si es assistant).
   String get assistantContent =>
@@ -5563,7 +5646,32 @@ class ActiveChat {
   void _mergeSteerRecords() {
     if (_steerRecords.isEmpty || messages.isEmpty) return;
     final anchors = <int, List<String>>{};
+    final authoritativeCorrectionCounts = <String, int>{};
+    var latestUserOrdinal = -1;
+    for (final message in messages.reversed) {
+      if (isRealUserTurn(message)) latestUserOrdinal++;
+    }
+    for (final message in messages) {
+      final key = message['_desktopSnapshotKey']?.toString() ?? '';
+      final isInflightCorrection =
+          message['_desktopSnapshotKind'] == 'inflight' &&
+          key.startsWith('user-inflight-correction-');
+      if (!isInflightCorrection) continue;
+      final content = message['content']?.toString() ?? '';
+      authoritativeCorrectionCounts.update(
+        content,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
     for (final record in _steerRecords) {
+      final authoritativeCount =
+          authoritativeCorrectionCounts[record.content] ?? 0;
+      if (authoritativeCount > 0 &&
+          record.anchorUserOrdinal == latestUserOrdinal) {
+        authoritativeCorrectionCounts[record.content] = authoritativeCount - 1;
+        continue;
+      }
       anchors
           .putIfAbsent(record.anchorUserOrdinal, () => [])
           .add(record.content);
@@ -6983,6 +7091,84 @@ class ActiveChat {
     }
   }
 
+  Future<String?> _reconcilePromptSessionOwnership(
+    HermesDesktopGateway gateway,
+    Object error, {
+    required String rejectedRuntimeId,
+    required int expectedSessionEpoch,
+    required int expectedBindEpoch,
+    required String profile,
+    required String model,
+    required int turnEpoch,
+  }) async {
+    if (!_isRecoverablePromptSessionRejection(error) ||
+        (gateway is! HermesDesktopSessionLifecycleGateway &&
+            gateway is! HermesDesktopRecoverySessionLifecycleGateway) ||
+        !_canRecoverTurn(turnEpoch) ||
+        profile != _storedSessionProfile ||
+        !activeChatRejectedRuntimeStillCurrent(
+          expectedSessionEpoch: expectedSessionEpoch,
+          currentSessionEpoch: _desktopSessionEpoch,
+          expectedBindEpoch: expectedBindEpoch,
+          currentBindEpoch: _desktopBindEpoch,
+          rejectedRuntimeId: rejectedRuntimeId,
+          currentRuntimeId: _desktopRuntimeSessionId,
+        )) {
+      return null;
+    }
+    final durableId = (_desktopStoredSessionId ?? serverSessionId).trim();
+    if (durableId.isEmpty) return null;
+    final expectedStoredSessionId = _desktopStoredSessionId;
+    final expectedServerSessionId = serverSessionId;
+    final expectedProfile = _storedSessionProfile;
+
+    final DesktopSessionSnapshot snapshot;
+    try {
+      snapshot = await _resumeDesktopSessionForRecovery(
+        gateway,
+        durableId,
+        profile: profile,
+        legacyModel: model,
+        deferRuntimeCommit: true,
+      );
+    } catch (_) {
+      return null;
+    }
+
+    final authoritativeRuntimeId = snapshot.runtimeSessionId.trim();
+    final sameRuntimeCanBeRematerialized =
+        error is TuiGatewayRpcError && error.code == 4001;
+    if (!_canRecoverTurn(turnEpoch) ||
+        expectedSessionEpoch != _desktopSessionEpoch ||
+        expectedBindEpoch != _desktopBindEpoch ||
+        expectedStoredSessionId != _desktopStoredSessionId ||
+        expectedServerSessionId != serverSessionId ||
+        expectedProfile != _storedSessionProfile ||
+        snapshot.created ||
+        snapshot.storedSessionId.trim() != durableId ||
+        _desktopRuntimeSessionId != rejectedRuntimeId ||
+        authoritativeRuntimeId.isEmpty ||
+        (authoritativeRuntimeId == rejectedRuntimeId &&
+            !sameRuntimeCanBeRematerialized)) {
+      return null;
+    }
+
+    _commitDesktopRecoveryRuntime(gateway, authoritativeRuntimeId);
+    _desktopStoredSessionId = snapshot.storedSessionId;
+    _desktopStoredSessionKnownMissing = false;
+    if (authoritativeRuntimeId != rejectedRuntimeId) {
+      _adoptDesktopRuntime(authoritativeRuntimeId, info: snapshot.info);
+    }
+    _desktopRuntimeInfo = snapshot.info;
+    _rememberDesktopLiveStatus(snapshot.status, running: snapshot.running);
+    _desktopStartedAt = snapshot.startedAt;
+    _desktopTurnStartedAt = snapshot.running
+        ? snapshot.resolvedTurnStartedAt
+        : null;
+    _usingDesktopGateway = true;
+    return authoritativeRuntimeId;
+  }
+
   /// Resuelve una entrega ambigua únicamente mediante el contrato negociado.
   /// `known:false`, capability ausente o cualquier violación dejan el turno
   /// ambiguo; este método nunca llama submit ni cambia de transporte.
@@ -7201,6 +7387,16 @@ class ActiveChat {
   }) async {
     var submissionAttempted = false;
     var idempotentSubmission = false;
+    var promptRecoverySuperseded = false;
+    String? attemptedRuntimeId;
+    int? attemptedSessionEpoch;
+    int? attemptedBindEpoch;
+    void captureRuntimeAttempt(String runtimeSessionId) {
+      attemptedRuntimeId = runtimeSessionId;
+      attemptedSessionEpoch = _desktopSessionEpoch;
+      attemptedBindEpoch = _desktopBindEpoch;
+    }
+
     try {
       _listenToDesktopGateway(gateway);
       await gateway.connect();
@@ -7243,6 +7439,7 @@ class ActiveChat {
       }
       if (_turnEpoch != turnEpoch || _runTerminal) return false;
       _adoptDesktopRuntime(runtimeId);
+      captureRuntimeAttempt(runtimeId);
       _usingDesktopGateway = true;
       currentRunId = null;
       state = ChatPipelineState.waiting;
@@ -7447,8 +7644,11 @@ class ActiveChat {
           ? gateway as HermesDesktopDurableRewindGateway
           : null;
       if (truncateBeforeUserOrdinal != null) {
-        final rewindRuntimeId = runtimeId;
-        Future<DesktopRewindAck> submitRewind(int ordinal) async {
+        Future<DesktopRewindAck> submitRewind(
+          String targetRuntimeId,
+          int ordinal,
+        ) async {
+          captureRuntimeAttempt(targetRuntimeId);
           final rowId = truncateBeforeRowId;
           if (rowId != null) {
             if (durableRewindGateway == null) {
@@ -7459,7 +7659,7 @@ class ActiveChat {
               );
             }
             return durableRewindGateway.submitDurableRewindPrompt(
-              rewindRuntimeId,
+              targetRuntimeId,
               promptText,
               ordinal,
               truncateBeforeRowId: rowId,
@@ -7473,11 +7673,47 @@ class ActiveChat {
             );
           }
           await rewindGateway.submitRewindPrompt(
-            rewindRuntimeId,
+            targetRuntimeId,
             promptText,
             ordinal,
           );
           return const DesktopRewindAck();
+        }
+
+        Future<DesktopRewindAck> submitRewindWithOrdinalRepair(
+          String targetRuntimeId,
+        ) async {
+          final repairSessionEpoch = _desktopSessionEpoch;
+          final repairBindEpoch = _desktopBindEpoch;
+          try {
+            return await submitRewind(
+              targetRuntimeId,
+              truncateBeforeUserOrdinal,
+            );
+          } on TuiGatewayRpcError catch (error) {
+            final fallbackOrdinal = _rewind4018FallbackOrdinal;
+            if (error.code != 4018 ||
+                fallbackOrdinal == null ||
+                fallbackOrdinal == truncateBeforeUserOrdinal) {
+              rethrow;
+            }
+            if (!activeChatRejectedRuntimeStillCurrent(
+              expectedSessionEpoch: repairSessionEpoch,
+              currentSessionEpoch: _desktopSessionEpoch,
+              expectedBindEpoch: repairBindEpoch,
+              currentBindEpoch: _desktopBindEpoch,
+              rejectedRuntimeId: targetRuntimeId,
+              currentRuntimeId: _desktopRuntimeSessionId,
+            )) {
+              promptRecoverySuperseded = true;
+              rethrow;
+            }
+            debugPrint(
+              '[active-chat] retrying rewind after Hermes model-switch '
+              'ordinal repair ($truncateBeforeUserOrdinal -> $fallbackOrdinal)',
+            );
+            return submitRewind(targetRuntimeId, fallbackOrdinal);
+          }
         }
 
         if (!await _beginTurnTransport(
@@ -7487,21 +7723,59 @@ class ActiveChat {
           return false;
         }
         submissionAttempted = true;
+        captureRuntimeAttempt(runtimeId);
         late DesktopRewindAck rewindAck;
         try {
-          rewindAck = await submitRewind(truncateBeforeUserOrdinal);
+          rewindAck = await submitRewindWithOrdinalRepair(runtimeId);
         } on TuiGatewayRpcError catch (error) {
-          final fallbackOrdinal = _rewind4018FallbackOrdinal;
-          if (error.code != 4018 ||
-              fallbackOrdinal == null ||
-              fallbackOrdinal == truncateBeforeUserOrdinal) {
+          if (!_isRecoverablePromptSessionRejection(error)) rethrow;
+          await _activeTurnDelivery?.markRejectedBeforeAcceptance();
+          final recoverySessionEpoch = _desktopSessionEpoch;
+          final recoveryBindEpoch = _desktopBindEpoch;
+          final rejectedRuntimeId = runtimeId;
+          final reboundRuntimeId = await _reconcilePromptSessionOwnership(
+            gateway,
+            error,
+            rejectedRuntimeId: rejectedRuntimeId,
+            expectedSessionEpoch: attemptedSessionEpoch ?? recoverySessionEpoch,
+            expectedBindEpoch: attemptedBindEpoch ?? recoveryBindEpoch,
+            profile: profile,
+            model: model,
+            turnEpoch: turnEpoch,
+          );
+          if (reboundRuntimeId == null) {
+            promptRecoverySuperseded = !activeChatRejectedRuntimeStillCurrent(
+              expectedSessionEpoch: recoverySessionEpoch,
+              currentSessionEpoch: _desktopSessionEpoch,
+              expectedBindEpoch: recoveryBindEpoch,
+              currentBindEpoch: _desktopBindEpoch,
+              rejectedRuntimeId: rejectedRuntimeId,
+              currentRuntimeId: _desktopRuntimeSessionId,
+            );
             rethrow;
           }
-          debugPrint(
-            '[active-chat] retrying rewind after Hermes model-switch '
-            'ordinal repair ($truncateBeforeUserOrdinal -> $fallbackOrdinal)',
-          );
-          rewindAck = await submitRewind(fallbackOrdinal);
+          final retrySessionEpoch = _desktopSessionEpoch;
+          final retryBindEpoch = _desktopBindEpoch;
+          if (!await _beginTurnTransport(
+            turnEpoch,
+            PreparedTurnTransport.desktop,
+          )) {
+            return false;
+          }
+          if (!activeChatRejectedRuntimeStillCurrent(
+            expectedSessionEpoch: retrySessionEpoch,
+            currentSessionEpoch: _desktopSessionEpoch,
+            expectedBindEpoch: retryBindEpoch,
+            currentBindEpoch: _desktopBindEpoch,
+            rejectedRuntimeId: reboundRuntimeId,
+            currentRuntimeId: _desktopRuntimeSessionId,
+          )) {
+            promptRecoverySuperseded = true;
+            await _activeTurnDelivery?.markRejectedBeforeAcceptance();
+            return false;
+          }
+          runtimeId = reboundRuntimeId;
+          rewindAck = await submitRewindWithOrdinalRepair(runtimeId);
         }
         _rebindSurvivorUserRowIds(rewindAck.survivorUserRowIds);
         _rewindRollbackMessages = null;
@@ -7522,27 +7796,116 @@ class ActiveChat {
                 await _canUseTurnIdempotency(gateway)
             ? gateway as HermesDesktopIdempotentGateway
             : null;
-        if (voicePlaybackInterrupted &&
-            gateway is HermesDesktopInterruptedPromptGateway) {
-          await (gateway as HermesDesktopInterruptedPromptGateway)
-              .submitInterruptedPrompt(runtimeId, promptText);
-        } else if (idempotentGateway != null) {
-          idempotentSubmission = true;
-          final ack = await idempotentGateway.submitPromptIdempotent(
-            runtimeId,
-            promptText,
-            delivery!.current.clientTurnId,
-          );
-          if (ack.state == DesktopTurnState.terminal) {
-            await _completeRun();
+        Future<void> submitPrompt(String targetRuntimeId) async {
+          captureRuntimeAttempt(targetRuntimeId);
+          if (voicePlaybackInterrupted &&
+              gateway is HermesDesktopInterruptedPromptGateway) {
+            await (gateway as HermesDesktopInterruptedPromptGateway)
+                .submitInterruptedPrompt(targetRuntimeId, promptText);
+          } else if (idempotentGateway != null) {
+            idempotentSubmission = true;
+            final ack = await idempotentGateway.submitPromptIdempotent(
+              targetRuntimeId,
+              promptText,
+              delivery!.current.clientTurnId,
+            );
+            if (ack.state == DesktopTurnState.terminal) {
+              await _completeRun();
+            }
+          } else {
+            await gateway.submitPrompt(targetRuntimeId, promptText);
           }
-        } else {
-          await gateway.submitPrompt(runtimeId, promptText);
+        }
+
+        try {
+          await submitPrompt(runtimeId);
+        } on TuiGatewayRpcError catch (error) {
+          // image.attach_bytes/file.attach mutan el runtime actual. Hasta que
+          // podamos re-subir el lote de forma segura, nunca reenviamos solo el
+          // prompt (ni referencias ligadas al runtime anterior) tras reanudar.
+          if (attachmentsForRuntime.isNotEmpty) {
+            if (_isRecoverablePromptSessionRejection(error)) {
+              await delivery?.markRejectedBeforeAcceptance(
+                invalidateRemoteSessionId: runtimeId,
+                invalidateTransport: AttachmentRemoteTransport.desktop,
+              );
+            }
+            rethrow;
+          }
+          if (!_isRecoverablePromptSessionRejection(error)) rethrow;
+          await delivery?.markRejectedBeforeAcceptance();
+          final recoverySessionEpoch = _desktopSessionEpoch;
+          final recoveryBindEpoch = _desktopBindEpoch;
+          final rejectedRuntimeId = runtimeId;
+          final reboundRuntimeId = await _reconcilePromptSessionOwnership(
+            gateway,
+            error,
+            rejectedRuntimeId: rejectedRuntimeId,
+            expectedSessionEpoch: attemptedSessionEpoch ?? recoverySessionEpoch,
+            expectedBindEpoch: attemptedBindEpoch ?? recoveryBindEpoch,
+            profile: profile,
+            model: model,
+            turnEpoch: turnEpoch,
+          );
+          if (reboundRuntimeId == null) {
+            promptRecoverySuperseded = !activeChatRejectedRuntimeStillCurrent(
+              expectedSessionEpoch: recoverySessionEpoch,
+              currentSessionEpoch: _desktopSessionEpoch,
+              expectedBindEpoch: recoveryBindEpoch,
+              currentBindEpoch: _desktopBindEpoch,
+              rejectedRuntimeId: rejectedRuntimeId,
+              currentRuntimeId: _desktopRuntimeSessionId,
+            );
+            rethrow;
+          }
+          final retrySessionEpoch = _desktopSessionEpoch;
+          final retryBindEpoch = _desktopBindEpoch;
+          if (!await _beginTurnTransport(
+            turnEpoch,
+            PreparedTurnTransport.desktop,
+          )) {
+            return false;
+          }
+          if (!activeChatRejectedRuntimeStillCurrent(
+            expectedSessionEpoch: retrySessionEpoch,
+            currentSessionEpoch: _desktopSessionEpoch,
+            expectedBindEpoch: retryBindEpoch,
+            currentBindEpoch: _desktopBindEpoch,
+            rejectedRuntimeId: reboundRuntimeId,
+            currentRuntimeId: _desktopRuntimeSessionId,
+          )) {
+            promptRecoverySuperseded = true;
+            await delivery?.markRejectedBeforeAcceptance();
+            return false;
+          }
+          runtimeId = reboundRuntimeId;
+          await submitPrompt(runtimeId);
         }
       }
       return true;
     } catch (error) {
       if (_turnEpoch != turnEpoch || _runTerminal) return false;
+      if (promptRecoverySuperseded) return false;
+      final failedRuntimeId = attemptedRuntimeId;
+      final failureSessionEpoch = attemptedSessionEpoch;
+      final failureBindEpoch = attemptedBindEpoch;
+      bool failureStillCurrent() {
+        if (failedRuntimeId == null ||
+            failureSessionEpoch == null ||
+            failureBindEpoch == null) {
+          return true;
+        }
+        return activeChatRejectedRuntimeStillCurrent(
+          expectedSessionEpoch: failureSessionEpoch,
+          currentSessionEpoch: _desktopSessionEpoch,
+          expectedBindEpoch: failureBindEpoch,
+          currentBindEpoch: _desktopBindEpoch,
+          rejectedRuntimeId: failedRuntimeId,
+          currentRuntimeId: _desktopRuntimeSessionId,
+        );
+      }
+
+      if (!failureStillCurrent()) return false;
       if (truncateBeforeUserOrdinal != null) {
         if (error is TuiGatewayRpcError) {
           debugPrint(
@@ -7625,6 +7988,7 @@ class ActiveChat {
       if (rejectedBeforeAcceptance) {
         await _activeTurnDelivery?.markRejectedBeforeAcceptance();
       }
+      if (!failureStillCurrent()) return false;
       _firstTokenTimer?.cancel();
       _firstTokenTimer = null;
       _expireInteractivePromptsForRuntime(_desktopRuntimeSessionId);
@@ -8382,7 +8746,10 @@ class ActiveChat {
     }
     if (_canRecoverTurn(turnEpoch) && messageLoadEpoch == _messageLoadEpoch) {
       debugPrint(activeChatDesktopRecoveryDiagnostic(originalError));
-      _failRun(activeChatDesktopRecoveryUiMessage(originalError));
+      _failRun(
+        activeChatDesktopRecoveryUiMessage(originalError),
+        failureMetadata: const {_awaitingDurableTurnRecoveryKey: true},
+      );
     }
   }
 
@@ -12495,6 +12862,7 @@ class ActiveChat {
       return false;
     }
     final top = messages.isNotEmpty ? messages.first : null;
+    final awaitsDurableTurnRecovery = awaitingDurableTurnRecovery;
     final looksUnfinished =
         top != null &&
         top['role'] == 'assistant' &&
@@ -12511,7 +12879,11 @@ class ActiveChat {
           visibleChronological,
           expectedUsers,
         );
-    if (!looksUnfinished && !endsInToolInvocationWithoutFinal) return false;
+    if (!looksUnfinished &&
+        !endsInToolInvocationWithoutFinal &&
+        !awaitsDurableTurnRecovery) {
+      return false;
+    }
 
     // Cerrar/reabrir durante una herramienta puede dejar la proyección local
     // terminada en `tool` justo antes de que Hermes publique el assistant
@@ -12609,7 +12981,7 @@ class ActiveChat {
       );
       _markTranscriptComplete(visibleCount: messages.length);
       _reconcileSubagentsFromTranscript();
-      if (state != ChatPipelineState.failed) {
+      if (state != ChatPipelineState.failed || awaitsDurableTurnRecovery) {
         state = ChatPipelineState.completed;
       }
       traceActive = false;

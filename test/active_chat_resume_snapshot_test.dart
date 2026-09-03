@@ -516,14 +516,110 @@ void main() {
       expect(chat.messages, firstProjection);
       expect(chat.messages.reversed.map((message) => message['content']), [
         'haz la auditoría',
-        'y documéntala',
         'trabajando',
+        'y documéntala',
       ]);
       expect(
         chat.messages.where((message) => message['_steer'] == true),
         hasLength(1),
       );
       expect(chat.queuedMessages, ['después publícala']);
+    },
+  );
+
+  test(
+    'merge local conserva el offset autoritativo de la corrección',
+    () async {
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-correction-offset-merge',
+          'session_key': 'stored-chat',
+          'messages': <Map<String, dynamic>>[],
+          'inflight': {
+            'user': 'avanza',
+            'assistant': 'Moving.Still.',
+            'streaming': true,
+            'corrections': ['más rápido'],
+            'correction_offsets': [7],
+          },
+          'running': true,
+        });
+      final chat = _chat(
+        'resume-correction-offset-merge',
+        gateway,
+        initialSteerProjections: const [
+          (anchorUserOrdinal: 0, content: 'más rápido'),
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      expect(chat.messages.reversed.map((message) => message['content']), [
+        'avanza',
+        'Moving.',
+        'más rápido',
+        'Still.',
+      ]);
+      expect(
+        chat.messages.where((message) => message['content'] == 'más rápido'),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'deduplicación de corrección autoritativa respeta el turno ancla',
+    () async {
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-correction-scope',
+          'session_key': 'stored-chat',
+          'message_count': 7,
+          'messages': [
+            {'role': 'user', 'content': 'primer turno'},
+            {'role': 'assistant', 'content': 'Cerrado.'},
+            {'role': 'user', 'content': 'segundo turno'},
+            {
+              'role': 'user',
+              'content': 'cambio interno',
+              'display_kind': 'model_switch',
+            },
+          ],
+          'inflight': {
+            'assistant': 'Moving.Still.',
+            'streaming': true,
+            'corrections': ['igual'],
+            'correction_offsets': [7],
+          },
+          'running': true,
+        });
+      final chat = _chat(
+        'resume-correction-scope',
+        gateway,
+        initialSteerProjections: const [
+          (anchorUserOrdinal: 0, content: 'igual'),
+          (anchorUserOrdinal: 1, content: 'igual'),
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      expect(chat.messages.reversed.map((message) => message['content']), [
+        'primer turno',
+        'igual',
+        'Cerrado.',
+        'segundo turno',
+        'cambio interno',
+        'Moving.',
+        'igual',
+        'Still.',
+      ]);
+      expect(
+        chat.messages.where((message) => message['content'] == 'igual'),
+        hasLength(2),
+      );
     },
   );
 
@@ -1089,6 +1185,44 @@ void main() {
     expect(chat.messages[1]['content'], 'respuesta parcial');
     expect(chat.messages[1]['_cancelled'], isTrue);
   });
+
+  test(
+    'reanudación recupera un turno durable tras agotar la ventana offline',
+    () async {
+      final gateway = _SnapshotGateway();
+      final chat = _chat(
+        'resume-after-offline-budget',
+        gateway,
+        storedMessageLoader: (_, _) async => [
+          {'role': 'user', 'content': 'espera y responde'},
+          {'role': 'assistant', 'content': 'respuesta durable final'},
+        ],
+      );
+      addTearDown(chat.dispose);
+      chat.messages = [
+        {
+          'role': 'assistant_error',
+          'content': 'No se pudo recuperar el turno. Inténtalo de nuevo.',
+          '_prompt': 'espera y responde',
+          '_awaitingDurableTurnRecovery': true,
+        },
+        {'role': 'user', 'content': 'espera y responde'},
+      ];
+      chat.messagesLoaded = true;
+      chat.state = ChatPipelineState.failed;
+
+      final changed = await chat.reconcileAfterResume();
+
+      expect(changed, isTrue);
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.messages.first['role'], 'assistant');
+      expect(chat.messages.first['content'], 'respuesta durable final');
+      expect(
+        chat.messages.where((message) => message['role'] == 'assistant_error'),
+        isEmpty,
+      );
+    },
+  );
 
   test(
     'reanudación de app no sustituye el turno local por REST vacío',

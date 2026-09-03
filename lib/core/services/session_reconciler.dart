@@ -156,12 +156,11 @@ class DesktopSessionReconciler {
     final inflightStatus = inflight?.status?.trim().toLowerCase() ?? '';
     final inflightFailed =
         inflightError.isNotEmpty || inflightStatus == 'error';
+    // The current Gateway inflight shape carries only user text, not the
+    // durable message/client-turn identity. Equal text is therefore ambiguous:
+    // it may be a genuinely repeated prompt after a cancelled turn. Fail
+    // closed and retain the live row until the protocol supplies an identity.
     if (inflightUser != null && inflightUser.trim().isNotEmpty) {
-      // `inflight.user` no comparte una identidad protocolaria con las filas
-      // persistidas. El upstream mantiene ambos planos separados: el history
-      // durable puede acabar en un user histórico/cancelado y el inflight ser
-      // un turno nuevo con el mismo texto. Fusionarlos por contenido haría que
-      // Stop anclase el turno nuevo al ID del histórico.
       chronological.add(
         Map<String, dynamic>.unmodifiable({
           'role': 'user',
@@ -174,41 +173,90 @@ class DesktopSessionReconciler {
 
     final inflightCorrections =
         inflight?.corrections ?? const <DesktopInflightCorrection>[];
-    for (var index = 0; index < inflightCorrections.length; index++) {
-      final correction = inflightCorrections[index];
-      // Igual que el prompt original, una corrección sin ID explícito nunca
-      // adquiere la identidad de una fila durable solo porque coincida el texto.
-      chronological.add(
-        Map<String, dynamic>.unmodifiable({
-          'role': 'user',
-          'content': correction.text,
-          '_steer': true,
-          '_desktopSnapshotKey':
-              'user-inflight-correction-$index-${snapshot.runtimeSessionId}',
-          '_desktopSnapshotKind': 'inflight',
-        }),
-      );
-    }
-
     final inflightAssistant = inflight?.assistant;
     final hasInflight =
         !inflightFailed &&
         (inflight != null || snapshot.running || inflight?.streaming == true);
-    if (hasInflight &&
-        (inflightAssistant != null ||
-            inflightUser != null ||
-            inflightCorrections.isNotEmpty ||
-            snapshot.running)) {
+    final correctionOffsets = inflight?.correctionOffsets ?? const <int?>[];
+    final correctionOffsetsUsable =
+        !inflightFailed &&
+        inflightAssistant != null &&
+        inflightAssistant.isNotEmpty &&
+        inflightCorrections.isNotEmpty &&
+        correctionOffsets.length >= inflightCorrections.length &&
+        correctionOffsets
+            .take(inflightCorrections.length)
+            .every((offset) => offset != null);
+
+    Map<String, dynamic> correctionMessage(
+      DesktopInflightCorrection correction,
+      int index,
+    ) => Map<String, dynamic>.unmodifiable({
+      'role': 'user',
+      'content': correction.text,
+      '_steer': true,
+      '_desktopSnapshotKey':
+          'user-inflight-correction-$index-${snapshot.runtimeSessionId}',
+      '_desktopSnapshotKind': 'inflight',
+    });
+
+    Map<String, dynamic> assistantMessage(
+      String content, {
+      required String key,
+      required bool live,
+    }) => Map<String, dynamic>.unmodifiable({
+      'role': 'assistant',
+      'content': content,
+      '_pipeline': live,
+      if (!live) '_interim': true,
+      '_desktopSnapshotKey': key,
+      '_desktopSnapshotKind': 'inflight',
+    });
+
+    if (correctionOffsetsUsable) {
+      var cursor = 0;
+      for (var index = 0; index < inflightCorrections.length; index++) {
+        final boundary = correctionOffsets[index]!.clamp(
+          cursor,
+          inflightAssistant.length,
+        );
+        final segment = inflightAssistant.substring(cursor, boundary);
+        if (segment.trim().isNotEmpty) {
+          chronological.add(
+            assistantMessage(
+              segment,
+              key: 'assistant-stream-segment-$index-${snapshot.runtimeSessionId}',
+              live: false,
+            ),
+          );
+        }
+        cursor = boundary;
+        chronological.add(correctionMessage(inflightCorrections[index], index));
+      }
       chronological.add(
-        Map<String, dynamic>.unmodifiable({
-          'role': 'assistant',
-          'content': inflightAssistant ?? '',
-          '_pipeline': true,
-          '_desktopSnapshotKey':
-              'assistant-stream-${snapshot.runtimeSessionId}',
-          '_desktopSnapshotKind': 'inflight',
-        }),
+        assistantMessage(
+          inflightAssistant.substring(cursor),
+          key: 'assistant-stream-${snapshot.runtimeSessionId}',
+          live: true,
+        ),
       );
+    } else {
+      if (hasInflight &&
+          (inflightAssistant != null ||
+              inflightUser != null ||
+              inflightCorrections.isNotEmpty ||
+              snapshot.running)) {
+        chronological.add(
+          assistantMessage(
+            inflightAssistant ?? '',
+            key: 'assistant-stream-${snapshot.runtimeSessionId}',
+            live: true,
+          ),
+        );
+      }
+      for (var index = 0; index < inflightCorrections.length; index++) {
+        chronological.add(correctionMessage(inflightCorrections[index], index));
+      }
     }
 
     if (inflightFailed) {

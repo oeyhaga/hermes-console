@@ -3,9 +3,11 @@ import 'package:hermes_android/core/models/session.dart';
 import 'package:hermes_android/core/models/session_category.dart';
 
 void main() {
-  test('taxonomía 0.20 conserva las siete fuentes de automatización', () {
+  test('taxonomía actual conserva las fuentes internas de automatización', () {
     expect(AutomationSessionSources.values, const [
       'cron',
+      'kanban',
+      'subagent',
       'tool',
       'api_server',
       'acp',
