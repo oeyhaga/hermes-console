@@ -2333,6 +2333,10 @@ class DashboardClient {
         DashboardWebSocketAuthFailureCode.unavailable,
         statusCode: error.statusCode,
       );
+    } on DashboardAuthException {
+      // This error already carries the stable, body-free Dashboard auth code
+      // that reconnect/UI recovery needs (for example loginRequired).
+      rethrow;
     } on Exception {
       throw const DashboardWebSocketAuthException(
         DashboardWebSocketAuthFailureCode.unavailable,
@@ -2362,6 +2366,8 @@ class DashboardClient {
         headers: headers,
       );
     } on DashboardWebSocketAuthException {
+      rethrow;
+    } on DashboardAuthException {
       rethrow;
     } on Exception {
       throw const DashboardWebSocketAuthException(
