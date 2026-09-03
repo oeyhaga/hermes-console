@@ -1006,6 +1006,14 @@ class ApiClient {
     'Content-Type': 'application/json',
   };
 
+  /// Hermes selects a non-default runtime profile from the URL namespace.
+  /// Empty/default preserve the historical unprefixed API surface.
+  static String profileEndpoint(String endpoint, {String? profile}) {
+    final owner = profile?.trim() ?? '';
+    if (owner.isEmpty || owner == 'default') return endpoint;
+    return 'p/${Uri.encodeComponent(owner)}/$endpoint';
+  }
+
   // ── Session listing ──────────────────────────────────────────────────
 
   /// Lista sesiones. Por defecto el servidor pliega las sesiones "hijas"
@@ -1039,12 +1047,16 @@ class ApiClient {
 
   // ── Messages ─────────────────────────────────────────────────────────
 
-  Future<List<Map<String, dynamic>>> getMessages(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getMessages(
+    String sessionId, {
+    String? profile,
+  }) async {
+    final endpoint = profileEndpoint(
+      'api/sessions/${Uri.encodeComponent(sessionId)}/messages',
+      profile: profile,
+    );
     final res = await _http
-        .get(
-          Uri.parse('$baseUrl/api/sessions/$sessionId/messages'),
-          headers: _headers,
-        )
+        .get(Uri.parse('$baseUrl/$endpoint'), headers: _headers)
         .timeout(_requestTimeout);
     if (res.statusCode != 200) {
       throw Exception('HTTP ${res.statusCode}: ${res.body}');
@@ -1061,13 +1073,14 @@ class ApiClient {
   /// lo trata como historial completo.
   Future<SessionMessagesPage> getMessagesPage(
     String sessionId, {
+    String? profile,
     int limit = 120,
     int offset = 0,
   }) async {
     final res = await _http
         .get(
           Uri.parse(
-            '$baseUrl/api/sessions/$sessionId/messages'
+            '$baseUrl/${profileEndpoint('api/sessions/${Uri.encodeComponent(sessionId)}/messages', profile: profile)}'
             '?limit=$limit&order=latest&offset=$offset',
           ),
           headers: _headers,
@@ -1240,12 +1253,13 @@ class ApiClient {
   /// borró (p.ej. recreada por un canal activo). Un 404 es éxito idempotente:
   /// la sesión ya no existe y se puede retirar su recuperación local. Lanza en
   /// los demás errores HTTP.
-  Future<bool> deleteSession(String sessionId) async {
+  Future<bool> deleteSession(String sessionId, {String? profile}) async {
+    final endpoint = profileEndpoint(
+      'api/sessions/${Uri.encodeComponent(sessionId)}',
+      profile: profile,
+    );
     final res = await _http
-        .delete(
-          Uri.parse('$baseUrl/api/sessions/$sessionId'),
-          headers: _headers,
-        )
+        .delete(Uri.parse('$baseUrl/$endpoint'), headers: _headers)
         .timeout(_requestTimeout);
     if (res.statusCode == 404) {
       await _clearSessionRecovery(sessionId);
@@ -1283,17 +1297,29 @@ class ApiClient {
   }
 
   /// GET /api/sessions/{id} — detalle con métricas (tokens, coste, lineage).
-  Future<Session> getSession(String sessionId) async {
-    final data = await apiGet('api/sessions/$sessionId');
+  Future<Session> getSession(String sessionId, {String? profile}) async {
+    final data = await apiGet(
+      profileEndpoint(
+        'api/sessions/${Uri.encodeComponent(sessionId)}',
+        profile: profile,
+      ),
+    );
     return Session.fromJson((data['session'] as Map<String, dynamic>?) ?? data);
   }
 
   /// POST /api/sessions/{id}/fork — ramifica una sesión (semántica /branch
   /// del CLI: la original queda end_reason="branched" y la hija hereda el
   /// transcript con parent_session_id). Verificado en vivo (api_server.py).
-  Future<Session> forkSession(String sessionId, {String? title}) async {
+  Future<Session> forkSession(
+    String sessionId, {
+    String? title,
+    String? profile,
+  }) async {
     final data = await apiPost(
-      'api/sessions/$sessionId/fork',
+      profileEndpoint(
+        'api/sessions/${Uri.encodeComponent(sessionId)}/fork',
+        profile: profile,
+      ),
       body: {if (title != null && title.isNotEmpty) 'title': title},
     );
     return Session.fromJson((data['session'] as Map<String, dynamic>?) ?? data);
@@ -1341,11 +1367,6 @@ class ApiClient {
       'input': input,
       if (sessionId != null && sessionId.isNotEmpty) 'session_id': sessionId,
       if (model != null && model.isNotEmpty) 'model': model,
-      // `profile` se incluye SOLO si el llamador lo pasa explícitamente. Hoy el
-      // gateway HTTP no enruta por perfil (lo ignora), así que los caminos
-      // remotos actuales NO lo envían; queda como contrato preparado para cuando
-      // el upstream acepte perfil en /v1/runs (la app ya estaría lista).
-      if (profile != null && profile.isNotEmpty) 'profile': profile,
       if (withHistory && history != null && history.isNotEmpty) ...{
         // `conversation_history` es el campo que el gateway lee de verdad para
         // reinyectar el hilo; `messages` se manda solo como alias compatible.
@@ -1362,7 +1383,7 @@ class ApiClient {
     const runStartTimeout = Duration(seconds: 30);
     try {
       data = await apiPost(
-        'v1/runs',
+        profileEndpoint('v1/runs', profile: profile),
         body: buildBody(withHistory: true),
       ).timeout(runStartTimeout);
     } catch (e) {
@@ -1374,7 +1395,7 @@ class ApiClient {
       final s = e.toString();
       if (hasHistory && (s.contains('400') || s.contains('422'))) {
         data = await apiPost(
-          'v1/runs',
+          profileEndpoint('v1/runs', profile: profile),
           body: _buildContextInjectedBody(input, history, sessionId, model),
         ).timeout(runStartTimeout);
       } else {
@@ -1418,7 +1439,13 @@ class ApiClient {
 
   /// GET /v1/runs/{id} — estado pollable. Lanza con el código HTTP en el
   /// mensaje (404 = el gateway ya no conserva esta ejecución).
-  Future<Map<String, dynamic>> getRun(String runId) => apiGet('v1/runs/$runId');
+  Future<Map<String, dynamic>> getRun(String runId, {String? profile}) =>
+      apiGet(
+        profileEndpoint(
+          'v1/runs/${Uri.encodeComponent(runId)}',
+          profile: profile,
+        ),
+      );
 
   /// POST /v1/runs/{id}/approval — resuelve una aprobación pendiente.
   /// [choice]: once | session | always | deny.
@@ -1427,8 +1454,12 @@ class ApiClient {
     String choice, {
     bool resolveAll = false,
     String? requestId,
+    String? profile,
   }) => apiPost(
-    'v1/runs/$runId/approval',
+    profileEndpoint(
+      'v1/runs/${Uri.encodeComponent(runId)}/approval',
+      profile: profile,
+    ),
     body: {
       'choice': choice,
       if (resolveAll) 'resolve_all': true,
@@ -1437,14 +1468,20 @@ class ApiClient {
   );
 
   /// POST /v1/runs/{id}/stop — interrumpe la ejecución.
-  Future<Map<String, dynamic>> stopRun(String runId) =>
-      apiPost('v1/runs/$runId/stop');
+  Future<Map<String, dynamic>> stopRun(String runId, {String? profile}) =>
+      apiPost(
+        profileEndpoint(
+          'v1/runs/${Uri.encodeComponent(runId)}/stop',
+          profile: profile,
+        ),
+      );
 
   /// GET /v1/runs/{id}/events — SSE de eventos estructurados del run
   /// (message.delta, tool.started/completed, approval.request,
   /// run.completed/failed/cancelled). Devuelve cuando el stream cierra.
   Future<void> streamRunEvents(
     String runId, {
+    String? profile,
     required void Function(Map<String, dynamic> event) onEvent,
     required void Function() onDone,
     required void Function(String error) onError,
@@ -1453,7 +1490,9 @@ class ApiClient {
     try {
       final request = http.Request(
         'GET',
-        Uri.parse('$baseUrl/v1/runs/$runId/events'),
+        Uri.parse(
+          '$baseUrl/${profileEndpoint('v1/runs/${Uri.encodeComponent(runId)}/events', profile: profile)}',
+        ),
       );
       request.headers.addAll(_headers);
       final response = await _http.send(request).timeout(_requestTimeout);
@@ -3174,22 +3213,16 @@ class DashboardClient {
 
   // ── Cron job management ──────────────────────────────────────────────
 
-  /// Elimina un cron de forma idempotente. Si hay perfil activo, probamos ese
-  /// ámbito y SIEMPRE confirmamos también en el ámbito global: Hermes responde
-  /// éxito cuando el job ya estaba ausente del perfil, así que un 2xx scoped no
-  /// demuestra que el schedule global haya desaparecido.
+  /// Elimina un cron de forma idempotente dentro de un único ámbito. Un perfil
+  /// nombrado nunca puede provocar además un DELETE global/default; sin perfil
+  /// se conserva la ruta histórica sin query.
   Future<void> deleteCronJob(String jobId, {String? profile}) async {
     final id = validateCronJobId(jobId);
     final scopedProfile = validateCronProfile(profile);
     final endpoint = 'cron/jobs/${Uri.encodeComponent(id)}';
-    final scopedQuery = _profileQuery(scopedProfile);
-    if (scopedQuery.isNotEmpty) {
-      final deleted = await _deleteCronEndpoint('$endpoint$scopedQuery');
-      if (!deleted) {
-        throw const CronDeleteRejectedException();
-      }
-    }
-    final deleted = await _deleteCronEndpoint(endpoint);
+    final deleted = await _deleteCronEndpoint(
+      '$endpoint${_profileQuery(scopedProfile)}',
+    );
     if (!deleted) {
       throw const CronDeleteRejectedException();
     }

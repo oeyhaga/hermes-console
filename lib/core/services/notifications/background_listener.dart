@@ -455,6 +455,11 @@ String _normalizeRunOwnerProfile(String value) {
   runId: run.runId,
 );
 
+@visibleForTesting
+Uri backgroundRunStatusUri(String safeBase, WatchedRun run) => Uri.parse(
+  '$safeBase/${ApiClient.profileEndpoint('v1/runs/${Uri.encodeComponent(run.runId)}', profile: run.profile)}',
+);
+
 class CronExecutionSnapshot {
   final String jobKey;
   final String jobId;
@@ -2038,7 +2043,7 @@ class _HermesTaskHandler extends TaskHandler {
     }
     try {
       final token = await _secure.readApiKey(r.connId);
-      final uri = Uri.parse('$safeBase/v1/runs/${r.runId}');
+      final uri = backgroundRunStatusUri(safeBase, r);
       final res = await _http
           .get(
             uri,

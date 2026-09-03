@@ -311,7 +311,10 @@ class HermesDrawer extends StatelessWidget {
         label: strings.drawerTaskCenter,
         enabled: enabled(),
         disabledReason: disabledReason(),
-        builder: (_) => TaskCenterScreen(connection: conn!),
+        builder: (_) => TaskCenterScreen(
+          connection: conn!,
+          profile: connManager.activeProfileFor(conn.id),
+        ),
       ),
       HermesToolDestination(
         id: 'activity',

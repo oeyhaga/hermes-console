@@ -868,7 +868,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     session,
     loadSessions: ({bool includeChildren = false}) =>
         _client.getSessions(includeChildren: includeChildren),
-    deleteSession: _client.deleteSession,
+    deleteSession: (sessionId) =>
+        _client.deleteSession(sessionId, profile: session.profile),
     cronDeletion: cronDeletion,
     deleteCronJob:
         !session.isJob || cronDeletion == LinkedCronDeletionMode.keepSchedule
@@ -876,7 +877,7 @@ class _SessionListScreenState extends State<SessionListScreen>
         : (jobId) => widget.connManager.deleteLinkedCronJob(
             widget.connection,
             jobId,
-            profile: widget.connManager.activeProfileFor(widget.connection.id),
+            profile: session.profile,
           ),
   );
 
@@ -1075,7 +1076,7 @@ class _SessionListScreenState extends State<SessionListScreen>
 
     for (final s in conversations) {
       try {
-        final ok = await _client.deleteSession(s.id);
+        final ok = await _client.deleteSession(s.id, profile: s.profile);
         if (ok) {
           try {
             await _activeChats?.clearCancelledTurnsForSession(

@@ -7256,7 +7256,10 @@ class _ChatScreenState extends State<ChatScreen>
     );
     Session? childSession;
     try {
-      childSession = await client.getSession(childSessionId);
+      childSession = await client.getSession(
+        childSessionId,
+        profile: _chat.sessionProfile,
+      );
     } catch (_) {
       if (!_disposed && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

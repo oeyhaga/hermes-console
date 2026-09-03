@@ -806,7 +806,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         if (index >= candidates.length) return;
         final candidate = candidates[index];
         try {
-          final messages = await client.getMessages(candidate.session.id);
+          final messages = await client.getMessages(
+            candidate.session.id,
+            profile: candidate.session.profile,
+          );
           hydrated[candidate.key] = (
             activityAt: candidate.session.lastActivityAt,
             user: latestUserPreview(messages),

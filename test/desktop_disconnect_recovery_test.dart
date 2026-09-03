@@ -297,7 +297,7 @@ class _RestFallbackApiClient extends ApiClient {
   }
 
   @override
-  Future<Map<String, dynamic>> stopRun(String runId) async {
+  Future<Map<String, dynamic>> stopRun(String runId, {String? profile}) async {
     stopCalls++;
     return <String, dynamic>{};
   }
@@ -305,6 +305,7 @@ class _RestFallbackApiClient extends ApiClient {
   @override
   Future<void> streamRunEvents(
     String runId, {
+    String? profile,
     required void Function(Map<String, dynamic> event) onEvent,
     required void Function() onDone,
     required void Function(String error) onError,
@@ -320,7 +321,10 @@ class _ControlledApiClient extends ApiClient {
   bool closed = false;
 
   @override
-  Future<List<Map<String, dynamic>>> getMessages(String sessionId) {
+  Future<List<Map<String, dynamic>>> getMessages(
+    String sessionId, {
+    String? profile,
+  }) {
     final request = Completer<List<Map<String, dynamic>>>();
     requests.add(request);
     return request.future;
@@ -329,10 +333,11 @@ class _ControlledApiClient extends ApiClient {
   @override
   Future<SessionMessagesPage> getMessagesPage(
     String sessionId, {
+    String? profile,
     int limit = 120,
     int offset = 0,
   }) async => SessionMessagesPage(
-    messages: await getMessages(sessionId),
+    messages: await getMessages(sessionId, profile: profile),
     pagination: null,
   );
 
@@ -353,7 +358,10 @@ class _CompletedTranscriptApi extends ApiClient {
   int calls = 0;
 
   @override
-  Future<List<Map<String, dynamic>>> getMessages(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getMessages(
+    String sessionId, {
+    String? profile,
+  }) async {
     calls++;
     return transcript;
   }
@@ -371,7 +379,10 @@ class _ToolThenFinalTranscriptApi extends ApiClient {
   int calls = 0;
 
   @override
-  Future<List<Map<String, dynamic>>> getMessages(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getMessages(
+    String sessionId, {
+    String? profile,
+  }) async {
     calls++;
     if (calls == 1) {
       if (!firstRead.isCompleted) firstRead.complete();
@@ -430,6 +441,7 @@ class _PartialTailApi extends ApiClient {
   @override
   Future<SessionMessagesPage> getMessagesPage(
     String sessionId, {
+    String? profile,
     int limit = 120,
     int offset = 0,
   }) async {

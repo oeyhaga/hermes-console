@@ -145,14 +145,20 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
     setState(() => _refreshing = true);
     if (refreshSession) {
       try {
-        final fresh = await _client.getSession(_session.id);
+        final fresh = await _client.getSession(
+          _session.id,
+          profile: _session.profile,
+        );
         if (mounted) setState(() => _session = fresh);
       } catch (_) {
         // La copia recibida de la lista sigue siendo válida; no romper la vista.
       }
     }
     try {
-      final msgs = await _client.getMessages(_session.id);
+      final msgs = await _client.getMessages(
+        _session.id,
+        profile: _session.profile,
+      );
       if (mounted) {
         _indexGeneratedArtifacts(msgs);
         setState(() {
@@ -567,7 +573,10 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
     if (confirm != true || !mounted) return;
 
     try {
-      final fork = await _client.forkSession(_session.id);
+      final fork = await _client.forkSession(
+        _session.id,
+        profile: _session.profile,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).sesDuplicated(fork.title))),
@@ -633,7 +642,8 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
         _session,
         loadSessions: ({bool includeChildren = false}) =>
             _client.getSessions(includeChildren: includeChildren),
-        deleteSession: _client.deleteSession,
+        deleteSession: (sessionId) =>
+            _client.deleteSession(sessionId, profile: _session.profile),
         cronDeletion: cronDeletion,
         deleteCronJob:
             !_session.isJob ||
@@ -647,7 +657,7 @@ class _SessionDetailScreenState extends State<SessionDetailScreen>
                         widget.connection.id,
                       ),
                     )
-                  : dashboard!.deleteCronJob(jobId),
+                  : dashboard!.deleteCronJob(jobId, profile: _session.profile),
       );
       if (!mounted) return;
       switch (result.status) {

@@ -314,6 +314,34 @@ void main() {
     expect(replacement.copyWith(clearApproval: true).approvalRequestId, isNull);
   });
 
+  test('FGS run polling uses the watched profile URL namespace', () {
+    expect(
+      backgroundRunStatusUri(
+        'https://hermes.example',
+        const WatchedRun(
+          connId: 'conn-a',
+          profile: 'team alpha',
+          base: 'https://hermes.example',
+          runId: 'run/1',
+          prompt: '',
+        ),
+      ).toString(),
+      'https://hermes.example/p/team%20alpha/v1/runs/run%2F1',
+    );
+    expect(
+      backgroundRunStatusUri(
+        'https://hermes.example',
+        const WatchedRun(
+          connId: 'conn-a',
+          base: 'https://hermes.example',
+          runId: 'run-1',
+          prompt: '',
+        ),
+      ).path,
+      '/v1/runs/run-1',
+    );
+  });
+
   test('FGS notification owner preserves exact profile route', () {
     const watched = WatchedRun(
       connId: 'conn-a',

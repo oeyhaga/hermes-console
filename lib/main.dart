@@ -1701,7 +1701,10 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
     );
     Session? session;
     try {
-      session = await client.getSession(sessionId);
+      session = await client.getSession(
+        sessionId,
+        profile: widget.connManager.activeProfileFor(connection.id),
+      );
     } catch (_) {
       // El widget conserva el último estado conocido. Si esa sesión ya no
       // existe, abrir la biblioteca es más útil y seguro que crear un chat

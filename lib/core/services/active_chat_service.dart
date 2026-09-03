@@ -2892,7 +2892,10 @@ class ActiveChat {
   /// Hermes publishes through REST but older `session.info` events omit.
   Future<Session?> loadPersistedSessionSnapshot() async {
     final requestedId = serverSessionId;
-    final snapshot = await _api.getSession(requestedId);
+    final snapshot = await _api.getSession(
+      requestedId,
+      profile: sessionProfile,
+    );
     if (_disposed || serverSessionId != requestedId) return null;
     return snapshot;
   }
@@ -3985,31 +3988,13 @@ class ActiveChat {
     if (injected != null) {
       return injected(serverSessionId, normalizedProfile);
     }
-    // `default` es una identidad explícita para los RPC de Desktop, pero no
-    // convierte el historial principal en una lectura Dashboard. Mantenerlo
-    // en el endpoint Gateway conserva el contrato legacy/offline y evita que
-    // una sesión normal dependa de credenciales Dashboard. Solo los perfiles
-    // alternativos necesitan la superficie profile-aware del Dashboard.
-    if (normalizedProfile.isEmpty || normalizedProfile == 'default') {
-      return _api.getMessages(serverSessionId);
-    }
-    final dashboard = DashboardClient.lazy(connection);
-    try {
-      return await dashboard.getSessionMessages(
-        serverSessionId,
-        profile: normalizedProfile,
-      );
-    } finally {
-      dashboard.close();
-    }
+    return _api.getMessages(serverSessionId, profile: normalizedProfile);
   }
 
-  /// Lee una página del transcript almacenado por la MISMA superficie que
-  /// [_loadStoredMessages] (Gateway :8642 para `default`, Dashboard para
-  /// perfiles alternativos), con la semántica `order=latest` de Hermes Agent
-  /// 0.20: [offset] hacia atrás desde el mensaje más reciente y la página en
-  /// orden cronológico. El loader inyectado y los gateways antiguos devuelven
-  /// el transcript completo sin metadata `pagination`.
+  /// Lee una página del transcript almacenado por el mismo Gateway REST,
+  /// aplicando el namespace de perfil cuando corresponde, con la semántica
+  /// `order=latest` de Hermes Agent 0.20. El loader inyectado y los gateways
+  /// antiguos devuelven el transcript completo sin metadata `pagination`.
   Future<SessionMessagesPage> _fetchStoredMessagesPage(
     String profile, {
     int limit = _transcriptPageSize,
@@ -4023,24 +4008,12 @@ class ActiveChat {
         pagination: null,
       );
     }
-    if (normalizedProfile.isEmpty || normalizedProfile == 'default') {
-      return _api.getMessagesPage(
-        serverSessionId,
-        limit: limit,
-        offset: offset,
-      );
-    }
-    final dashboard = DashboardClient.lazy(connection);
-    try {
-      return await dashboard.getSessionMessagesPage(
-        serverSessionId,
-        profile: normalizedProfile,
-        limit: limit,
-        offset: offset,
-      );
-    } finally {
-      dashboard.close();
-    }
+    return _api.getMessagesPage(
+      serverSessionId,
+      profile: normalizedProfile,
+      limit: limit,
+      offset: offset,
+    );
   }
 
   /// Actualiza el bookkeeping de la cola paginada tras cada página recibida.
@@ -9707,6 +9680,7 @@ class ActiveChat {
         input: sanitizeRemoteChatText(fullText),
         sessionId: serverSessionId,
         model: explicitRunModel(model),
+        profile: sessionProfile,
         history: history
             .map(
               (message) => <String, dynamic>{
@@ -9724,7 +9698,7 @@ class ActiveChat {
         // Su id identifica de forma inequívoca el turno viejo: detenlo y nunca lo
         // adoptes como currentRunId del epoch siguiente.
         try {
-          await _api.stopRun(runId);
+          await _api.stopRun(runId, profile: sessionProfile);
         } catch (_) {}
         return false;
       }
@@ -9741,6 +9715,7 @@ class ActiveChat {
       _armFirstTokenTimer();
       _api.streamRunEvents(
         runId,
+        profile: sessionProfile,
         onEvent: (event) {
           if (_turnEpoch == turnEpoch) _onRunEvent(event);
         },
@@ -9903,12 +9878,14 @@ class ActiveChat {
           .startRun(
             input: '/reasoning $level',
             sessionId: sessionId,
+            profile: sessionProfile,
             model: explicitRunModel(model),
             history: const [],
           )
           .then(
             (runId) => _api.streamRunEvents(
               runId,
+              profile: sessionProfile,
               onEvent: (_) {},
               onDone: () {},
               onError: (_) {},
@@ -10793,7 +10770,12 @@ class ActiveChat {
       return;
     }
     if (runId == null) return;
-    await _api.resolveRunApproval(runId, choice, requestId: approvalId);
+    await _api.resolveRunApproval(
+      runId,
+      choice,
+      requestId: approvalId,
+      profile: sessionProfile,
+    );
     await _notifications?.cancelApproval(
       connId: connection.id,
       profile: sessionProfile,
@@ -12596,12 +12578,14 @@ class ActiveChat {
       try {
         var remaining = remainingSettle();
         if (remaining <= Duration.zero) return;
-        final stopped = await _api.stopRun(runId).timeout(remaining);
+        final stopped = await _api
+            .stopRun(runId, profile: sessionProfile)
+            .timeout(remaining);
         remaining = remainingSettle();
         if (!activeChatVoiceBargeRunIsTerminal(stopped) &&
             remaining > Duration.zero) {
           await waitForActiveChatVoiceBargeTerminal(
-            readStatus: () => _api.getRun(runId),
+            readStatus: () => _api.getRun(runId, profile: sessionProfile),
             timeout: remaining,
           );
         }
@@ -12645,7 +12629,9 @@ class ActiveChat {
     final cancelProfile = _turnProfile;
     final cancelModel = _lastModel;
     if (requestServerStop && !shouldRecoverDesktopCancel && runId != null) {
-      _api.stopRun(runId).catchError((_) => <String, dynamic>{});
+      _api
+          .stopRun(runId, profile: cancelProfile)
+          .catchError((_) => <String, dynamic>{});
     }
     // Stop significa detener el trabajo completo solicitado desde el composer,
     // no solo el run que está delante. Ningún seguimiento pendiente debe

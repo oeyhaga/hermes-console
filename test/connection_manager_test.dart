@@ -1599,50 +1599,44 @@ void main() {
   });
 
   group('DashboardClient.deleteCronJob', () {
-    test(
-      'confirma global aunque el perfil responda éxito idempotente',
-      () async {
-        final calls = <Uri>[];
-        final client = DashboardClient(
-          host: 'hermes.local',
-          port: 9119,
-          manualToken: 'test-token',
-          httpClientOverride: MockClient((request) async {
-            calls.add(request.url);
-            expect(request.method, 'DELETE');
-            if (request.url.queryParameters['profile'] == 'wrong-profile') {
-              return http.Response('', 204);
-            }
-            return http.Response('', 204);
-          }),
-        );
-
-        await client.deleteCronJob('job-qa', profile: 'wrong-profile');
-
-        expect(calls, hasLength(2));
-        expect(calls.first.path, '/api/cron/jobs/job-qa');
-        expect(calls.first.queryParameters['profile'], 'wrong-profile');
-        expect(calls.last.path, '/api/cron/jobs/job-qa');
-        expect(calls.last.queryParameters, isEmpty);
-        client.close();
-      },
-    );
-
-    test('404 también global es éxito idempotente', () async {
-      var calls = 0;
+    test('named-profile deletion never also deletes default', () async {
+      final calls = <Uri>[];
       final client = DashboardClient(
         host: 'hermes.local',
         port: 9119,
         manualToken: 'test-token',
-        httpClientOverride: MockClient((_) async {
-          calls++;
+        httpClientOverride: MockClient((request) async {
+          calls.add(request.url);
+          expect(request.method, 'DELETE');
+          return http.Response('', 204);
+        }),
+      );
+
+      await client.deleteCronJob('job-qa', profile: 'work-profile');
+
+      expect(calls, hasLength(1));
+      expect(calls.single.path, '/api/cron/jobs/job-qa');
+      expect(calls.single.queryParameters['profile'], 'work-profile');
+      client.close();
+    });
+
+    test('unprofiled deletion targets only default route', () async {
+      final calls = <Uri>[];
+      final client = DashboardClient(
+        host: 'hermes.local',
+        port: 9119,
+        manualToken: 'test-token',
+        httpClientOverride: MockClient((request) async {
+          calls.add(request.url);
           return http.Response('already gone', 404);
         }),
       );
 
-      await client.deleteCronJob('job-gone', profile: 'old-profile');
+      await client.deleteCronJob('job-gone');
 
-      expect(calls, 2);
+      expect(calls, hasLength(1));
+      expect(calls.single.path, '/api/cron/jobs/job-gone');
+      expect(calls.single.queryParameters, isEmpty);
       client.close();
     });
 
@@ -1925,7 +1919,8 @@ void main() {
 
         expect(bridgeDeletes, 0);
         expect(provisions, 0);
-        expect(dashboardCalls, hasLength(2));
+        expect(dashboardCalls, hasLength(1));
+        expect(dashboardCalls.single.queryParameters['profile'], 'work_bot');
       },
     );
 
