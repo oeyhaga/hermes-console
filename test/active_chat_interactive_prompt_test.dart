@@ -1146,6 +1146,39 @@ void main() {
     },
   );
 
+  test(
+    'authoritative empty clarify snapshot clears stale card but partial does not',
+    () async {
+      final gateway = _InteractiveGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
+      gateway.emit('clarify.request', const {
+        'request_id': 'stale-snapshot-clarify',
+        'question': '¿Continuar?',
+        'choices': ['Sí', 'No'],
+      });
+      await _waitUntil(() => chat.pendingInteractivePrompt != null);
+
+      gateway.nextResumeSnapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-interactive',
+        storedSessionId: 'stored-interactive',
+        created: false,
+      );
+      await chat.loadMessages();
+      expect(chat.pendingInteractivePrompt, isNotNull);
+
+      gateway.nextResumeSnapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-interactive',
+        storedSessionId: 'stored-interactive',
+        created: false,
+        pendingClarifyProvided: true,
+      );
+      await chat.loadMessages();
+
+      expect(chat.pendingInteractivePrompt, isNull);
+    },
+  );
+
   test('ambiguous failure reconciles snapshot before allowing retry', () async {
     final gateway = _InteractiveGateway();
     final chat = await _start(gateway);

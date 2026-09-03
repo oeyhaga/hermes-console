@@ -798,6 +798,7 @@ class TuiGatewayClient
   /// Live events are parked until the replay gap is dispatched in order.
   Map<String, List<TuiGatewayEvent>>? _replayHold;
   bool _replayInFlight = false;
+  static const int _maxConcurrentReplayRequests = 4;
   String? _replayEpoch;
   String? _legacyEventRuntimeId;
   bool _legacyEventRuntimeAmbiguous = false;
@@ -1047,73 +1048,103 @@ class TuiGatewayClient
       for (final sessionId in replayFrom.keys) sessionId: <TuiGatewayEvent>[],
     };
     try {
-      for (final entry in replayFrom.entries) {
-        final result = await _requestConnected(
-          'session.events.since',
-          <String, dynamic>{'session_id': entry.key, 'last_seen': entry.value},
-          timeout: const Duration(seconds: 10),
-        );
-        final epoch = result['epoch'];
-        if (epoch is String && epoch.trim().isNotEmpty) {
-          final normalizedEpoch = epoch.trim();
-          if (_replayEpoch != null && _replayEpoch != normalizedEpoch) {
-            _adoptReplayEpoch(normalizedEpoch);
-            // Sequence values from a prior Gateway process are incomparable.
-            // session.resume immediately following reconnect is the durable
-            // recovery authority for that session.
-            continue;
-          }
-          _adoptReplayEpoch(normalizedEpoch);
-        }
-        if (result['truncated'] == true) {
-          // A bounded replay cannot prove that the retained tail follows the
-          // last delivered event. Drop both it and held live frames; the caller
-          // must obtain the authoritative session.resume/history backfill.
-          _lastSeenSequence.remove(entry.key);
-          _replayQuarantinedSessions.add(entry.key);
-          _replayHold?.remove(entry.key);
-          continue;
-        }
-        final rawEvents = result['events'];
-        if (rawEvents is List) {
-          final replayEvents = <TuiGatewayEvent>[];
-          for (final rawEvent in rawEvents) {
-            if (rawEvent is! Map) continue;
-            final event = _eventFromReplay(
-              Map<String, dynamic>.from(rawEvent),
-              fallbackSessionId: entry.key,
+      final entries = replayFrom.entries.toList(growable: false);
+      var nextEntry = 0;
+      Future<void> replayWorker() async {
+        while (nextEntry < entries.length) {
+          final entry = entries[nextEntry++];
+          try {
+            final result = await _requestConnected(
+              'session.events.since',
+              <String, dynamic>{
+                'session_id': entry.key,
+                'last_seen': entry.value,
+              },
+              timeout: const Duration(seconds: 10),
             );
-            if (event != null) replayEvents.add(event);
-          }
-          // Keep the server's relative order for legacy/unsequenced frames, but
-          // never let one of them break ordering of the valid monotonic stream.
-          final sequenced =
-              replayEvents.where((event) => event.sequence != null).toList()
-                ..sort(
-                  (left, right) => left.sequence!.compareTo(right.sequence!),
-                );
-          final unsequenced = replayEvents
-              .where((event) => event.sequence == null)
-              .toList();
-          for (final event in [...sequenced, ...unsequenced]) {
-            _dispatchIfNewer(event);
+            final rawEpoch = result['epoch'];
+            final truncated = result['truncated'];
+            final rawEvents = result['events'];
+            if (rawEpoch is! String ||
+                rawEpoch.trim().isEmpty ||
+                truncated is! bool ||
+                rawEvents is! List ||
+                _replayEpoch == null ||
+                _replayEpoch != rawEpoch.trim() ||
+                _replayQuarantinedSessions.contains(entry.key) ||
+                _replayHold?.containsKey(entry.key) != true) {
+              _quarantineReplay(entry.key);
+              continue;
+            }
+            if (truncated) {
+              // A bounded replay cannot prove that the retained tail follows the
+              // last delivered event. Drop both it and held live frames; the caller
+              // must obtain the authoritative session.resume/history backfill.
+              _quarantineReplay(entry.key);
+              continue;
+            }
+            final replayEvents = <TuiGatewayEvent>[];
+            for (final rawEvent in rawEvents) {
+              if (rawEvent is! Map) continue;
+              final event = _eventFromReplay(
+                Map<String, dynamic>.from(rawEvent),
+                fallbackSessionId: entry.key,
+              );
+              if (event != null) replayEvents.add(event);
+            }
+            // Keep the server's relative order for legacy/unsequenced frames, but
+            // never let one of them break ordering of the valid monotonic stream.
+            final sequenced =
+                replayEvents.where((event) => event.sequence != null).toList()
+                  ..sort(
+                    (left, right) =>
+                        left.sequence!.compareTo(right.sequence!),
+                  );
+            final unsequenced = replayEvents
+                .where((event) => event.sequence == null)
+                .toList();
+            for (final event in [...sequenced, ...unsequenced]) {
+              _dispatchIfNewer(event);
+            }
+            _releaseReplayHold(entry.key);
+          } catch (_) {
+            // Recovery is isolated per runtime: one failed request must neither
+            // release unproven live frames nor abandon later watermarks.
+            _quarantineReplay(entry.key);
           }
         }
       }
-    } catch (_) {
-      // A replay request is transport recovery, not a second terminal state.
-      // ActiveChat will resume the durable session after connect() returns.
+
+      await Future.wait(
+        List<Future<void>>.generate(
+          entries.length.clamp(0, _maxConcurrentReplayRequests),
+          (_) => replayWorker(),
+        ),
+      );
     } finally {
       final held = _replayHold;
       _replayHold = null;
       _replayInFlight = false;
       if (held != null) {
-        for (final events in held.values) {
-          for (final event in events) {
-            _dispatchIfNewer(event);
-          }
+        for (final sessionId in held.keys) {
+          _lastSeenSequence.remove(sessionId);
+          _replayQuarantinedSessions.add(sessionId);
         }
       }
+    }
+  }
+
+  void _quarantineReplay(String sessionId) {
+    _lastSeenSequence.remove(sessionId);
+    _replayQuarantinedSessions.add(sessionId);
+    _replayHold?.remove(sessionId);
+  }
+
+  void _releaseReplayHold(String sessionId) {
+    final events = _replayHold?.remove(sessionId);
+    if (events == null) return;
+    for (final event in events) {
+      _dispatchIfNewer(event);
     }
   }
 
@@ -1158,7 +1189,14 @@ class TuiGatewayClient
 
   void _adoptReplayEpoch(String epoch) {
     if (_replayEpoch == epoch) return;
-    if (_replayEpoch != null) _lastSeenSequence.clear();
+    if (_replayEpoch != null) {
+      // A process-wide epoch change invalidates every prior per-session
+      // sequence. Snapshot recovery, not a racing replay response, must release
+      // those runtimes again.
+      for (final sessionId in _lastSeenSequence.keys.toList(growable: false)) {
+        _quarantineReplay(sessionId);
+      }
+    }
     _replayEpoch = epoch;
   }
 
