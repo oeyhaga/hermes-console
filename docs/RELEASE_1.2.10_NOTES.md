@@ -1,12 +1,28 @@
-# Hermes Console 1.2.10 — notas de publicación (candidata)
+# Hermes Console 1.2.10 — notas de publicación
 
-Candidate interno: `1.2.10+9004` (no distribuido).
-
-> No distribuir ni presentar como release pública hasta cerrar la matriz E2E en
-> emulador y Hermes Desktop, firmar los artefactos exactos y aprobar
-> explícitamente la publicación.
+Build publicado: `1.2.10+9008` (2026-09-14). Validado en Pixel 9 Pro contra
+Hermes Agent `main` (contrato v7): clarify/aprobaciones de extremo a extremo,
+espera de más de dos minutos sin falso `firstTokenTimeout`, y recuperación de un
+turno con la terminal tras un cambio de red a mitad de ejecución.
 
 ## Cambios frente a 1.2.9
+
+- Console habla el contrato v7 de Hermes Agent: aprobaciones, clarify, sudo,
+  secretos y lecturas de terminal llegan como peticiones JSON-RPC
+  servidor→cliente y se responden por el mismo socket; los lotes de clarify
+  bloquean respuesta a respuesta (`clarify.lock`), `request.cancel` retira la
+  tarjeta y `open_requests` reentrega las preguntas pendientes tras reconectar.
+  Un backend que aún emite los eventos `*.request` heredados sigue funcionando.
+- Un corte de socket a mitad de turno contra un gateway sin
+  `turn_idempotency_v1` (el oficial) reanuda la sesión viva y adopta el turno en
+  vuelo en vez de fallar de inmediato.
+- Desaparece el falso «Modelo sin respuesta» mientras el agente espera una
+  respuesta humana: los eventos de vida del servidor ya no rearman el vigilante
+  de 90 s bajo una tarjeta pendiente.
+- «Reintentar» sobre un turno fallido siempre actúa: reconcilia con el
+  transcript durable y, si el servidor no tiene el turno, lo reenvía.
+- La tarjeta de clarify/sudo/secreto sube como hoja compacta sobre el chat, con
+  opciones en filas anchas, etiqueta «Recomendado» y campo «Otro» integrado.
 
 - La lista de sesiones muestra una proyección global y acotada de actividad
   iniciada en Desktop u otra Console. Reconcilia el roster activo, la lista

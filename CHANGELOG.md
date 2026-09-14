@@ -3,7 +3,7 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.10 (9008) — candidate, not distributed
+## 1.2.10 (9008) — 2026-09-14
 
 - "Reintentar" on a failed turn always does something: it first reconciles
   with the durable transcript and, when the server has no evidence of the
