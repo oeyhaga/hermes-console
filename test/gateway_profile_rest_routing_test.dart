@@ -104,6 +104,7 @@ void main() {
     expect(requested.path, '/p/team_alpha/api/sessions');
     expect(requested.queryParameters, {
       'limit': '200',
+      'offset': '0',
       'include_children': 'true',
     });
     client.close();

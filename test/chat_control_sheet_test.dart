@@ -17,6 +17,8 @@ const _labels = ChatControlLabels(
   cron: 'Schedule',
   delete: 'Delete conversation',
   readOnly: 'Read only',
+  releaseDesktop: 'Release for Desktop',
+  releaseUnavailable: 'Viewer cardinality unavailable',
 );
 
 Widget _app({
@@ -24,6 +26,10 @@ Widget _app({
   bool showDelete = true,
   VoidCallback? onDelete,
   VoidCallback? onArtifacts,
+  bool showRelease = false,
+  bool releaseEnabled = false,
+  bool releaseInFlight = false,
+  VoidCallback? onRelease,
 }) => MaterialApp(
   theme: AppTheme.hermesRedDark,
   home: Scaffold(
@@ -39,6 +45,10 @@ Widget _app({
       onDetails: () {},
       onCron: () {},
       onDelete: showDelete ? onDelete ?? () {} : null,
+      showReleaseDesktop: showRelease,
+      releaseDesktopEnabled: releaseEnabled,
+      releaseInFlight: releaseInFlight,
+      onReleaseDesktop: onRelease,
     ),
   ),
 );
@@ -96,6 +106,31 @@ void main() {
     expect(find.byKey(const ValueKey('chat-control-delete')), findsNothing);
   });
 
+  testWidgets('release habilitado ejecuta callback y expone progreso estable', (
+    tester,
+  ) async {
+    var released = false;
+    await tester.pumpWidget(
+      _app(
+        showRelease: true,
+        releaseEnabled: true,
+        onRelease: () => released = true,
+      ),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('chat-control-release-desktop')),
+    );
+    expect(released, isTrue);
+
+    await tester.pumpWidget(
+      _app(showRelease: true, releaseEnabled: false, releaseInFlight: true),
+    );
+    expect(
+      find.byKey(const ValueKey('chat-runtime-release-progress')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('floating menu stays bounded and scrollable at 2x text', (
     tester,
   ) async {
@@ -108,9 +143,8 @@ void main() {
       MaterialApp(
         theme: AppTheme.hermesRedDark,
         builder: (context, child) => MediaQuery(
-          data: MediaQuery.of(
-            context,
-          ).copyWith(textScaler: const TextScaler.linear(2)),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: const TextScaler.linear(2)),
           child: child!,
         ),
         home: Builder(

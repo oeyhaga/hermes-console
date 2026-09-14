@@ -9,7 +9,6 @@ void main() {
       'kanban',
       'subagent',
       'tool',
-      'api_server',
       'acp',
       'hermes_flow',
       'vulcan_delegate',
@@ -45,6 +44,12 @@ void main() {
     expect(SessionCategory.automation.sources, AutomationSessionSources.values);
     expect(SessionCategory.all.sources, isEmpty);
     expect(SessionCategory.all.excludeSources, isEmpty);
+    expect(
+      SessionCategory.chats.includesSource('api_server'),
+      isTrue,
+      reason: 'API es un transporte de chat, no una automatización',
+    );
+    expect(SessionCategory.automation.includesSource('api_server'), isFalse);
   });
 
   test('Session parsea lineage, perfil, rama, archivo y handoff 0.19', () {

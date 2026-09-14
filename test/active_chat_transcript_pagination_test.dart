@@ -3,19 +3,29 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/models/core_read.dart';
+import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
+import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
+import 'package:hermes_android/core/services/subagent_transcript_projection.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'support/in_memory_compression_fence_storage.dart';
+
 /// Fake del canal Desktop que graba los flags de `session.resume` y permite
 /// emitir eventos `session.resume_progress` como haría Hermes Agent 0.20.
 class _DeferrableGateway
-    implements HermesDesktopGateway, HermesDesktopSessionLifecycleGateway {
+    implements
+        HermesDesktopGateway,
+        HermesDesktopSessionLifecycleGateway,
+        HermesDesktopSubagentGateway {
   final StreamController<TuiGatewayEvent> _events =
       StreamController<TuiGatewayEvent>.broadcast();
   DesktopSessionSnapshot? snapshot;
@@ -25,6 +35,11 @@ class _DeferrableGateway
   int resumeExistingCalls = 0;
   bool? lastDeferHistory;
   bool? lastOmitMessages;
+  final List<({String runtimeId, String subagentId})> subagentTailCalls = [];
+  final List<({String runtimeId, String subagentId, String text})>
+  subagentSteerCalls = [];
+  final List<({String runtimeId, String subagentId})> subagentInterruptCalls =
+      [];
 
   @override
   Stream<TuiGatewayEvent> get events => _events.stream;
@@ -73,6 +88,64 @@ class _DeferrableGateway
 
   @override
   Future<void> interrupt(String runtimeSessionId) async {}
+
+  @override
+  DesktopGatewayCapabilityState capabilityState(
+    DesktopGatewayCapability capability,
+  ) => DesktopGatewayCapabilityState.supported;
+
+  @override
+  Future<List<DesktopSubagentSnapshot>> listSubagents(
+    String runtimeSessionId,
+  ) async => const [];
+
+  @override
+  Future<DesktopSubagentTailResult> tailSubagent(
+    String runtimeSessionId,
+    String subagentId,
+  ) async {
+    subagentTailCalls.add((
+      runtimeId: runtimeSessionId,
+      subagentId: subagentId,
+    ));
+    return const DesktopSubagentTailResult(
+      available: true,
+      content: 'coherent live tail',
+      truncated: false,
+    );
+  }
+
+  @override
+  Future<DesktopSubagentSteerResult> steerSubagent(
+    String runtimeSessionId,
+    String subagentId,
+    String text,
+  ) async {
+    subagentSteerCalls.add((
+      runtimeId: runtimeSessionId,
+      subagentId: subagentId,
+      text: text,
+    ));
+    return DesktopSubagentSteerResult(
+      status: 'queued',
+      subagentId: subagentId,
+      text: text,
+    );
+  }
+
+  @override
+  Future<DesktopSubagentInterruptResult> interruptSubagent(
+    String runtimeSessionId,
+    String subagentId,
+  ) {
+    subagentInterruptCalls.add((
+      runtimeId: runtimeSessionId,
+      subagentId: subagentId,
+    ));
+    return Future.value(
+      DesktopSubagentInterruptResult(found: true, subagentId: subagentId),
+    );
+  }
 
   @override
   Future<void> resolveApproval(
@@ -168,6 +241,52 @@ class _TranscriptServer {
   });
 }
 
+class _CompactedTranscriptServer {
+  final List<Map<String, dynamic>> activeRows;
+  final List<Map<String, dynamic>> compactedRows;
+  final List<Uri> requests = [];
+
+  _CompactedTranscriptServer({
+    required this.activeRows,
+    required this.compactedRows,
+  });
+
+  http.Client client() => MockClient((request) async {
+    requests.add(request.url);
+    final includeCompacted =
+        request.url.queryParameters['include_compacted'] == 'true';
+    final source = <Map<String, dynamic>>[
+      if (includeCompacted) ...compactedRows,
+      ...activeRows,
+    ];
+    final seen = <Object?>{};
+    final canonical = source
+        .where((row) => seen.add(row['message_id'] ?? row['id']))
+        .toList(growable: false);
+    final limit = int.parse(request.url.queryParameters['limit'] ?? '120');
+    final offset = int.parse(request.url.queryParameters['offset'] ?? '0');
+    final end = math.max(0, canonical.length - offset);
+    final start = math.max(0, end - limit);
+    final page = canonical.sublist(start, end);
+    return http.Response(
+      jsonEncode({
+        'object': 'list',
+        'session_id': 'stored-chat',
+        'messages': page,
+        'data': page,
+        'pagination': {
+          'limit': limit,
+          'offset': offset,
+          'order': 'latest',
+          'returned': page.length,
+        },
+      }),
+      200,
+      headers: {'content-type': 'application/json'},
+    );
+  });
+}
+
 class _OutOfOrderTranscriptServer {
   final requests = <({Uri url, Completer<http.Response> response})>[];
 
@@ -211,6 +330,70 @@ class _OutOfOrderTranscriptServer {
   }
 }
 
+class _ControlledTranscriptServer {
+  final requests = <({Uri url, Completer<http.Response> response})>[];
+
+  http.Client client() => MockClient((request) {
+    if (!request.url.path.endsWith('/messages')) {
+      return Future.value(
+        http.Response(
+          jsonEncode(const <String, Object?>{}),
+          200,
+          headers: const {'content-type': 'application/json'},
+        ),
+      );
+    }
+    final response = Completer<http.Response>();
+    requests.add((url: request.url, response: response));
+    return response.future;
+  });
+
+  Future<void> waitForRequests(int count) async {
+    while (requests.length < count) {
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
+  void completePage(
+    int index,
+    List<Object?> rows, {
+    Object? pagination,
+    bool paginationProvided = true,
+    String resolvedSessionId = 'stored-chat',
+  }) {
+    final requestedLimit = int.parse(
+      requests[index].url.queryParameters['limit'] ?? '120',
+    );
+    final requestedOffset = int.parse(
+      requests[index].url.queryParameters['offset'] ?? '0',
+    );
+    requests[index].response.complete(
+      http.Response(
+        jsonEncode({
+          'object': 'list',
+          'session_id': resolvedSessionId,
+          'messages': rows,
+          if (paginationProvided)
+            'pagination':
+                pagination ??
+                {
+                  'limit': requestedLimit,
+                  'offset': requestedOffset,
+                  'order': 'latest',
+                  'returned': rows.length,
+                },
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      ),
+    );
+  }
+
+  void completeError(int index) {
+    requests[index].response.complete(http.Response('unavailable', 503));
+  }
+}
+
 List<Map<String, dynamic>> _rows(int count, {int from = 1}) => [
   for (var index = from; index < from + count; index++)
     {
@@ -234,13 +417,20 @@ ActiveChat _chat(
   String id,
   http.Client client, {
   String sessionId = 'stored-chat',
+  String? logicalSessionId,
+  String? initialStoredSessionId,
   _DeferrableGateway? gateway,
   List<CancelledTurnTombstone> initialCancelledTurnTombstones = const [],
   Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
   void Function()? onTerminal,
+  DesktopCompressionFenceStore? compressionFenceStore,
+  int transcriptPageSizeForTesting = 120,
 }) => ActiveChat(
+  compressionFenceStore: compressionFenceStore ?? testCompressionFenceStore(),
+  transcriptPageSizeForTesting: transcriptPageSizeForTesting,
   connection: _connection(id),
   sessionId: sessionId,
+  logicalSessionId: logicalSessionId,
   sessionTitle: 'Paginación',
   notifications: null,
   onTerminal: onTerminal ?? () {},
@@ -250,6 +440,8 @@ ActiveChat _chat(
     httpClient: client,
   ),
   desktopGateway: gateway,
+  initialStoredSessionId: initialStoredSessionId,
+  allowUnownedDesktopSnapshotForTesting: true,
   initialCancelledTurnTombstones: initialCancelledTurnTombstones,
   onCancelledTurn: onCancelledTurn,
 );
@@ -265,6 +457,509 @@ List<Map<String, dynamic>> _generatedImageRefs(Map<String, dynamic> message) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('passive activity request is fenced by every authority coordinate', () {
+    const baseline = (
+      stored: 'stored-a',
+      runtime: null,
+      turn: 4,
+      bind: 7,
+      session: 9,
+      request: 2,
+    );
+    bool current({
+      String stored = 'stored-a',
+      String? runtime,
+      int turn = 4,
+      int bind = 7,
+      int session = 9,
+      int request = 2,
+    }) => activeChatPassiveActivityRequestStillCurrent(
+      expectedStoredSessionId: baseline.stored,
+      currentStoredSessionId: stored,
+      expectedRuntimeSessionId: baseline.runtime,
+      currentRuntimeSessionId: runtime,
+      expectedTurnEpoch: baseline.turn,
+      currentTurnEpoch: turn,
+      expectedBindEpoch: baseline.bind,
+      currentBindEpoch: bind,
+      expectedSessionEpoch: baseline.session,
+      currentSessionEpoch: session,
+      expectedRequestGeneration: baseline.request,
+      currentRequestGeneration: request,
+    );
+
+    expect(current(), isTrue);
+    expect(current(stored: 'stored-b'), isFalse);
+    expect(current(runtime: 'runtime-new'), isFalse);
+    expect(current(turn: 5), isFalse);
+    expect(current(bind: 8), isFalse);
+    expect(current(session: 10), isFalse);
+    expect(current(request: 3), isFalse);
+  });
+
+  test(
+    '[console-state 5/7] active_list is tri-state and only unique idle drains',
+    () {
+      const idle = DesktopActiveSession(
+        runtimeSessionId: 'runtime-idle',
+        storedSessionId: 'stored-a',
+        status: 'idle',
+      );
+      const working = DesktopActiveSession(
+        runtimeSessionId: 'runtime-working',
+        storedSessionId: 'stored-a',
+        status: 'working',
+      );
+      const unknown = DesktopActiveSession(
+        runtimeSessionId: 'runtime-unknown',
+        storedSessionId: 'stored-a',
+        status: 'future-state',
+      );
+      const missing = DesktopActiveSession(
+        runtimeSessionId: 'runtime-missing',
+        storedSessionId: 'stored-a',
+      );
+      const pending = DesktopActiveSession(
+        runtimeSessionId: 'runtime-pending',
+        storedSessionId: 'stored-a',
+        status: 'pending',
+      );
+      const error = DesktopActiveSession(
+        runtimeSessionId: 'runtime-error',
+        storedSessionId: 'stored-a',
+        status: 'error',
+      );
+
+      final matrix =
+          <(List<DesktopActiveSession>, DesktopPassiveActivityState)>[
+            (const [], DesktopPassiveActivityState.idle),
+            (const [idle], DesktopPassiveActivityState.idle),
+            (const [working], DesktopPassiveActivityState.busy),
+            (const [idle, idle], DesktopPassiveActivityState.unknown),
+            (const [pending], DesktopPassiveActivityState.unknown),
+            (const [error], DesktopPassiveActivityState.unknown),
+            (const [idle, working], DesktopPassiveActivityState.unknown),
+            (const [idle, unknown], DesktopPassiveActivityState.unknown),
+            (const [idle, missing], DesktopPassiveActivityState.unknown),
+          ];
+      for (final (rows, expected) in matrix) {
+        expect(activeChatPassiveRowsState(rows), expected, reason: '$rows');
+      }
+      final malformed = DesktopActiveSessionList.fromJson(const {
+        'sessions': [
+          {'status': 'idle'},
+        ],
+      });
+      expect(
+        activeChatPassiveRowsState(
+          malformed.sessions,
+          hasMalformedRows: malformed.hasMalformedRows,
+        ),
+        DesktopPassiveActivityState.unknown,
+      );
+    },
+  );
+
+  test(
+    'compacted display survives once and mixed page coverage fails closed',
+    () async {
+      final compacted = <Map<String, dynamic>>[
+        const {
+          'id': 'old-user',
+          'message_id': 'old-user',
+          'role': 'user',
+          'content': 'Como va?',
+          'active': 0,
+          'compacted': 1,
+        },
+        const {
+          'id': 'old-assistant',
+          'message_id': 'old-assistant',
+          'role': 'assistant',
+          'content': 'earlier answer',
+          'active': 0,
+          'compacted': 1,
+        },
+        ..._rows(120, from: 1000),
+      ];
+      final active = <Map<String, dynamic>>[
+        const {
+          'id': 'summary',
+          'message_id': 'summary',
+          'role': 'system',
+          'content': 'summary',
+        },
+        const {
+          'id': 'current-user',
+          'message_id': 'current-user',
+          'role': 'user',
+          'content': 'Todavía?',
+        },
+        const {
+          'id': 'current-assistant',
+          'message_id': 'current-assistant',
+          'role': 'assistant',
+          'content': 'GO',
+        },
+      ];
+      final server = _CompactedTranscriptServer(
+        activeRows: active,
+        compactedRows: compacted,
+      );
+      final chat = _chat('compacted-pagination', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: active.length);
+
+      expect(
+        server.requests.single.queryParameters['include_compacted'],
+        'true',
+      );
+      expect(chat.messages.any((row) => row['content'] == 'Todavía?'), isTrue);
+      expect(chat.messages.any((row) => row['content'] == 'GO'), isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(chat.coreReadLineageComplete, isFalse);
+
+      while (chat.hasEarlierMessages) {
+        await chat.loadEarlierMessages();
+      }
+
+      final identities = chat.messages
+          .map(canonicalTranscriptMessageId)
+          .toList(growable: false);
+      expect(chat.messages.any((row) => row['content'] == 'Como va?'), isTrue);
+      expect(identities, hasLength(compacted.length + active.length - 1));
+      expect(identities.toSet(), hasLength(identities.length));
+      expect(identities.first, 'current-assistant');
+      expect(identities.last, 'old-user');
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.coreReadCoverage, {
+        CoreReadCoverage.full,
+        CoreReadCoverage.tipOnly,
+        CoreReadCoverage.metadataPartial,
+      });
+    },
+  );
+
+  test(
+    'authoritative compacted REST walks 500-row pages until returned is short',
+    () async {
+      final compacted = [
+        for (final row in _rows(1000))
+          <String, dynamic>{...row, 'active': 0, 'compacted': 1},
+      ];
+      final active = _rows(1, from: 1001);
+      final server = _CompactedTranscriptServer(
+        activeRows: active,
+        compactedRows: compacted,
+      );
+      final chat = _chat(
+        'compacted-500-pages',
+        server.client(),
+        transcriptPageSizeForTesting: 500,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 1001);
+      while (chat.hasEarlierMessages) {
+        expect(await chat.loadEarlierMessages(), isTrue);
+      }
+
+      expect(server.requests, hasLength(3));
+      expect(
+        server.requests.map((uri) => uri.queryParameters['limit']),
+        everyElement('500'),
+      );
+      expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+        '0',
+        '500',
+        '1000',
+      ]);
+      expect(
+        server.requests.map((uri) => uri.queryParameters['include_compacted']),
+        everyElement('true'),
+      );
+      expect(
+        server.requests.every(
+          (uri) => !uri.queryParameters.containsKey('total'),
+        ),
+        isTrue,
+      );
+      expect(chat.messages, hasLength(1001));
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
+  test(
+    'direct rotated descendant compacted rows keep lineage coverage partial',
+    () async {
+      final client = MockClient(
+        (request) async => http.Response(
+          jsonEncode({
+            'object': 'list',
+            'session_id': 'rotated-tip',
+            'messages': const [
+              {
+                'id': 'tip-compacted',
+                'message_id': 'tip-compacted',
+                'role': 'user',
+                'content': 'tip-only compacted row',
+                'active': 0,
+                'compacted': 1,
+              },
+            ],
+            'pagination': const {
+              'limit': 120,
+              'offset': 0,
+              'order': 'latest',
+              'returned': 1,
+            },
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        ),
+      );
+      final chat = _chat(
+        'direct-rotated-descendant',
+        client,
+        sessionId: 'rotated-tip',
+        logicalSessionId: 'lineage-root',
+        initialStoredSessionId: 'rotated-tip',
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 1);
+
+      expect(chat.coreReadIdentity.logicalRootId, 'lineage-root');
+      expect(chat.coreReadIdentity.storedId, 'rotated-tip');
+      expect(chat.coreReadIdentity.resolvedTipId, 'rotated-tip');
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.coreReadCoverageIsPartial, isTrue);
+    },
+  );
+
+  test(
+    'carga inicial salta paginas internas hasta hallar conversacion visible',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll(const [
+          {
+            'id': 'older-user',
+            'message_id': 'older-user',
+            'role': 'user',
+            'content': 'Pregunta visible anterior',
+          },
+          {
+            'id': 'older-assistant',
+            'message_id': 'older-assistant',
+            'role': 'assistant',
+            'content': 'Respuesta visible anterior',
+          },
+        ])
+        ..rows.addAll([
+          for (var i = 0; i < 60; i++) ...[
+            {
+              'id': 'assistant-tool-$i',
+              'message_id': 'assistant-tool-$i',
+              'role': 'assistant',
+              'content': null,
+              'tool_calls': [
+                {
+                  'id': 'call-$i',
+                  'type': 'function',
+                  'function': {'name': 'execute_code', 'arguments': '{}'},
+                },
+              ],
+            },
+            {
+              'id': 'tool-result-$i',
+              'message_id': 'tool-result-$i',
+              'role': 'tool',
+              'tool_call_id': 'call-$i',
+              'content': 'resultado interno',
+            },
+          ],
+        ]);
+      final chat = _chat('editorially-empty-tail', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 122);
+
+      expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+        '0',
+        '120',
+      ]);
+      expect(
+        chat.messages.any(
+          (row) => row['content'] == 'Pregunta visible anterior',
+        ),
+        isTrue,
+      );
+      expect(
+        chat.messages.any(
+          (row) => row['content'] == 'Respuesta visible anterior',
+        ),
+        isTrue,
+      );
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
+  test(
+    'el presupuesto de backfill automatico no se reinicia en cada refresh',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          {
+            'id': 'older-user',
+            'message_id': 'older-user',
+            'role': 'user',
+            'content': 'Pregunta visible anterior',
+          },
+          {
+            'id': 'older-assistant',
+            'message_id': 'older-assistant',
+            'role': 'assistant',
+            'content': 'Respuesta visible anterior',
+          },
+          for (var i = 0; i < 7800; i++)
+            {
+              'id': 'internal-$i',
+              'message_id': 'internal-$i',
+              'role': 'system',
+              'content': 'interno $i',
+            },
+        ]);
+      final chat = _chat('bounded-editorially-empty-tail', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 7802);
+      expect(server.requests.length, 65);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      await chat.loadMessages(expectedMessageCount: 7802, passiveOnly: true);
+
+      expect(server.requests.length, 66);
+      expect(server.requests.last.queryParameters['offset'], '0');
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
+
+  test('respuesta tardia de backfill no altera su señal de error', () async {
+    final server = _ControlledTranscriptServer();
+    final chat = _chat('stale-backfill-error-state', server.client());
+    addTearDown(chat.dispose);
+
+    final initial = chat.loadMessages(expectedMessageCount: 480);
+    await server.waitForRequests(1);
+    server.completePage(0, _rows(120, from: 361));
+    await initial;
+    expect(chat.hasEarlierMessages, isTrue);
+    expect(chat.earlierMessagesLoadFailed, isFalse);
+
+    final failed = chat.loadEarlierMessages();
+    await server.waitForRequests(2);
+    server.completeError(1);
+    expect(await failed, isFalse);
+    expect(chat.earlierMessagesLoadFailed, isTrue);
+
+    final staleSuccess = chat.loadEarlierMessages();
+    await server.waitForRequests(3);
+    chat.invalidatePassiveRead();
+    server.completePage(2, _rows(120, from: 241));
+    expect(await staleSuccess, isFalse);
+    expect(chat.earlierMessagesLoadFailed, isTrue);
+
+    final freshSuccess = chat.loadEarlierMessages();
+    await server.waitForRequests(4);
+    server.completePage(3, _rows(120, from: 241));
+    expect(await freshSuccess, isTrue);
+    expect(chat.earlierMessagesLoadFailed, isFalse);
+
+    final staleFailure = chat.loadEarlierMessages();
+    await server.waitForRequests(5);
+    chat.invalidatePassiveRead();
+    server.completeError(4);
+    expect(await staleFailure, isFalse);
+    expect(chat.earlierMessagesLoadFailed, isFalse);
+  });
+
+  test(
+    'reapertura elimina una generacion user retirada sin deduplicar por texto',
+    () async {
+      Map<String, dynamic> assistantToolRow(String generation, int index) => {
+        'id': '$generation-assistant-$index',
+        'message_id': '$generation-assistant-$index',
+        'role': 'assistant',
+        'content': null,
+        'tool_calls': [
+          {
+            'id': '$generation-call-$index',
+            'type': 'function',
+            'function': {'name': 'execute_code', 'arguments': '{}'},
+          },
+        ],
+      };
+
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          for (var i = 0; i < 108; i++) assistantToolRow('old', i),
+          for (var i = 0; i < 11; i++)
+            {
+              'id': 'old-visible-$i',
+              'message_id': 'old-visible-$i',
+              'role': 'user',
+              'content': 'Turno visible viejo $i',
+            },
+          const {
+            'id': 'old-user-generation',
+            'message_id': 'old-user-generation',
+            'role': 'user',
+            'content': 'El mismo prompt humano',
+          },
+        ]);
+      final chat = _chat('generation-replacement', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 120);
+      expect(
+        chat.messages.where(
+          (row) => row['content'] == 'El mismo prompt humano',
+        ),
+        hasLength(1),
+      );
+
+      server.rows
+        ..clear()
+        ..addAll([
+          for (var i = 0; i < 240; i++) assistantToolRow('new', i),
+          const {
+            'id': 'new-user-generation',
+            'message_id': 'new-user-generation',
+            'role': 'user',
+            'content': 'El mismo prompt humano',
+          },
+        ]);
+
+      await chat.loadMessages(expectedMessageCount: 241);
+
+      expect(
+        chat.messages.where(
+          (row) => row['content'] == 'El mismo prompt humano',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'new-user-generation'),
+        isTrue,
+      );
+      expect(
+        chat.messages.any((row) => row['message_id'] == 'old-user-generation'),
+        isFalse,
+      );
+    },
+  );
 
   test('hidrata solo la cola paginada y antepone páginas anteriores', () async {
     final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
@@ -285,6 +980,16 @@ void main() {
     expect(server.requests.single.queryParameters['limit'], '120');
     expect(server.requests.single.queryParameters['order'], 'latest');
     expect(server.requests.single.queryParameters['offset'], '0');
+    expect(chat.coreReadIdentity.storedId, 'stored-chat');
+    expect(chat.coreReadIdentity.resolvedTipId, 'stored-chat');
+    expect(chat.coreReadIdentity.runtimeId, isNull);
+    expect(
+      chat.coreReadCoverage.map((value) => value.toString()),
+      containsAll([
+        'CoreReadCoverage.tipOnly',
+        'CoreReadCoverage.metadataPartial',
+      ]),
+    );
 
     expect(await chat.loadEarlierMessages(), isTrue);
     expect(chat.messages, hasLength(240));
@@ -303,6 +1008,276 @@ void main() {
       hasLength(2),
     );
   });
+
+  test('un gesto atraviesa paginas anteriores editorialmente vacias', () async {
+    final server = _TranscriptServer(paginate: true)
+      ..rows.addAll([
+        ..._rows(2),
+        for (var index = 0; index < 120; index++)
+          {
+            'id': 'internal-$index',
+            'message_id': 'internal-$index',
+            'role': 'system',
+            'content': 'interno $index',
+          },
+        ..._rows(120, from: 1000),
+      ]);
+    final chat = _chat('scroll-empty-page', server.client());
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(expectedMessageCount: 242);
+    expect(server.requests.map((uri) => uri.queryParameters['offset']), ['0']);
+
+    expect(await chat.loadEarlierMessages(continuePastInvisible: true), isTrue);
+
+    expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+      '0',
+      '120',
+      '240',
+    ]);
+    expect(
+      chat.messages.any((message) => message['content'] == 'msg 1'),
+      isTrue,
+    );
+    expect(
+      chat.messages.any((message) => message['content'] == 'msg 2'),
+      isTrue,
+    );
+  });
+
+  test('un gesto atraviesa una pagina de delegaciones omitidas', () async {
+    final server = _TranscriptServer(paginate: true)
+      ..rows.addAll([
+        ..._rows(2),
+        for (var index = 0; index < 120; index++)
+          {
+            'id': 'delegate-$index',
+            'message_id': 'delegate-$index',
+            'role': 'assistant',
+            'content': 'delegación interna $index',
+            'tool_calls': [
+              {
+                'id': 'delegate-call-$index',
+                'function': {'name': 'delegate_task'},
+              },
+            ],
+          },
+        ..._rows(120, from: 1000),
+      ]);
+    final chat = _chat('scroll-delegate-page', server.client());
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(expectedMessageCount: 242);
+    expect(await chat.loadEarlierMessages(continuePastInvisible: true), isTrue);
+
+    expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+      '0',
+      '120',
+      '240',
+    ]);
+    expect(
+      chat.messages.any((message) => message['content'] == 'msg 1'),
+      isTrue,
+    );
+  });
+
+  test(
+    'un gesto atraviesa delegacion privada y editorial con cursor raw',
+    () async {
+      final omitted = <Map<String, dynamic>>[
+        for (var index = 0; index < 40; index++)
+          {
+            'id': 'hidden-$index',
+            'message_id': 'hidden-$index',
+            'role': 'user',
+            'content': 'editorial privado $index',
+            'display_kind': 'hidden',
+          },
+        for (var index = 0; index < 40; index++)
+          {
+            'id': 'private-$index',
+            'message_id': 'private-$index',
+            'role': 'assistant',
+            'content': '',
+            'reasoning': 'razonamiento privado $index',
+          },
+        for (var index = 0; index < 40; index++)
+          {
+            'id': 'delegate-mixed-$index',
+            'message_id': 'delegate-mixed-$index',
+            'role': 'assistant',
+            'content': 'delegación omitida $index',
+            'tool_calls': [
+              {
+                'id': 'delegate-mixed-call-$index',
+                'function': {'name': 'delegate_task'},
+              },
+            ],
+          },
+      ];
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([..._rows(2), ...omitted, ..._rows(120, from: 1000)]);
+      final chat = _chat('mixed-omitted-page', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 242);
+      expect(
+        await chat.loadEarlierMessages(continuePastInvisible: true),
+        isTrue,
+      );
+
+      expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+        '0',
+        '120',
+        '240',
+      ]);
+      expect(chat.messages.any((row) => row['content'] == 'msg 1'), isTrue);
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
+
+  test(
+    'un gesto termina tras una pagina omitida y un final realmente vacio',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          for (var index = 0; index < 120; index++)
+            {
+              'id': 'empty-control-$index',
+              'message_id': 'empty-control-$index',
+              'role': 'user',
+              'content': 'oculto $index',
+              'display_kind': 'hidden',
+            },
+          ..._rows(120, from: 1000),
+        ]);
+      final chat = _chat('truly-empty-control', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 240);
+      expect(
+        await chat.loadEarlierMessages(continuePastInvisible: true),
+        isTrue,
+      );
+
+      expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+        '0',
+        '120',
+        '240',
+      ]);
+      expect(chat.hasEarlierMessages, isFalse);
+      expect(
+        await chat.loadEarlierMessages(continuePastInvisible: true),
+        isFalse,
+      );
+      expect(server.requests, hasLength(3));
+    },
+  );
+
+  test(
+    'un gesto tiene presupuesto finito ante paginas siempre omitidas',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          for (var index = 0; index < 7800; index++)
+            {
+              'id': 'bounded-hidden-$index',
+              'message_id': 'bounded-hidden-$index',
+              'role': 'user',
+              'content': 'oculto $index',
+              'display_kind': 'hidden',
+            },
+          ..._rows(120, from: 10000),
+        ]);
+      final chat = _chat('bounded-explicit-gesture', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 7920);
+      expect(
+        await chat.loadEarlierMessages(continuePastInvisible: true),
+        isTrue,
+      );
+
+      expect(server.requests, hasLength(65));
+      expect(server.requests.first.queryParameters['offset'], '0');
+      expect(
+        server.requests.last.queryParameters['offset'],
+        '${63 * 120 + 120}',
+      );
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
+
+  test('el polling pasivo conserva la pagina anterior y su cursor', () async {
+    final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
+    final chat = _chat('passive-refresh-after-backfill', server.client());
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(expectedMessageCount: 300);
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(chat.messages, hasLength(240));
+    expect(chat.earlierMessagesNextOffsetForTesting, 240);
+
+    await chat.loadMessages(expectedMessageCount: 300, passiveOnly: true);
+
+    expect(chat.messages, hasLength(240));
+    expect(chat.messages.last['content'], 'msg 61');
+    expect(chat.earlierMessagesNextOffsetForTesting, 240);
+    expect(chat.hasEarlierMessages, isTrue);
+
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '240');
+    expect(chat.messages, hasLength(300));
+    expect(chat.messages.last['content'], 'msg 1');
+  });
+
+  test(
+    'historical completion keeps identity across backfill and refresh',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.add({
+          'id': 1,
+          'message_id': 'paged-completion',
+          'role': 'user',
+          'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_c0ffee12]',
+          'display_kind': 'async_delegation_complete',
+          'display_metadata': {
+            'delegation_id': 'deleg_c0ffee12',
+            'task_count': 1,
+            'completed_count': 1,
+            'failed_count': 0,
+            'subagent_ids': ['sa-paged-one'],
+          },
+        })
+        ..rows.addAll(_rows(120, from: 2));
+      final chat = _chat('paged-subagent', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 121);
+      expect(
+        chat.messages
+            .map(historicalSubagentCompletionOf)
+            .whereType<SubagentCompletionCardData>(),
+        isEmpty,
+      );
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      final afterBackfill = chat.messages
+          .map(historicalSubagentCompletionOf)
+          .whereType<SubagentCompletionCardData>()
+          .toList();
+      expect(afterBackfill, hasLength(1));
+      final completionKey = afterBackfill.single.completionKey;
+
+      await chat.loadMessages(expectedMessageCount: 121);
+      final afterRefresh = chat.messages
+          .map(historicalSubagentCompletionOf)
+          .whereType<SubagentCompletionCardData>()
+          .toList();
+      expect(afterRefresh, hasLength(1));
+      expect(afterRefresh.single.completionKey, completionKey);
+    },
+  );
 
   test(
     'refresh obsoleto no sobrescribe el bookkeeping paginado vigente',
@@ -399,7 +1374,11 @@ void main() {
 
       await chat.loadMessages(expectedMessageCount: 120);
 
-      expect(chat.messages, hasLength(119));
+      expect(chat.messages, hasLength(2));
+      expect(
+        chat.messages.any((message) => message['role'] == 'tool'),
+        isFalse,
+      );
       expect(chat.hasEarlierMessages, isTrue);
       expect(
         chat.messages.any(
@@ -418,12 +1397,13 @@ void main() {
       );
 
       // El cursor usa las 120 filas brutas, no las 119 que se pudieron
-      // proyectar. La página final vacía retira el botón de backfill, pero el
-      // hueco sigue impidiendo que `firstUser` se aplique como si la cobertura
-      // fuese completa.
+      // proyectar. La página final no sana el hueco: rearma una lectura
+      // autoritativa desde offset cero y mantiene `firstUser` diferido.
       expect(await chat.loadEarlierMessages(), isFalse);
       expect(requests.last.queryParameters['offset'], '120');
-      expect(chat.hasEarlierMessages, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(chat.earlierMessagesNextOffsetForTesting, 0);
+      expect(chat.needsTranscriptTailHydrationForTesting, isTrue);
       expect(
         chat.messages.any(
           (message) =>
@@ -443,54 +1423,580 @@ void main() {
   );
 
   test(
-    'backfill iniciado tras refresh no aplica un cursor que el refresh rebobinó',
+    'pagination metadata inconsistente conserva cobertura parcial',
     () async {
-      final server = _OutOfOrderTranscriptServer();
-      final chat = _chat('refresh-backfill-revision', server.client());
-      addTearDown(chat.dispose);
+      for (final pagination in <Map<String, dynamic>>[
+        const {'limit': 120, 'offset': 0, 'returned': 120},
+        const {'limit': 120, 'offset': 120, 'returned': 1},
+      ]) {
+        final client = MockClient(
+          (_) async => http.Response(
+            jsonEncode({
+              'object': 'list',
+              'data': const [
+                {
+                  'message_id': 'only-row',
+                  'role': 'user',
+                  'content': 'fila visible',
+                },
+              ],
+              'pagination': pagination,
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          ),
+        );
+        final api = ApiClient(
+          baseUrl: 'http://127.0.0.1:8642',
+          apiKey: 'test-key',
+          httpClient: client,
+        );
 
-      final initialLoad = chat.loadMessages(expectedMessageCount: 500);
-      await server.waitForRequests(1);
-      server.complete(0, _rows(120, from: 381), paginated: true);
-      await initialLoad;
+        final page = await api.getMessagesPage('stored-chat');
 
-      final firstBackfill = chat.loadEarlierMessages();
-      await server.waitForRequests(2);
-      expect(server.requests[1].url.queryParameters['offset'], '120');
-      server.complete(1, _rows(120, from: 261), paginated: true);
-      expect(await firstBackfill, isTrue);
-      expect(
-        chat.messages.map((message) => message['id']),
-        orderedEquals(List<int>.generate(240, (index) => 500 - index)),
-      );
-
-      final refresh = chat.loadMessages(expectedMessageCount: 500);
-      await server.waitForRequests(3);
-      final staleBackfill = chat.loadEarlierMessages();
-      await server.waitForRequests(4);
-      expect(server.requests[3].url.queryParameters['offset'], '240');
-
-      // El refresh termina primero y vuelve a declarar que la cola autoritativa
-      // empieza en offset cero. La página pedida con el cursor viejo ya no puede
-      // modificar ni el orden visible ni el siguiente offset.
-      server.complete(2, _rows(120, from: 381), paginated: true);
-      await refresh;
-      server.complete(3, _rows(120, from: 141), paginated: true);
-      expect(await staleBackfill, isFalse);
-
-      expect(
-        chat.messages.map((message) => message['id']),
-        orderedEquals(List<int>.generate(240, (index) => 500 - index)),
-      );
-      expect(chat.messages.any((message) => message['id'] == 260), isFalse);
-
-      final retry = chat.loadEarlierMessages();
-      await server.waitForRequests(5);
-      expect(server.requests[4].url.queryParameters['offset'], '120');
-      server.complete(4, _rows(120, from: 261), paginated: true);
-      await retry;
+        expect(page.messages, hasLength(1));
+        expect(page.paginationProvided, isTrue);
+        expect(page.paginationFullyParsed, isFalse);
+      }
     },
   );
+
+  test('malformed returned downgrades a previously complete lineage', () async {
+    final malformedReturnedValues = <Object?>[
+      '1',
+      -1,
+      1.5,
+      null,
+      const <Object?>[],
+      const <String, Object?>{'value': 1},
+    ];
+    for (var index = 0; index < malformedReturnedValues.length; index++) {
+      var request = 0;
+      final client = MockClient((_) async {
+        final pagination = <String, Object?>{
+          'limit': 120,
+          'offset': 0,
+          'returned': request++ == 0 ? 1 : malformedReturnedValues[index],
+        };
+        return http.Response(
+          jsonEncode({
+            'session_id': 'stored-chat',
+            'messages': const [
+              {
+                'message_id': 'compacted-row',
+                'role': 'user',
+                'content': 'historial',
+                'compacted': 1,
+                'active': 0,
+              },
+            ],
+            'pagination': pagination,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final chat = _chat('malformed-returned-$index', client);
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isTrue, reason: 'case $index');
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isFalse, reason: 'case $index');
+      expect(chat.coreReadCoverageIsPartial, isTrue, reason: 'case $index');
+    }
+  });
+
+  test(
+    'all-discarded canonical page downgrades preserved complete lineage',
+    () async {
+      var request = 0;
+      final requests = <http.Request>[];
+      final client = MockClient((incoming) async {
+        requests.add(incoming);
+        final response = switch (request++) {
+          0 => <Object?>[
+            const {
+              'message_id': 'durable-row',
+              'role': 'user',
+              'content': 'fila durable',
+              'compacted': 1,
+              'active': 0,
+            },
+          ],
+          1 => <Object?>['fila no proyectable'],
+          _ => <Object?>[
+            const {
+              'message_id': 'durable-row',
+              'role': 'user',
+              'content': 'fila durable',
+              'compacted': 1,
+              'active': 0,
+            },
+            const {
+              'message_id': 'recovered-row',
+              'role': 'assistant',
+              'content': 'fila recuperada',
+            },
+          ],
+        };
+        return http.Response(
+          jsonEncode({
+            'session_id': 'stored-chat',
+            'messages': response,
+            'pagination': {
+              'limit': 120,
+              'offset': 0,
+              'returned': response.length,
+            },
+            'coverage': ['full'],
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final chat = _chat('all-discarded-lineage-downgrade', client);
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.coreReadCoverageIsPartial, isFalse);
+      expect(chat.hasEarlierMessages, isFalse);
+
+      await chat.loadMessages();
+      expect(chat.messages.map(canonicalTranscriptMessageId), ['durable-row']);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.coreReadCoverageIsPartial, isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(requests.last.url.queryParameters['offset'], '0');
+      expect(
+        chat.messages.map(canonicalTranscriptMessageId),
+        containsAll(<String>['durable-row', 'recovered-row']),
+      );
+    },
+  );
+
+  test('genuine empty canonical page preserves visible complete transcript', () async {
+    var request = 0;
+    final client = MockClient((_) async {
+      final response = request++ == 0
+          ? const <Object?>[
+              {
+                'message_id': 'durable-row',
+                'role': 'user',
+                'content': 'fila durable',
+                'compacted': 1,
+                'active': 0,
+              },
+            ]
+          : const <Object?>[];
+      return http.Response(
+        jsonEncode({
+          'session_id': 'stored-chat',
+          'messages': response,
+          'pagination': {
+            'limit': 120,
+            'offset': 0,
+            'returned': response.length,
+          },
+          'coverage': ['full'],
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      );
+    });
+    final chat = _chat('genuine-empty-preserves-transcript', client);
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages();
+    await chat.loadMessages();
+
+    expect(chat.messages.map(canonicalTranscriptMessageId), ['durable-row']);
+    expect(chat.coreReadLineageComplete, isTrue);
+    // Una página sin filas no acredita metadata full por sí sola, pero tampoco
+    // crea un hueco de parseo ni habilita un cursor de backfill inventado.
+    expect(chat.hasEarlierMessages, isFalse);
+  });
+
+  test('empty canonical page keeps expected-count failure', () async {
+    final client = MockClient(
+      (_) async => http.Response(
+        jsonEncode({
+          'session_id': 'stored-chat',
+          'messages': const <Object?>[],
+          'pagination': const {'limit': 120, 'offset': 0, 'returned': 0},
+          'coverage': const ['full'],
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      ),
+    );
+    final chat = _chat('empty-expected-count-failure', client);
+    addTearDown(chat.dispose);
+
+    await expectLater(
+      chat.loadMessages(expectedMessageCount: 1),
+      throwsA(isA<StateError>()),
+    );
+    expect(chat.messagesLoaded, isFalse);
+  });
+
+  test(
+    'canonical non-Map row downgrades a preserved complete lineage',
+    () async {
+      var request = 0;
+      final client = MockClient((_) async {
+        final response = switch (request++) {
+          0 => <Object?>[
+            const {
+              'message_id': 'durable-row',
+              'role': 'user',
+              'content': 'fila durable',
+              'compacted': 1,
+              'active': 0,
+            },
+          ],
+          1 => <Object?>[
+            const {
+              'message_id': 'durable-row',
+              'role': 'user',
+              'content': 'fila durable',
+              'compacted': 1,
+              'active': 0,
+            },
+            'fila no proyectable',
+          ],
+          _ => <Object?>[
+            const {
+              'message_id': 'durable-row',
+              'role': 'user',
+              'content': 'fila durable',
+              'compacted': 1,
+              'active': 0,
+            },
+            const {
+              'message_id': 'hydrated-row',
+              'role': 'assistant',
+              'content': 'fila recuperada',
+            },
+          ],
+        };
+        return http.Response(
+          jsonEncode({
+            'session_id': 'stored-chat',
+            'messages': response,
+            'pagination': {
+              'limit': 120,
+              'offset': 0,
+              'returned': response.length,
+            },
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final chat = _chat('non-map-lineage-downgrade', client);
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.coreReadCoverageIsPartial, isFalse);
+
+      // El refresh solapa exactamente la fila ya visible, así que la ruta real
+      // conserva la cobertura existente aunque la respuesta raw tenga un hueco.
+      await chat.loadMessages();
+      expect(
+        chat.messages.map(canonicalTranscriptMessageId),
+        contains('durable-row'),
+      );
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.coreReadCoverageIsPartial, isTrue);
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.coreReadCoverageIsPartial, isFalse);
+
+      // Otra lectura canónica conserva la reparación ya acreditada.
+      await chat.loadMessages();
+      expect(
+        chat.messages.map(canonicalTranscriptMessageId),
+        containsAll(<String>['durable-row', 'hydrated-row']),
+      );
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.coreReadCoverageIsPartial, isFalse);
+    },
+  );
+
+  test(
+    'ambiguous canonical identities downgrade a previously complete lineage',
+    () async {
+      final ambiguousResponses = <List<Map<String, Object?>>>[
+        const [
+          {
+            'message_id': 'duplicate-id',
+            'role': 'user',
+            'content': 'primera fila',
+            'compacted': 1,
+            'active': 0,
+          },
+          {
+            'message_id': 'duplicate-id',
+            'role': 'assistant',
+            'content': 'segunda fila distinta',
+          },
+        ],
+        const [
+          {
+            'id': 'alias-a',
+            'message_id': 'alias-b',
+            'role': 'user',
+            'content': 'aliases incompatibles',
+            'compacted': 1,
+            'active': 0,
+          },
+        ],
+      ];
+      for (var index = 0; index < ambiguousResponses.length; index++) {
+        var request = 0;
+        final client = MockClient((_) async {
+          final response = request++ == 0
+              ? const <Map<String, Object?>>[
+                  {
+                    'message_id': 'initial-row',
+                    'role': 'user',
+                    'content': 'historial inicial',
+                    'compacted': 1,
+                    'active': 0,
+                  },
+                ]
+              : ambiguousResponses[index];
+          return http.Response(
+            jsonEncode({
+              'session_id': 'stored-chat',
+              'messages': response,
+              'pagination': {
+                'limit': 120,
+                'offset': 0,
+                'returned': response.length,
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        });
+        final chat = _chat('ambiguous-lineage-$index', client);
+        addTearDown(chat.dispose);
+
+        await chat.loadMessages();
+        expect(chat.coreReadLineageComplete, isTrue, reason: 'case $index');
+        await chat.loadMessages();
+        expect(chat.coreReadLineageComplete, isFalse, reason: 'case $index');
+        expect(chat.coreReadCoverageIsPartial, isTrue, reason: 'case $index');
+      }
+    },
+  );
+
+  test('valid canonical full refresh preserves complete lineage', () async {
+    var request = 0;
+    final client = MockClient((_) async {
+      final response = request++ == 0
+          ? const <Map<String, Object?>>[
+              {
+                'message_id': 'valid-initial',
+                'role': 'user',
+                'content': 'historial inicial',
+                'compacted': 1,
+                'active': 0,
+              },
+            ]
+          : const <Map<String, Object?>>[
+              {
+                'message_id': 'valid-initial',
+                'role': 'user',
+                'content': 'historial inicial',
+                'compacted': 1,
+                'active': 0,
+              },
+              {
+                'message_id': 'valid-next',
+                'role': 'assistant',
+                'content': 'respuesta válida',
+              },
+            ];
+      return http.Response(
+        jsonEncode({
+          'session_id': 'stored-chat',
+          'messages': response,
+          'pagination': {
+            'limit': 120,
+            'offset': 0,
+            'returned': response.length,
+          },
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      );
+    });
+    final chat = _chat('valid-full-refresh', client);
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages();
+    expect(chat.coreReadLineageComplete, isTrue);
+    expect(chat.coreReadCoverageIsPartial, isFalse);
+    await chat.loadMessages();
+    expect(chat.coreReadLineageComplete, isTrue);
+    expect(chat.coreReadCoverageIsPartial, isFalse);
+  });
+
+  test(
+    'response limit mismatch downgrades a previously complete lineage',
+    () async {
+      for (final responseLimit in <int>[500, 60]) {
+        var requestCount = 0;
+        final client = MockClient((request) async {
+          expect(request.url.queryParameters['limit'], '120');
+          expect(request.url.queryParameters['include_compacted'], 'true');
+          final firstRequest = requestCount++ == 0;
+          final messages = firstRequest
+              ? const <Map<String, Object?>>[
+                  {
+                    'message_id': 'initial-compacted-row',
+                    'role': 'user',
+                    'content': 'historial inicial',
+                    'compacted': 1,
+                    'active': 0,
+                  },
+                ]
+              : <Map<String, Object?>>[
+                  const {
+                    'message_id': 'mismatched-compacted-row',
+                    'role': 'user',
+                    'content': 'historial paginado',
+                    'compacted': 1,
+                    'active': 0,
+                  },
+                  for (var index = 1; index < 120; index++)
+                    {
+                      'message_id': 'mismatched-context-$index',
+                      'role': 'system',
+                      'content': 'contexto $index',
+                    },
+                ];
+          return http.Response(
+            jsonEncode({
+              'session_id': 'stored-chat',
+              'messages': messages,
+              'pagination': {
+                'limit': firstRequest ? 120 : responseLimit,
+                'offset': 0,
+                'returned': messages.length,
+              },
+            }),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        });
+        final chat = _chat('limit-mismatch-$responseLimit', client);
+        addTearDown(chat.dispose);
+
+        await chat.loadMessages();
+        expect(chat.coreReadLineageComplete, isTrue, reason: '$responseLimit');
+        await chat.loadMessages();
+        expect(chat.coreReadLineageComplete, isFalse, reason: '$responseLimit');
+        expect(
+          chat.coreReadCoverageIsPartial,
+          isTrue,
+          reason: '$responseLimit',
+        );
+      }
+    },
+  );
+
+  test('invalid pagination downgrades a previously complete lineage', () async {
+    for (final invalid in <Map<String, dynamic>>[
+      const {'limit': 120, 'offset': 0, 'returned': 2},
+      const {'limit': 120, 'offset': 120, 'returned': 1},
+    ]) {
+      var request = 0;
+      final client = MockClient((_) async {
+        final pagination = request++ == 0
+            ? const {'limit': 120, 'offset': 0, 'returned': 1}
+            : invalid;
+        return http.Response(
+          jsonEncode({
+            'session_id': 'stored-chat',
+            'messages': const [
+              {
+                'message_id': 'compacted-row',
+                'role': 'user',
+                'content': 'historial',
+                'compacted': 1,
+                'active': 0,
+              },
+            ],
+            'pagination': pagination,
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final chat = _chat('lineage-downgrade-${invalid['offset']}', client);
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isTrue);
+      await chat.loadMessages();
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.coreReadCoverageIsPartial, isTrue);
+    }
+  });
+
+  test('backfill iniciado tras refresh no aplica un cursor que el refresh rebobinó', () async {
+    final server = _OutOfOrderTranscriptServer();
+    final chat = _chat('refresh-backfill-revision', server.client());
+    addTearDown(chat.dispose);
+
+    final initialLoad = chat.loadMessages(expectedMessageCount: 500);
+    await server.waitForRequests(1);
+    server.complete(0, _rows(120, from: 381), paginated: true);
+    await initialLoad;
+
+    final firstBackfill = chat.loadEarlierMessages();
+    await server.waitForRequests(2);
+    expect(server.requests[1].url.queryParameters['offset'], '120');
+    server.complete(1, _rows(120, from: 261), paginated: true);
+    expect(await firstBackfill, isTrue);
+    expect(
+      chat.messages.map((message) => message['id']),
+      orderedEquals(List<int>.generate(240, (index) => 500 - index)),
+    );
+
+    final refresh = chat.loadMessages(expectedMessageCount: 500);
+    await server.waitForRequests(3);
+    final staleBackfill = chat.loadEarlierMessages();
+    await server.waitForRequests(4);
+    expect(server.requests[3].url.queryParameters['offset'], '240');
+
+    // El refresh termina primero y vuelve a declarar que la cola autoritativa
+    // empieza en offset cero. La página pedida con el cursor viejo ya no puede
+    // modificar ni el orden visible ni el siguiente offset.
+    server.complete(2, _rows(120, from: 381), paginated: true);
+    await refresh;
+    server.complete(3, _rows(120, from: 141), paginated: true);
+    expect(await staleBackfill, isFalse);
+
+    expect(
+      chat.messages.map((message) => message['id']),
+      orderedEquals(List<int>.generate(240, (index) => 500 - index)),
+    );
+    expect(chat.messages.any((message) => message['id'] == 260), isFalse);
+
+    final retry = chat.loadEarlierMessages();
+    await server.waitForRequests(5);
+    expect(server.requests[4].url.queryParameters['offset'], '120');
+    server.complete(4, _rows(120, from: 261), paginated: true);
+    await retry;
+  });
 
   test(
     'Stop invalida un refresh pendiente y su snapshot running obsoleto',
@@ -925,7 +2431,7 @@ void main() {
 
         expect(chat.messages, hasLength(2), reason: 'restFirst=$restFirst');
         expect(
-          chat.messages.map(canonicalTranscriptMessageId),
+          chat.internalMessagesForTesting.map(canonicalTranscriptMessageId),
           ['snapshot-answer', 'snapshot-user'],
           reason: 'restFirst=$restFirst',
         );
@@ -989,7 +2495,7 @@ void main() {
 
         expect(chat.messages, hasLength(2), reason: 'restFirst=$restFirst');
         expect(
-          chat.messages.map(canonicalTranscriptMessageId),
+          chat.internalMessagesForTesting.map(canonicalTranscriptMessageId),
           ['partial-answer', 'partial-user'],
           reason: 'restFirst=$restFirst',
         );
@@ -1045,7 +2551,7 @@ void main() {
         await load;
 
         expect(
-          chat.messages.any(
+          chat.internalMessagesForTesting.any(
             (message) => message['_desktopSnapshotKind'] == 'inflight',
           ),
           isTrue,
@@ -1180,53 +2686,50 @@ void main() {
     }
   });
 
-  test(
-    'resume_progress con REST aún vacío conserva cobertura parcial y Stop seguro',
-    () async {
-      final server = _OutOfOrderTranscriptServer();
-      final snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-empty-progress-retry',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: false,
-        messageCount: 300,
-        hydrating: true,
-        running: true,
-        inflight: DesktopInflightTurn(
-          user: 'turno sintético sin transcript durable',
-          streaming: true,
-        ),
-      );
-      final gateway = _DeferrableGateway()..snapshot = snapshot;
-      final recorded = <CancelledTurnTombstone>[];
-      final chat = _chat(
-        'empty-progress-retry',
-        server.client(),
-        gateway: gateway,
-        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
-      );
-      addTearDown(chat.dispose);
+  test('resume_progress con REST aún vacío conserva cobertura parcial y Stop seguro', () async {
+    final server = _OutOfOrderTranscriptServer();
+    final snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-empty-progress-retry',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: 300,
+      hydrating: true,
+      running: true,
+      inflight: DesktopInflightTurn(
+        user: 'turno sintético sin transcript durable',
+        streaming: true,
+      ),
+    );
+    final gateway = _DeferrableGateway()..snapshot = snapshot;
+    final recorded = <CancelledTurnTombstone>[];
+    final chat = _chat(
+      'empty-progress-retry',
+      server.client(),
+      gateway: gateway,
+      onCancelledTurn: (tombstone) async => recorded.add(tombstone),
+    );
+    addTearDown(chat.dispose);
 
-      final load = chat.loadMessages(expectedMessageCount: 300);
-      await server.waitForRequests(1);
-      server.complete(0, const [], paginated: true);
-      await load;
-      expect(chat.hasEarlierMessages, isTrue);
+    final load = chat.loadMessages(expectedMessageCount: 300);
+    await server.waitForRequests(1);
+    server.complete(0, const [], paginated: true);
+    await load;
+    expect(chat.hasEarlierMessages, isTrue);
 
-      gateway.emitResumeProgress('complete', messageCount: 300);
-      await server.waitForRequests(2);
-      expect(server.requests[1].url.queryParameters['offset'], '0');
-      server.complete(1, const [], paginated: true);
-      for (var tick = 0; tick < 20; tick++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+    gateway.emitResumeProgress('complete', messageCount: 300);
+    await server.waitForRequests(2);
+    expect(server.requests[1].url.queryParameters['offset'], '0');
+    server.complete(1, const [], paginated: true);
+    for (var tick = 0; tick < 20; tick++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
-      expect(chat.hasEarlierMessages, isTrue);
-      await expectLater(chat.cancel(), throwsStateError);
-      expect(recorded.where((tombstone) => tombstone.firstUser), isEmpty);
-      expect(chat.isStreaming, isTrue);
-    },
-  );
+    expect(chat.hasEarlierMessages, isTrue);
+    await expectLater(chat.cancel(), throwsStateError);
+    expect(recorded.where((tombstone) => tombstone.firstUser), isEmpty);
+    expect(chat.isStreaming, isTrue);
+  });
 
   test(
     'resume_progress complete sustituye count viejo tras compactación 300 a 2',
@@ -1275,61 +2778,58 @@ void main() {
     },
   );
 
-  test(
-    'scroll y resume_progress solapados no rebobinan la cola hidratada a offset cero',
-    () async {
-      final server = _OutOfOrderTranscriptServer();
-      final gateway = _DeferrableGateway()
-        ..snapshot = const DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-overlapping-tail-hydration',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: false,
-          messageCount: 300,
-          hydrating: true,
-        );
-      final chat = _chat(
-        'overlapping-tail-hydration',
-        server.client(),
-        gateway: gateway,
+  test('scroll y resume_progress solapados no rebobinan la cola hidratada a offset cero', () async {
+    final server = _OutOfOrderTranscriptServer();
+    final gateway = _DeferrableGateway()
+      ..snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-overlapping-tail-hydration',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 300,
+        hydrating: true,
       );
-      addTearDown(chat.dispose);
+    final chat = _chat(
+      'overlapping-tail-hydration',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      final initialLoad = chat.loadMessages(expectedMessageCount: 300);
-      await server.waitForRequests(1);
-      server.complete(0, _rows(120, from: 181), paginated: true);
-      await initialLoad;
-      expect(chat.hasEarlierMessages, isTrue);
+    final initialLoad = chat.loadMessages(expectedMessageCount: 300);
+    await server.waitForRequests(1);
+    server.complete(0, _rows(120, from: 181), paginated: true);
+    await initialLoad;
+    expect(chat.hasEarlierMessages, isTrue);
 
-      final scrollHydration = chat.loadEarlierMessages();
-      await server.waitForRequests(2);
-      expect(server.requests[1].url.queryParameters['offset'], '0');
+    final scrollHydration = chat.loadEarlierMessages();
+    await server.waitForRequests(2);
+    expect(server.requests[1].url.queryParameters['offset'], '0');
 
-      gateway.emitResumeProgress('complete', messageCount: 300);
-      await server.waitForRequests(3);
-      expect(server.requests[2].url.queryParameters['offset'], '0');
+    gateway.emitResumeProgress('complete', messageCount: 300);
+    await server.waitForRequests(3);
+    expect(server.requests[2].url.queryParameters['offset'], '0');
 
-      // El gesto publica primero una cola válida llena (cursor siguiente 120).
-      server.complete(1, _rows(120, from: 181), paginated: true);
-      expect(await scrollHydration, isTrue);
+    // El gesto publica primero una cola válida llena (cursor siguiente 120).
+    server.complete(1, _rows(120, from: 181), paginated: true);
+    expect(await scrollHydration, isTrue);
 
-      // La rehidratación diferida, pedida bajo la revisión anterior, termina
-      // después con una cola corta todavía no lista. No puede rebobinar a 0.
-      server.complete(2, const [
-        {'id': 299, 'role': 'user', 'content': 'msg 299'},
-        {'id': 300, 'role': 'assistant', 'content': 'msg 300'},
-      ], paginated: true);
-      for (var tick = 0; tick < 10; tick++) {
-        await Future<void>.delayed(Duration.zero);
-      }
+    // La rehidratación diferida, pedida bajo la revisión anterior, termina
+    // después con una cola corta todavía no lista. No puede rebobinar a 0.
+    server.complete(2, const [
+      {'id': 299, 'role': 'user', 'content': 'msg 299'},
+      {'id': 300, 'role': 'assistant', 'content': 'msg 300'},
+    ], paginated: true);
+    for (var tick = 0; tick < 10; tick++) {
+      await Future<void>.delayed(Duration.zero);
+    }
 
-      final nextBackfill = chat.loadEarlierMessages();
-      await server.waitForRequests(4);
-      expect(server.requests[3].url.queryParameters['offset'], '120');
-      server.complete(3, _rows(120, from: 61), paginated: true);
-      expect(await nextBackfill, isTrue);
-    },
-  );
+    final nextBackfill = chat.loadEarlierMessages();
+    await server.waitForRequests(4);
+    expect(server.requests[3].url.queryParameters['offset'], '120');
+    server.complete(3, _rows(120, from: 61), paginated: true);
+    expect(await nextBackfill, isTrue);
+  });
 
   test(
     'snapshot running omitido sin ancla no revive el primer turno ya terminal',
@@ -1393,75 +2893,72 @@ void main() {
     },
   );
 
-  test(
-    'REST con solo user canónico no borra el assistant terminal local sin ancla',
-    () async {
-      final server = _TranscriptServer(paginate: true);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-first-user-only-after-terminal',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: false,
-          messageCount: 2,
-          hydrating: true,
-          running: true,
-          inflight: DesktopInflightTurn(
-            user: 'primer turno sin ancla durable',
-            assistant: 'parcial local',
-            streaming: true,
-          ),
-        );
-      final chat = _chat(
-        'first-user-only-after-terminal',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
-
-      await chat.loadMessages(expectedMessageCount: 2);
-      gateway.emit(
-        'message.complete',
-        payload: const {'text': 'respuesta final local sin ancla'},
-      );
-      for (
-        var attempt = 0;
-        attempt < 200 && chat.state != ChatPipelineState.completed;
-        attempt++
-      ) {
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      expect(chat.state, ChatPipelineState.completed);
-
-      server.rows.add(const {
-        'id': 'first-user-canonical-only',
-        'role': 'user',
-        'content': 'primer turno sin ancla durable',
-      });
-      gateway.snapshot = const DesktopSessionSnapshot(
+  test('REST con solo user canónico no borra el assistant terminal local sin ancla', () async {
+    final server = _TranscriptServer(paginate: true);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-first-user-only-after-terminal',
         storedSessionId: 'stored-chat',
         created: false,
         messagesProvided: false,
-        messageCount: 1,
+        messageCount: 2,
+        hydrating: true,
+        running: true,
+        inflight: DesktopInflightTurn(
+          user: 'primer turno sin ancla durable',
+          assistant: 'parcial local',
+          streaming: true,
+        ),
       );
-      await chat.loadMessages(expectedMessageCount: 1);
+    final chat = _chat(
+      'first-user-only-after-terminal',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      expect(chat.isStreaming, isFalse);
-      expect(
-        chat.messages.where(
-          (message) => message['content'] == 'respuesta final local sin ancla',
-        ),
-        hasLength(1),
-      );
-      expect(
-        chat.messages.any(
-          (message) => message['_localTerminalProjectionId'] != null,
-        ),
-        isTrue,
-      );
-    },
-  );
+    await chat.loadMessages(expectedMessageCount: 2);
+    gateway.emit(
+      'message.complete',
+      payload: const {'text': 'respuesta final local sin ancla'},
+    );
+    for (
+      var attempt = 0;
+      attempt < 200 && chat.state != ChatPipelineState.completed;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    expect(chat.state, ChatPipelineState.completed);
+
+    server.rows.add(const {
+      'id': 'first-user-canonical-only',
+      'role': 'user',
+      'content': 'primer turno sin ancla durable',
+    });
+    gateway.snapshot = const DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-first-user-only-after-terminal',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: 1,
+    );
+    await chat.loadMessages(expectedMessageCount: 1);
+
+    expect(chat.isStreaming, isFalse);
+    expect(
+      chat.messages.where(
+        (message) => message['content'] == 'respuesta final local sin ancla',
+      ),
+      hasLength(1),
+    );
+    expect(
+      chat.messages.any(
+        (message) => message['_localTerminalProjectionId'] != null,
+      ),
+      isFalse,
+    );
+  });
 
   test(
     'REST histórico completo no borra un terminal local todavía sin ancla',
@@ -1546,7 +3043,7 @@ void main() {
         chat.messages.any(
           (message) => message['_localTerminalProjectionId'] != null,
         ),
-        isTrue,
+        isFalse,
       );
     },
   );
@@ -1598,7 +3095,7 @@ void main() {
 
       await chat.loadMessages(expectedMessageCount: 3);
 
-      final repeatedUsers = chat.messages
+      final repeatedUsers = chat.internalMessagesForTesting
           .where(
             (message) =>
                 isRealUserTurn(message) &&
@@ -1683,52 +3180,48 @@ void main() {
     },
   );
 
-  test(
-    'count hydrating bajo o exacto no sella una cola llena ni bloquea offset 120',
-    () async {
-      for (final announcedCount in const [2, 120]) {
-        final server = _TranscriptServer(paginate: true)
-          ..rows.addAll(_rows(240));
-        final gateway = _DeferrableGateway()
-          ..snapshot = DesktopSessionSnapshot(
-            runtimeSessionId: 'runtime-stale-count-$announcedCount',
-            storedSessionId: 'stored-chat',
-            created: false,
-            messagesProvided: false,
-            messageCount: announcedCount,
-            hydrating: true,
-          );
-        final chat = _chat(
-          'stale-hydration-count-$announcedCount',
-          server.client(),
-          gateway: gateway,
+  test('count hydrating bajo o exacto no sella una cola llena ni bloquea offset 120', () async {
+    for (final announcedCount in const [2, 120]) {
+      final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(240));
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-stale-count-$announcedCount',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: announcedCount,
+          hydrating: true,
         );
-        addTearDown(chat.dispose);
+      final chat = _chat(
+        'stale-hydration-count-$announcedCount',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
 
-        await chat.loadMessages(expectedMessageCount: announcedCount);
-        expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
+      await chat.loadMessages(expectedMessageCount: announcedCount);
+      expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
 
-        expect(
-          await chat.loadEarlierMessages(),
-          isTrue,
-          reason: '$announcedCount',
-        );
-        expect(server.requests.last.queryParameters['offset'], '0');
-        expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
+      expect(
+        await chat.loadEarlierMessages(),
+        isTrue,
+        reason: '$announcedCount',
+      );
+      expect(server.requests.last.queryParameters['offset'], '0');
+      expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
 
-        expect(
-          await chat.loadEarlierMessages(),
-          isTrue,
-          reason: '$announcedCount',
-        );
-        expect(server.requests.last.queryParameters['offset'], '120');
-        expect(chat.messages.last['id'], 1, reason: '$announcedCount');
-      }
-    },
-  );
+      expect(
+        await chat.loadEarlierMessages(),
+        isTrue,
+        reason: '$announcedCount',
+      );
+      expect(server.requests.last.queryParameters['offset'], '120');
+      expect(chat.messages.last['id'], 1, reason: '$announcedCount');
+    }
+  });
 
   test(
-    'refresh vacío rechazado conserva el bookkeeping de la cola visible',
+    'refresh vacío con count duro conserva filas y arma recuperación',
     () async {
       final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
       final chat = _chat('empty-refresh', server.client());
@@ -1739,11 +3232,16 @@ void main() {
       expect(chat.hasEarlierMessages, isTrue);
 
       server.rows.clear();
-      await chat.loadMessages(expectedMessageCount: 300);
+      await expectLater(
+        chat.loadMessages(expectedMessageCount: 300),
+        throwsStateError,
+      );
 
       expect(chat.messages, hasLength(120));
       expect(chat.messages.first['content'], 'msg 300');
       expect(chat.hasEarlierMessages, isTrue);
+      expect(chat.earlierMessagesNextOffsetForTesting, 0);
+      expect(chat.needsTranscriptTailHydrationForTesting, isTrue);
       server.rows.addAll(_rows(300));
       expect(await chat.loadEarlierMessages(), isTrue);
     },
@@ -1881,8 +3379,11 @@ void main() {
       await load;
 
       expect(chat.messages, hasLength(300));
-      expect(canonicalTranscriptRowId(chat.messages.first), 300);
-      expect(canonicalTranscriptRowId(chat.messages.last), 1);
+      expect(
+        canonicalTranscriptRowId(chat.internalMessagesForTesting.first),
+        300,
+      );
+      expect(canonicalTranscriptRowId(chat.internalMessagesForTesting.last), 1);
       expect(chat.hasEarlierMessages, isFalse);
     },
   );
@@ -1934,8 +3435,11 @@ void main() {
       await load;
 
       expect(chat.messages, hasLength(300));
-      expect(canonicalTranscriptRowId(chat.messages.first), 300);
-      expect(canonicalTranscriptRowId(chat.messages.last), 1);
+      expect(
+        canonicalTranscriptRowId(chat.internalMessagesForTesting.first),
+        300,
+      );
+      expect(canonicalTranscriptRowId(chat.internalMessagesForTesting.last), 1);
       expect(chat.hasEarlierMessages, isFalse);
     },
   );
@@ -1987,7 +3491,10 @@ void main() {
       await load;
 
       expect(canonicalTranscriptMessageId(chat.messages.first), '301');
-      expect(canonicalTranscriptMessageId(chat.messages.last), '1');
+      expect(
+        canonicalTranscriptMessageId(chat.internalMessagesForTesting.last),
+        '1',
+      );
       expect(chat.messages, hasLength(301));
       expect(chat.hasEarlierMessages, isTrue);
     },
@@ -2043,7 +3550,10 @@ void main() {
       await load;
 
       expect(canonicalTranscriptMessageId(chat.messages.first), '301');
-      expect(canonicalTranscriptMessageId(chat.messages.last), '1');
+      expect(
+        canonicalTranscriptMessageId(chat.internalMessagesForTesting.last),
+        '1',
+      );
       expect(chat.messages, hasLength(301));
       expect(chat.hasEarlierMessages, isTrue);
     },
@@ -2370,9 +3880,9 @@ void main() {
         await Future<void>.delayed(Duration.zero);
       }
 
-      // La primera de las dos fuentes ya publicó. Aunque se presente como
-      // completa (o incluso running), todavía no acredita el assistant final.
-      expect(publications, greaterThan(0));
+      // REST positivo pero rechazado por la valla conserva la proyección sin
+      // fingir una publicación. El snapshot sí puede publicarse por separado.
+      expect(publications, scenario.snapshotFirst ? greaterThan(0) : 0);
       expect(
         chat.messages.any(
           (message) =>
@@ -2397,6 +3907,7 @@ void main() {
         resumeGate.complete(snapshot);
       }
       await refresh;
+      expect(publications, greaterThan(0));
 
       expect(
         chat.messages.any(
@@ -2417,7 +3928,7 @@ void main() {
   }
 
   test(
-    'refresh adopta un turno Desktop nuevo tras un terminal y procesa eventos',
+    'refresh externo conserva child vivo controles y una terminal exacta',
     () async {
       final server = _TranscriptServer(paginate: false)
         ..rows.addAll(const [
@@ -2447,6 +3958,7 @@ void main() {
         onTerminal: () => terminalCallbacks++,
       );
       addTearDown(chat.dispose);
+      chat.acquireSubagentForegroundPresentation();
 
       await chat.loadMessages(expectedMessageCount: server.rows.length);
       await chat.send(
@@ -2454,6 +3966,21 @@ void main() {
         model: 'hermes-agent',
         history: chat.buildHistory(),
       );
+      gateway.emit(
+        'subagent.start',
+        payload: const {
+          'subagent_id': 'child-external-turn',
+          'delegation_id': 'deleg_external_turn',
+          'status': 'running',
+          'accepting_steer': true,
+          'output_tail': 'coherent live tail',
+          'event_id': 'external-child-start',
+          'event_revision': 1,
+        },
+      );
+      await Future<void>.delayed(Duration.zero);
+      final originalActivityKey = chat.subagentActivities.single.key;
+      expect(chat.subagentActivities.single.isTerminal, isFalse);
       server.rows.addAll(const [
         {'id': 'user-a', 'role': 'user', 'content': 'turno local A'},
         {'id': 'answer-a', 'role': 'assistant', 'content': 'respuesta final A'},
@@ -2489,6 +4016,51 @@ void main() {
       await chat.loadMessages(expectedMessageCount: server.rows.length);
 
       expect(chat.isStreaming, isTrue);
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.subagentActivities.single.key, originalActivityKey);
+      expect(chat.subagentActivities.single.isTerminal, isFalse);
+      expect(chat.canSteerSubagent(chat.subagentActivities.single), isTrue);
+      expect(chat.canInterruptSubagent(chat.subagentActivities.single), isTrue);
+      final live = chat.subagentActivities.single;
+      final tail = await chat.tailSubagent(live);
+      expect(tail.content, 'coherent live tail');
+      final childSteer = await chat.steerSubagent(live, 'preserva identidad');
+      expect(childSteer.queued, isTrue);
+      final childInterrupt = await chat.interruptSubagent(live);
+      expect(childInterrupt, isTrue);
+      expect(gateway.subagentTailCalls, [
+        (
+          runtimeId: 'runtime-refresh-external-turn',
+          subagentId: 'child-external-turn',
+        ),
+      ]);
+      expect(gateway.subagentSteerCalls, [
+        (
+          runtimeId: 'runtime-refresh-external-turn',
+          subagentId: 'child-external-turn',
+          text: 'preserva identidad',
+        ),
+      ]);
+      expect(gateway.subagentInterruptCalls, [
+        (
+          runtimeId: 'runtime-refresh-external-turn',
+          subagentId: 'child-external-turn',
+        ),
+      ]);
+      gateway.emit(
+        'subagent.complete',
+        payload: const {
+          'subagent_id': 'child-external-turn',
+          'delegation_id': 'deleg_external_turn',
+          'status': 'completed',
+          'event_id': 'external-child-complete',
+          'event_revision': 2,
+        },
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.subagentActivities.single.key, originalActivityKey);
+      expect(chat.subagentActivities.single.isTerminal, isTrue);
       expect(
         chat.messages.any((message) => message['content'] == 'turno remoto B'),
         isTrue,
@@ -2526,449 +4098,504 @@ void main() {
     },
   );
 
-  test(
-    'dos refresh stale no limpian la valla y durable la retira sin bloquear cola',
-    () async {
-      final server = _TranscriptServer(paginate: false)
-        ..rows.addAll(const [
-          {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
-          {
-            'id': 'old-answer',
-            'role': 'assistant',
-            'content': 'respuesta anterior',
-          },
-        ]);
-      DesktopSessionSnapshot snapshotFor(List<Map<String, dynamic>> rows) =>
-          DesktopSessionSnapshot(
-            runtimeSessionId: 'runtime-terminal-fence-lifetime',
-            storedSessionId: 'stored-chat',
-            created: false,
-            messagesProvided: true,
-            messageCount: rows.length,
-            messages: rows
-                .map((row) => DesktopSessionMessage.tryParse(row)!)
-                .toList(growable: false),
-          );
-
-      final gateway = _DeferrableGateway()..snapshot = snapshotFor(server.rows);
-      final chat = _chat(
-        'terminal-fence-lifetime',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
-
-      await chat.loadMessages(expectedMessageCount: server.rows.length);
-      await chat.send(
-        fullText: 'turno A aún no persistido',
-        model: 'hermes-agent',
-        history: chat.buildHistory(),
-      );
-      gateway.emit(
-        'message.complete',
-        payload: const {'text': 'respuesta final A aún local'},
-      );
-      for (
-        var attempt = 0;
-        attempt < 100 && chat.state != ChatPipelineState.completed;
-        attempt++
-      ) {
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      expect(chat.state, ChatPipelineState.completed);
-
-      await chat.send(
-        fullText: 'turno B activo',
-        model: 'hermes-agent',
-        history: chat.buildHistory(),
-      );
-      for (var refresh = 0; refresh < 2; refresh++) {
-        await chat.loadMessages(expectedMessageCount: server.rows.length);
-        expect(
-          chat.messages.any(
-            (message) => message['content'] == 'turno A aún no persistido',
-          ),
-          isTrue,
-        );
-        expect(
-          chat.messages.any(
-            (message) => message['content'] == 'respuesta final A aún local',
-          ),
-          isTrue,
-        );
-        expect(
-          chat.messages.any(
-            (message) => message['_localTerminalProjectionId'] != null,
-          ),
-          isTrue,
-        );
-      }
-
-      server.rows.addAll(const [
-        {'id': 'user-a', 'role': 'user', 'content': 'turno A ya durable'},
-        {
-          'id': 'answer-a',
-          'role': 'assistant',
-          'content': 'respuesta final A ya durable',
-        },
-      ]);
-      gateway.snapshot = snapshotFor(server.rows);
-      await chat.loadMessages(expectedMessageCount: server.rows.length);
-
-      expect(
-        chat.messages.any(
-          (message) => message['_localTerminalProjectionId'] != null,
-        ),
-        isFalse,
-      );
-
-      final shiftedRows = _rows(130, from: 1000);
-      server.paginate = true;
-      server.rows
-        ..clear()
-        ..addAll(shiftedRows);
-      gateway.snapshot = snapshotFor(shiftedRows);
-      await chat.loadMessages(expectedMessageCount: shiftedRows.length);
-
-      expect(chat.messages.any((message) => message['id'] == 1129), isTrue);
-      expect(chat.hasEarlierMessages, isTrue);
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(chat.messages.any((message) => message['id'] == 1000), isTrue);
-    },
-  );
-
-  test(
-    'valla terminal atraviesa más de 120 tools hasta acreditar su user canónico',
-    () async {
-      final initialRows = <Map<String, dynamic>>[
+  test('dos refresh stale no limpian la valla y durable la retira sin bloquear cola', () async {
+    final server = _TranscriptServer(paginate: false)
+      ..rows.addAll(const [
         {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
         {
           'id': 'old-answer',
           'role': 'assistant',
           'content': 'respuesta anterior',
         },
-      ];
-      final server = _TranscriptServer(paginate: false)
-        ..rows.addAll(initialRows);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-terminal-tool-overflow',
+      ]);
+    DesktopSessionSnapshot snapshotFor(List<Map<String, dynamic>> rows) =>
+        DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-terminal-fence-lifetime',
           storedSessionId: 'stored-chat',
           created: false,
           messagesProvided: true,
-          messageCount: initialRows.length,
-          messages: initialRows
+          messageCount: rows.length,
+          messages: rows
               .map((row) => DesktopSessionMessage.tryParse(row)!)
               .toList(growable: false),
         );
-      final chat = _chat(
-        'terminal-tool-overflow',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: initialRows.length);
-      await chat.send(
-        fullText: 'turno A con muchas tools',
-        model: 'hermes-agent',
-        history: chat.buildHistory(),
-      );
-      gateway.emit(
-        'message.complete',
-        payload: const {'text': 'respuesta final A'},
-      );
-      for (
-        var attempt = 0;
-        attempt < 100 && chat.state != ChatPipelineState.completed;
-        attempt++
-      ) {
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      expect(chat.state, ChatPipelineState.completed);
+    final gateway = _DeferrableGateway()..snapshot = snapshotFor(server.rows);
+    final chat = _chat(
+      'terminal-fence-lifetime',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      server
-        ..paginate = true
-        ..rows.addAll([
-          const {
-            'id': 'user-a-overflow',
-            'role': 'user',
-            'content': 'turno A con muchas tools',
-          },
-          const {
-            'id': 'answer-a-overflow',
-            'role': 'assistant',
-            'content': 'respuesta final A',
-          },
-          for (var index = 0; index < 120; index++)
-            {
-              'id': 'tool-a-$index',
-              'role': 'tool',
-              'content': 'resultado tool $index',
-            },
-        ]);
-      gateway.snapshot = DesktopSessionSnapshot(
+    await chat.loadMessages(expectedMessageCount: server.rows.length);
+    await chat.send(
+      fullText: 'turno A aún no persistido',
+      model: 'hermes-agent',
+      history: chat.buildHistory(),
+    );
+    gateway.emit(
+      'message.complete',
+      payload: const {'text': 'respuesta final A aún local'},
+    );
+    for (
+      var attempt = 0;
+      attempt < 100 && chat.state != ChatPipelineState.completed;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    expect(chat.state, ChatPipelineState.completed);
+
+    await chat.send(
+      fullText: 'turno B activo',
+      model: 'hermes-agent',
+      history: chat.buildHistory(),
+    );
+    for (var refresh = 0; refresh < 2; refresh++) {
+      await chat.loadMessages(expectedMessageCount: server.rows.length);
+      expect(
+        chat.messages.any(
+          (message) => message['content'] == 'turno A aún no persistido',
+        ),
+        isTrue,
+      );
+      expect(
+        chat.messages.any(
+          (message) => message['content'] == 'respuesta final A aún local',
+        ),
+        isTrue,
+      );
+      expect(
+        chat.messages.any(
+          (message) => message['_localTerminalProjectionId'] != null,
+        ),
+        isFalse,
+      );
+      expect(
+        chat.coreReadLineageComplete,
+        isFalse,
+        reason:
+            'un graft rechazado conserva filas visibles pero no completitud',
+      );
+      expect(
+        chat.hasEarlierMessages,
+        isTrue,
+        reason: 'la reparación debe reiniciarse desde offset cero',
+      );
+    }
+
+    server.rows.addAll(const [
+      {'id': 'user-a', 'role': 'user', 'content': 'turno A ya durable'},
+      {
+        'id': 'answer-a',
+        'role': 'assistant',
+        'content': 'respuesta final A ya durable',
+      },
+    ]);
+    gateway.snapshot = snapshotFor(server.rows);
+    await chat.loadMessages(expectedMessageCount: server.rows.length);
+
+    expect(
+      chat.messages.any(
+        (message) => message['_localTerminalProjectionId'] != null,
+      ),
+      isFalse,
+    );
+
+    final shiftedRows = _rows(130, from: 1000);
+    server.paginate = true;
+    server.rows
+      ..clear()
+      ..addAll(shiftedRows);
+    gateway.snapshot = snapshotFor(shiftedRows);
+    await chat.loadMessages(expectedMessageCount: shiftedRows.length);
+
+    expect(chat.messages.any((message) => message['id'] == 1129), isTrue);
+    expect(chat.hasEarlierMessages, isTrue);
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(chat.messages.any((message) => message['id'] == 1000), isTrue);
+  });
+
+  test('valla terminal atraviesa más de 120 tools hasta acreditar su user canónico', () async {
+    final initialRows = <Map<String, dynamic>>[
+      {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
+      {
+        'id': 'old-answer',
+        'role': 'assistant',
+        'content': 'respuesta anterior',
+      },
+    ];
+    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-terminal-tool-overflow',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: false,
-        messageCount: server.rows.length,
-        hydrating: true,
+        messagesProvided: true,
+        messageCount: initialRows.length,
+        messages: initialRows
+            .map((row) => DesktopSessionMessage.tryParse(row)!)
+            .toList(growable: false),
       );
+    final chat = _chat(
+      'terminal-tool-overflow',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: server.rows.length);
-      expect(chat.hasEarlierMessages, isTrue);
-      expect(
-        chat.messages.any(
-          (message) => message['content'] == 'respuesta final A',
-        ),
-        isTrue,
-      );
+    await chat.loadMessages(expectedMessageCount: initialRows.length);
+    await chat.send(
+      fullText: 'turno A con muchas tools',
+      model: 'hermes-agent',
+      history: chat.buildHistory(),
+    );
+    gateway.emit(
+      'message.complete',
+      payload: const {'text': 'respuesta final A'},
+    );
+    for (
+      var attempt = 0;
+      attempt < 100 && chat.state != ChatPipelineState.completed;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    expect(chat.state, ChatPipelineState.completed);
 
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(server.requests.last.queryParameters['offset'], '0');
-      expect(chat.hasEarlierMessages, isTrue);
-      expect(
-        chat.messages.any(
-          (message) => message['_localTerminalProjectionId'] != null,
-        ),
-        isTrue,
-      );
-
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(server.requests.last.queryParameters['offset'], '120');
-      expect(chat.hasEarlierMessages, isFalse);
-      expect(
-        chat.messages.any((message) => message['id'] == 'user-a-overflow'),
-        isTrue,
-      );
-      expect(
-        chat.messages.any(
-          (message) => message['_localTerminalProjectionId'] != null,
-        ),
-        isFalse,
-      );
-    },
-  );
-
-  test(
-    'valla provisional poda IDs viejos si la cola de 120 pertenece a una compactación',
-    () async {
-      final initialRows = <Map<String, dynamic>>[
-        {'id': 'ghost-user', 'role': 'user', 'content': 'turno compactado'},
-        {
-          'id': 'ghost-answer',
-          'role': 'assistant',
-          'content': 'respuesta compactada',
+    server
+      ..paginate = true
+      ..rows.addAll([
+        const {
+          'id': 'user-a-overflow',
+          'role': 'user',
+          'content': 'turno A con muchas tools',
         },
-      ];
-      final server = _TranscriptServer(paginate: false)
-        ..rows.addAll(initialRows);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-terminal-tool-compaction',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: true,
-          messageCount: initialRows.length,
-          messages: initialRows
-              .map((row) => DesktopSessionMessage.tryParse(row)!)
-              .toList(growable: false),
-        );
-      final chat = _chat(
-        'terminal-tool-compaction',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
-
-      await chat.loadMessages(expectedMessageCount: initialRows.length);
-      await chat.send(
-        fullText: 'turno después de compactar',
-        model: 'hermes-agent',
-        history: chat.buildHistory(),
-      );
-      gateway.emit(
-        'message.complete',
-        payload: const {'text': 'respuesta local tras compactar'},
-      );
-      for (
-        var attempt = 0;
-        attempt < 100 && chat.state != ChatPipelineState.completed;
-        attempt++
-      ) {
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-
-      server.paginate = true;
-      server.rows
-        ..clear()
-        ..addAll([
-          const {
-            'id': 'compact-current-user',
-            'role': 'user',
-            'content': 'turno después de compactar',
+        const {
+          'id': 'answer-a-overflow',
+          'role': 'assistant',
+          'content': 'respuesta final A',
+        },
+        for (var index = 0; index < 120; index++)
+          {
+            'id': 'tool-a-$index',
+            'role': 'tool',
+            'content': 'resultado tool $index',
           },
-          const {
-            'id': 'compact-current-answer',
-            'role': 'assistant',
-            'content': 'respuesta local tras compactar',
-          },
-          for (var index = 0; index < 120; index++)
-            {
-              'id': 'compact-tool-$index',
-              'role': 'tool',
-              'content': 'tool compactada $index',
-            },
-        ]);
-      gateway.snapshot = DesktopSessionSnapshot(
+      ]);
+    gateway.snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-terminal-tool-overflow',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: server.rows.length,
+      hydrating: true,
+    );
+
+    await chat.loadMessages(expectedMessageCount: server.rows.length);
+    expect(chat.hasEarlierMessages, isTrue);
+    expect(
+      chat.messages.any((message) => message['content'] == 'respuesta final A'),
+      isTrue,
+    );
+
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '0');
+    expect(chat.hasEarlierMessages, isTrue);
+    expect(
+      chat.messages.any(
+        (message) => message['_localTerminalProjectionId'] != null,
+      ),
+      isFalse,
+    );
+
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '120');
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(
+      chat.messages.any((message) => message['id'] == 'user-a-overflow'),
+      isTrue,
+    );
+    expect(
+      chat.messages.any(
+        (message) => message['_localTerminalProjectionId'] != null,
+      ),
+      isFalse,
+    );
+  });
+
+  test('valla provisional poda IDs viejos si la cola de 120 pertenece a una compactación', () async {
+    final initialRows = <Map<String, dynamic>>[
+      {'id': 'ghost-user', 'role': 'user', 'content': 'turno compactado'},
+      {
+        'id': 'ghost-answer',
+        'role': 'assistant',
+        'content': 'respuesta compactada',
+      },
+    ];
+    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-terminal-tool-compaction',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: false,
-        messageCount: server.rows.length,
-        hydrating: true,
+        messagesProvided: true,
+        messageCount: initialRows.length,
+        messages: initialRows
+            .map((row) => DesktopSessionMessage.tryParse(row)!)
+            .toList(growable: false),
       );
+    final chat = _chat(
+      'terminal-tool-compaction',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: server.rows.length);
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(server.requests.last.queryParameters['offset'], '0');
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(server.requests.last.queryParameters['offset'], '120');
+    await chat.loadMessages(expectedMessageCount: initialRows.length);
+    await chat.send(
+      fullText: 'turno después de compactar',
+      model: 'hermes-agent',
+      history: chat.buildHistory(),
+    );
+    gateway.emit(
+      'message.complete',
+      payload: const {'text': 'respuesta local tras compactar'},
+    );
+    for (
+      var attempt = 0;
+      attempt < 100 && chat.state != ChatPipelineState.completed;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
 
-      expect(chat.hasEarlierMessages, isFalse);
-      expect(
-        chat.messages.any((message) => message['id'] == 'ghost-user'),
-        isFalse,
-      );
-      expect(
-        chat.messages.any((message) => message['id'] == 'ghost-answer'),
-        isFalse,
-      );
-      expect(
-        chat.messages.any(
-          (message) => message['content'] == 'respuesta local tras compactar',
-        ),
-        isTrue,
-      );
-    },
-  );
+    server.paginate = true;
+    server.rows
+      ..clear()
+      ..addAll([
+        const {
+          'id': 'compact-current-user',
+          'role': 'user',
+          'content': 'turno después de compactar',
+        },
+        const {
+          'id': 'compact-current-answer',
+          'role': 'assistant',
+          'content': 'respuesta local tras compactar',
+        },
+        for (var index = 0; index < 120; index++)
+          {
+            'id': 'compact-tool-$index',
+            'role': 'tool',
+            'content': 'tool compactada $index',
+          },
+      ]);
+    gateway.snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-terminal-tool-compaction',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: server.rows.length,
+      hydrating: true,
+    );
 
-  test(
-    'compactación conserva inflight y assistant terminal sin fusionarlo por texto',
-    () async {
-      final server = _TranscriptServer(paginate: true)..healthy = false;
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-canonical-terminal-compaction',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: true,
-          messageCount: 121,
-          hydrating: true,
-          messages: [
-            DesktopSessionMessage.tryParse(const {
-              'message_id': 'canonical-current-user',
-              'role': 'user',
-              'content': 'turno canónico aún no compactado',
-            })!,
-          ],
-          running: true,
-          inflight: DesktopInflightTurn(
-            user: 'turno canónico aún no compactado',
-            assistant: 'respuesta parcial de Desktop',
-            streaming: true,
-          ),
-        );
-      final chat = _chat(
-        'canonical-terminal-compaction',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
+    await chat.loadMessages(expectedMessageCount: server.rows.length);
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '0');
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '120');
 
-      await chat.loadMessages(expectedMessageCount: 121);
-      expect(
-        chat.messages.where(
-          (message) =>
-              canonicalTranscriptMessageId(message) == 'canonical-current-user',
-        ),
-        hasLength(1),
-      );
-      gateway.emit(
-        'message.complete',
-        payload: const {'text': 'respuesta terminal local completa'},
-      );
-      for (
-        var attempt = 0;
-        attempt < 200 && chat.state != ChatPipelineState.completed;
-        attempt++
-      ) {
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      expect(chat.state, ChatPipelineState.completed);
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(
+      chat.messages.any((message) => message['id'] == 'ghost-user'),
+      isFalse,
+    );
+    expect(
+      chat.messages.any((message) => message['id'] == 'ghost-answer'),
+      isFalse,
+    );
+    expect(
+      chat.messages.any(
+        (message) => message['content'] == 'respuesta local tras compactar',
+      ),
+      isTrue,
+    );
+  });
 
-      // El transcript sufrió una compactación que ya no contiene el turno
-      // terminal. La cola llena lo conserva provisionalmente y la página corta
-      // acredita el inicio, pero no acredita esa valla concreta.
-      server
-        ..healthy = true
-        ..rows.addAll(_rows(121, from: 5000));
-      gateway.resumeError = StateError('snapshot todavía no disponible');
-      gateway.snapshot = const DesktopSessionSnapshot(
+  test('compactación conserva inflight y assistant terminal sin fusionarlo por texto', () async {
+    final server = _TranscriptServer(paginate: true)..healthy = false;
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-canonical-terminal-compaction',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: false,
+        messagesProvided: true,
         messageCount: 121,
         hydrating: true,
+        messages: [
+          DesktopSessionMessage.tryParse(const {
+            'message_id': 'canonical-current-user',
+            'role': 'user',
+            'content': 'turno canónico aún no compactado',
+          })!,
+        ],
+        running: true,
+        inflight: DesktopInflightTurn(
+          user: 'turno canónico aún no compactado',
+          assistant: 'respuesta parcial de Desktop',
+          streaming: true,
+        ),
       );
+    final chat = _chat(
+      'canonical-terminal-compaction',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: 121);
-      expect(
-        chat.messages.any(
-          (message) =>
-              message['content'] == 'respuesta terminal local completa',
-        ),
-        isTrue,
-      );
-      expect(await chat.loadEarlierMessages(), isTrue);
-      expect(server.requests.last.queryParameters['offset'], '120');
+    await chat.loadMessages(expectedMessageCount: 121);
+    expect(
+      chat.internalMessagesForTesting.where(
+        (message) =>
+            canonicalTranscriptMessageId(message) == 'canonical-current-user',
+      ),
+      hasLength(1),
+    );
+    gateway.emit(
+      'message.complete',
+      payload: const {'text': 'respuesta terminal local completa'},
+    );
+    for (
+      var attempt = 0;
+      attempt < 200 && chat.state != ChatPipelineState.completed;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    expect(chat.state, ChatPipelineState.completed);
 
-      expect(chat.hasEarlierMessages, isFalse);
-      expect(
-        chat.messages.where(
-          (message) =>
-              canonicalTranscriptMessageId(message) == 'canonical-current-user',
-        ),
-        isEmpty,
+    // El transcript sufrió una compactación que ya no contiene el turno
+    // terminal. La cola llena lo conserva provisionalmente y la página corta
+    // acredita el inicio, pero no acredita esa valla concreta.
+    server
+      ..healthy = true
+      ..rows.addAll(_rows(121, from: 5000));
+    gateway.resumeError = StateError('snapshot todavía no disponible');
+    gateway.snapshot = const DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-canonical-terminal-compaction',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: 121,
+      hydrating: true,
+    );
+
+    await chat.loadMessages(expectedMessageCount: 121);
+    expect(
+      chat.messages.any(
+        (message) => message['content'] == 'respuesta terminal local completa',
+      ),
+      isTrue,
+    );
+    expect(await chat.loadEarlierMessages(), isTrue);
+    expect(server.requests.last.queryParameters['offset'], '120');
+
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(
+      chat.internalMessagesForTesting.where(
+        (message) =>
+            canonicalTranscriptMessageId(message) == 'canonical-current-user',
+      ),
+      isEmpty,
+    );
+    expect(
+      chat.messages.where(
+        (message) => message['content'] == 'respuesta terminal local completa',
+      ),
+      hasLength(1),
+    );
+    expect(
+      chat.messages.where(
+        (message) =>
+            isRealUserTurn(message) &&
+            message['content'] == 'turno canónico aún no compactado',
+      ),
+      hasLength(1),
+    );
+    final terminalAssistantIndex = chat.messages.indexWhere(
+      (message) => message['content'] == 'respuesta terminal local completa',
+    );
+    final terminalUserIndex = chat.messages.indexWhere(
+      (message) =>
+          isRealUserTurn(message) &&
+          message['content'] == 'turno canónico aún no compactado',
+    );
+    expect(terminalAssistantIndex + 1, terminalUserIndex);
+
+    server.rows.addAll(const [
+      {
+        'id': 5121,
+        'message_id': 'newer-durable-user',
+        'role': 'user',
+        'content': 'turno durable posterior',
+      },
+      {
+        'id': 5122,
+        'message_id': 'newer-durable-assistant',
+        'role': 'assistant',
+        'content': 'respuesta durable posterior',
+      },
+    ]);
+
+    Future<void> expectStableChronology() async {
+      await chat.loadMessages(expectedMessageCount: server.rows.length);
+      final messages = chat.internalMessagesForTesting;
+      final newerAssistant = messages.indexWhere(
+        (message) => message['message_id'] == 'newer-durable-assistant',
       );
-      expect(
-        chat.messages.where(
-          (message) =>
-              message['content'] == 'respuesta terminal local completa',
-        ),
-        hasLength(1),
+      final newerUser = messages.indexWhere(
+        (message) => message['message_id'] == 'newer-durable-user',
       );
-      expect(
-        chat.messages.where(
-          (message) =>
-              isRealUserTurn(message) &&
-              message['content'] == 'turno canónico aún no compactado',
-        ),
-        hasLength(1),
-      );
-      final terminalAssistantIndex = chat.messages.indexWhere(
+      final compactedAssistant = messages.indexWhere(
         (message) => message['content'] == 'respuesta terminal local completa',
       );
-      final terminalUserIndex = chat.messages.indexWhere(
+      final compactedUser = messages.indexWhere(
         (message) =>
             isRealUserTurn(message) &&
             message['content'] == 'turno canónico aún no compactado',
       );
-      expect(terminalAssistantIndex + 1, terminalUserIndex);
-    },
-  );
+      expect(newerAssistant, greaterThanOrEqualTo(0));
+      expect(newerUser, newerAssistant + 1);
+      expect(compactedAssistant, greaterThan(newerUser));
+      expect(compactedUser, compactedAssistant + 1);
+      final compacted = messages.where(
+        (message) => message['_localCompactedTerminalProjection'] != null,
+      );
+      expect(compacted, hasLength(2));
+      expect(
+        compacted.every(
+          (message) =>
+              canonicalTranscriptIdentity(message) == null &&
+              message['_localTerminalProjectionId'] == null,
+        ),
+        isTrue,
+      );
+    }
+
+    await expectStableChronology();
+    await expectStableChronology();
+    expect(
+      chat.messages.where(
+        (message) =>
+            message['content'] == 'respuesta terminal local completa' ||
+            (isRealUserTurn(message) &&
+                message['content'] == 'turno canónico aún no compactado'),
+      ),
+      hasLength(2),
+    );
+  });
 
   test('tombstone huérfano no fuerza paginar fuera de la cola', () async {
     final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
@@ -3212,7 +4839,7 @@ void main() {
   );
 
   test(
-    'terminal rápido se reaplica tras persistir el binding de un Stop id-less',
+    '[console-state 4/7] terminal override survives tombstone metadata await',
     () async {
       final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(200));
       final gateway = _DeferrableGateway()
@@ -3563,61 +5190,60 @@ void main() {
     expect(chat.messages.any((message) => message['id'] == 179), isTrue);
   });
 
-  test(
-    'backfill asocia tool result con su image_generate al cruzar el corte de página',
-    () async {
-      final server = _TranscriptServer(paginate: true)
-        ..rows.addAll([
-          for (var id = 1; id <= 178; id++)
-            {'id': id, 'role': 'system', 'content': 'relleno $id'},
-          {'id': 179, 'role': 'user', 'content': 'genera una imagen'},
-          {
-            'id': 180,
-            'role': 'assistant',
-            'content': '',
-            'tool_calls': [
-              {
-                'id': 'call-page-image',
-                'type': 'function',
-                'function': {
-                  'name': 'image_generate',
-                  'arguments': '{"prompt":"page boundary"}',
-                },
+  test('backfill asocia tool result con su image_generate al cruzar el corte de página', () async {
+    final server = _TranscriptServer(paginate: true)
+      ..rows.addAll([
+        for (var id = 1; id <= 178; id++)
+          {'id': id, 'role': 'system', 'content': 'relleno $id'},
+        {'id': 179, 'role': 'user', 'content': 'genera una imagen'},
+        {
+          'id': 180,
+          'role': 'assistant',
+          'content': '',
+          'tool_calls': [
+            {
+              'id': 'call-page-image',
+              'type': 'function',
+              'function': {
+                'name': 'image_generate',
+                'arguments': '{"prompt":"page boundary"}',
               },
-            ],
-          },
-          {
-            'id': 181,
-            'role': 'tool',
-            'tool_call_id': 'call-page-image',
-            'content':
-                '{"success":true,"host_image":"/home/hermes/.hermes/cache/images/page-boundary.png"}',
-          },
-          {'id': 182, 'role': 'assistant', 'content': 'Imagen terminada.'},
-          for (var id = 183; id <= 300; id++)
-            {'id': id, 'role': 'system', 'content': 'relleno $id'},
-        ]);
-      final chat = _chat('image-page-boundary', server.client());
-      addTearDown(chat.dispose);
+            },
+          ],
+        },
+        {
+          'id': 181,
+          'role': 'tool',
+          'tool_call_id': 'call-page-image',
+          'content': '{"success":true,"host_image":"/home/hermes/.hermes/cache/images/page-boundary.png"}',
+        },
+        {'id': 182, 'role': 'assistant', 'content': 'Imagen terminada.'},
+        for (var id = 183; id <= 300; id++)
+          {'id': id, 'role': 'system', 'content': 'relleno $id'},
+      ]);
+    final chat = _chat('image-page-boundary', server.client());
+    addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: 300);
+    await chat.loadMessages(expectedMessageCount: 300);
 
-      final finalAssistant = chat.messages.singleWhere(
-        (message) => message['id'] == 182,
-      );
-      expect(_generatedImageRefs(finalAssistant), isEmpty);
+    final finalAssistant = chat.messages.singleWhere(
+      (message) => message['id'] == 182,
+    );
+    final initialRefs = _generatedImageRefs(finalAssistant);
+    expect(initialRefs, hasLength(1));
+    expect(initialRefs.single['basename'], 'page-boundary.png');
+    expect(initialRefs.single['tool_call_id'], 'call-page-image');
 
-      expect(await chat.loadEarlierMessages(), isTrue);
+    expect(await chat.loadEarlierMessages(), isTrue);
 
-      final hydratedAssistant = chat.messages.singleWhere(
-        (message) => message['id'] == 182,
-      );
-      final refs = _generatedImageRefs(hydratedAssistant);
-      expect(refs, hasLength(1));
-      expect(refs.single['basename'], 'page-boundary.png');
-      expect(refs.single['tool_call_id'], 'call-page-image');
-    },
-  );
+    final hydratedAssistant = chat.messages.singleWhere(
+      (message) => message['id'] == 182,
+    );
+    final refs = _generatedImageRefs(hydratedAssistant);
+    expect(refs, hasLength(1));
+    expect(refs.single['basename'], 'page-boundary.png');
+    expect(refs.single['tool_call_id'], 'call-page-image');
+  });
 
   test('gateway legacy sin metadata pagination: transcript one-shot', () async {
     final server = _TranscriptServer(paginate: false)..rows.addAll(_rows(300));
@@ -3630,6 +5256,15 @@ void main() {
     expect(chat.messages.first['content'], 'msg 300');
     expect(chat.hasEarlierMessages, isFalse);
     expect(await chat.loadEarlierMessages(), isFalse);
+    expect(chat.coreReadLineageComplete, isFalse);
+    expect(chat.coreReadCoverageIsPartial, isTrue);
+    expect(
+      chat.coreReadCoverage,
+      containsAll(<CoreReadCoverage>{
+        CoreReadCoverage.tipOnly,
+        CoreReadCoverage.metadataPartial,
+      }),
+    );
     expect(server.requests, hasLength(1));
   });
 
@@ -3887,7 +5522,7 @@ void main() {
   );
 
   test(
-    'refresh anclado falla cerrado ante un prefijo histórico sin id',
+    'refresh descarta un tool privado sin id y adopta la fila pública nueva',
     () async {
       final server = _TranscriptServer(paginate: false)
         ..rows.addAll(_rows(120));
@@ -3895,7 +5530,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 120);
-      chat.messages.add(const {
+      chat.internalMessagesForTesting.add(const {
         'role': 'tool',
         'content': 'resultado histórico legítimo sin identidad durable',
       });
@@ -3911,7 +5546,7 @@ void main() {
               message['content'] ==
               'resultado histórico legítimo sin identidad durable',
         ),
-        isTrue,
+        isFalse,
       );
       expect(chat.messages.any((message) => message['id'] == 121), isFalse);
       expect(chat.messages.any((message) => message['id'] == 120), isTrue);
@@ -3919,7 +5554,7 @@ void main() {
   );
 
   test(
-    'refresh anclado tampoco descarta una fila sin id más nueva que el ancla',
+    'refresh descarta un tool privado nuevo sin id y conserva la cola pública',
     () async {
       final server = _TranscriptServer(paginate: false)
         ..rows.addAll(_rows(120));
@@ -3927,7 +5562,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 120);
-      chat.messages.insert(0, const {
+      chat.internalMessagesForTesting.insert(0, const {
         'role': 'tool',
         'content': 'tool visible sin id delante del ancla',
       });
@@ -3942,7 +5577,7 @@ void main() {
           (message) =>
               message['content'] == 'tool visible sin id delante del ancla',
         ),
-        isTrue,
+        isFalse,
       );
       expect(chat.messages.any((message) => message['id'] == 121), isFalse);
       expect(chat.messages.any((message) => message['id'] == 120), isTrue);
@@ -3957,7 +5592,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 2);
-      chat.messages.insertAll(0, [
+      chat.internalMessagesForTesting.insertAll(0, [
         {
           'role': 'assistant_error',
           'content': 'sin conexión',
@@ -4023,7 +5658,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 4);
-      chat.messages.insert(2, const {
+      chat.internalMessagesForTesting.insert(2, const {
         'role': 'assistant',
         'content': 'parcial local que Stop debe retirar',
         '_cancelled': true,
@@ -4089,7 +5724,7 @@ void main() {
         ]);
       final chat = _chat('local-error-repeated-user', server.client());
       addTearDown(chat.dispose);
-      chat.messages.addAll(const [
+      chat.internalMessagesForTesting.addAll(const [
         {
           'role': 'assistant_error',
           'content': 'fallo local recuperable',
@@ -4138,7 +5773,7 @@ void main() {
         ]);
       final chat = _chat('two-identical-local-errors', server.client());
       addTearDown(chat.dispose);
-      chat.messages.addAll([
+      chat.internalMessagesForTesting.addAll([
         {
           'role': 'assistant_error',
           'content': 'sin conexión',
@@ -4173,7 +5808,7 @@ void main() {
         hasLength(3),
       );
       expect(
-        chat.messages
+        chat.internalMessagesForTesting
             .where((message) => message['role'] == 'assistant_error')
             .map((message) => message['_localTranscriptProjectionId'])
             .toSet(),
@@ -4350,7 +5985,8 @@ void main() {
     await chat.loadMessages(expectedMessageCount: 121);
     expect(await chat.loadEarlierMessages(), isTrue);
 
-    expect(chat.messages, hasLength(121));
+    expect(chat.messages, hasLength(2));
+    expect(chat.messages.any((message) => message['role'] == 'tool'), isFalse);
     expect(
       chat.messages.where((message) => message['content'] == 'fila numérica'),
       hasLength(1),
@@ -4387,24 +6023,28 @@ void main() {
     },
   );
 
-  test('refresh id-less tras backfill no duplica la cola solapada', () async {
-    final server = _TranscriptServer(paginate: true)
-      ..rows.addAll([
-        for (var index = 0; index < 121; index++)
-          const {'role': 'assistant', 'content': 'respuesta idéntica'},
-      ]);
-    final chat = _chat('idless-refresh', server.client());
-    addTearDown(chat.dispose);
+  test(
+    'refresh id-less tras backfill no duplica y mantiene reparación abierta',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          for (var index = 0; index < 121; index++)
+            const {'role': 'assistant', 'content': 'respuesta idéntica'},
+        ]);
+      final chat = _chat('idless-refresh', server.client());
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(expectedMessageCount: 121);
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(chat.messages, hasLength(121));
+      await chat.loadMessages(expectedMessageCount: 121);
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(121));
 
-    await chat.loadMessages(expectedMessageCount: 121);
+      await chat.loadMessages(expectedMessageCount: 121);
 
-    expect(chat.messages, hasLength(121));
-    expect(chat.hasEarlierMessages, isFalse);
-  });
+      expect(chat.messages, hasLength(121));
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(chat.coreReadLineageComplete, isFalse);
+    },
+  );
 
   test(
     'página vacía tras múltiplo exacto conserva el backfill al refrescar',
@@ -4670,46 +6310,135 @@ void main() {
     },
   );
 
-  test(
-    'resume_progress no fusiona canonical e inflight idénticos sin ID compartido',
-    () async {
+  test('resume_progress no fusiona canonical e inflight idénticos sin ID compartido', () async {
+    final server = _TranscriptServer(paginate: true);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-live-canonical-overlay',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 2,
+        hydrating: true,
+        running: true,
+        inflight: DesktopInflightTurn(
+          user: 'turno current canónico',
+          assistant: 'respuesta parcial current suficientemente larga',
+          streaming: true,
+        ),
+      );
+    final chat = _chat(
+      'live-canonical-overlay',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(expectedMessageCount: 2);
+    server.rows.addAll(const [
+      {
+        'id': 'current-user',
+        'role': 'user',
+        'content': 'turno current canónico',
+      },
+      {
+        'id': 'current-answer',
+        'role': 'assistant',
+        'content': 'respuesta parcial current suficientemente larga',
+      },
+    ]);
+    gateway.emitResumeProgress('complete', messageCount: 2);
+    for (
+      var attempt = 0;
+      attempt < 100 && server.requests.length < 2;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 1));
+    }
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    expect(
+      chat.messages.where(
+        (message) => message['content'] == 'turno current canónico',
+      ),
+      hasLength(2),
+    );
+    expect(
+      chat.messages.where(
+        (message) =>
+            message['content'] ==
+            'respuesta parcial current suficientemente larga',
+      ),
+      hasLength(2),
+    );
+    expect(chat.isStreaming, isTrue);
+    expect(
+      chat.internalMessagesForTesting.where(
+        (message) => message['_desktopSnapshotKind'] == 'inflight',
+      ),
+      hasLength(2),
+    );
+    expect(
+      chat.messages.where((message) => message['id'] == 'current-user'),
+      hasLength(1),
+    );
+    expect(
+      chat.messages.where((message) => message['id'] == 'current-answer'),
+      hasLength(1),
+    );
+  });
+
+  test('hidratación live no inventa equivalencia si falta assistant o cambia su texto', () async {
+    for (final durableRows in <List<Map<String, dynamic>>>[
+      const [
+        {
+          'id': 'ambiguous-user-only',
+          'role': 'user',
+          'content': 'prompt repetido ambiguo',
+        },
+      ],
+      const [
+        {
+          'id': 'old-repeated-user',
+          'role': 'user',
+          'content': 'prompt repetido ambiguo',
+        },
+        {
+          'id': 'old-repeated-answer',
+          'role': 'assistant',
+          'content': 'respuesta anterior distinta',
+        },
+      ],
+    ]) {
       final server = _TranscriptServer(paginate: true);
+      final suffix = durableRows.length;
       final gateway = _DeferrableGateway()
         ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-live-canonical-overlay',
+          runtimeSessionId: 'runtime-ambiguous-live-$suffix',
           storedSessionId: 'stored-chat',
           created: false,
           messagesProvided: false,
-          messageCount: 2,
+          messageCount: durableRows.length,
           hydrating: true,
           running: true,
           inflight: DesktopInflightTurn(
-            user: 'turno current canónico',
-            assistant: 'respuesta parcial current suficientemente larga',
+            user: 'prompt repetido ambiguo',
+            assistant: 'respuesta nueva current claramente distinta',
             streaming: true,
           ),
         );
       final chat = _chat(
-        'live-canonical-overlay',
+        'ambiguous-live-$suffix',
         server.client(),
         gateway: gateway,
       );
       addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: 2);
-      server.rows.addAll(const [
-        {
-          'id': 'current-user',
-          'role': 'user',
-          'content': 'turno current canónico',
-        },
-        {
-          'id': 'current-answer',
-          'role': 'assistant',
-          'content': 'respuesta parcial current suficientemente larga',
-        },
-      ]);
-      gateway.emitResumeProgress('complete', messageCount: 2);
+      await chat.loadMessages(expectedMessageCount: durableRows.length);
+      server.rows.addAll(durableRows);
+      gateway.emitResumeProgress('complete', messageCount: durableRows.length);
       for (
         var attempt = 0;
         attempt < 100 && server.requests.length < 2;
@@ -4723,111 +6452,13 @@ void main() {
 
       expect(
         chat.messages.where(
-          (message) => message['content'] == 'turno current canónico',
+          (message) => message['content'] == 'prompt repetido ambiguo',
         ),
         hasLength(2),
+        reason: 'durableRows=${durableRows.length}',
       );
-      expect(
-        chat.messages.where(
-          (message) =>
-              message['content'] ==
-              'respuesta parcial current suficientemente larga',
-        ),
-        hasLength(2),
-      );
-      expect(chat.isStreaming, isTrue);
-      expect(
-        chat.messages.where(
-          (message) => message['_desktopSnapshotKind'] == 'inflight',
-        ),
-        hasLength(2),
-      );
-      expect(
-        chat.messages.where((message) => message['id'] == 'current-user'),
-        hasLength(1),
-      );
-      expect(
-        chat.messages.where((message) => message['id'] == 'current-answer'),
-        hasLength(1),
-      );
-    },
-  );
-
-  test(
-    'hidratación live no inventa equivalencia si falta assistant o cambia su texto',
-    () async {
-      for (final durableRows in <List<Map<String, dynamic>>>[
-        const [
-          {
-            'id': 'ambiguous-user-only',
-            'role': 'user',
-            'content': 'prompt repetido ambiguo',
-          },
-        ],
-        const [
-          {
-            'id': 'old-repeated-user',
-            'role': 'user',
-            'content': 'prompt repetido ambiguo',
-          },
-          {
-            'id': 'old-repeated-answer',
-            'role': 'assistant',
-            'content': 'respuesta anterior distinta',
-          },
-        ],
-      ]) {
-        final server = _TranscriptServer(paginate: true);
-        final suffix = durableRows.length;
-        final gateway = _DeferrableGateway()
-          ..snapshot = DesktopSessionSnapshot(
-            runtimeSessionId: 'runtime-ambiguous-live-$suffix',
-            storedSessionId: 'stored-chat',
-            created: false,
-            messagesProvided: false,
-            messageCount: durableRows.length,
-            hydrating: true,
-            running: true,
-            inflight: DesktopInflightTurn(
-              user: 'prompt repetido ambiguo',
-              assistant: 'respuesta nueva current claramente distinta',
-              streaming: true,
-            ),
-          );
-        final chat = _chat(
-          'ambiguous-live-$suffix',
-          server.client(),
-          gateway: gateway,
-        );
-        addTearDown(chat.dispose);
-
-        await chat.loadMessages(expectedMessageCount: durableRows.length);
-        server.rows.addAll(durableRows);
-        gateway.emitResumeProgress(
-          'complete',
-          messageCount: durableRows.length,
-        );
-        for (
-          var attempt = 0;
-          attempt < 100 && server.requests.length < 2;
-          attempt++
-        ) {
-          await Future<void>.delayed(const Duration(milliseconds: 1));
-        }
-        for (var attempt = 0; attempt < 20; attempt++) {
-          await Future<void>.delayed(Duration.zero);
-        }
-
-        expect(
-          chat.messages.where(
-            (message) => message['content'] == 'prompt repetido ambiguo',
-          ),
-          hasLength(2),
-          reason: 'durableRows=${durableRows.length}',
-        );
-      }
-    },
-  );
+    }
+  });
 
   test('REST id-less más inflight homónimo falla cerrado ante Stop', () async {
     final rows = <Map<String, dynamic>>[
@@ -4996,7 +6627,10 @@ void main() {
         chat.messages.where(
           (message) => message['content'] == 'turno current durable',
         ),
-        hasLength(3),
+        hasLength(2),
+        reason:
+            'Console posee este mismo turno: optimista y durable sobreviven, '
+            'pero el inflight ya representado no añade una tercera burbuja',
       );
 
       await expectLater(chat.cancel(), throwsStateError);
@@ -5006,87 +6640,78 @@ void main() {
     },
   );
 
-  test(
-    'Stop no confunde con el turno actual una fila histórica tardía homónima',
-    () async {
-      final initialRows = <Map<String, dynamic>>[
-        {
-          'id': 101,
-          'role': 'user',
-          'content': 'turno anterior',
-          'timestamp': 10,
-        },
-        {
-          'id': 102,
-          'role': 'assistant',
-          'content': 'respuesta anterior',
-          'timestamp': 20,
-        },
-        {
-          'role': 'user',
-          'content': 'turno histórico sin identidad',
-          'timestamp': 30,
-        },
-      ];
-      final server = _TranscriptServer(paginate: true)
-        ..rows.addAll(initialRows);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-used-session-stop',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: false,
-          messageCount: initialRows.length,
-        );
-      final recorded = <CancelledTurnTombstone>[];
-      final chat = _chat(
-        'used-session-stop',
-        server.client(),
-        gateway: gateway,
-        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
-      );
-      addTearDown(chat.dispose);
-
-      await chat.loadMessages(expectedMessageCount: initialRows.length);
-      await chat.send(
-        fullText: 'turno actual que debe parar',
-        model: 'hermes-agent',
-        history: chat.buildHistory(),
-      );
-      server.rows.add(const {
-        'id': 301,
+  test('Stop no confunde con el turno actual una fila histórica tardía homónima', () async {
+    final initialRows = <Map<String, dynamic>>[
+      {'id': 101, 'role': 'user', 'content': 'turno anterior', 'timestamp': 10},
+      {
+        'id': 102,
+        'role': 'assistant',
+        'content': 'respuesta anterior',
+        'timestamp': 20,
+      },
+      {
         'role': 'user',
-        'content': 'turno actual que debe parar',
-        'timestamp': 99,
-      });
-      gateway.snapshot = DesktopSessionSnapshot(
+        'content': 'turno histórico sin identidad',
+        'timestamp': 30,
+      },
+    ];
+    final server = _TranscriptServer(paginate: true)..rows.addAll(initialRows);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-used-session-stop',
         storedSessionId: 'stored-chat',
         created: false,
         messagesProvided: false,
-        messageCount: server.rows.length,
-        running: true,
-        inflight: DesktopInflightTurn(
-          user: 'turno actual que debe parar',
-          streaming: true,
-          startedAt: DateTime.fromMillisecondsSinceEpoch(100000, isUtc: true),
-        ),
+        messageCount: initialRows.length,
       );
+    final recorded = <CancelledTurnTombstone>[];
+    final chat = _chat(
+      'used-session-stop',
+      server.client(),
+      gateway: gateway,
+      onCancelledTurn: (tombstone) async => recorded.add(tombstone),
+    );
+    addTearDown(chat.dispose);
 
-      final requestsBeforeStop = server.requests.length;
-      await expectLater(chat.cancel(), throwsStateError);
+    await chat.loadMessages(expectedMessageCount: initialRows.length);
+    await chat.send(
+      fullText: 'turno actual que debe parar',
+      model: 'hermes-agent',
+      history: chat.buildHistory(),
+    );
+    server.rows.add(const {
+      'id': 301,
+      'role': 'user',
+      'content': 'turno actual que debe parar',
+      'timestamp': 99,
+    });
+    gateway.snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-used-session-stop',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: server.rows.length,
+      running: true,
+      inflight: DesktopInflightTurn(
+        user: 'turno actual que debe parar',
+        streaming: true,
+        startedAt: DateTime.fromMillisecondsSinceEpoch(100000, isUtc: true),
+      ),
+    );
 
-      expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
-      expect(
-        server.requests,
-        hasLength(requestsBeforeStop + 1),
-        reason:
-            'la página se consulta, pero su fila anterior a inflight.started_at '
-            'no acredita el turno vivo',
-      );
-    },
-  );
+    final requestsBeforeStop = server.requests.length;
+    await expectLater(chat.cancel(), throwsStateError);
+
+    expect(recorded, isEmpty);
+    expect(chat.isStreaming, isTrue);
+    expect(
+      server.requests,
+      hasLength(requestsBeforeStop + 1),
+      reason:
+          'la página se consulta, pero su fila anterior a inflight.started_at '
+          'no acredita el turno vivo',
+    );
+  });
 
   test(
     'Stop acepta una frontera homónima acreditada antes del submit',
@@ -5172,7 +6797,7 @@ void main() {
     );
     addTearDown(chat.dispose);
     chat.markStoredSessionMissing();
-    chat.messages.add(Map<String, dynamic>.of(historical));
+    chat.internalMessagesForTesting.add(Map<String, dynamic>.of(historical));
 
     final accepted = await chat.send(
       fullText: 'prompt repetido antes del repin',
@@ -5711,7 +7336,10 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 2);
-      chat.messages[1] = {...chat.messages[1], 'content': 'prompt repetido'};
+      chat.internalMessagesForTesting[1] = {
+        ...chat.messages[1],
+        'content': 'prompt repetido',
+      };
       server.healthy = false;
       gateway.snapshot = const DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-stale-hydration',
@@ -5901,148 +7529,140 @@ void main() {
     },
   );
 
-  test(
-    'snapshot omitido con count mayor degrada un fallback completo sin borrarlo',
-    () async {
-      final initialRows = <Map<String, dynamic>>[
-        {'message_id': 'fallback-user', 'role': 'user', 'content': 'pregunta'},
-        {
-          'message_id': 'fallback-answer',
-          'role': 'assistant',
-          'content': 'respuesta',
-        },
-      ];
-      final server = _TranscriptServer(paginate: false)
-        ..rows.addAll(initialRows);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-fallback-complete',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: true,
-          messages: initialRows
-              .map((row) => DesktopSessionMessage.tryParse(row)!)
-              .toList(growable: false),
-          messageCount: 2,
-        );
-      final chat = _chat(
-        'omitted-larger-count',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
-
-      await chat.loadMessages(expectedMessageCount: 2);
-      expect(chat.messages, hasLength(2));
-      expect(chat.hasEarlierMessages, isFalse);
-
-      server.healthy = false;
-      gateway.snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-fallback-omitted',
+  test('snapshot omitido con count mayor degrada un fallback completo sin borrarlo', () async {
+    final initialRows = <Map<String, dynamic>>[
+      {'message_id': 'fallback-user', 'role': 'user', 'content': 'pregunta'},
+      {
+        'message_id': 'fallback-answer',
+        'role': 'assistant',
+        'content': 'respuesta',
+      },
+    ];
+    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-fallback-complete',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: false,
-        messageCount: 300,
-        inflight: DesktopInflightTurn(
-          user: 'turno posterior activo',
-          streaming: true,
-        ),
-        running: true,
+        messagesProvided: true,
+        messages: initialRows
+            .map((row) => DesktopSessionMessage.tryParse(row)!)
+            .toList(growable: false),
+        messageCount: 2,
       );
-      await chat.loadMessages(expectedMessageCount: 300);
+    final chat = _chat(
+      'omitted-larger-count',
+      server.client(),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
 
-      expect(
-        chat.messages.any(
-          (message) => message['message_id'] == 'fallback-answer',
-        ),
-        isTrue,
-      );
-      expect(chat.hasEarlierMessages, isTrue);
-    },
-  );
+    await chat.loadMessages(expectedMessageCount: 2);
+    expect(chat.messages, hasLength(2));
+    expect(chat.hasEarlierMessages, isFalse);
 
-  test(
-    'snapshot omitido con count menor degrada un fallback completo sin borrarlo',
-    () async {
-      final initialRows = <Map<String, dynamic>>[
-        {
-          'message_id': 'compacted-fallback-user',
-          'role': 'user',
-          'content': 'prompt original',
-        },
-        {
-          'message_id': 'compacted-fallback-answer',
-          'role': 'assistant',
-          'content': 'respuesta legítima',
-        },
-      ];
-      final server = _TranscriptServer(paginate: false)
-        ..rows.addAll(initialRows);
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-before-compaction',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: true,
-          messages: initialRows
-              .map((row) => DesktopSessionMessage.tryParse(row)!)
-              .toList(growable: false),
-          messageCount: 2,
-        );
-      final chat = _chat(
-        'omitted-smaller-count',
-        server.client(),
-        gateway: gateway,
-        initialCancelledTurnTombstones: const [
-          CancelledTurnTombstone(
-            content: 'prompt repetido tras compactación',
-            firstUser: true,
-          ),
-        ],
-      );
-      addTearDown(chat.dispose);
+    server.healthy = false;
+    gateway.snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-fallback-omitted',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: 300,
+      inflight: DesktopInflightTurn(
+        user: 'turno posterior activo',
+        streaming: true,
+      ),
+      running: true,
+    );
+    await chat.loadMessages(expectedMessageCount: 300);
 
-      await chat.loadMessages(expectedMessageCount: 2);
-      expect(chat.messages, hasLength(2));
-      expect(chat.hasEarlierMessages, isFalse);
+    expect(
+      chat.messages.any(
+        (message) => message['message_id'] == 'fallback-answer',
+      ),
+      isTrue,
+    );
+    expect(chat.hasEarlierMessages, isTrue);
+  });
 
-      final userIndex = chat.messages.indexWhere(
-        (message) => message['message_id'] == 'compacted-fallback-user',
-      );
-      chat.messages[userIndex] = {
-        ...chat.messages[userIndex],
-        'content': 'prompt repetido tras compactación',
-      };
-      server.healthy = false;
-      gateway.snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-after-compaction',
+  test('snapshot omitido con count menor degrada un fallback completo sin borrarlo', () async {
+    final initialRows = <Map<String, dynamic>>[
+      {
+        'message_id': 'compacted-fallback-user',
+        'role': 'user',
+        'content': 'prompt original',
+      },
+      {
+        'message_id': 'compacted-fallback-answer',
+        'role': 'assistant',
+        'content': 'respuesta legítima',
+      },
+    ];
+    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
+    final gateway = _DeferrableGateway()
+      ..snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-before-compaction',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: false,
-        messageCount: 1,
+        messagesProvided: true,
+        messages: initialRows
+            .map((row) => DesktopSessionMessage.tryParse(row)!)
+            .toList(growable: false),
+        messageCount: 2,
       );
-
-      await chat.loadMessages(expectedMessageCount: 1);
-
-      expect(
-        chat.messages.any(
-          (message) =>
-              message['message_id'] == 'compacted-fallback-answer' &&
-              message['content'] == 'respuesta legítima',
+    final chat = _chat(
+      'omitted-smaller-count',
+      server.client(),
+      gateway: gateway,
+      initialCancelledTurnTombstones: const [
+        CancelledTurnTombstone(
+          content: 'prompt repetido tras compactación',
+          firstUser: true,
         ),
-        isTrue,
-      );
-      expect(
-        chat.messages
-            .singleWhere(
-              (message) => message['message_id'] == 'compacted-fallback-user',
-            )
-            .containsKey('_cancelledUser'),
-        isFalse,
-      );
-      expect(chat.hasEarlierMessages, isTrue);
-    },
-  );
+      ],
+    );
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(expectedMessageCount: 2);
+    expect(chat.messages, hasLength(2));
+    expect(chat.hasEarlierMessages, isFalse);
+
+    final userIndex = chat.messages.indexWhere(
+      (message) => message['message_id'] == 'compacted-fallback-user',
+    );
+    chat.internalMessagesForTesting[userIndex] = {
+      ...chat.messages[userIndex],
+      'content': 'prompt repetido tras compactación',
+    };
+    server.healthy = false;
+    gateway.snapshot = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-after-compaction',
+      storedSessionId: 'stored-chat',
+      created: false,
+      messagesProvided: false,
+      messageCount: 1,
+    );
+
+    await chat.loadMessages(expectedMessageCount: 1);
+
+    expect(
+      chat.messages.any(
+        (message) =>
+            message['message_id'] == 'compacted-fallback-answer' &&
+            message['content'] == 'respuesta legítima',
+      ),
+      isTrue,
+    );
+    expect(
+      chat.messages
+          .singleWhere(
+            (message) => message['message_id'] == 'compacted-fallback-user',
+          )
+          .containsKey('_cancelledUser'),
+      isFalse,
+    );
+    expect(chat.hasEarlierMessages, isTrue);
+  });
 
   test(
     'snapshot omitido no acredita count contra una fila durable sin id',
@@ -6087,7 +7707,7 @@ void main() {
       final userIndex = chat.messages.indexWhere(
         (message) => message['message_id'] == 'idless-coverage-user',
       );
-      chat.messages[userIndex] = {
+      chat.internalMessagesForTesting[userIndex] = {
         ...chat.messages[userIndex],
         'content': 'prompt repetido tras compactación idless',
       };
@@ -6164,7 +7784,7 @@ void main() {
       await chat.loadMessages(expectedMessageCount: 1);
 
       expect(
-        chat.messages.any(
+        chat.internalMessagesForTesting.any(
           (message) =>
               canonicalTranscriptMessageId(message) ==
                   'provided-mismatch-answer' &&
@@ -6173,7 +7793,7 @@ void main() {
         isTrue,
       );
       expect(
-        chat.messages
+        chat.internalMessagesForTesting
             .singleWhere(
               (message) =>
                   canonicalTranscriptMessageId(message) ==
@@ -6233,7 +7853,7 @@ void main() {
             canonicalTranscriptMessageId(message) ==
             'provided-empty-fallback-user',
       );
-      chat.messages[userIndex] = {
+      chat.internalMessagesForTesting[userIndex] = {
         ...chat.messages[userIndex],
         'content': 'prompt repetido antes del snapshot vacío',
       };
@@ -6721,17 +8341,25 @@ void main() {
           },
         ]);
       gateway.emitResumeProgress('complete', messageCount: 4);
+      SubagentCompletionCardData? completion;
       for (var attempt = 0; attempt < 100; attempt++) {
-        if (chat.subagentActivities.isNotEmpty) break;
+        final projected = chat.messages
+            .map(historicalSubagentCompletionOf)
+            .whereType<SubagentCompletionCardData>()
+            .toList(growable: false);
+        if (projected.isNotEmpty) {
+          completion = projected.single;
+          break;
+        }
         await Future<void>.delayed(const Duration(milliseconds: 2));
       }
 
-      expect(chat.subagentActivities, hasLength(1));
-      expect(
-        chat.subagentActivities.single.phase,
-        SubagentActivityPhase.completed,
-      );
-      expect(chat.subagentActivities.single.delegationId, 'deleg_hydrated');
+      expect(chat.subagentActivities, isEmpty);
+      expect(completion, isNotNull);
+      expect(completion?.delegationId, 'deleg_hydrated');
+      expect(completion?.subagentIds, ['sa-hydrated']);
+      expect(completion?.completedCount, 1);
+      expect(completion?.failedCount, 0);
     },
   );
 
@@ -6767,4 +8395,780 @@ void main() {
       expect(chat.messages.last['content'], 'pregunta');
     },
   );
+
+  group('OBJ A SessionMessagesPage evidence transition', () {
+    const durableRow = <String, Object?>{
+      'message_id': 'obj-a-durable',
+      'role': 'user',
+      'content': 'fila durable OBJ A',
+      'compacted': 1,
+      'active': 0,
+    };
+
+    DesktopSessionSnapshot completeSnapshot(String runtimeId) =>
+        DesktopSessionSnapshot(
+          runtimeSessionId: runtimeId,
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: true,
+          messages: [DesktopSessionMessage.tryParse(durableRow)!],
+          messageCount: 1,
+        );
+
+    test(
+      'RED invalid empty returned/limit degrades a visible transcript',
+      () async {
+        final invalidPagination = <({String name, Object pagination})>[
+          (
+            name: 'returned',
+            pagination: const <String, Object?>{
+              'limit': 120,
+              'offset': 0,
+              'returned': '0',
+            },
+          ),
+          (
+            name: 'limit',
+            pagination: const <String, Object?>{
+              'limit': 500,
+              'offset': 0,
+              'returned': 0,
+            },
+          ),
+        ];
+        for (final invalid in invalidPagination) {
+          final server = _ControlledTranscriptServer();
+          final chat = _chat(
+            'obj-a-invalid-empty-${invalid.name}',
+            server.client(),
+          );
+          addTearDown(chat.dispose);
+
+          final initialLoad = chat.loadMessages();
+          await server.waitForRequests(1);
+          server.completePage(0, const [durableRow]);
+          await initialLoad;
+          expect(chat.coreReadLineageComplete, isTrue, reason: invalid.name);
+          final revisionBeforeInvalid =
+              chat.transcriptCoverageRevisionForTesting;
+
+          final invalidLoad = chat.loadMessages();
+          await server.waitForRequests(2);
+          server.completePage(
+            1,
+            const <Object?>[],
+            pagination: invalid.pagination,
+          );
+          await invalidLoad;
+
+          expect(chat.messages.map(canonicalTranscriptMessageId), [
+            'obj-a-durable',
+          ], reason: invalid.name);
+          expect(chat.coreReadLineageComplete, isFalse, reason: invalid.name);
+          expect(chat.coreReadCoverageIsPartial, isTrue, reason: invalid.name);
+          expect(chat.hasEarlierMessages, isTrue, reason: invalid.name);
+          expect(
+            chat.transcriptCoverageRevisionForTesting,
+            revisionBeforeInvalid + 1,
+            reason: invalid.name,
+          );
+          expect(
+            chat.transcriptExtentForTesting,
+            'partial',
+            reason: invalid.name,
+          );
+          expect(
+            chat.transcriptCoverageHasParseGapForTesting,
+            isTrue,
+            reason: invalid.name,
+          );
+          expect(
+            chat.earlierMessagesNextOffsetForTesting,
+            0,
+            reason: invalid.name,
+          );
+          expect(
+            chat.needsTranscriptTailHydrationForTesting,
+            isTrue,
+            reason: invalid.name,
+          );
+          expect(
+            chat.desktopHistoryNeedsHydrationForTesting,
+            isTrue,
+            reason: invalid.name,
+          );
+
+          final recovery = chat.loadEarlierMessages();
+          await server.waitForRequests(3);
+          expect(
+            server.requests[2].url.queryParameters['offset'],
+            '0',
+            reason: invalid.name,
+          );
+          server.completePage(2, const [durableRow]);
+          expect(await recovery, isTrue, reason: invalid.name);
+        }
+      },
+    );
+
+    test(
+      'RED hard expected count precedes preservation of visible rows',
+      () async {
+        final server = _ControlledTranscriptServer();
+        final chat = _chat('obj-a-hard-expected-visible', server.client());
+        addTearDown(chat.dispose);
+        chat.replaceInternalMessagesForTesting([
+          Map<String, dynamic>.from(durableRow),
+        ]);
+        final revisionBeforeLoad = chat.transcriptCoverageRevisionForTesting;
+        var publications = 0;
+
+        final load = chat.loadMessages(
+          expectedMessageCount: 1,
+          onMessagesPublished: () => publications++,
+        );
+        await server.waitForRequests(1);
+        server.completePage(0, const <Object?>[]);
+
+        await expectLater(load, throwsStateError);
+        expect(chat.messagesLoaded, isFalse);
+        expect(chat.messages.map(canonicalTranscriptMessageId), [
+          'obj-a-durable',
+        ]);
+        expect(chat.coreReadLineageComplete, isFalse);
+        expect(chat.hasEarlierMessages, isTrue);
+        expect(publications, 0);
+        expect(
+          chat.transcriptCoverageRevisionForTesting,
+          revisionBeforeLoad + 1,
+        );
+        expect(chat.transcriptExtentForTesting, 'partial');
+        expect(chat.transcriptCoverageHasParseGapForTesting, isTrue);
+        expect(chat.earlierMessagesNextOffsetForTesting, 0);
+        expect(chat.needsTranscriptTailHydrationForTesting, isTrue);
+        expect(chat.desktopHistoryNeedsHydrationForTesting, isTrue);
+      },
+    );
+
+    test('RED valid empty preserves all prior core evidence', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-valid-empty-neutral', server.client());
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages();
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      final identityBefore = chat.coreReadIdentity;
+      final coverageBefore = chat.coreReadCoverage;
+      final revisionBefore = chat.transcriptCoverageRevisionForTesting;
+      final extentBefore = chat.transcriptExtentForTesting;
+      final gapBefore = chat.transcriptCoverageHasParseGapForTesting;
+      final earlierBefore = chat.hasEarlierMessages;
+      final offsetBefore = chat.earlierMessagesNextOffsetForTesting;
+      final tailHydrationBefore = chat.needsTranscriptTailHydrationForTesting;
+      final desktopHydrationBefore =
+          chat.desktopHistoryNeedsHydrationForTesting;
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      final emptyRefresh = chat.loadMessages(expectedMessageCount: 0);
+      await server.waitForRequests(2);
+      server.completePage(1, const <Object?>[]);
+      await emptyRefresh;
+
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+      expect(chat.coreReadIdentity, same(identityBefore));
+      expect(chat.coreReadCoverage, same(coverageBefore));
+      expect(chat.coreReadCoverage, {CoreReadCoverage.full});
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.transcriptCoverageRevisionForTesting, revisionBefore);
+      expect(chat.transcriptExtentForTesting, extentBefore);
+      expect(chat.transcriptCoverageHasParseGapForTesting, gapBefore);
+      expect(chat.hasEarlierMessages, earlierBefore);
+      expect(chat.earlierMessagesNextOffsetForTesting, offsetBefore);
+      expect(chat.needsTranscriptTailHydrationForTesting, tailHydrationBefore);
+      expect(
+        chat.desktopHistoryNeedsHydrationForTesting,
+        desktopHydrationBefore,
+      );
+    });
+
+    test('RED stale page cannot mutate core identity or coverage', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-stale-core', server.client());
+      addTearDown(chat.dispose);
+
+      final staleLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      final currentLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(2);
+      server.completePage(1, const [durableRow]);
+      await currentLoad;
+
+      final identityBeforeStale = chat.coreReadIdentity;
+      final coverageBeforeStale = chat.coreReadCoverage;
+      final revisionBeforeStale = chat.transcriptCoverageRevisionForTesting;
+      final extentBeforeStale = chat.transcriptExtentForTesting;
+      final gapBeforeStale = chat.transcriptCoverageHasParseGapForTesting;
+      final earlierBeforeStale = chat.hasEarlierMessages;
+      final offsetBeforeStale = chat.earlierMessagesNextOffsetForTesting;
+      final tailHydrationBeforeStale =
+          chat.needsTranscriptTailHydrationForTesting;
+      final desktopHydrationBeforeStale =
+          chat.desktopHistoryNeedsHydrationForTesting;
+      expect(identityBeforeStale.resolvedTipId, 'stored-chat');
+      expect(coverageBeforeStale, {CoreReadCoverage.full});
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      server.completePage(0, const [
+        <String, Object?>{
+          'message_id': 'obj-a-stale-row',
+          'role': 'assistant',
+          'content': 'respuesta obsoleta',
+        },
+      ], resolvedSessionId: 'obj-a-stale-tip');
+      await staleLoad;
+
+      expect(chat.coreReadIdentity, same(identityBeforeStale));
+      expect(chat.coreReadCoverage, same(coverageBeforeStale));
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.transcriptCoverageRevisionForTesting, revisionBeforeStale);
+      expect(chat.transcriptExtentForTesting, extentBeforeStale);
+      expect(chat.transcriptCoverageHasParseGapForTesting, gapBeforeStale);
+      expect(chat.hasEarlierMessages, earlierBeforeStale);
+      expect(chat.earlierMessagesNextOffsetForTesting, offsetBeforeStale);
+      expect(
+        chat.needsTranscriptTailHydrationForTesting,
+        tailHydrationBeforeStale,
+      );
+      expect(
+        chat.desktopHistoryNeedsHydrationForTesting,
+        desktopHydrationBeforeStale,
+      );
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+    });
+
+    test('disposed page is a no-op and emits no hydration event', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-disposed-page', server.client());
+      final events = <ActiveChatEvent>[];
+      final subscription = chat.changes.listen(events.add);
+
+      final load = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      chat.dispose();
+      final identityAfterDispose = chat.coreReadIdentity;
+      final coverageAfterDispose = chat.coreReadCoverage;
+      final revisionAfterDispose = chat.transcriptCoverageRevisionForTesting;
+      final extentAfterDispose = chat.transcriptExtentForTesting;
+      final gapAfterDispose = chat.transcriptCoverageHasParseGapForTesting;
+      final earlierAfterDispose = chat.hasEarlierMessages;
+      final offsetAfterDispose = chat.earlierMessagesNextOffsetForTesting;
+      final tailHydrationAfterDispose =
+          chat.needsTranscriptTailHydrationForTesting;
+      final desktopHydrationAfterDispose =
+          chat.desktopHistoryNeedsHydrationForTesting;
+      server.completePage(0, const [durableRow]);
+      await load;
+      await subscription.cancel();
+
+      expect(chat.coreReadIdentity, same(identityAfterDispose));
+      expect(chat.coreReadCoverage, same(coverageAfterDispose));
+      expect(chat.transcriptCoverageRevisionForTesting, revisionAfterDispose);
+      expect(chat.transcriptExtentForTesting, extentAfterDispose);
+      expect(chat.transcriptCoverageHasParseGapForTesting, gapAfterDispose);
+      expect(chat.hasEarlierMessages, earlierAfterDispose);
+      expect(chat.earlierMessagesNextOffsetForTesting, offsetAfterDispose);
+      expect(
+        chat.needsTranscriptTailHydrationForTesting,
+        tailHydrationAfterDispose,
+      );
+      expect(
+        chat.desktopHistoryNeedsHydrationForTesting,
+        desktopHydrationAfterDispose,
+      );
+      expect(chat.messages, isEmpty);
+      expect(chat.messagesLoaded, isFalse);
+      expect(events, isEmpty);
+    });
+
+    test('stored-session repin makes the received page stale', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-repinned-page', server.client());
+      addTearDown(chat.dispose);
+      var publications = 0;
+
+      final load = chat.loadMessages(
+        expectedMessageCount: 1,
+        onMessagesPublished: () => publications++,
+      );
+      await server.waitForRequests(1);
+      expect(chat.bindKnownStoredSession('stored-chat-repinned'), isTrue);
+      final identityAfterRepin = chat.coreReadIdentity;
+      final coverageAfterRepin = chat.coreReadCoverage;
+      final revisionAfterRepin = chat.transcriptCoverageRevisionForTesting;
+      final extentAfterRepin = chat.transcriptExtentForTesting;
+      final gapAfterRepin = chat.transcriptCoverageHasParseGapForTesting;
+      final offsetAfterRepin = chat.earlierMessagesNextOffsetForTesting;
+      final tailHydrationAfterRepin =
+          chat.needsTranscriptTailHydrationForTesting;
+      final desktopHydrationAfterRepin =
+          chat.desktopHistoryNeedsHydrationForTesting;
+
+      server.completePage(0, const [durableRow]);
+      await load;
+
+      expect(chat.coreReadIdentity, same(identityAfterRepin));
+      expect(chat.coreReadCoverage, same(coverageAfterRepin));
+      expect(chat.transcriptCoverageRevisionForTesting, revisionAfterRepin);
+      expect(chat.transcriptExtentForTesting, extentAfterRepin);
+      expect(chat.transcriptCoverageHasParseGapForTesting, gapAfterRepin);
+      expect(chat.earlierMessagesNextOffsetForTesting, offsetAfterRepin);
+      expect(
+        chat.needsTranscriptTailHydrationForTesting,
+        tailHydrationAfterRepin,
+      );
+      expect(
+        chat.desktopHistoryNeedsHydrationForTesting,
+        desktopHydrationAfterRepin,
+      );
+      expect(chat.messages, isEmpty);
+      expect(publications, 0);
+    });
+
+    test('RED parse gap remains sticky and repairs from offset zero', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-sticky-gap', server.client());
+      addTearDown(chat.dispose);
+      final partialTail = <Object?>[
+        {...durableRow, 'message_id': 'obj-a-partial-1'},
+        for (var index = 2; index < 120; index++)
+          {
+            'message_id': 'obj-a-partial-$index',
+            'role': index.isOdd ? 'user' : 'assistant',
+            'content': 'fila parcial $index',
+          },
+        'fila descartada',
+      ];
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 120);
+      await server.waitForRequests(1);
+      server.completePage(0, partialTail);
+      await initialLoad;
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final terminalBackfill = chat.loadEarlierMessages();
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.completePage(1, const [
+        <String, Object?>{
+          'message_id': 'obj-a-older-row',
+          'role': 'assistant',
+          'content': 'fila anterior válida',
+          'compacted': 1,
+          'active': 0,
+        },
+      ]);
+      expect(await terminalBackfill, isFalse);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final repair = chat.loadEarlierMessages();
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '0');
+      server.completePage(2, const [durableRow]);
+      expect(await repair, isTrue);
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.hasEarlierMessages, isFalse);
+    });
+
+    test('RED soft announced-count shortfall retries the tail', () async {
+      final server = _ControlledTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-obj-a-soft-shortfall',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: 300,
+          hydrating: true,
+        );
+      final chat = _chat(
+        'obj-a-soft-shortfall',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 300);
+      await server.waitForRequests(1);
+      server.completePage(0, _rows(120, from: 181));
+      await initialLoad;
+
+      final tailHydration = chat.loadEarlierMessages();
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '0');
+      server.completePage(1, _rows(120, from: 181));
+      expect(await tailHydration, isTrue);
+
+      final shortBackfill = chat.loadEarlierMessages();
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '120');
+      server.completePage(2, const [
+        <String, Object?>{
+          'message_id': 'obj-a-shortfall-row',
+          'role': 'user',
+          'content': 'cobertura todavía corta',
+        },
+      ]);
+      expect(await shortBackfill, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final retry = chat.loadEarlierMessages();
+      await server.waitForRequests(4);
+      expect(server.requests[3].url.queryParameters['offset'], '0');
+      server.completePage(3, _rows(120, from: 181));
+      expect(await retry, isTrue);
+    });
+
+    test('full positive page remains authoritative', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-full-positive', server.client());
+      addTearDown(chat.dispose);
+
+      final load = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await load;
+
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+      expect(chat.coreReadCoverage, {CoreReadCoverage.full});
+      expect(chat.coreReadCoverageIsPartial, isFalse);
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(chat.hasEarlierMessages, isFalse);
+    });
+
+    test('RED all-discarded is consumed by compression-fenced load', () async {
+      final server = _ControlledTranscriptServer();
+      final storage = InMemoryDesktopCompressionFenceStorage();
+      final store = DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'obj-a-compression-attempt',
+      );
+      final chat = _chat(
+        'obj-a-compression-consumer',
+        server.client(),
+        compressionFenceStore: store,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages();
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      expect(
+        (await store.arm(
+          DesktopCompressionFenceScope(
+            connectionId: 'obj-a-compression-consumer',
+            profile: 'default',
+            logicalSessionId: 'stored-chat',
+          ),
+          tipAtStart: 'stored-chat',
+          compressionsAtStart: 0,
+          createdAtMs: now,
+          reconcileUntilMs: now + 120000,
+        )).claimed,
+        isTrue,
+      );
+
+      final fencedLoad = chat.loadMessages(expectedMessageCount: 0);
+      await server.waitForRequests(2);
+      server.completePage(1, const <Object?>['discarded']);
+      await fencedLoad;
+
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+    });
+
+    test('RED all-discarded is consumed by lifecycle prefetch', () async {
+      final server = _ControlledTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = completeSnapshot('runtime-obj-a-prefetch');
+      final chat = _chat(
+        'obj-a-prefetch-consumer',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      final refresh = chat.loadMessages(expectedMessageCount: 0);
+      await server.waitForRequests(2);
+      for (var tick = 0; tick < 5; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      server.completePage(1, const <Object?>['discarded']);
+      await refresh;
+
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+    });
+
+    test('RED all-discarded is consumed by resume-progress retry', () async {
+      final server = _ControlledTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = completeSnapshot('runtime-obj-a-resume-initial');
+      final chat = _chat(
+        'obj-a-resume-retry-consumer',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      expect(chat.coreReadLineageComplete, isTrue);
+      chat.replaceInternalMessagesForTesting(const []);
+
+      gateway.snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-obj-a-resume-retry',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 1,
+        hydrating: true,
+      );
+      final load = chat.loadMessages(expectedMessageCount: 0);
+      await server.waitForRequests(2);
+      server.completeError(1);
+      for (var tick = 0; tick < 20; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      gateway.emitResumeProgress('complete', messageCount: 1);
+      await server.waitForRequests(3);
+      server.completePage(2, const <Object?>['discarded']);
+
+      await expectLater(load, throwsStateError);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+    });
+
+    test('RED all-discarded is consumed by tail-hydration backfill', () async {
+      final server = _ControlledTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = completeSnapshot('runtime-obj-a-tail-initial');
+      final chat = _chat(
+        'obj-a-tail-consumer',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      gateway.snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-obj-a-tail-retry',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 2,
+      );
+      final omittedLoad = chat.loadMessages(expectedMessageCount: 2);
+      await server.waitForRequests(2);
+      server.completeError(1);
+      await omittedLoad;
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final hydration = chat.loadEarlierMessages();
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '0');
+      server.completePage(2, const <Object?>['discarded']);
+      expect(await hydration, isFalse);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+    });
+
+    test('RED all-discarded is consumed by normal backfill', () async {
+      final server = _ControlledTranscriptServer();
+      final chat = _chat('obj-a-backfill-consumer', server.client());
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 120);
+      await server.waitForRequests(1);
+      server.completePage(0, _rows(120));
+      await initialLoad;
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final discarded = chat.loadEarlierMessages();
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.completePage(1, const <Object?>['discarded']);
+      expect(await discarded, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      final retry = chat.loadEarlierMessages();
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '0');
+      server.completePage(2, _rows(120));
+      expect(await retry, isTrue);
+    });
+
+    test('RED all-discarded is consumed by scheduled hydration', () async {
+      final server = _ControlledTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = completeSnapshot('runtime-obj-a-scheduled-initial');
+      final chat = _chat(
+        'obj-a-scheduled-consumer',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      final initialLoad = chat.loadMessages(expectedMessageCount: 1);
+      await server.waitForRequests(1);
+      server.completePage(0, const [durableRow]);
+      await initialLoad;
+      expect(chat.coreReadLineageComplete, isTrue);
+
+      gateway.snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-obj-a-scheduled',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 2,
+        hydrating: true,
+      );
+      final hydratingLoad = chat.loadMessages(expectedMessageCount: 2);
+      await server.waitForRequests(2);
+      server.completeError(1);
+      await hydratingLoad;
+
+      gateway.emitResumeProgress('complete', messageCount: 2);
+      await server.waitForRequests(3);
+      server.completePage(2, const <Object?>['discarded']);
+      for (var tick = 0; tick < 20; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.messages.map(canonicalTranscriptMessageId), [
+        'obj-a-durable',
+      ]);
+      expect(chat.hasEarlierMessages, isTrue);
+    });
+
+    test('RED all-discarded is consumed by cancelled-anchor repair', () async {
+      var discardPages = false;
+      final requests = <Uri>[];
+      final client = MockClient((request) async {
+        requests.add(request.url);
+        if (!request.url.path.endsWith('/messages')) {
+          return http.Response(
+            jsonEncode(const <String, Object?>{}),
+            200,
+            headers: const {'content-type': 'application/json'},
+          );
+        }
+        final rows = discardPages
+            ? const <Object?>['discarded']
+            : const <Object?>[durableRow];
+        return http.Response(
+          jsonEncode({
+            'object': 'list',
+            'session_id': 'stored-chat',
+            'messages': rows,
+            'pagination': {'limit': 120, 'offset': 0, 'returned': rows.length},
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final gateway = _DeferrableGateway()
+        ..snapshot = completeSnapshot('runtime-obj-a-anchor');
+      final recorded = <CancelledTurnTombstone>[];
+      final chat = _chat(
+        'obj-a-anchor-consumer',
+        client,
+        gateway: gateway,
+        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 1);
+      expect(chat.coreReadLineageComplete, isTrue);
+      expect(
+        await chat.send(
+          fullText: 'turno cancelado OBJ A',
+          model: 'hermes-agent',
+          history: chat.buildHistory(),
+        ),
+        isTrue,
+      );
+      await chat.cancel();
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'Operation interrupted.'},
+      );
+      for (var tick = 0; tick < 20; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(recorded, isNotEmpty);
+      expect(
+        chat.messages.any(
+          (message) =>
+              message['content'] == 'turno cancelado OBJ A' &&
+              message['_cancelledUser'] == true &&
+              canonicalTranscriptMessageId(message) == null &&
+              canonicalTranscriptRowId(message) == null,
+        ),
+        isTrue,
+      );
+
+      discardPages = true;
+      final accepted = await chat.send(
+        fullText: 'turno que debe seguir bloqueado',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+
+      expect(accepted, isFalse);
+      expect(chat.coreReadLineageComplete, isFalse);
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(
+        chat.messages.any(
+          (message) => message['content'] == 'turno que debe seguir bloqueado',
+        ),
+        isFalse,
+      );
+      expect(requests.where((uri) => uri.path.endsWith('/messages')).length, 2);
+    });
+  });
 }

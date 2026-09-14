@@ -6,10 +6,21 @@
 // · Un agente local caído no debe sugerir revisar credenciales.
 // · Un 401 remoto sí debe clasificarse como error de modelo/API.
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/utils/chat_error.dart';
 
 void main() {
   group('classifyChatError — local bridge errors', () {
+    test('fallback Bridge desconocido nunca concatena detalle privado', () {
+      final message = activeChatBridgeErrorUiMessage(
+        StateError('PRIVATE_BODY /home/private/socket'),
+      );
+
+      expect(message, 'No se pudo completar la respuesta local. Reintenta.');
+      expect(message, isNot(contains('PRIVATE_BODY')));
+      expect(message, isNot(contains('/home/private')));
+    });
+
     test('timeout del agente local → localColdStart (no model)', () {
       // Texto real generado por _humanizeBridgeError en active_chat_service.dart.
       const msg =
@@ -85,15 +96,12 @@ void main() {
   });
 
   group('classifyChatError — "modelo" español no debe clasificar como model', () {
-    test(
-      '"modelo" en mensaje local no activa model si hay señal local primero',
-      () {
-        // Caso que fallaba antes del fix: "modelo" contenía "model" en inglés.
-        const msg =
-            'El agente local tardó demasiado. El modelo puede estar cargándose.';
-        expect(classifyChatError(msg), ChatErrorKind.localColdStart);
-      },
-    );
+    test('"modelo" en mensaje local no activa model si hay señal local primero', () {
+      // Caso que fallaba antes del fix: "modelo" contenía "model" en inglés.
+      const msg =
+          'El agente local tardó demasiado. El modelo puede estar cargándose.';
+      expect(classifyChatError(msg), ChatErrorKind.localColdStart);
+    });
 
     test('"modelo" sin señal local → model (comportamiento esperado)', () {
       // Un mensaje genérico sobre el modelo sin señal local sí debe ir a model.
@@ -141,15 +149,12 @@ void main() {
   });
 
   group('classifyChatError — firstTokenTimeout (remoto)', () {
-    test(
-      'prefijo firstTokenTimeout emitido por active_chat_service → firstTokenTimeout',
-      () {
-        const msg =
-            'firstTokenTimeout: El servidor conectó pero no empezó a generar '
-            'respuesta en 90 s. El modelo puede estar cargando.';
-        expect(classifyChatError(msg), ChatErrorKind.firstTokenTimeout);
-      },
-    );
+    test('prefijo firstTokenTimeout emitido por active_chat_service → firstTokenTimeout', () {
+      const msg =
+          'firstTokenTimeout: El servidor conectó pero no empezó a generar '
+          'respuesta en 90 s. El modelo puede estar cargando.';
+      expect(classifyChatError(msg), ChatErrorKind.firstTokenTimeout);
+    });
   });
 
   group('classifyChatError — searchToolUnavailable', () {

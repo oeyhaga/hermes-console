@@ -19,6 +19,8 @@ import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/bridge_client.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 
+import 'support/in_memory_compression_fence_storage.dart';
+
 SavedConnection _conn() => SavedConnection(
   id: 'conn-1',
   label: 'Test',
@@ -51,6 +53,7 @@ void main() {
           httpClient: client,
         );
         final chat = ActiveChat(
+          compressionFenceStore: testCompressionFenceStore(),
           connection: _conn(),
           sessionId: 'sess-1',
           sessionTitle: 'X',
@@ -79,64 +82,62 @@ void main() {
       },
     );
 
-    test(
-      '1a-bis. corte del stream con la respuesta ya en el servidor: reconcilia '
-      'el transcript y la muestra, no falla',
-      () async {
-        // startRun responde, pero el SSE se cae a mitad. La diferencia con 1a: el
-        // servidor SÍ produjo la respuesta del turno, así que releer la
-        // conversación (getMessages) debe recuperarla en vez de dejar un error.
-        final client = MockClient((request) async {
-          final path = request.url.path;
-          if (request.method == 'POST' && path == '/v1/runs') {
-            await Future<void>.delayed(const Duration(milliseconds: 30));
-            return http.Response(jsonEncode({'run_id': 'run_1'}), 200);
-          }
-          if (request.method == 'GET' && path == '/v1/runs/run_1/events') {
-            throw const SocketException('stream caído a mitad');
-          }
-          if (request.method == 'GET' &&
-              path == '/api/sessions/sess-1/messages') {
-            return http.Response(
-              jsonEncode({
-                'data': [
-                  {'role': 'user', 'content': 'hola'},
-                  {'role': 'assistant', 'content': 'Aquí está la respuesta.'},
-                ],
-              }),
-              200,
-            );
-          }
-          return http.Response('not found', 404);
-        });
-        final api = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
-          apiKey: 'k',
-          httpClient: client,
-        );
-        final chat = ActiveChat(
-          connection: _conn(),
-          sessionId: 'sess-1',
-          sessionTitle: 'X',
-          notifications: null,
-          onTerminal: () {},
-          api: api,
-        );
-
-        chat.send(fullText: 'hola', model: 'm', history: const []);
-        final deadline = DateTime.now().add(const Duration(seconds: 5));
-        while (chat.state != ChatPipelineState.completed &&
-            DateTime.now().isBefore(deadline)) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
+    test('1a-bis. corte del stream con la respuesta ya en el servidor: reconcilia '
+        'el transcript y la muestra, no falla', () async {
+      // startRun responde, pero el SSE se cae a mitad. La diferencia con 1a: el
+      // servidor SÍ produjo la respuesta del turno, así que releer la
+      // conversación (getMessages) debe recuperarla en vez de dejar un error.
+      final client = MockClient((request) async {
+        final path = request.url.path;
+        if (request.method == 'POST' && path == '/v1/runs') {
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          return http.Response(jsonEncode({'run_id': 'run_1'}), 200);
         }
+        if (request.method == 'GET' && path == '/v1/runs/run_1/events') {
+          throw const SocketException('stream caído a mitad');
+        }
+        if (request.method == 'GET' &&
+            path == '/api/sessions/sess-1/messages') {
+          return http.Response(
+            jsonEncode({
+              'data': [
+                {'role': 'user', 'content': 'hola'},
+                {'role': 'assistant', 'content': 'Aquí está la respuesta.'},
+              ],
+            }),
+            200,
+          );
+        }
+        return http.Response('not found', 404);
+      });
+      final api = ApiClient(
+        baseUrl: 'http://hermes.local:8642',
+        apiKey: 'k',
+        httpClient: client,
+      );
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: _conn(),
+        sessionId: 'sess-1',
+        sessionTitle: 'X',
+        notifications: null,
+        onTerminal: () {},
+        api: api,
+      );
 
-        expect(chat.state, ChatPipelineState.completed);
-        expect(chat.messages.first['role'], 'assistant');
-        expect(chat.messages.first['content'], 'Aquí está la respuesta.');
+      chat.send(fullText: 'hola', model: 'm', history: const []);
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (chat.state != ChatPipelineState.completed &&
+          DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
 
-        chat.dispose();
-      },
-    );
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.messages.first['role'], 'assistant');
+      expect(chat.messages.first['content'], 'Aquí está la respuesta.');
+
+      chat.dispose();
+    });
 
     test('1a-ter. el turno termina con la respuesta VACÍA (continuación '
         'post-aprobación tardía); aparece luego en el transcript y se rellena '
@@ -184,6 +185,7 @@ void main() {
         httpClient: client,
       );
       final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
         connection: _conn(),
         sessionId: 'sess-1',
         sessionTitle: 'X',
@@ -274,39 +276,32 @@ void main() {
       },
     );
 
-    test(
-      '1d. body 200 malformado lanza una excepción manejable (no crash)',
-      () async {
-        // El cuerpo 2xx se decodifica sin try/catch en BridgeClient._decode, así
-        // que un body no-JSON propaga un FormatException. Es CATCHABLE (no peta el
-        // isolate) y el llamador lo maneja como cualquier error del turno.
-        // TODO: requires refactor of BridgeClient._decode to wrap 2xx JSON parse
-        // errors in a BridgeException with a human-readable message.
-        final client = bridge(
-          MockClient(
-            (request) async => http.Response('<html>not json at all', 200),
-          ),
-        );
+    test('1d. body 200 malformado lanza una excepción manejable (no crash)', () async {
+      // El cuerpo 2xx se decodifica sin try/catch en BridgeClient._decode, así
+      // que un body no-JSON propaga un FormatException. Es CATCHABLE (no peta el
+      // isolate) y el llamador lo maneja como cualquier error del turno.
+      // TODO: requires refactor of BridgeClient._decode to wrap 2xx JSON parse
+      // errors in a BridgeException with a human-readable message.
+      final client = bridge(
+        MockClient(
+          (request) async => http.Response('<html>not json at all', 200),
+        ),
+      );
 
-        await expectLater(client.chat('hola'), throwsA(isA<Exception>()));
-        client.close();
-      },
-    );
+      await expectLater(client.chat('hola'), throwsA(isA<Exception>()));
+      client.close();
+    });
 
-    test(
-      '1e. conexión rechazada (SocketException) en health → false, no lanza',
-      () async {
-        final client = bridge(
-          MockClient(
-            (request) async =>
-                throw const SocketException('connection refused'),
-          ),
-        );
+    test('1e. conexión rechazada (SocketException) en health → false, no lanza', () async {
+      final client = bridge(
+        MockClient(
+          (request) async => throw const SocketException('connection refused'),
+        ),
+      );
 
-        // health() captura cualquier fallo de red y degrada a false sin propagar.
-        expect(await client.health(), isFalse);
-        client.close();
-      },
-    );
+      // health() captura cualquier fallo de red y degrada a false sin propagar.
+      expect(await client.health(), isFalse);
+      client.close();
+    });
   });
 }

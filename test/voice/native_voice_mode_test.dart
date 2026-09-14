@@ -157,6 +157,33 @@ Uint8List _bargeInWav({
   return wav;
 }
 
+Future<void> _grantNativeVoice(
+  SharedPreferences preferences,
+  String identity,
+) async {
+  await NativeVoiceConsentStore(preferences)
+      .write(identity, NativeVoiceConsent.accepted);
+  await NativeVoiceModeStore(preferences)
+      .write(identity, NativeVoiceMode.server);
+  await NativeVoiceCapabilityStore(preferences).write(
+    identity,
+    NativeVoiceCapability(
+      transcribe: true,
+      speak: true,
+      checkedAtMs: DateTime.now().millisecondsSinceEpoch,
+      conclusive: true,
+    ),
+  );
+}
+
+SavedConnection _nativeConnection(String id, String host) => SavedConnection(
+  id: id,
+  label: id,
+  host: host,
+  port: 8642,
+  apiKey: String.fromCharCodes(const <int>[107]),
+);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -209,43 +236,40 @@ void main() {
       expect(offline.conclusive, isFalse);
     });
 
-    test(
-      'el caché ignora resultados no concluyentes y entradas antiguas',
-      () async {
-        final prefs = await SharedPreferences.getInstance();
-        final store = NativeVoiceCapabilityStore(prefs);
-        const identity = 'http://hermes-demo.local:9119';
+    test('el caché ignora resultados no concluyentes y entradas antiguas', () async {
+      final prefs = await SharedPreferences.getInstance();
+      final store = NativeVoiceCapabilityStore(prefs);
+      const identity = 'http://hermes-demo.local:9119';
 
-        final inconclusive = await probeNativeVoiceCapability(
-          statusOf: (endpoint) async => 401,
-        );
-        await store.write(identity, inconclusive);
-        expect(store.isFresh(store.read(identity)!), isFalse);
+      final inconclusive = await probeNativeVoiceCapability(
+        statusOf: (endpoint) async => 401,
+      );
+      await store.write(identity, inconclusive);
+      expect(store.isFresh(store.read(identity)!), isFalse);
 
-        // Entrada antigua sin el campo `conclusive` (formato previo) → re-sondeo.
-        final legacy = NativeVoiceCapability.fromJson({
-          'transcribe': false,
-          'speak': false,
-          'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
-        });
-        expect(store.isFresh(legacy!), isFalse);
+      // Entrada antigua sin el campo `conclusive` (formato previo) → re-sondeo.
+      final legacy = NativeVoiceCapability.fromJson({
+        'transcribe': false,
+        'speak': false,
+        'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
+      });
+      expect(store.isFresh(legacy!), isFalse);
 
-        // Entrada de la sonda v1 (GET, falsos 404 por el catch-all) → re-sondeo.
-        final v1 = NativeVoiceCapability.fromJson({
-          'transcribe': false,
-          'speak': false,
-          'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
-          'conclusive': true,
-        });
-        expect(store.isFresh(v1!), isFalse);
+      // Entrada de la sonda v1 (GET, falsos 404 por el catch-all) → re-sondeo.
+      final v1 = NativeVoiceCapability.fromJson({
+        'transcribe': false,
+        'speak': false,
+        'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
+        'conclusive': true,
+      });
+      expect(store.isFresh(v1!), isFalse);
 
-        final conclusive = await probeNativeVoiceCapability(
-          statusOf: (endpoint) async => 422,
-        );
-        await store.write(identity, conclusive);
-        expect(store.isFresh(store.read(identity)!), isTrue);
-      },
-    );
+      final conclusive = await probeNativeVoiceCapability(
+        statusOf: (endpoint) async => 422,
+      );
+      await store.write(identity, conclusive);
+      expect(store.isFresh(store.read(identity)!), isTrue);
+    });
   });
 
   group('consentimiento por identidad', () {
@@ -268,12 +292,10 @@ void main() {
       expect(workScope, '$dashboard::profile=trabajo%20principal');
       expect(qaScope, '$dashboard::profile=qa');
 
-      await NativeVoiceConsentStore(
-        prefs,
-      ).write(workScope, NativeVoiceConsent.accepted);
-      await NativeVoiceModeStore(
-        prefs,
-      ).write(workScope, NativeVoiceMode.server);
+      await NativeVoiceConsentStore(prefs)
+          .write(workScope, NativeVoiceConsent.accepted);
+      await NativeVoiceModeStore(prefs)
+          .write(workScope, NativeVoiceMode.server);
 
       expect(
         NativeVoiceConsentStore(prefs).read(workScope),
@@ -306,29 +328,25 @@ void main() {
       expect(store.read(a), NativeVoiceConsent.rejected);
     });
 
-    test(
-      'un consentimiento legacy no selecciona servidor y el modo es por identidad',
-      () async {
-        final prefs = await SharedPreferences.getInstance();
-        const a = 'http://hermes-demo.local:9119';
-        const b = 'http://otro:9119';
-        await NativeVoiceConsentStore(
-          prefs,
-        ).write(a, NativeVoiceConsent.accepted);
+    test('un consentimiento legacy no selecciona servidor y el modo es por identidad', () async {
+      final prefs = await SharedPreferences.getInstance();
+      const a = 'http://hermes-demo.local:9119';
+      const b = 'http://otro:9119';
+      await NativeVoiceConsentStore(prefs)
+          .write(a, NativeVoiceConsent.accepted);
 
-        final modes = NativeVoiceModeStore(prefs);
-        expect(modes.read(a), NativeVoiceMode.phone);
-        expect(modes.read(b), NativeVoiceMode.phone);
+      final modes = NativeVoiceModeStore(prefs);
+      expect(modes.read(a), NativeVoiceMode.phone);
+      expect(modes.read(b), NativeVoiceMode.phone);
 
-        await modes.write(a, NativeVoiceMode.server);
-        expect(modes.read(a), NativeVoiceMode.server);
-        expect(modes.read(b), NativeVoiceMode.phone);
-        expect(
-          NativeVoiceConsentStore(prefs).read(a),
-          NativeVoiceConsent.accepted,
-        );
-      },
-    );
+      await modes.write(a, NativeVoiceMode.server);
+      expect(modes.read(a), NativeVoiceMode.server);
+      expect(modes.read(b), NativeVoiceMode.phone);
+      expect(
+        NativeVoiceConsentStore(prefs).read(a),
+        NativeVoiceConsent.accepted,
+      );
+    });
   });
 
   group('configuración background consentida', () {
@@ -369,12 +387,272 @@ void main() {
       },
     );
 
+    test(
+      'revocar consentimiento durante config impide instalar callbacks',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        const identity = 'http://hermes.test:9119';
+        await NativeVoiceConsentStore(prefs)
+            .write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceModeStore(prefs)
+            .write(identity, NativeVoiceMode.server);
+        await NativeVoiceCapabilityStore(prefs).write(
+          identity,
+          NativeVoiceCapability(
+            transcribe: true,
+            speak: true,
+            checkedAtMs: DateTime.now().millisecondsSinceEpoch,
+            conclusive: true,
+          ),
+        );
+        final schemaRequested = Completer<void>();
+        final releaseSchema = Completer<void>();
+        final client = _TrackingMockClient((request) async {
+          if (request.method == 'GET' && request.url.path == '/') {
+            return http.Response(
+              'window.__HERMES_SESSION_TOKEN__="test-session";',
+              200,
+            );
+          }
+          if (request.url.path == '/api/config/schema') {
+            if (!schemaRequested.isCompleted) schemaRequested.complete();
+            await releaseSchema.future;
+            return http.Response('{}', 200);
+          }
+          if (request.url.path == '/api/config') {
+            return http.Response('{}', 200);
+          }
+          return http.Response('{}', 500);
+        });
+        final voice = VoiceService(prefs, SecureStorage());
+        final connection = SavedConnection(
+          id: 'native-revoked-during-config',
+          label: 'Hermes',
+          host: 'hermes.test',
+          port: 8642,
+          apiKey: String.fromCharCodes(const <int>[107]),
+        );
+        addTearDown(() async {
+          if (!releaseSchema.isCompleted) releaseSchema.complete();
+          await voice.dispose();
+        });
+
+        final configuring = configureAcceptedNativeVoiceSession(
+          voice: voice,
+          connection: connection,
+          preferences: prefs,
+          profile: '',
+          dashboardClient: DashboardClient(
+            host: 'hermes.test',
+            port: 9119,
+            httpClientOverride: client,
+          ),
+        );
+        await schemaRequested.future;
+        await NativeVoiceConsentStore(prefs)
+            .write(identity, NativeVoiceConsent.rejected);
+        releaseSchema.complete();
+
+        expect(await configuring, isFalse);
+        expect(voice.nativeVoiceActive, isFalse);
+        expect(client.closed, isTrue);
+      },
+    );
+
+    test('config A tardía no sustituye ni cierra la ruta B vigente', () async {
+      final prefs = await SharedPreferences.getInstance();
+      const identityA = 'http://voice-a.test:9119';
+      const identityB = 'http://voice-b.test:9119';
+      for (final identity in <String>[identityA, identityB]) {
+        await NativeVoiceConsentStore(prefs)
+            .write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceModeStore(prefs)
+            .write(identity, NativeVoiceMode.server);
+        await NativeVoiceCapabilityStore(prefs).write(
+          identity,
+          NativeVoiceCapability(
+            transcribe: true,
+            speak: true,
+            checkedAtMs: DateTime.now().millisecondsSinceEpoch,
+            conclusive: true,
+          ),
+        );
+      }
+      final aSchemaRequested = Completer<void>();
+      final releaseA = Completer<void>();
+      final clientA = _TrackingMockClient((request) async {
+        if (request.url.path == '/api/config/schema') {
+          if (!aSchemaRequested.isCompleted) aSchemaRequested.complete();
+          await releaseA.future;
+        }
+        return http.Response('{}', 200);
+      });
+      final clientB = _TrackingMockClient(
+        (_) async => http.Response('{}', 200),
+      );
+      final voice = VoiceService(prefs, SecureStorage());
+      SavedConnection connection(String id, String host) => SavedConnection(
+        id: id,
+        label: id,
+        host: host,
+        port: 8642,
+        apiKey: String.fromCharCodes(const <int>[107]),
+      );
+      DashboardClient dashboard(String host, _TrackingMockClient client) =>
+          DashboardClient(
+            host: host,
+            port: 9119,
+            manualToken: String.fromCharCodes(const <int>[116]),
+            httpClientOverride: client,
+          );
+      addTearDown(() async {
+        if (!releaseA.isCompleted) releaseA.complete();
+        await voice.dispose();
+      });
+
+      final configuringA = configureAcceptedNativeVoiceSession(
+        voice: voice,
+        connection: connection('native-a', 'voice-a.test'),
+        preferences: prefs,
+        profile: '',
+        dashboardClient: dashboard('voice-a.test', clientA),
+      );
+      await aSchemaRequested.future;
+      expect(
+        await configureAcceptedNativeVoiceSession(
+          voice: voice,
+          connection: connection('native-b', 'voice-b.test'),
+          preferences: prefs,
+          profile: '',
+          dashboardClient: dashboard('voice-b.test', clientB),
+        ),
+        isTrue,
+      );
+      expect(clientB.closed, isFalse);
+
+      releaseA.complete();
+
+      expect(await configuringA, isFalse);
+      expect(clientA.closed, isTrue);
+      expect(clientB.closed, isFalse);
+      expect(voice.nativeVoiceActive, isTrue);
+    });
+
+    test(
+      'una instancia dispuesta rechaza callbacks nativos directos',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        final voice = VoiceService(prefs, SecureStorage());
+        await voice.dispose();
+        var releases = 0;
+
+        expect(
+          voice.enableNativeVoice(
+            speak: (_) async => <String, dynamic>{'ok': true},
+            transcribe: (_, _) async => <String, dynamic>{'ok': true},
+            onDispose: () => releases++,
+          ),
+          isFalse,
+        );
+        expect(voice.nativeVoiceActive, isFalse);
+        expect(
+          releases,
+          0,
+          reason: 'el caller conserva el recurso no transferido',
+        );
+      },
+    );
+
+    test(
+      'dispose durante config invalida callbacks y cierra su cliente',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        const identity = 'http://voice-dispose.test:9119';
+        await _grantNativeVoice(prefs, identity);
+        final schemaRequested = Completer<void>();
+        final releaseSchema = Completer<void>();
+        final client = _TrackingMockClient((request) async {
+          if (request.url.path == '/api/config/schema') {
+            if (!schemaRequested.isCompleted) schemaRequested.complete();
+            await releaseSchema.future;
+          }
+          return http.Response('{}', 200);
+        });
+        final voice = VoiceService(prefs, SecureStorage());
+        final configuring = configureAcceptedNativeVoiceSession(
+          voice: voice,
+          connection: _nativeConnection('native-dispose', 'voice-dispose.test'),
+          preferences: prefs,
+          profile: '',
+          dashboardClient: DashboardClient(
+            host: 'voice-dispose.test',
+            port: 9119,
+            manualToken: String.fromCharCodes(const <int>[116]),
+            httpClientOverride: client,
+          ),
+        );
+        await schemaRequested.future;
+
+        await voice.dispose();
+        releaseSchema.complete();
+
+        expect(await configuring, isFalse);
+        expect(voice.nativeVoiceActive, isFalse);
+        expect(client.closed, isTrue);
+        await expectLater(
+          voice.transcribeNativeWav(Uint8List.fromList(<int>[1])),
+          throwsStateError,
+        );
+      },
+    );
+
+    test('cambio de perfil invalida configuración todavía pendiente', () async {
+      final prefs = await SharedPreferences.getInstance();
+      const identity = 'http://voice-profile.test:9119::profile=work';
+      await _grantNativeVoice(prefs, identity);
+      final schemaRequested = Completer<void>();
+      final releaseSchema = Completer<void>();
+      final client = _TrackingMockClient((request) async {
+        if (request.url.path == '/api/config/schema') {
+          if (!schemaRequested.isCompleted) schemaRequested.complete();
+          await releaseSchema.future;
+        }
+        return http.Response('{}', 200);
+      });
+      final voice = VoiceService(prefs, SecureStorage());
+      var profileIsCurrent = true;
+      addTearDown(() async {
+        if (!releaseSchema.isCompleted) releaseSchema.complete();
+        await voice.dispose();
+      });
+
+      final configuring = configureAcceptedNativeVoiceSession(
+        voice: voice,
+        connection: _nativeConnection('native-profile', 'voice-profile.test'),
+        preferences: prefs,
+        profile: 'work',
+        isStillCurrent: () => profileIsCurrent,
+        dashboardClient: DashboardClient(
+          host: 'voice-profile.test',
+          port: 9119,
+          manualToken: String.fromCharCodes(const <int>[116]),
+          httpClientOverride: client,
+        ),
+      );
+      await schemaRequested.future;
+      profileIsCurrent = false;
+      releaseSchema.complete();
+
+      expect(await configuring, isFalse);
+      expect(voice.nativeVoiceActive, isFalse);
+      expect(client.closed, isTrue);
+    });
+
     test('una sesión reutiliza su DashboardClient y evita relogins', () async {
       final prefs = await SharedPreferences.getInstance();
       const identity = 'http://hermes.test:9119';
-      await NativeVoiceConsentStore(
-        prefs,
-      ).write(identity, NativeVoiceConsent.accepted);
+      await NativeVoiceConsentStore(prefs)
+          .write(identity, NativeVoiceConsent.accepted);
       await NativeVoiceModeStore(prefs).write(identity, NativeVoiceMode.server);
       await NativeVoiceCapabilityStore(prefs).write(
         identity,
@@ -746,6 +1024,30 @@ void main() {
       },
     );
 
+    test('barge-in remoto falla sin copiar detail del servidor', () async {
+      final prefs = await SharedPreferences.getInstance();
+      final voice = VoiceService(prefs, SecureStorage());
+      voice.enableNativeVoice(
+        speak: (text) async => {'ok': true},
+        transcribe: (dataUrl, mime) async => {
+          'ok': false,
+          'detail': 'PRIVATE_NATIVE_STT /home/server/audio.wav',
+        },
+      );
+      addTearDown(voice.dispose);
+
+      await expectLater(
+        voice.transcribeNativeWav(_bargeInWav()),
+        throwsA(
+          predicate<Object>(
+            (error) =>
+                !error.toString().contains('PRIVATE_NATIVE_STT') &&
+                !error.toString().contains('/home/server'),
+          ),
+        ),
+      );
+    });
+
     test('barge-in entendido no duplica la petición STT', () async {
       final prefs = await SharedPreferences.getInstance();
       final voice = VoiceService(prefs, SecureStorage());
@@ -928,9 +1230,8 @@ void main() {
       'dictado Hermes sondea solo transcribe y no cambia Modo Voz',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(
-          sttEngine: SttEngineKind.hermesServer,
-        ).save(prefs);
+        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+            .save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final paths = <String>[];
@@ -947,9 +1248,8 @@ void main() {
           dashboard.baseUrl,
           profile: 'perfil-es',
         );
-        await NativeVoiceConsentStore(
-          prefs,
-        ).write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceConsentStore(prefs)
+            .write(identity, NativeVoiceConsent.accepted);
         final connection = SavedConnection(
           id: 'dictation-hermes',
           label: 'Hermes',
@@ -993,9 +1293,8 @@ void main() {
       'dictado Hermes sin consentimiento falla cerrado y no sondea',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(
-          sttEngine: SttEngineKind.hermesServer,
-        ).save(prefs);
+        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+            .save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         var requests = 0;
@@ -1039,9 +1338,8 @@ void main() {
 
     test('un probe tardío no sustituye el binding vigente', () async {
       final prefs = await SharedPreferences.getInstance();
-      await const VoiceSettings(
-        sttEngine: SttEngineKind.hermesServer,
-      ).save(prefs);
+      await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+          .save(prefs);
       final voice = VoiceService(prefs, SecureStorage());
       addTearDown(voice.dispose);
       final slowProbe = Completer<http.Response>();
@@ -1136,9 +1434,8 @@ void main() {
       'dos probes del mismo owner silencian el resultado obsoleto',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(
-          sttEngine: SttEngineKind.hermesServer,
-        ).save(prefs);
+        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+            .save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final probeA = Completer<http.Response>();
@@ -1243,9 +1540,8 @@ void main() {
       'una reconfiguración fallida no conserva el perfil anterior',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(
-          sttEngine: SttEngineKind.hermesServer,
-        ).save(prefs);
+        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+            .save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final oldClient = _TrackingMockClient(
@@ -1332,9 +1628,8 @@ void main() {
 
     test('liberar owner durante el probe impide instalarlo', () async {
       final prefs = await SharedPreferences.getInstance();
-      await const VoiceSettings(
-        sttEngine: SttEngineKind.hermesServer,
-      ).save(prefs);
+      await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
+          .save(prefs);
       final voice = VoiceService(prefs, SecureStorage());
       addTearDown(voice.dispose);
       final probe = Completer<http.Response>();
@@ -1349,9 +1644,8 @@ void main() {
         manualToken: 'test-token',
         httpClientOverride: client,
       );
-      await NativeVoiceConsentStore(
-        prefs,
-      ).write(dashboard.baseUrl, NativeVoiceConsent.accepted);
+      await NativeVoiceConsentStore(prefs)
+          .write(dashboard.baseUrl, NativeVoiceConsent.accepted);
       final owner = Object();
       final preparation = voice.beginHermesServerDictationPreparation(
         owner: owner,

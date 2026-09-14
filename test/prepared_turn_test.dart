@@ -68,7 +68,7 @@ void main() {
     expect(item.localId, isNotEmpty);
     expect(item.uploadState, AttachmentUploadState.pending);
     expect(item.attempt, 0);
-    expect(restored.toJson()['schema_version'], 3);
+    expect(restored.toJson()['schema_version'], 4);
     expect(
       AttachmentDraft.fromJson(item.toJson()).localId,
       item.localId,
@@ -111,12 +111,12 @@ void main() {
       'state': 'prepared',
     };
 
-    final ids = PreparedTurn.fromJson(
-      legacy,
-    ).attachments.map((item) => item.localId).toList();
+    final ids = PreparedTurn.fromJson(legacy).attachments
+        .map((item) => item.localId)
+        .toList();
     expect(ids.toSet(), hasLength(2));
     expect(
-      () => PreparedTurn.fromJson({...legacy, 'schema_version': 4}),
+      () => PreparedTurn.fromJson({...legacy, 'schema_version': 5}),
       throwsFormatException,
     );
   });
@@ -167,7 +167,7 @@ void main() {
     expect(restored.desktopText, original.desktopText);
     expect(restored.queued, isTrue);
     expect(restored.text, 'resumen visible');
-    expect(restored.toJson()['schema_version'], 3);
+    expect(restored.toJson()['schema_version'], 4);
   });
 
   test('schema 2 migra fullText desde text y deja desktopText ausente', () {

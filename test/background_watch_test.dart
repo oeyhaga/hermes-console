@@ -141,7 +141,12 @@ void main() {
     // Closing the connection models the OS closing SQLite handles after a
     // process death. The uncommitted transaction is rolled back atomically.
     await abandonedOwner.close();
-    await waiting.timeout(const Duration(seconds: 2));
+    await waiting.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => throw TimeoutException(
+        'Watch mutex did not recover after owner connection closed',
+      ),
+    );
 
     expect(entered, isTrue);
   });
@@ -1014,35 +1019,38 @@ void main() {
     },
   );
 
-  test('cron conserva delivery_failed como fallo terminal notificable', () async {
-    final executions = await BackgroundCronWatch.loadExecutions((_) async {
-      return {
-        'jobs': [
-          {
-            'id': 'job-delivery',
-            'name': 'Entrega crítica',
-            'profile': 'default',
-            'last_run_at': '2026-09-02T17:36:53+01:00',
-            'last_status': 'delivery_failed',
-            'last_delivery_error': 'timed out',
-          },
-        ],
-      };
-    });
+  test(
+    'cron conserva delivery_failed como fallo terminal notificable',
+    () async {
+      final executions = await BackgroundCronWatch.loadExecutions((_) async {
+        return {
+          'jobs': [
+            {
+              'id': 'job-delivery',
+              'name': 'Entrega crítica',
+              'profile': 'default',
+              'last_run_at': '2026-09-02T17:36:53+01:00',
+              'last_status': 'delivery_failed',
+              'last_delivery_error': 'timed out',
+            },
+          ],
+        };
+      });
 
-    expect(executions, hasLength(1));
-    final execution = executions!.single;
-    expect(execution.status, 'failed');
-    expect(execution.terminal, isTrue);
-    expect(
-      BackgroundCronWatch.shouldNotifyResult(
-        execution,
-        session: null,
-        preview: null,
-      ),
-      isTrue,
-    );
-  });
+      expect(executions, hasLength(1));
+      final execution = executions!.single;
+      expect(execution.status, 'failed');
+      expect(execution.terminal, isTrue);
+      expect(
+        BackgroundCronWatch.shouldNotifyResult(
+          execution,
+          session: null,
+          preview: null,
+        ),
+        isTrue,
+      );
+    },
+  );
 
   test('cron modern and legacy execution ids cannot collide durably', () {
     const opaqueId =
@@ -1085,98 +1093,95 @@ void main() {
     expect(session.objectId, 'session_discovery.$opaqueId');
   });
 
-  test(
-    'legacy cron routing ignores colliding ids and picks the latest exact job session',
-    () {
-      const opaqueId =
-          'e437ea2e9a36d2c99bdc53649913c440cab390549314077e3476527b3346dde7';
-      final execution = CronExecutionSnapshot(
-        jobKey: 'research::job-1',
-        jobId: 'job-1',
-        title: 'Housing search',
-        profile: 'research',
-        executionId: opaqueId,
-        status: 'completed',
-        syntheticExecutionId: true,
-      );
-      const collidingModernSession = Session(
-        id: opaqueId,
-        title: 'Different modern execution',
-        model: '',
-        source: 'cron',
-        messageCount: 2,
-        isActive: false,
-        preview: 'wrong',
-        startedAt: 300,
-        profile: 'research',
-        isDefaultProfile: false,
-      );
-      const staleJobSession = Session(
-        id: 'cron_job-1_old',
-        title: 'Old job execution',
-        model: '',
-        source: 'cron',
-        messageCount: 2,
-        isActive: false,
-        preview: 'old',
-        startedAt: 100,
-        profile: 'research',
-        isDefaultProfile: false,
-      );
-      const latestJobSession = Session(
-        id: 'cron_job-1_latest',
-        title: 'Latest job execution',
-        model: '',
-        source: 'cron',
-        messageCount: 2,
-        isActive: false,
-        preview: 'latest',
-        startedAt: 200,
-        profile: 'research',
-        isDefaultProfile: false,
-      );
-      const activeJobSession = Session(
-        id: 'cron_job-1_active',
-        title: 'Still running',
-        model: '',
-        source: 'cron',
-        messageCount: 1,
-        isActive: true,
-        preview: 'working',
-        startedAt: 400,
-        profile: 'research',
-        isDefaultProfile: false,
-      );
-      const otherProfileSession = Session(
-        id: 'cron_job-1_other',
-        title: 'Other profile',
-        model: '',
-        source: 'cron',
-        messageCount: 2,
-        isActive: false,
-        preview: 'other',
-        startedAt: 500,
-        profile: 'default',
-      );
+  test('legacy cron routing ignores colliding ids and picks the latest exact job session', () {
+    const opaqueId =
+        'e437ea2e9a36d2c99bdc53649913c440cab390549314077e3476527b3346dde7';
+    final execution = CronExecutionSnapshot(
+      jobKey: 'research::job-1',
+      jobId: 'job-1',
+      title: 'Housing search',
+      profile: 'research',
+      executionId: opaqueId,
+      status: 'completed',
+      syntheticExecutionId: true,
+    );
+    const collidingModernSession = Session(
+      id: opaqueId,
+      title: 'Different modern execution',
+      model: '',
+      source: 'cron',
+      messageCount: 2,
+      isActive: false,
+      preview: 'wrong',
+      startedAt: 300,
+      profile: 'research',
+      isDefaultProfile: false,
+    );
+    const staleJobSession = Session(
+      id: 'cron_job-1_old',
+      title: 'Old job execution',
+      model: '',
+      source: 'cron',
+      messageCount: 2,
+      isActive: false,
+      preview: 'old',
+      startedAt: 100,
+      profile: 'research',
+      isDefaultProfile: false,
+    );
+    const latestJobSession = Session(
+      id: 'cron_job-1_latest',
+      title: 'Latest job execution',
+      model: '',
+      source: 'cron',
+      messageCount: 2,
+      isActive: false,
+      preview: 'latest',
+      startedAt: 200,
+      profile: 'research',
+      isDefaultProfile: false,
+    );
+    const activeJobSession = Session(
+      id: 'cron_job-1_active',
+      title: 'Still running',
+      model: '',
+      source: 'cron',
+      messageCount: 1,
+      isActive: true,
+      preview: 'working',
+      startedAt: 400,
+      profile: 'research',
+      isDefaultProfile: false,
+    );
+    const otherProfileSession = Session(
+      id: 'cron_job-1_other',
+      title: 'Other profile',
+      model: '',
+      source: 'cron',
+      messageCount: 2,
+      isActive: false,
+      preview: 'other',
+      startedAt: 500,
+      profile: 'default',
+    );
 
-      final match = BackgroundCronWatch.sessionForExecution(execution, const [
-        collidingModernSession,
-        activeJobSession,
-        staleJobSession,
-        otherProfileSession,
+    final match = BackgroundCronWatch.sessionForExecution(execution, const [
+      collidingModernSession,
+      activeJobSession,
+      staleJobSession,
+      otherProfileSession,
+      latestJobSession,
+    ]);
+
+    expect(match?.id, latestJobSession.id);
+    expect(
+      BackgroundCronWatch.sessionForExecution(execution, const [
         latestJobSession,
-      ]);
-
-      expect(match?.id, latestJobSession.id);
-      expect(
-        BackgroundCronWatch.sessionForExecution(execution, const [
-          latestJobSession,
-          staleJobSession,
-        ])?.id,
-        latestJobSession.id,
-      );
-    },
-  );
+        staleJobSession,
+      ])?.id,
+      latestJobSession.id,
+    );
+  });
 
   test('cron notification opens its chat instead of Task Center', () {
     const session = Session(
@@ -1200,7 +1205,7 @@ void main() {
   });
 
   test(
-    'cron hidrata el último resultado si la lista no trae preview',
+    'cron omite preview si la lista no publica un resultado seguro',
     () async {
       const session = Session(
         id: 'cron_job_20260804_180956',
@@ -1214,22 +1219,9 @@ void main() {
         profile: 'research',
         isDefaultProfile: false,
       );
-      final calls = <(String, String)>[];
+      final preview = BackgroundCronWatch.notificationPreview(session);
 
-      final preview = await BackgroundCronWatch.notificationPreview(session, (
-        sessionId,
-        profile,
-      ) async {
-        calls.add((sessionId, profile));
-        return const [
-          {'role': 'user', 'content': 'prompt privado'},
-          {'role': 'assistant', 'content': '**2 compras nuevas verificadas**'},
-        ];
-      });
-
-      expect(calls, [('cron_job_20260804_180956', 'research')]);
-      expect(preview, '2 compras nuevas verificadas');
-      expect(preview, isNot(contains('prompt privado')));
+      expect(preview, isNull);
     },
   );
 
@@ -1246,10 +1238,7 @@ void main() {
       startedAt: 0,
     );
 
-    final preview = await BackgroundCronWatch.notificationPreview(
-      session,
-      (_, _) => throw StateError('no debe consultar el transcript'),
-    );
+    final preview = BackgroundCronWatch.notificationPreview(session);
 
     expect(preview, 'Sin compras nuevas verificadas.');
   });

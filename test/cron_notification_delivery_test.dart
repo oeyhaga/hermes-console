@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/notifications/notification_delivery_store.dart';
+import 'package:hermes_android/core/services/new_session_launch_coordinator.dart';
 import 'package:hermes_android/core/services/notifications/notification_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
@@ -152,73 +153,70 @@ void main() {
     },
   );
 
-  test(
-    'empty initial cron discovery seeds cursor and later terminal dispatches once',
-    () async {
-      final prefs = await SharedPreferences.getInstance();
-      final service = testService(prefs)..appInForeground = false;
-      const scope = 'demo-node/default/cron/discovery';
+  test('empty initial cron discovery seeds cursor and later terminal dispatches once', () async {
+    final prefs = await SharedPreferences.getInstance();
+    final service = testService(prefs)..appInForeground = false;
+    const scope = 'demo-node/default/cron/discovery';
 
-      await service.deliverDiscoveryBatch(
-        scopeKey: scope,
-        connId: 'demo-node',
-        profile: 'default',
-        sourceKind: 'cron',
-        objectId: 'discovery',
-        sourceVersion: 'empty-snapshot',
-        lastState: 'snapshot',
-        events: const <DurableDiscoveryNotification>[],
-        suppressByPolicy: false,
-      );
-      expect(calls.where((call) => call.method == 'show'), isEmpty);
+    await service.deliverDiscoveryBatch(
+      scopeKey: scope,
+      connId: 'demo-node',
+      profile: 'default',
+      sourceKind: 'cron',
+      objectId: 'discovery',
+      sourceVersion: 'empty-snapshot',
+      lastState: 'snapshot',
+      events: const <DurableDiscoveryNotification>[],
+      suppressByPolicy: false,
+    );
+    expect(calls.where((call) => call.method == 'show'), isEmpty);
 
-      const identity = NotificationEventIdentity(
-        connId: 'demo-node',
-        profile: 'default',
-        sourceKind: 'cron',
-        objectId: 'execution-later',
-        eventKind: 'terminal',
-        sourceVersion: 'execution-later:completed',
-      );
-      const event = DurableDiscoveryNotification(
-        identity: identity,
-        destinationKind: 'cron_terminal',
-        kind: NotificationKind.run,
-        title: 'Cron completed',
-        body: 'Done',
-        jobId: 'job-later',
-      );
-      await service.deliverDiscoveryBatch(
-        scopeKey: scope,
-        connId: 'demo-node',
-        profile: 'default',
-        sourceKind: 'cron',
-        objectId: 'discovery',
-        sourceVersion: 'terminal-snapshot',
-        lastState: 'snapshot',
-        events: const <DurableDiscoveryNotification>[event],
-        suppressByPolicy: false,
-      );
-      await service.deliverDiscoveryBatch(
-        scopeKey: scope,
-        connId: 'demo-node',
-        profile: 'default',
-        sourceKind: 'cron',
-        objectId: 'discovery',
-        sourceVersion: 'terminal-snapshot',
-        lastState: 'snapshot',
-        events: const <DurableDiscoveryNotification>[event],
-        suppressByPolicy: false,
-      );
+    const identity = NotificationEventIdentity(
+      connId: 'demo-node',
+      profile: 'default',
+      sourceKind: 'cron',
+      objectId: 'execution-later',
+      eventKind: 'terminal',
+      sourceVersion: 'execution-later:completed',
+    );
+    const event = DurableDiscoveryNotification(
+      identity: identity,
+      destinationKind: 'cron_terminal',
+      kind: NotificationKind.run,
+      title: 'Cron completed',
+      body: 'Done',
+      jobId: 'job-later',
+    );
+    await service.deliverDiscoveryBatch(
+      scopeKey: scope,
+      connId: 'demo-node',
+      profile: 'default',
+      sourceKind: 'cron',
+      objectId: 'discovery',
+      sourceVersion: 'terminal-snapshot',
+      lastState: 'snapshot',
+      events: const <DurableDiscoveryNotification>[event],
+      suppressByPolicy: false,
+    );
+    await service.deliverDiscoveryBatch(
+      scopeKey: scope,
+      connId: 'demo-node',
+      profile: 'default',
+      sourceKind: 'cron',
+      objectId: 'discovery',
+      sourceVersion: 'terminal-snapshot',
+      lastState: 'snapshot',
+      events: const <DurableDiscoveryNotification>[event],
+      suppressByPolicy: false,
+    );
 
-      final shown = calls.where((call) => call.method == 'show').toList();
-      expect(shown, hasLength(1));
-      final args = Map<String, dynamic>.from(shown.single.arguments as Map);
-      final open = NotificationOpen.tryParse(args['payload'] as String?);
-      expect(open?.jobId, 'job-later');
-      await service.closeDelivery();
-    },
-  );
+    final shown = calls.where((call) => call.method == 'show').toList();
+    expect(shown, hasLength(1));
+    final args = Map<String, dynamic>.from(shown.single.arguments as Map);
+    final open = NotificationOpen.tryParse(args['payload'] as String?);
+    expect(open?.jobId, 'job-later');
+    await service.closeDelivery();
+  });
 
   test('unknown cron terminal is accepted by the durable store', () async {
     final prefs = await SharedPreferences.getInstance();
@@ -404,7 +402,7 @@ void main() {
     final opened = <NotificationOpen>[];
     service.onOpenSession = (open) {
       opened.add(open);
-      return true;
+      return NavigationDeliveryOutcome.delivered;
     };
     await service.init();
 
@@ -432,7 +430,7 @@ void main() {
     final opened = <NotificationOpen>[];
     service.onOpenSession = (open) {
       opened.add(open);
-      return true;
+      return NavigationDeliveryOutcome.delivered;
     };
 
     await service.init();
@@ -449,9 +447,9 @@ void main() {
     var ready = false;
     var opened = 0;
     service.onOpenSession = (open) {
-      if (!ready) return false;
+      if (!ready) return NavigationDeliveryOutcome.deferred;
       opened++;
-      return true;
+      return NavigationDeliveryOutcome.delivered;
     };
     await service.init();
 
@@ -459,7 +457,10 @@ void main() {
     expect(opened, 0);
 
     ready = true;
-    expect(service.retryPendingOpen(), isTrue);
+    expect(
+      await service.retryPendingOpen(),
+      NavigationDeliveryOutcome.delivered,
+    );
     expect(opened, 1);
   });
 
@@ -471,7 +472,7 @@ void main() {
       final opened = <NotificationOpen>[];
       service.onOpenSession = (open) {
         opened.add(open);
-        return true;
+        return NavigationDeliveryOutcome.delivered;
       };
       await service.init();
 

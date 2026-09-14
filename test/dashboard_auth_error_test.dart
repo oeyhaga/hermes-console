@@ -301,6 +301,65 @@ void main() {
         );
       },
     );
+    test('typed ticket failures use the closed transport cause', () async {
+      final failures = <Object>[
+        TimeoutException('timeout detail'),
+        const SocketException('socket detail'),
+        http.ClientException('client detail'),
+      ];
+      for (final failure in failures) {
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((_) async => throw failure),
+        );
+        addTearDown(client.close);
+
+        await expectLater(
+          client.mintWsTicket(),
+          throwsA(
+            isA<DashboardWebSocketAuthException>()
+                .having((error) => error.statusCode, 'statusCode', isNull)
+                .having(
+                  (error) => error.cause,
+                  'cause',
+                  DashboardWebSocketAuthFailureCause.transport,
+                ),
+          ),
+        );
+      }
+    });
+
+    test(
+      'missing ticket uses malformed while legacy construction is unknown',
+      () async {
+        final client = DashboardClient(
+          host: 'hermes.local',
+          manualToken: 'legacy-test-token',
+          httpClientOverride: MockClient((_) async => http.Response('{}', 200)),
+        );
+        addTearDown(client.close);
+
+        await expectLater(
+          client.mintWsTicket(),
+          throwsA(
+            isA<DashboardWebSocketAuthException>()
+                .having((error) => error.statusCode, 'statusCode', isNull)
+                .having(
+                  (error) => error.cause,
+                  'cause',
+                  DashboardWebSocketAuthFailureCause.malformed,
+                ),
+          ),
+        );
+        expect(
+          const DashboardWebSocketAuthException(
+            DashboardWebSocketAuthFailureCode.unavailable,
+          ).cause,
+          DashboardWebSocketAuthFailureCause.unknown,
+        );
+      },
+    );
   });
 
   test('loginRequired se produce por señal real del Dashboard', () async {

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/session.dart';
 import 'package:hermes_android/core/services/run_registry.dart';
+import 'package:hermes_android/core/utils/chat_turn.dart';
 
 void main() {
   group('timestamps: identidad canónica y orden estable (#2)', () {
@@ -341,6 +342,45 @@ void main() {
       expect(s.displayTitle, 'Conversación');
     });
 
+    test('oculta el carrier background completo y el preview de SessionDB', () {
+      const full =
+          '[IMPORTANT: Background process proc_0b5fab8a4839 exited (exit code 1).\n'
+          'Command: claude -p private\n'
+          'Output:\n'
+          'private output\n'
+          ']';
+      const backendPreview =
+          '[IMPORTANT: Background process proc_0b5fab8a4839 exited (exi...';
+      expect(stripBackgroundProcessCarrier(full), '');
+      for (final preview in const [full, backendPreview]) {
+        final s = Session.fromJson({
+          'id': 'background-preview-$preview',
+          'title': preview,
+          'preview': preview,
+          'source': 'mobile',
+        });
+        expect(s.cleanPreview, '', reason: preview);
+        expect(s.displayTitle, 'Conversación', reason: preview);
+      }
+    });
+
+    test('preview background conserva citas e incompletos no canónicos', () {
+      for (final preview in const [
+        '¿Qué significa [IMPORTANT: Background process ...]?',
+        '[IMPORTANT: Background process proc_0b5fab8a4839 exited (exit code 1).',
+        '[IMPORTANT: Background process proc_0b5fab8a4839 exited (exi... ¿qué significa?',
+      ]) {
+        final s = Session.fromJson({
+          'id': 'background-preview-false-positive-$preview',
+          'title': 'Título humano',
+          'preview': preview,
+          'source': 'mobile',
+        });
+        expect(s.cleanPreview, preview, reason: preview);
+        expect(s.displayTitle, 'Título humano', reason: preview);
+      }
+    });
+
     test('oculta el carrier async completo y su preview truncado', () {
       for (final marker in const [
         '[ASYNC DELEGATION BATCH COMPLETE — deleg_deadbeef]',
@@ -371,35 +411,29 @@ void main() {
       expect(s.displayTitle, quoted);
     });
 
-    test(
-      'displayTitle conserva una consulta que empieza citando la cabecera',
-      () {
-        const title =
-            '[Your active task list was preserved across context compression] ¿qué significa?';
-        final s = Session.fromJson({
-          'id': '20260828_question',
-          'title': title,
-          'preview': 'Explícame esa cabecera',
-          'source': 'mobile',
-        });
-        expect(s.displayTitle, title);
-      },
-    );
+    test('displayTitle conserva una consulta que empieza citando la cabecera', () {
+      const title =
+          '[Your active task list was preserved across context compression] ¿qué significa?';
+      final s = Session.fromJson({
+        'id': '20260828_question',
+        'title': title,
+        'preview': 'Explícame esa cabecera',
+        'source': 'mobile',
+      });
+      expect(s.displayTitle, title);
+    });
 
-    test(
-      'displayTitle oculta el snapshot con preview truncado por SessionDB',
-      () {
-        final s = Session.fromJson({
-          'id': '20260828_todo_truncated',
-          'title':
-              '[Your active task list was preserved across context compression]',
-          'preview':
-              '[Your active task list was preserved across context compress...',
-          'source': 'mobile',
-        });
-        expect(s.displayTitle, 'Conversación');
-      },
-    );
+    test('displayTitle oculta el snapshot con preview truncado por SessionDB', () {
+      final s = Session.fromJson({
+        'id': '20260828_todo_truncated',
+        'title':
+            '[Your active task list was preserved across context compression]',
+        'preview':
+            '[Your active task list was preserved across context compress...',
+        'source': 'mobile',
+      });
+      expect(s.displayTitle, 'Conversación');
+    });
 
     test('displayTitle de job sin contenido legible → "Tarea programada"', () {
       final s = Session.fromJson({

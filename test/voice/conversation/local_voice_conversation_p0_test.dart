@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/secure_storage.dart';
@@ -15,6 +16,8 @@ import 'package:hermes_android/core/services/voice/voice_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../support/in_memory_compression_fence_storage.dart';
 
 class _VoiceProbe {
   final List<_ProbeStt> sttEngines = [];
@@ -136,7 +139,11 @@ class _ProbeTts implements TtsEngine {
   }
 }
 
-class _DesktopGatewayProbe implements HermesDesktopGateway {
+class _DesktopGatewayProbe
+    implements
+        HermesDesktopGateway,
+        HermesDesktopSessionLifecycleGateway,
+        HermesDesktopExclusiveSubmitCapabilityGateway {
   _DesktopGatewayProbe(this.runtimeSessionId);
 
   final String runtimeSessionId;
@@ -168,6 +175,38 @@ class _DesktopGatewayProbe implements HermesDesktopGateway {
     storedSessionId: storedSessionId,
     created: false,
   );
+
+  @override
+  Future<void> ensureExclusiveSubmitCapability() async {}
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) async {
+    _connected = true;
+    return DesktopSessionSnapshot(
+      runtimeSessionId: runtimeSessionId,
+      storedSessionId: storedSessionId,
+      created: false,
+    );
+  }
+
+  @override
+  Future<DesktopSessionSnapshot> createForFirstSubmit({
+    String profile = '',
+    List<Map<String, dynamic>> seedMessages = const [],
+    String model = '',
+  }) async {
+    _connected = true;
+    return DesktopSessionSnapshot(
+      runtimeSessionId: runtimeSessionId,
+      storedSessionId: 'stored-created',
+      created: true,
+    );
+  }
 
   @override
   Future<void> submitPrompt(String runtimeSessionId, String text) async {
@@ -245,6 +284,7 @@ SavedConnection _connection(String suffix) => SavedConnection(
 );
 
 ActiveChat _chatFor(_DesktopGatewayProbe gateway, String suffix) => ActiveChat(
+  compressionFenceStore: testCompressionFenceStore(),
   connection: _connection(suffix),
   sessionId: 'stored-$suffix',
   sessionTitle: 'Voice P0',
@@ -570,44 +610,41 @@ void main() {
     },
   );
 
-  test(
-    'reasoning interim queda fuera y el comentario público se acota',
-    () async {
-      final probe = _VoiceProbe()..holdSpeech = true;
-      final harness = await _harness('public-commentary-safety', probe: probe);
-      addTearDown(harness.close);
+  test('reasoning interim queda fuera y el comentario público se acota', () async {
+    final probe = _VoiceProbe()..holdSpeech = true;
+    final harness = await _harness('public-commentary-safety', probe: probe);
+    addTearDown(harness.close);
 
-      await _submitFromMic(harness, 'revisa con cuidado');
-      harness.gateway.emit('tool.start', const {
-        'name': 'read_file',
-        'preview': '/home/private/secret.txt',
-      });
-      harness.gateway.emit('message.interim', const {
-        'text': 'RAZONAMIENTO PRIVADO QUE NO DEBE APARECER',
-        'reasoning': true,
-      });
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      expect(harness.controller.publicCommentary, isEmpty);
-      expect(probe.spoken, isEmpty);
+    await _submitFromMic(harness, 'revisa con cuidado');
+    harness.gateway.emit('tool.start', const {
+      'name': 'read_file',
+      'preview': '/home/private/secret.txt',
+    });
+    harness.gateway.emit('message.interim', const {
+      'text': 'RAZONAMIENTO PRIVADO QUE NO DEBE APARECER',
+      'reasoning': true,
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(harness.controller.publicCommentary, isEmpty);
+    expect(probe.spoken, isEmpty);
 
-      final longPublic =
-          '**Comentario público:** '
-          '${List<String>.filled(40, 'estoy revisando cada detalle').join(' ')}';
-      harness.gateway.emit('message.interim', {'text': longPublic});
-      await _waitFor(
-        () => harness.controller.publicCommentary.isNotEmpty,
-        reason: 'el interim público debe llegar a la única línea de Voz',
-      );
+    final longPublic =
+        '**Comentario público:** '
+        '${List<String>.filled(40, 'estoy revisando cada detalle').join(' ')}';
+    harness.gateway.emit('message.interim', {'text': longPublic});
+    await _waitFor(
+      () => harness.controller.publicCommentary.isNotEmpty,
+      reason: 'el interim público debe llegar a la única línea de Voz',
+    );
 
-      final commentary = harness.controller.publicCommentary;
-      expect(commentary, startsWith('Comentario público:'));
-      expect(commentary, isNot(contains('**')));
-      expect(commentary, isNot(contains('RAZONAMIENTO PRIVADO')));
-      expect(commentary, isNot(contains('/home/private')));
-      expect(commentary.runes.length, lessThanOrEqualTo(160));
-      expect(commentary, endsWith('…'));
-    },
-  );
+    final commentary = harness.controller.publicCommentary;
+    expect(commentary, startsWith('Comentario público:'));
+    expect(commentary, isNot(contains('**')));
+    expect(commentary, isNot(contains('RAZONAMIENTO PRIVADO')));
+    expect(commentary, isNot(contains('/home/private')));
+    expect(commentary.runes.length, lessThanOrEqualTo(160));
+    expect(commentary, endsWith('…'));
+  });
 
   test('el texto público gana y tool/subagent no añaden otro aviso', () async {
     final probe = _VoiceProbe()..holdSpeech = true;
@@ -643,7 +680,7 @@ void main() {
     });
     await _waitFor(
       () =>
-          harness.chat.subagentActivities.isNotEmpty &&
+          harness.chat.subagentAggregate.activeCount == 1 &&
           harness.chat.messages.any(
             (message) => message['_desktopInterim'] == true,
           ),
@@ -790,121 +827,118 @@ void main() {
     expect(probe.heavyModelOverlapObserved, isFalse);
   });
 
-  test(
-    'cinco ciclos App Lock cortan listening/thinking/speaking/Pause sin auto-reanudar',
-    () async {
-      final probe = _VoiceProbe();
-      final voice = await _voiceFor(probe);
-      final controller = LocalVoiceConversationController(voice);
-      final chats = <ActiveChat>[];
-      final gateways = <_DesktopGatewayProbe>[];
-      const stages = <String>[
-        'listening',
-        'thinking',
-        'speaking',
-        'paused',
-        'thinking',
-      ];
+  test('cinco ciclos App Lock cortan listening/thinking/speaking/Pause sin auto-reanudar', () async {
+    final probe = _VoiceProbe();
+    final voice = await _voiceFor(probe);
+    final controller = LocalVoiceConversationController(voice);
+    final chats = <ActiveChat>[];
+    final gateways = <_DesktopGatewayProbe>[];
+    const stages = <String>[
+      'listening',
+      'thinking',
+      'speaking',
+      'paused',
+      'thinking',
+    ];
 
-      addTearDown(() async {
-        await controller.exit();
-        controller.dispose();
-        for (final chat in chats) {
-          if (chat.isStreaming) chat.cancel();
-          chat.dispose();
-        }
-        for (final gateway in gateways) {
-          await gateway.close();
-        }
-        await voice.dispose();
-      });
-
-      for (var cycle = 0; cycle < stages.length; cycle++) {
-        final stage = stages[cycle];
-        final gateway = _DesktopGatewayProbe('runtime-lock-$cycle');
-        final chat = _chatFor(gateway, 'lock-$cycle');
-        gateways.add(gateway);
-        chats.add(chat);
-
-        final capturesBeforeEnter = probe.captures.length;
-        await controller.enter(chat: chat, model: 'hermes-agent');
-        await _waitFor(
-          () => probe.captures.length == capturesBeforeEnter + 1,
-          reason: 'App Lock ciclo $cycle debe partir de una captura única',
-        );
-        final cycleStt = probe.sttEngines.last;
-
-        if (stage == 'thinking' || stage == 'speaking') {
-          probe.captures.last.add(SttResult('turno privado $cycle', true));
-          await _waitFor(
-            () => gateway.submittedCount == 1,
-            reason: 'el ciclo $cycle debe alcanzar thinking',
-          );
-          expect(controller.phase, VoicePhase.thinking);
-        }
-        if (stage == 'speaking') {
-          probe.holdSpeech = true;
-          gateway.emit('message.delta', const {
-            'text': 'Respuesta privada retenida.',
-          });
-          await _waitFor(
-            () => controller.phase == VoicePhase.speaking,
-            reason: 'el ciclo speaking debe tener playback vivo',
-          );
-          expect(voice.speaking.value, isTrue);
-        } else if (stage == 'paused') {
-          controller.pauseConversation();
-          await _waitFor(
-            () => cycleStt.disposeCount == 1,
-            reason: 'Pause previo debe liberar su STT',
-          );
-          expect(controller.userPaused, isTrue);
-        } else {
-          expect(controller.phase, VoicePhase.values.byName(stage));
-        }
-
-        final capturesBeforeLock = probe.captures.length;
-        final enginesBeforeLock = probe.sttEngines.length;
-        final ttsBeforeLock = probe.ttsEngines.length;
-        final cycleTts = ttsBeforeLock == 0 ? null : probe.ttsEngines.last;
-        await controller.suspendForPrivacy();
-
-        expect(controller.active, isTrue);
-        expect(controller.userPaused, isTrue);
-        expect(voice.microphoneCapturing.value, isFalse);
-        expect(cycleStt.disposeCount, 1);
-        if (stage == 'speaking') {
-          expect(cycleTts, isNotNull);
-          expect(cycleTts!.stopCount, greaterThanOrEqualTo(1));
-          expect(cycleTts.disposeCount, 1);
-          expect(voice.speaking.value, isFalse);
-        }
-
-        controller.onAppResumed(appUnlocked: false);
-        controller.onAppResumed(appUnlocked: true);
-        await Future<void>.delayed(const Duration(milliseconds: 30));
-        expect(controller.userPaused, isTrue);
-        expect(probe.captures, hasLength(capturesBeforeLock));
-        expect(probe.sttEngines, hasLength(enginesBeforeLock));
-        expect(probe.ttsEngines, hasLength(ttsBeforeLock));
-
-        probe.holdSpeech = false;
-        await controller.exit();
-        expect(controller.active, isFalse);
+    addTearDown(() async {
+      await controller.exit();
+      controller.dispose();
+      for (final chat in chats) {
         if (chat.isStreaming) chat.cancel();
+        chat.dispose();
+      }
+      for (final gateway in gateways) {
+        await gateway.close();
+      }
+      await voice.dispose();
+    });
+
+    for (var cycle = 0; cycle < stages.length; cycle++) {
+      final stage = stages[cycle];
+      final gateway = _DesktopGatewayProbe('runtime-lock-$cycle');
+      final chat = _chatFor(gateway, 'lock-$cycle');
+      gateways.add(gateway);
+      chats.add(chat);
+
+      final capturesBeforeEnter = probe.captures.length;
+      await controller.enter(chat: chat, model: 'hermes-agent');
+      await _waitFor(
+        () => probe.captures.length == capturesBeforeEnter + 1,
+        reason: 'App Lock ciclo $cycle debe partir de una captura única',
+      );
+      final cycleStt = probe.sttEngines.last;
+
+      if (stage == 'thinking' || stage == 'speaking') {
+        probe.captures.last.add(SttResult('turno privado $cycle', true));
+        await _waitFor(
+          () => gateway.submittedCount == 1,
+          reason: 'el ciclo $cycle debe alcanzar thinking',
+        );
+        expect(controller.phase, VoicePhase.thinking);
+      }
+      if (stage == 'speaking') {
+        probe.holdSpeech = true;
+        gateway.emit('message.delta', const {
+          'text': 'Respuesta privada retenida.',
+        });
+        await _waitFor(
+          () => controller.phase == VoicePhase.speaking,
+          reason: 'el ciclo speaking debe tener playback vivo',
+        );
+        expect(voice.speaking.value, isTrue);
+      } else if (stage == 'paused') {
+        controller.pauseConversation();
+        await _waitFor(
+          () => cycleStt.disposeCount == 1,
+          reason: 'Pause previo debe liberar su STT',
+        );
+        expect(controller.userPaused, isTrue);
+      } else {
+        expect(controller.phase, VoicePhase.values.byName(stage));
       }
 
-      expect(
-        probe.sttEngines.map((engine) => engine.disposeCount),
-        everyElement(1),
-      );
-      expect(
-        probe.ttsEngines.map((engine) => engine.disposeCount),
-        everyElement(1),
-      );
-      expect(probe.heavyModelOverlapObserved, isFalse);
-    },
-  );
+      final capturesBeforeLock = probe.captures.length;
+      final enginesBeforeLock = probe.sttEngines.length;
+      final ttsBeforeLock = probe.ttsEngines.length;
+      final cycleTts = ttsBeforeLock == 0 ? null : probe.ttsEngines.last;
+      await controller.suspendForPrivacy();
+
+      expect(controller.active, isTrue);
+      expect(controller.userPaused, isTrue);
+      expect(voice.microphoneCapturing.value, isFalse);
+      expect(cycleStt.disposeCount, 1);
+      if (stage == 'speaking') {
+        expect(cycleTts, isNotNull);
+        expect(cycleTts!.stopCount, greaterThanOrEqualTo(1));
+        expect(cycleTts.disposeCount, 1);
+        expect(voice.speaking.value, isFalse);
+      }
+
+      controller.onAppResumed(appUnlocked: false);
+      controller.onAppResumed(appUnlocked: true);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(controller.userPaused, isTrue);
+      expect(probe.captures, hasLength(capturesBeforeLock));
+      expect(probe.sttEngines, hasLength(enginesBeforeLock));
+      expect(probe.ttsEngines, hasLength(ttsBeforeLock));
+
+      probe.holdSpeech = false;
+      await controller.exit();
+      expect(controller.active, isFalse);
+      if (chat.isStreaming) chat.cancel();
+    }
+
+    expect(
+      probe.sttEngines.map((engine) => engine.disposeCount),
+      everyElement(1),
+    );
+    expect(
+      probe.ttsEngines.map((engine) => engine.disposeCount),
+      everyElement(1),
+    );
+    expect(probe.heavyModelOverlapObserved, isFalse);
+  });
 
   test(
     'cinco ciclos enter/pause/play/stop/exit conservan un único dueño',

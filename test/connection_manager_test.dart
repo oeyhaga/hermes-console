@@ -1,11 +1,14 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:hermes_android/core/models/core_read.dart';
 import 'package:hermes_android/core/services/bridge_client.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/session_repository.dart';
@@ -355,7 +358,13 @@ void main() {
 
       await expectLater(
         client.getMessages('stored-chat'),
-        throwsA(isA<FormatException>()),
+        throwsA(
+          isA<CoreReadException>().having(
+            (error) => error.kind,
+            'kind',
+            CoreReadErrorKind.malformed,
+          ),
+        ),
       );
     });
 
@@ -398,6 +407,7 @@ void main() {
         expect(requests.single.url.path, '/api/sessions');
         expect(requests.single.url.queryParameters, {
           'limit': '200',
+          'offset': '0',
           'include_children': 'true',
         });
         expect(sessions.map((session) => session.id), [
@@ -502,45 +512,42 @@ void main() {
       client.close();
     });
 
-    test(
-      'startRun inyecta el contexto en input si el gateway rechaza (422)',
-      () async {
-        final bodies = <Map<String, dynamic>>[];
-        final client = ApiClient(
-          baseUrl: 'http://hermes.local:8642',
-          apiKey: 'k',
-          httpClient: MockClient((request) async {
-            final b = jsonDecode(request.body) as Map<String, dynamic>;
-            bodies.add(b);
-            // Gateway estricto: rechaza cualquier cuerpo con campos de historial.
-            if (b.containsKey('conversation_history') ||
-                b.containsKey('messages')) {
-              return http.Response('{"error":"unexpected field"}', 422);
-            }
-            return http.Response(jsonEncode({'run_id': 'run_2'}), 200);
-          }),
-        );
+    test('startRun inyecta el contexto en input si el gateway rechaza (422)', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = ApiClient(
+        baseUrl: 'http://hermes.local:8642',
+        apiKey: 'k',
+        httpClient: MockClient((request) async {
+          final b = jsonDecode(request.body) as Map<String, dynamic>;
+          bodies.add(b);
+          // Gateway estricto: rechaza cualquier cuerpo con campos de historial.
+          if (b.containsKey('conversation_history') ||
+              b.containsKey('messages')) {
+            return http.Response('{"error":"unexpected field"}', 422);
+          }
+          return http.Response(jsonEncode({'run_id': 'run_2'}), 200);
+        }),
+      );
 
-        final runId = await client.startRun(
-          input: '¿cómo me llamo?',
-          sessionId: 'sess-1',
-          history: const [
-            {'role': 'user', 'content': 'me llamo Zorglub'},
-            {'role': 'assistant', 'content': 'Hola Zorglub'},
-          ],
-        );
+      final runId = await client.startRun(
+        input: '¿cómo me llamo?',
+        sessionId: 'sess-1',
+        history: const [
+          {'role': 'user', 'content': 'me llamo Zorglub'},
+          {'role': 'assistant', 'content': 'Hola Zorglub'},
+        ],
+      );
 
-        expect(runId, 'run_2');
-        // El reintento NO debe perder el contexto: va inyectado en `input`.
-        final retry = bodies.last;
-        expect(retry.containsKey('conversation_history'), isFalse);
-        expect(retry.containsKey('messages'), isFalse);
-        expect(retry['input'], contains('me llamo Zorglub'));
-        expect(retry['input'], contains('Hola Zorglub'));
-        expect(retry['input'], contains('¿cómo me llamo?'));
-        client.close();
-      },
-    );
+      expect(runId, 'run_2');
+      // El reintento NO debe perder el contexto: va inyectado en `input`.
+      final retry = bodies.last;
+      expect(retry.containsKey('conversation_history'), isFalse);
+      expect(retry.containsKey('messages'), isFalse);
+      expect(retry['input'], contains('me llamo Zorglub'));
+      expect(retry['input'], contains('Hola Zorglub'));
+      expect(retry['input'], contains('¿cómo me llamo?'));
+      client.close();
+    });
 
     test('getModelInfoList returns fallback for malformed JSON', () async {
       final client = ApiClient(
@@ -1053,41 +1060,38 @@ void main() {
       expect(connection.dashboardUrl, 'http://127.0.0.1:9119');
     });
 
-    test(
-      'mixed legacy+corrupt entries: does not throw, re-saves only the clean valid entry',
-      () async {
-        const prefsKey = 'saved_connections';
+    test('mixed legacy+corrupt entries: does not throw, re-saves only the clean valid entry', () async {
+      const prefsKey = 'saved_connections';
 
-        SharedPreferences.setMockInitialValues({
-          prefsKey: [
-            jsonEncode({
-              'id': 'conn-1',
-              'label': 'Home',
-              'host': '192.168.1.50',
-              'port': 8642,
-              'api_key': 'secret',
-            }),
-            '{NOT_VALID_JSON',
-          ],
-        });
+      SharedPreferences.setMockInitialValues({
+        prefsKey: [
+          jsonEncode({
+            'id': 'conn-1',
+            'label': 'Home',
+            'host': '192.168.1.50',
+            'port': 8642,
+            'api_key': 'secret',
+          }),
+          '{NOT_VALID_JSON',
+        ],
+      });
 
-        final prefs = await SharedPreferences.getInstance();
+      final prefs = await SharedPreferences.getInstance();
 
-        // Must not throw despite the corrupt entry
-        await ConnectionManager.create(prefs);
+      // Must not throw despite the corrupt entry
+      await ConnectionManager.create(prefs);
 
-        final saved = prefs.getStringList(prefsKey)!;
+      final saved = prefs.getStringList(prefsKey)!;
 
-        // Corrupt entry excluded, valid entry preserved
-        expect(saved, hasLength(1));
+      // Corrupt entry excluded, valid entry preserved
+      expect(saved, hasLength(1));
 
-        final entry = jsonDecode(saved.first) as Map<String, dynamic>;
-        expect(entry['id'], 'conn-1');
+      final entry = jsonDecode(saved.first) as Map<String, dynamic>;
+      expect(entry['id'], 'conn-1');
 
-        // api_key must not appear in the re-saved JSON
-        expect(entry.containsKey('api_key'), isFalse);
-      },
-    );
+      // api_key must not appear in the re-saved JSON
+      expect(entry.containsKey('api_key'), isFalse);
+    });
 
     test(
       'pruneOrphanData quita restos de instancias borradas y conserva el resto',
@@ -1164,50 +1168,41 @@ void main() {
       },
     );
 
-    test(
-      'pruneOrphanData poda las preferencias de mascota con scope connId.profile',
-      () async {
-        SharedPreferences.setMockInitialValues({
-          'saved_connections': [
-            jsonEncode({
-              'id': 'keep',
-              'label': 'Viva',
-              'host': '192.168.1.50',
-              'port': 8642,
-            }),
-          ],
-          // Scoped a la conexión viva: se conservan.
-          'companion.selected_slug.keep.alpha': 'nimbus',
-          'companion.enabled.keep.alpha': false,
-          // Huérfanas de una instancia borrada: se eliminan.
-          'companion.selected_slug.gone.alpha': 'jinx',
-          'companion.scale.gone.beta': 'large',
-          'companion.size_multiplier.gone.beta': 1.25,
-          // Globales (legado y ajustes de app): nunca se tocan.
-          'companion.selected_slug': 'boba',
-          'companion.enabled': true,
-          'companion.presence_level': 'minimal',
-          'companion.animation_speed.nimbus': 0.8,
-        });
-        final prefs = await SharedPreferences.getInstance();
-        await ConnectionManager.create(prefs);
+    test('pruneOrphanData poda las preferencias de mascota con scope connId.profile', () async {
+      SharedPreferences.setMockInitialValues({
+        'saved_connections': [
+          jsonEncode({
+            'id': 'keep',
+            'label': 'Viva',
+            'host': '192.168.1.50',
+            'port': 8642,
+          }),
+        ],
+        // Scoped a la conexión viva: se conservan.
+        'companion.selected_slug.keep.alpha': 'nimbus',
+        'companion.enabled.keep.alpha': false,
+        // Huérfanas de una instancia borrada: se eliminan.
+        'companion.selected_slug.gone.alpha': 'jinx',
+        'companion.scale.gone.beta': 'large',
+        'companion.size_multiplier.gone.beta': 1.25,
+        // Globales (legado y ajustes de app): nunca se tocan.
+        'companion.selected_slug': 'boba',
+        'companion.enabled': true,
+        'companion.presence_level': 'minimal',
+        'companion.animation_speed.nimbus': 0.8,
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await ConnectionManager.create(prefs);
 
-        expect(
-          prefs.containsKey('companion.selected_slug.gone.alpha'),
-          isFalse,
-        );
-        expect(prefs.containsKey('companion.scale.gone.beta'), isFalse);
-        expect(
-          prefs.containsKey('companion.size_multiplier.gone.beta'),
-          isFalse,
-        );
-        expect(prefs.containsKey('companion.selected_slug.keep.alpha'), isTrue);
-        expect(prefs.getString('companion.selected_slug'), 'boba');
-        expect(prefs.getBool('companion.enabled'), isTrue);
-        expect(prefs.getString('companion.presence_level'), 'minimal');
-        expect(prefs.getDouble('companion.animation_speed.nimbus'), 0.8);
-      },
-    );
+      expect(prefs.containsKey('companion.selected_slug.gone.alpha'), isFalse);
+      expect(prefs.containsKey('companion.scale.gone.beta'), isFalse);
+      expect(prefs.containsKey('companion.size_multiplier.gone.beta'), isFalse);
+      expect(prefs.containsKey('companion.selected_slug.keep.alpha'), isTrue);
+      expect(prefs.getString('companion.selected_slug'), 'boba');
+      expect(prefs.getBool('companion.enabled'), isTrue);
+      expect(prefs.getString('companion.presence_level'), 'minimal');
+      expect(prefs.getDouble('companion.animation_speed.nimbus'), 0.8);
+    });
   });
 
   group('ConnectionManager.findConnectionByEndpoint', () {
@@ -1411,6 +1406,338 @@ void main() {
         expect(revisions[1], greaterThan(revisions[0]));
       },
     );
+    test(
+      'upsert material publica ambas revisiones una vez y solo tras persistir',
+      () async {
+        final fixture = await managerWithCapabilities();
+        final connectionRevision = fixture.manager.connectionRevisionFor(id);
+        final observed = <String>[];
+        var fenceSawOldState = false;
+
+        fixture.manager.connectionWillChangeFor(id).addListener(() {
+          final persisted = fixture.manager.getConnections().single;
+          fenceSawOldState = persisted.label == 'Server';
+          expect(connectionRevision.value, 0);
+          expect(fixture.manager.connectionsRevision.value, 0);
+        });
+        connectionRevision.addListener(() {
+          observed.add('connection');
+          final persisted = fixture.manager.getConnections().single;
+          expect(persisted.label, 'Server editado');
+          expect(persisted.dashboardUrl, 'https://dashboard.example.test');
+        });
+        fixture.manager.connectionsRevision.addListener(() {
+          observed.add('global');
+          final persisted = fixture.manager.getConnections().single;
+          expect(persisted.label, 'Server editado');
+          expect(persisted.dashboardUrl, 'https://dashboard.example.test');
+        });
+
+        final saving = fixture.manager.upsertConnection(
+          SavedConnection(
+            id: id,
+            label: 'Server editado',
+            host: 'hermes.example.test',
+            port: 443,
+            apiKey: '',
+            useHttps: true,
+            dashboardUrl: 'https://dashboard.example.test',
+          ),
+        );
+
+        expect(fenceSawOldState, isTrue);
+        expect(observed, isEmpty);
+        await saving;
+
+        expect(observed, const ['connection', 'global']);
+        expect(connectionRevision.value, 1);
+        expect(fixture.manager.connectionsRevision.value, 1);
+      },
+    );
+    test(
+      'un probe rutinario no invalida el lifecycle general ni un turno activo',
+      () async {
+        final fixture = await managerWithCapabilities();
+        final connectionRevision = fixture.manager.connectionRevisionFor(id);
+        final configAccessRevision = fixture.manager.configAccessRevisionFor(
+          id,
+        );
+        var generalFences = 0;
+        var generalRevisions = 0;
+        var globalRevisions = 0;
+        var configAccessFences = 0;
+        var configAccessRevisions = 0;
+        var activeTurnInvalidated = false;
+
+        // Un turno vivo se cuelga del fence general porque URL/auth/perfil sí
+        // invalidan su cliente. Un probe no relacionado no puede dispararlo.
+        fixture.manager.connectionWillChangeFor(id).addListener(() {
+          generalFences += 1;
+          activeTurnInvalidated = true;
+        });
+        connectionRevision.addListener(() => generalRevisions += 1);
+        fixture.manager.connectionsRevision.addListener(
+          () => globalRevisions += 1,
+        );
+        fixture.manager
+            .configAccessWillChangeFor(id)
+            .addListener(() => configAccessFences += 1);
+        configAccessRevision.addListener(() => configAccessRevisions += 1);
+
+        final saving = fixture.manager.saveCapabilities(
+          id,
+          const CapabilityMatrix(modelsRead: CapState.yes, checkedAtMs: 42),
+        );
+
+        expect(generalFences, 0);
+        expect(activeTurnInvalidated, isFalse);
+        expect(generalRevisions, 0);
+        expect(globalRevisions, 0);
+        expect(configAccessFences, 0);
+        expect(configAccessRevisions, 0);
+        await saving;
+
+        expect(generalFences, 0);
+        expect(activeTurnInvalidated, isFalse);
+        expect(generalRevisions, 0);
+        expect(globalRevisions, 0);
+        expect(configAccessFences, 0);
+        expect(configAccessRevisions, 0);
+        expect(fixture.manager.loadCapabilities(id).modelsRead, CapState.yes);
+      },
+    );
+
+    test(
+      'una transición config usa su fence aislado y omite matrices iguales',
+      () async {
+        final fixture = await managerWithCapabilities();
+        final connectionRevision = fixture.manager.connectionRevisionFor(id);
+        final configAccessRevision = fixture.manager.configAccessRevisionFor(
+          id,
+        );
+        var generalFences = 0;
+        var generalRevisions = 0;
+        var globalRevisions = 0;
+        var configAccessFences = 0;
+        var configAccessRevisions = 0;
+
+        fixture.manager
+            .connectionWillChangeFor(id)
+            .addListener(() => generalFences += 1);
+        connectionRevision.addListener(() => generalRevisions += 1);
+        fixture.manager.connectionsRevision.addListener(
+          () => globalRevisions += 1,
+        );
+        fixture.manager
+            .configAccessWillChangeFor(id)
+            .addListener(() => configAccessFences += 1);
+        configAccessRevision.addListener(() => configAccessRevisions += 1);
+
+        const configAccess = CapabilityMatrix(
+          configRead: CapState.yes,
+          configWrite: CapState.no,
+          checkedAtMs: 43,
+        );
+        final saving = fixture.manager.saveCapabilities(id, configAccess);
+
+        // El fence llega antes de persistir para cerrar el repositorio y su
+        // debounce, pero la revisión solo expone el nuevo permiso confirmado.
+        expect(configAccessFences, 1);
+        expect(configAccessRevision.value, 0);
+        expect(generalFences, 0);
+        expect(generalRevisions, 0);
+        expect(globalRevisions, 0);
+        await saving;
+
+        expect(configAccessRevision.value, 1);
+        expect(configAccessRevisions, 1);
+        expect(generalFences, 0);
+        expect(generalRevisions, 0);
+        expect(globalRevisions, 0);
+
+        await fixture.manager.saveCapabilities(
+          id,
+          const CapabilityMatrix(
+            configRead: CapState.yes,
+            configWrite: CapState.no,
+            modelsRead: CapState.yes,
+            checkedAtMs: 44,
+          ),
+        );
+        expect(configAccessFences, 1);
+        expect(configAccessRevisions, 1);
+
+        await fixture.manager.saveCapabilities(
+          id,
+          const CapabilityMatrix(
+            configRead: CapState.yes,
+            configWrite: CapState.no,
+            modelsRead: CapState.yes,
+            checkedAtMs: 44,
+          ),
+        );
+        expect(configAccessFences, 1);
+        expect(configAccessRevisions, 1);
+        expect(generalFences, 0);
+        expect(generalRevisions, 0);
+        expect(globalRevisions, 0);
+      },
+    );
+
+    test('cambios materiales publican el fence antes de persistir', () async {
+      final fixture = await managerWithCapabilities();
+      var fences = 0;
+      fixture.manager.connectionWillChangeFor(id).addListener(() {
+        fences += 1;
+      });
+
+      final metadata = fixture.manager.upsertConnection(
+        SavedConnection(
+          id: id,
+          label: 'Server editado',
+          host: 'hermes.example.test',
+          port: 443,
+          apiKey: '',
+          useHttps: true,
+        ),
+      );
+      expect(fences, 1);
+      await metadata;
+
+      final profile = fixture.manager.setActiveProfile(id, 'coding');
+      expect(fences, 2);
+      await profile;
+
+      final capabilities = fixture.manager.saveCapabilities(
+        id,
+        const CapabilityMatrix(configWrite: CapState.no),
+      );
+      expect(fences, 2);
+      await capabilities;
+
+      final apiKey = fixture.manager.updateApiKey(id, 'rotated-gateway-key');
+      expect(fences, 3);
+      await apiKey;
+
+      final dashboardSecret = fixture.manager.setDashboardSecrets(
+        id,
+        sessionToken: 'rotated-dashboard-token',
+      );
+      expect(fences, 4);
+      await dashboardSecret;
+
+      final revocation = fixture.manager.wipeAllApiKeys();
+      expect(fences, 5);
+      await revocation;
+
+      final deletion = fixture.manager.deleteConnection(id);
+      expect(fences, 6);
+      await deletion;
+    });
+    test(
+      'deleteConnection dispone notifiers por id y un reemplazo empieza limpio',
+      () async {
+        final fixture = await managerWithCapabilities();
+        final profileRevision = fixture.manager.activeProfileRevisionFor(id);
+        final connectionRevision = fixture.manager.connectionRevisionFor(id);
+        final willChange = fixture.manager.connectionWillChangeFor(id);
+        final configAccessRevision = fixture.manager.configAccessRevisionFor(
+          id,
+        );
+        final configAccessWillChange = fixture.manager
+            .configAccessWillChangeFor(id);
+
+        await fixture.manager.deleteConnection(id);
+
+        expect(
+          () => profileRevision.addListener(() {}),
+          throwsA(isA<FlutterError>()),
+        );
+        expect(
+          () => connectionRevision.addListener(() {}),
+          throwsA(isA<FlutterError>()),
+        );
+        expect(
+          () => willChange.addListener(() {}),
+          throwsA(isA<FlutterError>()),
+        );
+        expect(
+          () => configAccessRevision.addListener(() {}),
+          throwsA(isA<FlutterError>()),
+        );
+        expect(
+          () => configAccessWillChange.addListener(() {}),
+          throwsA(isA<FlutterError>()),
+        );
+
+        final replacementProfile = fixture.manager.activeProfileRevisionFor(id);
+        final replacementConnection = fixture.manager.connectionRevisionFor(id);
+        final replacementWillChange = fixture.manager.connectionWillChangeFor(
+          id,
+        );
+        final replacementConfigAccess = fixture.manager.configAccessRevisionFor(
+          id,
+        );
+        final replacementConfigAccessWillChange = fixture.manager
+            .configAccessWillChangeFor(id);
+        expect(identical(replacementProfile, profileRevision), isFalse);
+        expect(identical(replacementConnection, connectionRevision), isFalse);
+        expect(identical(replacementWillChange, willChange), isFalse);
+        expect(
+          identical(replacementConfigAccess, configAccessRevision),
+          isFalse,
+        );
+        expect(
+          identical(replacementConfigAccessWillChange, configAccessWillChange),
+          isFalse,
+        );
+        expect(replacementProfile.value, 0);
+        expect(replacementConnection.value, 0);
+        expect(replacementConfigAccess.value, 0);
+      },
+    );
+    test('dispose libera todos los notifiers administrados', () async {
+      final fixture = await managerWithCapabilities();
+      final profileRevision = fixture.manager.activeProfileRevisionFor(id);
+      final connectionRevision = fixture.manager.connectionRevisionFor(id);
+      final willChange = fixture.manager.connectionWillChangeFor(id);
+      final configAccessRevision = fixture.manager.configAccessRevisionFor(id);
+      final configAccessWillChange = fixture.manager.configAccessWillChangeFor(
+        id,
+      );
+
+      fixture.manager.dispose();
+
+      for (final notifier in <Listenable>[
+        profileRevision,
+        connectionRevision,
+        willChange,
+        configAccessRevision,
+        configAccessWillChange,
+        fixture.manager.activeProfile,
+        fixture.manager.activeConnectionId,
+        fixture.manager.connectionsRevision,
+      ]) {
+        expect(() => notifier.addListener(() {}), throwsA(isA<FlutterError>()));
+      }
+      expect(
+        () => fixture.manager.activeProfileRevisionFor(id),
+        throwsStateError,
+      );
+      expect(() => fixture.manager.connectionRevisionFor(id), throwsStateError);
+      expect(
+        () => fixture.manager.connectionWillChangeFor(id),
+        throwsStateError,
+      );
+      expect(
+        () => fixture.manager.configAccessRevisionFor(id),
+        throwsStateError,
+      );
+      expect(
+        () => fixture.manager.configAccessWillChangeFor(id),
+        throwsStateError,
+      );
+    });
   });
 
   group('ConnectionManager instancia predeterminada', () {
@@ -1532,17 +1859,14 @@ void main() {
       expect(info.configuredCount, 0);
     });
 
-    test(
-      'fromJson handles null active, empty providers, and missing builtin files',
-      () {
-        final info = MemoryInfo.fromJson({'active': null, 'providers': []});
+    test('fromJson handles null active, empty providers, and missing builtin files', () {
+      final info = MemoryInfo.fromJson({'active': null, 'providers': []});
 
-        expect(info.active, '');
-        expect(info.providers, isEmpty);
-        expect(info.builtinFiles, isEmpty);
-        expect(info.activeProvider, isNull);
-      },
-    );
+      expect(info.active, '');
+      expect(info.providers, isEmpty);
+      expect(info.builtinFiles, isEmpty);
+      expect(info.activeProvider, isNull);
+    });
 
     test('MemoryProvider.fromJson captures all fields', () {
       final p = MemoryProvider.fromJson({
@@ -1690,9 +2014,8 @@ void main() {
     });
 
     test('la ruta usa la normalización central y Uri.encodeComponent', () {
-      final source = File(
-        'lib/core/services/connection_manager.dart',
-      ).readAsStringSync();
+      final source = File('lib/core/services/connection_manager.dart')
+          .readAsStringSync();
 
       expect(source, contains('validateCronJobId(jobId)'));
       expect(source, contains('Uri.encodeComponent(id)'));
@@ -2237,37 +2560,34 @@ void main() {
       client.close();
     });
 
-    test(
-      'falls back to legacy token scrape when login endpoint is 404',
-      () async {
-        final client = DashboardClient(
-          host: 'hermes.local',
-          port: 9119,
-          basicUser: 'admin',
-          basicPass: 's3cret',
-          httpClientOverride: MockClient((request) async {
-            if (request.url.path == '/auth/password-login') {
-              return http.Response('not found', 404);
-            }
-            if (request.url.path == '/') {
-              return http.Response(
-                '<script>window.__HERMES_SESSION_TOKEN__="legacy-tok";</script>',
-                200,
-              );
-            }
-            if (request.url.path == '/api/model/options') {
-              expect(request.headers['x-hermes-session-token'], 'legacy-tok');
-              return http.Response(jsonEncode({'providers': {}}), 200);
-            }
+    test('falls back to legacy token scrape when login endpoint is 404', () async {
+      final client = DashboardClient(
+        host: 'hermes.local',
+        port: 9119,
+        basicUser: 'admin',
+        basicPass: 's3cret',
+        httpClientOverride: MockClient((request) async {
+          if (request.url.path == '/auth/password-login') {
             return http.Response('not found', 404);
-          }),
-        );
+          }
+          if (request.url.path == '/') {
+            return http.Response(
+              '<script>window.__HERMES_SESSION_TOKEN__="legacy-tok";</script>',
+              200,
+            );
+          }
+          if (request.url.path == '/api/model/options') {
+            expect(request.headers['x-hermes-session-token'], 'legacy-tok');
+            return http.Response(jsonEncode({'providers': {}}), 200);
+          }
+          return http.Response('not found', 404);
+        }),
+      );
 
-        final providers = await client.getModelOptions();
-        expect(providers, isEmpty);
-        client.close();
-      },
-    );
+      final providers = await client.getModelOptions();
+      expect(providers, isEmpty);
+      client.close();
+    });
   });
 
   group('DashboardClient.getMemoryInfo', () {
