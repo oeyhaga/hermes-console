@@ -10149,6 +10149,47 @@ void main() {
   });
 
   testWidgets(
+    'Reintentar reenvía el prompt cuando el servidor no tiene el turno',
+    (tester) async {
+      const prompt = 'espera y responde';
+      var sendAttempts = 0;
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-recovery-resend'),
+        messages: const [
+          {
+            'role': 'assistant_error',
+            'content': 'No se pudo recuperar el turno. Inténtalo de nuevo.',
+            '_prompt': prompt,
+            '_awaitingDurableTurnRecovery': true,
+          },
+          {'role': 'user', 'content': prompt},
+        ],
+        chatState: ChatPipelineState.failed,
+        // The durable transcript never received the turn: nothing to adopt.
+        storedMessageLoader: (_, _) async => const [
+          {'role': 'user', 'content': prompt},
+        ],
+        sendAttemptObserver: () => sendAttempts += 1,
+      );
+      // After a relaunch the screen no longer remembers the prompt; the error
+      // bubble does, and Reintentar must still do something visible.
+      chat.lastPrompt = '';
+      await tester.pump();
+
+      await tester.tap(find.text('↺ reintentar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(sendAttempts, 1);
+      // The stale "recoverable" projection is gone; whatever the resend
+      // produces is a fresh outcome, not the old dead end.
+      expect(chat.awaitingDurableTurnRecovery, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'un error owner guardado por una build anterior nunca revela el RPC',
     (tester) async {
       const prompt = 'continúa esta conversación desde el móvil';

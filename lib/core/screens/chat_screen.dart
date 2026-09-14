@@ -6802,24 +6802,28 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   /// Retry the last failed send.
-  void _retryLastPrompt() {
+  Future<void> _retryLastPrompt([String? bubblePrompt]) async {
+    // The error bubble remembers its own prompt; after a relaunch the screen's
+    // last prompt can be empty while the bubble is still on screen.
+    final prompt = _lastPrompt.isNotEmpty ? _lastPrompt : (bubblePrompt ?? '');
     if (_chat.awaitingDurableTurnRecovery) {
-      unawaited(_chat.reconcileAfterResume());
-      return;
+      final reconciled = await _chat.reconcileAfterResume();
+      if (reconciled || !mounted || _chat.state != ChatPipelineState.failed) {
+        return;
+      }
+      // The server holds no evidence of this turn: reconciling cannot recover
+      // anything, so the retry the user asked for is a real resend.
     }
-    if (_lastPrompt.isEmpty) return;
-    _removeLatestFailedPromptProjection(
-      _lastPrompt,
-      allowLegacyContentPair: true,
-    );
+    if (prompt.isEmpty) return;
+    _removeLatestFailedPromptProjection(prompt, allowLegacyContentPair: true);
     // En un fallo previo al ACK, el composer ya conserva el texto y todos los
     // adjuntos originales. Solo reconstruimos desde lastPrompt para sesiones
     // antiguas o fallos posteriores al ACK donde el composer sí estaba vacío.
     if (_textController.text.trim().isEmpty && _pendingAttachments.isEmpty) {
-      _textController.text = _lastPrompt;
+      _textController.text = prompt;
     }
     setState(() => _pipelineState = ChatPipelineState.idle);
-    _sendMessage();
+    await _sendMessage();
   }
 
   bool _removeLatestFailedPromptProjection(
@@ -12423,7 +12427,9 @@ class _ChatScreenState extends State<ChatScreen>
       final prompt = (msg['_prompt'] as String?) ?? _lastPrompt;
       return _ErrorBubble(
         error: activeChatStoredErrorUiMessage(content),
-        onRetry: _chat.conflictReadOnly ? null : () => _retryLastPrompt(),
+        onRetry: _chat.conflictReadOnly
+            ? null
+            : () => unawaited(_retryLastPrompt(prompt)),
         prompt: prompt,
         onRestartGateway: _restartGatewayFromChat,
       );

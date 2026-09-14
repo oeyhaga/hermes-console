@@ -3,8 +3,12 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.10 (9007) — candidate, not distributed
+## 1.2.10 (9008) — candidate, not distributed
 
+- "Reintentar" on a failed turn always does something: it first reconciles
+  with the durable transcript and, when the server has no evidence of the
+  turn, resends the prompt instead of ending silently. The error bubble's own
+  prompt is used when the screen no longer remembers the last one (relaunch).
 - Redesigned the blocking prompt card (clarify, sudo, secret): it now rises as
   a compact sheet above the composer over the dimmed transcript instead of
   replacing the whole screen. Choices are full-width option rows with a
