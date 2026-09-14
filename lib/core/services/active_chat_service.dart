@@ -5121,6 +5121,7 @@ class ActiveChat {
   final Set<String> _preparedTurnCancellationsInFlight = <String>{};
   int _nextQueueOrder = 0;
   int _queueGeneration = 0;
+  int _queueParkGeneration = 0;
   bool _preparedTurnDrainInFlight = false;
   bool _queueDrainSuspended = false;
   bool _queueAdmissionFrozen = false;
@@ -16874,6 +16875,7 @@ class ActiveChat {
     if (!delivery.assignQueueOrder(queueOrder)) return false;
     if (queueOrder >= _nextQueueOrder) _nextQueueOrder = queueOrder + 1;
     final queueGeneration = _queueGeneration;
+    final queueParkGeneration = _queueParkGeneration;
     final owner = _PreparedTurnOwner(
       delivery: delivery,
       queueOrder: queueOrder,
@@ -16902,8 +16904,12 @@ class ActiveChat {
       owner.state = _PreparedTurnOwnershipState.queued;
       _insertPreparedTurnByOrder(owner.queued);
       // Una admisión durable nueva es intención explícita de seguir: levanta el
-      // park sólo después de que la escritura preparada haya aterrizado.
-      _unparkQueueLease();
+      // park sólo después de que la escritura preparada haya aterrizado. Un
+      // Stop pulsado mientras esa escritura estaba en vuelo gana la carrera y
+      // conserva el turno estacionado hasta una reanudación explícita.
+      if (_queueParkGeneration == queueParkGeneration) {
+        _unparkQueueLease();
+      }
       _emit(ActiveChatEvent.queueChanged);
       return true;
     } finally {
@@ -17306,6 +17312,7 @@ class ActiveChat {
     // no frena nada y sólo queda como valla rancia — réplica de
     // `parkQueuedPrompts` (`composer-queue.ts:312-317`).
     if (!_hasQueuedWork) return;
+    _queueParkGeneration++;
     _queueLease = QueueLease.parked;
     _queueDrainSuspended = true;
     final acceptedByGateway = _desktopAcceptedQueuedPrompt;

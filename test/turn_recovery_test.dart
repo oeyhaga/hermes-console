@@ -1035,7 +1035,7 @@ void main() {
     await repeatedStop;
 
     expect(admittedDuringStop, isTrue);
-    expect(chat.queueParked, isTrue);
+    expect(chat.queueParked, isFalse);
     expect(chat.queuedTextMessages, contains('conservar estacionado'));
     expect(gateway.submittedTexts, isEmpty);
     expect(chat.queuedMessages, ['cancelar', 'conservar estacionado']);
