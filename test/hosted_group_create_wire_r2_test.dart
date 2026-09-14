@@ -67,12 +67,15 @@ void main() {
     'exact external upstream parser accepts local fixture and rejects mixed fields',
     () async {
       final upstream = Platform.environment['HERMES_UPSTREAM_CHECKOUT'];
-      expect(
-        upstream,
-        isNotNull,
-        reason: 'set HERMES_UPSTREAM_CHECKOUT to the exact upstream checkout',
-      );
-      final upstreamPath = upstream!;
+      if (upstream == null || upstream.trim().isEmpty) {
+        // The exact-upstream comparison is a local release gate; CI has no
+        // hermes-agent checkout, so it must not fail the suite there.
+        markTestSkipped(
+          'set HERMES_UPSTREAM_CHECKOUT to the exact upstream checkout',
+        );
+        return;
+      }
+      final upstreamPath = upstream;
       final roster = [
         HostedGroupCreateMember.localProfile(
           profile: 'builder',
