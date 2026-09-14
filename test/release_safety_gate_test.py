@@ -2201,6 +2201,10 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("not a general reproducible-build claim", policy)
         self.assertIn("v1.2.9", policy)
         self.assertIn("86edaa150fabd33d8184f5b958400cabadacb49632f7ec50ecbe49608058d159", policy)
+        self.assertIn(
+            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
+            policy,
+        )
 
     def test_direct_workflow_is_fail_closed_and_preserves_channel_separation(self):
         workflow = (ROOT / ".github/workflows/build-apk.yml").read_text(encoding="utf-8")
@@ -2222,7 +2226,7 @@ class WorkflowContractTest(unittest.TestCase):
         self.assertIn("./tool/sbom/generate.sh", workflow)
         self.assertIn("git diff --exit-code -- sbom", workflow)
         self.assertIn(
-            "524bed99dbd103bcd247fc0bba8f19278d74596dd3b7e94a730cb259e7cd96a7",
+            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
             workflow,
         )
 
@@ -2611,7 +2615,7 @@ class ReleaseContractAndDoubleBuildTest(unittest.TestCase):
         )
         self.assertEqual(
             policy["source"]["authoritativeLockSha256"],
-            "524bed99dbd103bcd247fc0bba8f19278d74596dd3b7e94a730cb259e7cd96a7",
+            "f366fdfc011b65c1b3f44e777fc876be21d3492ec3b0b0cf014536c0ac3490c3",
         )
         self.assertEqual(policy["android"]["packageId"], "dev.xpetalab.hermesconsole")
         self.assertEqual(set(policy["channels"]), {"direct-public", "play-private"})
