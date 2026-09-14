@@ -4543,60 +4543,59 @@ void main() {
     },
   );
 
-  testWidgets(
-    'turno escrito durante ownership externo espera y continúa la misma sesión',
-    (tester) async {
-      final gateway = _UiRewindGateway()
-        ..activeSessionList = const DesktopActiveSessionList(
-          sessions: [
-            DesktopActiveSession(
-              runtimeSessionId: 'runtime-owned-by-desktop',
-              storedSessionId: 'sess-test',
-              status: 'working',
-            ),
-          ],
-        );
-      final chat = await pumpChat(
-        tester,
-        desktopGateway: gateway,
-        connection: _remoteConn('conn-passive-queued-follow-up'),
-        messagesLoaded: false,
-        initialStoredSessionId: 'sess-test',
-        attachDesktopRuntimeOnLoad: false,
-        allowUnownedDesktopSnapshotForTesting: false,
-        storedMessageLoader: (_, _) async => const [
-          {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+  testWidgets('turno escrito tras attach nativo continúa la misma sesión', (
+    tester,
+  ) async {
+    final gateway = _UiRewindGateway()
+      ..activeSessionList = const DesktopActiveSessionList(
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-owned-by-desktop',
+            storedSessionId: 'sess-test',
+            status: 'working',
+          ),
         ],
       );
-      await tester.pump(const Duration(seconds: 4));
-      await tester.pump();
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-passive-queued-follow-up'),
+      messagesLoaded: false,
+      initialStoredSessionId: 'sess-test',
+      attachDesktopRuntimeOnLoad: false,
+      allowUnownedDesktopSnapshotForTesting: false,
+      storedMessageLoader: (_, _) async => const [
+        {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+      ],
+    );
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump();
 
-      await tester.enterText(
-        find.byType(TextField),
-        'Siguiente turno desde Console',
-      );
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byKey(const ValueKey('send')));
-      await tester.pump(const Duration(milliseconds: 100));
+    await tester.enterText(
+      find.byType(TextField),
+      'Siguiente turno desde Console',
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
 
-      expect(gateway.resumeExistingCalls, 0);
-      expect(gateway.createCalls, 0);
-      expect(gateway.submissions, isEmpty);
-      expect(chat.queuedMessages, ['Siguiente turno desde Console']);
+    expect(gateway.resumeExistingCalls, 1);
+    expect(gateway.createCalls, 0);
+    expect(gateway.submissions, ['Siguiente turno desde Console']);
+    expect(chat.queuedMessages, isEmpty);
 
-      gateway.activeSessionList = const DesktopActiveSessionList();
-      await tester.pump(const Duration(seconds: 4));
-      await tester.pump(const Duration(milliseconds: 100));
+    gateway.activeSessionList = const DesktopActiveSessionList();
+    await tester.pump(const Duration(seconds: 4));
+    await tester.pump(const Duration(milliseconds: 100));
 
-      expect(gateway.resumeExistingCalls, 1);
-      expect(gateway.createCalls, 0);
-      expect(gateway.submissions, ['Siguiente turno desde Console']);
-      gateway.emit('message.complete', const {'text': 'Continuación completa'});
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 900));
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(gateway.resumeExistingCalls, 1);
+    expect(gateway.createCalls, 0);
+    expect(gateway.submissions, ['Siguiente turno desde Console']);
+    gateway.emit('message.complete', const {'text': 'Continuación completa'});
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('el observador pasivo pausa en background y refresca al volver', (
     tester,
@@ -14618,7 +14617,7 @@ void main() {
 
     final error = find
         .textContaining(
-          'No se pudo completar la respuesta. Inténtalo de nuevo.',
+          'No se pudo completar la respuesta: Fallo parcial único',
         )
         .first;
     expect(
@@ -14719,7 +14718,7 @@ void main() {
 
       final error = find
           .textContaining(
-            'No se pudo completar la respuesta. Inténtalo de nuevo.',
+            'No se pudo completar la respuesta: Fallo virtualizado único',
           )
           .first;
       expect(

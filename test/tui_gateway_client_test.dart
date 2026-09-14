@@ -2180,6 +2180,7 @@ void main() {
       'text': 'corregido',
       'truncate_before_row_id': 73,
       'confirm_truncate': true,
+      'confirm_empty_truncate': true,
     });
     expect(requests[6]['params'], {
       'session_id': 'runtime-native',
