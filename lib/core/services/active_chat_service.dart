@@ -14100,7 +14100,19 @@ class ActiveChat {
       final canUseIdempotency = await _canUseTurnIdempotency(gateway);
       if (!_canRecoverTurn(turnEpoch)) return;
       if (!canUseIdempotency) {
-        _degradeLegacyTurnRecovery(turnEpoch, originalError);
+        // The official gateway does not publish `turn_idempotency_v1`. Without
+        // it the turn is still recoverable through the live session: resume it
+        // and adopt `inflight`/`running` instead of failing the turn outright.
+        if (gateway is HermesDesktopSessionLifecycleGateway ||
+            gateway is HermesDesktopRecoverySessionLifecycleGateway) {
+          await _recoverDesktopTurnFromSnapshot(
+            gateway,
+            turnEpoch,
+            originalError,
+          );
+        } else {
+          _degradeLegacyTurnRecovery(turnEpoch, originalError);
+        }
         return;
       }
 
@@ -14859,7 +14871,8 @@ class ActiveChat {
       _turnIdempotencySupported = supported;
       return supported;
     } catch (_) {
-      _turnIdempotencySupported = false;
+      // A transient probe failure is not a capability verdict; leave the
+      // cache empty so the next recovery asks again.
       return false;
     }
   }

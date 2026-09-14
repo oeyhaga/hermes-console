@@ -1254,6 +1254,9 @@ class TuiGatewayClient
   final StreamController<TuiGatewayEvent> _events =
       StreamController<TuiGatewayEvent>.broadcast();
   final Map<int, _PendingRpc> _pending = {};
+  final Map<String, _OpenServerRequest> _openServerRequests = {};
+  // Approval queue `request_id` → JSON-RPC server request id (`srq-…`).
+  final Map<String, String> _approvalServerRequestIds = {};
   int _nextId = 1;
   bool _connected = false;
   bool _closed = false;
@@ -1452,6 +1455,10 @@ class TuiGatewayClient
       if (parsed == null) return;
       _lastInboundAt = _now();
       if (parsed is JsonRpcNotificationFrame) return;
+      if (parsed is JsonRpcServerRequestFrame) {
+        _deliverServerRequest(parsed, generation, channel);
+        return;
+      }
       if (parsed is JsonRpcResponseFrame) {
         final pending = _pending[parsed.id];
         if (pending == null) return;
@@ -1479,6 +1486,16 @@ class TuiGatewayClient
           );
         } else {
           final result = parsed.result;
+          if (result is Map<String, dynamic>) {
+            // Reconnect contract: resume/activate/events.since answer with the
+            // server→client requests still waiting on this session. They are
+            // not events, so they cannot ride the replay ring.
+            _deliverOpenServerRequests(
+              result['open_requests'],
+              generation,
+              channel,
+            );
+          }
           pending.completer.complete(
             result is Map<String, dynamic>
                 ? Map<String, dynamic>.from(result)
@@ -1552,7 +1569,7 @@ class TuiGatewayClient
       );
       if (sessionEvent.sequence == null) {
         _observeWatchdogEvent(sessionEvent, _now());
-        if (!_events.isClosed) _events.add(event);
+        if (!_events.isClosed) _events.add(_translateRequestCancel(event));
         return;
       }
       final disposition = _replayCoordinator.acceptLive(
@@ -1563,10 +1580,187 @@ class TuiGatewayClient
       );
       if (disposition == ReplayLiveDisposition.dispatch) {
         _observeWatchdogEvent(sessionEvent, _now());
-        if (!_events.isClosed) _events.add(event);
+        if (!_events.isClosed) _events.add(_translateRequestCancel(event));
       }
     } catch (_) {
       _handleMalformedFrame(generation, channel);
+    }
+  }
+
+  /// Legacy event type each server request kind used to arrive as. The chat
+  /// service still consumes those shapes; the transport adapts the v7 frames.
+  static const Map<String, String> _serverRequestLegacyEvents = {
+    'approval': 'approval.request',
+    'clarify': 'clarify.request',
+    'sudo': 'sudo.request',
+    'secret': 'secret.request',
+    'terminal.read': 'terminal.read.request',
+    'vault.unlock_prompt': 'vault.unlock.request',
+    'vault.save_login': 'vault.save_login.request',
+    'vault.code': 'vault.code.request',
+  };
+
+  void _deliverServerRequest(
+    JsonRpcServerRequestFrame frame,
+    int generation,
+    WebSocketChannel channel,
+  ) {
+    final rawSession = frame.params['session_id'];
+    final sessionId = rawSession is String ? rawSession.trim() : '';
+    final legacyType = _serverRequestLegacyEvents[frame.method];
+    if (legacyType == null || sessionId.isEmpty) {
+      // Same as Desktop's `no handler` path: fail the request so the backend
+      // does not wait on a client that cannot answer this kind of question.
+      _writeServerRequestFrame(generation, channel, {
+        'jsonrpc': '2.0',
+        'id': frame.id,
+        'error': {
+          'code': legacyType == null ? -32601 : -32602,
+          'message': legacyType == null
+              ? 'no handler for server request: ${frame.method}'
+              : 'server request without session_id',
+        },
+      });
+      return;
+    }
+    final payload = Map<String, dynamic>.from(frame.params)
+      ..remove('session_id');
+    if (frame.method == 'approval') {
+      // The approval queue keeps its own `request_id`; the UI and the compat
+      // `approval.respond` RPC key on it, so it must survive untouched.
+      final approvalId = (payload['request_id'] ?? payload['approval_id'])
+          ?.toString()
+          .trim();
+      if (approvalId == null || approvalId.isEmpty) {
+        payload['request_id'] = frame.id;
+        _approvalServerRequestIds[frame.id] = frame.id;
+      } else {
+        _approvalServerRequestIds[approvalId] = frame.id;
+      }
+    } else {
+      payload['request_id'] = frame.id;
+    }
+    _openServerRequests[frame.id] = _OpenServerRequest(
+      id: frame.id,
+      method: frame.method,
+      sessionId: sessionId,
+      generation: generation,
+      channel: channel,
+    );
+    if (_events.isClosed) return;
+    _events.add(
+      TuiGatewayEvent(
+        type: legacyType,
+        sessionId: sessionId,
+        transportGeneration: generation,
+        producerChannel: channel,
+        payload: Map<String, dynamic>.unmodifiable(payload),
+      ),
+    );
+  }
+
+  void _deliverOpenServerRequests(
+    Object? open,
+    int generation,
+    WebSocketChannel channel,
+  ) {
+    if (open is! List) return;
+    for (final entry in open) {
+      if (entry is! Map) continue;
+      final id = entry['id'];
+      final method = entry['method'];
+      final params = entry['params'];
+      if (id is! String || id.isEmpty || method is! String || method.isEmpty) {
+        continue;
+      }
+      _deliverServerRequest(
+        JsonRpcServerRequestFrame(
+          id,
+          method,
+          params is Map<String, dynamic>
+              ? Map<String, dynamic>.unmodifiable(params)
+              : const <String, dynamic>{},
+        ),
+        generation,
+        channel,
+      );
+    }
+  }
+
+  /// `request.cancel {id, method, reason}` withdraws an open server request.
+  /// Consumers still speak the legacy `*.expire` / `approval.responded` shapes.
+  TuiGatewayEvent _translateRequestCancel(TuiGatewayEvent event) {
+    if (event.type != 'request.cancel') return event;
+    final id = event.payload['id'];
+    if (id is! String || id.isEmpty) return event;
+    final open = _openServerRequests.remove(id);
+    final method = open?.method ?? event.payload['method'];
+    if (method is! String) return event;
+    var requestId = id;
+    if (method == 'approval') {
+      for (final entry in _approvalServerRequestIds.entries) {
+        if (entry.value == id) {
+          requestId = entry.key;
+          break;
+        }
+      }
+      _approvalServerRequestIds.remove(requestId);
+      return TuiGatewayEvent(
+        type: 'approval.responded',
+        sessionId: event.sessionId,
+        sequence: event.sequence,
+        transportGeneration: event.transportGeneration,
+        producerChannel: event.producerChannel,
+        payload: Map<String, dynamic>.unmodifiable({
+          'request_id': requestId,
+          'reason': event.payload['reason'],
+        }),
+      );
+    }
+    final legacyType = _serverRequestLegacyEvents[method];
+    if (legacyType == null) return event;
+    return TuiGatewayEvent(
+      type:
+          '${legacyType.substring(0, legacyType.length - '.request'.length)}'
+          '.expire',
+      sessionId: event.sessionId,
+      sequence: event.sequence,
+      transportGeneration: event.transportGeneration,
+      producerChannel: event.producerChannel,
+      payload: Map<String, dynamic>.unmodifiable({
+        'request_id': requestId,
+        'reason': event.payload['reason'],
+      }),
+    );
+  }
+
+  /// Answers an open server request over the socket it arrived on. False when
+  /// nothing is open under that id (expired, cancelled, or the transport was
+  /// replaced — the backend re-delivers it as `open_requests` on resume).
+  bool _respondServerRequest(String requestId, Map<String, Object?> result) {
+    final open = _openServerRequests.remove(requestId);
+    if (open == null) return false;
+    return _writeServerRequestFrame(open.generation, open.channel, {
+      'jsonrpc': '2.0',
+      'id': requestId,
+      'result': result,
+    });
+  }
+
+  bool _writeServerRequestFrame(
+    int generation,
+    WebSocketChannel channel,
+    Map<String, Object?> frame,
+  ) {
+    if (generation != _socketGeneration || !identical(_channel, channel)) {
+      return false;
+    }
+    try {
+      channel.sink.add(jsonEncode(frame));
+      return true;
+    } catch (error, stackTrace) {
+      _handleSocketError(generation, channel, error, stackTrace);
+      return false;
     }
   }
 
@@ -1614,6 +1808,8 @@ class TuiGatewayClient
       }
     }
     _pending.clear();
+    _openServerRequests.clear();
+    _approvalServerRequestIds.clear();
     if (wasConnected && !_events.isClosed) {
       _events.addError(
         TuiGatewayRpcError(
@@ -2082,6 +2278,8 @@ class TuiGatewayClient
       }
     }
     _pending.clear();
+    _openServerRequests.clear();
+    _approvalServerRequestIds.clear();
   }
 
   Future<Map<String, dynamic>> _request(
@@ -5347,6 +5545,37 @@ class TuiGatewayClient
     String? questionId,
   }) async {
     const method = 'clarify.respond';
+    if (_openServerRequests.containsKey(requestId)) {
+      if (questionId != null) {
+        // Batch clarify: answers lock one at a time; the last lock resolves the
+        // server request itself.
+        const lockMethod = 'clarify.lock';
+        final result = await _request(lockMethod, {
+          'request_id': _interactiveRequestId(lockMethod, requestId),
+          'question_id': questionId,
+          'answer': answer,
+        });
+        final remaining = result['remaining'];
+        if (result['status'] == 'expired' ||
+            (remaining is List && remaining.isEmpty)) {
+          _openServerRequests.remove(requestId);
+        }
+        return DesktopPromptResponse.fromJson(
+          result,
+          method: lockMethod,
+          allowExpired: true,
+        );
+      }
+      if (!_respondServerRequest(requestId, {'answer': answer})) {
+        // The socket that owns the request is gone; the backend re-delivers it
+        // as `open_requests` on resume, so the card must stay answerable.
+        throw const TuiGatewayRpcError(
+          'clarify',
+          'Hermes Desktop WebSocket was replaced',
+        );
+      }
+      return const DesktopPromptResponse._(DesktopPromptResponseStatus.ok);
+    }
     final params = <String, Object?>{
       'request_id': _interactiveRequestId(method, requestId),
       'answer': answer,
@@ -5427,6 +5656,15 @@ class TuiGatewayClient
     required EphemeralSensitiveValue value,
   }) {
     final ephemeralValue = value.take();
+    if (_openServerRequests.containsKey(requestId)) {
+      // v7 server requests answer every one-string prompt under `value`.
+      if (!_respondServerRequest(requestId, {'value': ephemeralValue})) {
+        return Future<Map<String, dynamic>>.error(
+          TuiGatewayRpcError(method, 'Hermes Desktop WebSocket was replaced'),
+        );
+      }
+      return Future<Map<String, dynamic>>.value({'status': 'ok'});
+    }
     return _requestConnected(method, {
       'request_id': requestId,
       valueKey: ephemeralValue,
@@ -5436,6 +5674,17 @@ class TuiGatewayClient
   @override
   Future<DesktopPromptResponse> respondToTerminalRead(String requestId) async {
     const method = 'terminal.read.respond';
+    if (_openServerRequests.containsKey(requestId)) {
+      if (!_respondServerRequest(requestId, {
+        'value': TerminalReadResponsePolicy.noOwnedTerminalText,
+      })) {
+        throw const TuiGatewayRpcError(
+          'terminal.read',
+          'Hermes Desktop WebSocket was replaced',
+        );
+      }
+      return const DesktopPromptResponse._(DesktopPromptResponseStatus.ok);
+    }
     final result = await _request(method, {
       'request_id': _interactiveRequestId(method, requestId),
       'text': TerminalReadResponsePolicy.noOwnedTerminalText,
@@ -5450,6 +5699,28 @@ class TuiGatewayClient
     bool resolveAll = false,
     String? requestId,
   }) async {
+    if (requestId != null && requestId.isNotEmpty) {
+      final serverRequestId = _approvalServerRequestIds[requestId];
+      if (serverRequestId != null &&
+          _respondServerRequest(serverRequestId, {
+            'choice': choice,
+            if (resolveAll) 'all': true,
+          })) {
+        _approvalServerRequestIds.remove(requestId);
+        return;
+      }
+    } else if (resolveAll) {
+      for (final open in _openServerRequests.values) {
+        if (open.method != 'approval' || open.sessionId != runtimeSessionId) {
+          continue;
+        }
+        if (_respondServerRequest(open.id, {'choice': choice, 'all': true})) {
+          _approvalServerRequestIds.removeWhere((_, id) => id == open.id);
+          return;
+        }
+        break;
+      }
+    }
     if (resolveAll || requestId == null) {
       await _request('approval.respond', {
         'session_id': _validatedRuntimeId('approval.respond', runtimeSessionId),
@@ -5477,6 +5748,14 @@ class TuiGatewayClient
     if (request == null ||
         !const {'once', 'session', 'always', 'deny'}.contains(choice)) {
       throw const TuiGatewayRpcError(method, 'Invalid approval response');
+    }
+    final serverRequestId = _approvalServerRequestIds[request];
+    if (serverRequestId != null &&
+        _respondServerRequest(serverRequestId, {'choice': choice})) {
+      // The response frame is the first-wins answer by construction: it can
+      // only settle the request it was minted for.
+      _approvalServerRequestIds.remove(request);
+      return const DesktopApprovalResult(resolved: 1);
     }
     final result = await _request(method, {
       'session_id': _validatedRuntimeId(method, runtimeSessionId),
@@ -5579,6 +5858,22 @@ class TuiGatewayClient
     await _disconnectTransport('client_dispose');
     if (!_events.isClosed) await _events.close();
   }
+}
+
+final class _OpenServerRequest {
+  final String id;
+  final String method;
+  final String sessionId;
+  final int generation;
+  final WebSocketChannel channel;
+
+  const _OpenServerRequest({
+    required this.id,
+    required this.method,
+    required this.sessionId,
+    required this.generation,
+    required this.channel,
+  });
 }
 
 class _PendingRpc {

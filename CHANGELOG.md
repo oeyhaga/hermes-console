@@ -3,8 +3,19 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.10 (9004) — candidate, not distributed
+## 1.2.10 (9005) — candidate, not distributed
 
+- Speak the Hermes Agent v7 prompt contract: `approval`, `clarify`, `sudo`,
+  `secret` and `terminal.read` now arrive as JSON-RPC server→client requests
+  and are answered on the same socket with the request id. Batch clarify
+  answers lock through `clarify.lock`, `request.cancel` withdraws the card,
+  and `open_requests` returned by `session.resume` / `session.events.since`
+  re-deliver questions that were waiting across a reconnect. A backend that
+  still emits the legacy `*.request` events keeps working unchanged.
+- A socket drop mid-turn against a gateway without `turn_idempotency_v1` (the
+  official one) now resumes the live session and adopts its inflight turn
+  instead of failing the turn immediately; the turn only degrades to a
+  recoverable failure when the server has no evidence of it.
 - Added a global, privacy-bounded activity projection to the session list for
   work started from Desktop or another Console. It reconciles active-session
   and process lists, blocking prompts, reconnects and replay uncertainty without

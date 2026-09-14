@@ -105,6 +105,17 @@ final class JsonRpcNotificationFrame extends JsonRpcWireFrame {
   const JsonRpcNotificationFrame(this.method, this.params, this.hasParams);
 }
 
+/// A server→client JSON-RPC request (`tui_gateway/server_requests.py`): the
+/// backend asks the client a question (`approval`, `clarify`, `sudo`, …) and
+/// waits for a response frame carrying the same string `id`.
+final class JsonRpcServerRequestFrame extends JsonRpcWireFrame {
+  final String id;
+  final String method;
+  final Map<String, dynamic> params;
+
+  const JsonRpcServerRequestFrame(this.id, this.method, this.params);
+}
+
 abstract final class EventEnvelopeParser {
   static ParsedGatewayEvent parse(
     Map<String, dynamic> fields, {
@@ -219,6 +230,38 @@ abstract final class JsonRpcWireDecoder {
     final hasId = frame.containsKey('id');
     final hasResult = frame.containsKey('result');
     final hasError = frame.containsKey('error');
+    final rawId = frame['id'];
+    // Server requests carry a string id (`srq-…`) and a method that is never
+    // `event`; an event envelope with an id stays a grammar violation.
+    if (hasId &&
+        rawId is String &&
+        frame.containsKey('method') &&
+        frame['method'] != 'event') {
+      if (frame.keys.any(
+            (key) => !const {'jsonrpc', 'id', 'method', 'params'}.contains(key),
+          ) ||
+          rawId.isEmpty ||
+          rawId != rawId.trim()) {
+        throw const JsonRpcWireFormatException('invalid server request');
+      }
+      final method = frame['method'];
+      if (method is! String || method.isEmpty || method != method.trim()) {
+        throw const JsonRpcWireFormatException('invalid server request method');
+      }
+      final params = frame['params'];
+      if (frame.containsKey('params') && params is! Map<String, dynamic>) {
+        throw const JsonRpcWireFormatException(
+          'server request params must be an object',
+        );
+      }
+      return JsonRpcServerRequestFrame(
+        rawId,
+        method,
+        params is Map<String, dynamic>
+            ? Map<String, dynamic>.unmodifiable(params)
+            : const <String, dynamic>{},
+      );
+    }
     if (hasId || hasResult || hasError) {
       if (frame.keys.any(
             (key) => !const {'jsonrpc', 'id', 'result', 'error'}.contains(key),

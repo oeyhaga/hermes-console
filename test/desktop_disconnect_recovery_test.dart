@@ -1180,6 +1180,7 @@ ActiveChat _recoverableChat(
   Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
   void Function(ActiveChatEvent)? onEvent,
   StoredSessionMessageLoader? storedMessageLoader,
+  bool turnIdempotencySupported = true,
 }) => ActiveChat(
   compressionFenceStore: testCompressionFenceStore(),
   connection: _connection(id),
@@ -1196,7 +1197,7 @@ ActiveChat _recoverableChat(
       ),
   desktopGateway: gateway,
   allowUnownedDesktopSnapshotForTesting: true,
-  turnIdempotencyCapability: () async => true,
+  turnIdempotencyCapability: () async => turnIdempotencySupported,
   terminalReconcileBudget: terminalReconcileBudget,
   desktopRecoveryAttemptTimeout: desktopRecoveryAttemptTimeout,
   desktopRecoveryBackoff: desktopRecoveryBackoff,
@@ -3325,6 +3326,87 @@ void main() {
         ),
         isFalse,
       );
+    },
+  );
+
+  test(
+    'sin turn_idempotency_v1 el corte reanuda la sesión viva en vez de fallar',
+    () async {
+      // The official gateway never publishes `turn_idempotency_v1`. A socket
+      // drop mid-turn must still resume the live session and adopt its
+      // inflight turn instead of degrading straight to a failed turn.
+      final gateway = _LifecycleRecoverableGateway()
+        ..recoverySnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-live-noidem',
+          storedSessionId: 'session-live-noidem',
+          created: false,
+          messagesProvided: true,
+          messages: const [],
+          inflight: DesktopInflightTurn(
+            user: 'sigue vivo sin idempotencia',
+            assistant: 'respuesta parcial viva',
+            streaming: true,
+          ),
+          running: true,
+        );
+      final chat = _recoverableChat(
+        'live-noidem',
+        gateway,
+        turnIdempotencySupported: false,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'sigue vivo sin idempotencia',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('live-noidem', _NoopOutbox()),
+      );
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
+      gateway.drop();
+      await _waitUntil(
+        () =>
+            chat.assistantContent == 'respuesta parcial viva' ||
+            chat.state == ChatPipelineState.failed,
+        timeout: const Duration(seconds: 10),
+      );
+
+      expect(chat.state, isNot(ChatPipelineState.failed));
+      expect(chat.assistantContent, 'respuesta parcial viva');
+      expect(chat.awaitingDurableTurnRecovery, isFalse);
+      expect(chat.desktopRuntimeSessionId, 'runtime-live-noidem');
+      expect(gateway.resumeExistingCalls, resumesBeforeDrop + 1);
+      expect(gateway.statusCalls, 0);
+    },
+  );
+
+  test(
+    'sin turn_idempotency_v1 un resume sin snapshot sigue degradando honesto',
+    () async {
+      final gateway = _LifecycleRecoverableGateway();
+      final chat = _recoverableChat(
+        'binding-noidem',
+        gateway,
+        turnIdempotencySupported: false,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'sin evidencia del servidor',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('binding-noidem', _NoopOutbox()),
+      );
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
+      gateway.drop();
+      await _waitUntil(
+        () => chat.state == ChatPipelineState.failed,
+        timeout: const Duration(seconds: 10),
+      );
+
+      expect(chat.awaitingDurableTurnRecovery, isTrue);
+      expect(gateway.resumeExistingCalls, resumesBeforeDrop + 1);
+      expect(gateway.statusCalls, 0);
     },
   );
 
