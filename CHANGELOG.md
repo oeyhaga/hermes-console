@@ -3,8 +3,13 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.10 (9005) — candidate, not distributed
+## 1.2.10 (9006) — candidate, not distributed
 
+- Fixed the false "Modelo sin respuesta" (`firstTokenTimeout`) while the agent
+  waits on a human: liveness events (`status.update`, `tool.*`,
+  `session.info`) no longer restart the 90 s inactivity watchdog under a
+  pending approval, clarify, sudo or vault card. The budget resumes once the
+  card is answered or withdrawn.
 - Speak the Hermes Agent v7 prompt contract: `approval`, `clarify`, `sudo`,
   `secret` and `terminal.read` now arrive as JSON-RPC server→client requests
   and are answered on the same socket with the request id. Batch clarify

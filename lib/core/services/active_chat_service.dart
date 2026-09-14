@@ -4274,6 +4274,9 @@ class ActiveChat {
       pendingInteractivePrompt != null ||
       _desktopContinuationRequired;
 
+  @visibleForTesting
+  bool get firstTokenWatchdogArmed => _firstTokenTimer != null;
+
   List<SubagentActivity> get subagentActivities {
     if (_disposed ||
         !_subagentForegroundPresentationLeased ||
@@ -17663,9 +17666,16 @@ class ActiveChat {
   /// (texto o herramientas) → se da por fallido. Cualquier evento lo reinicia.
   void _armFirstTokenTimer() {
     _firstTokenTimer?.cancel();
+    // While the agent waits on a human (approval, clarify, sudo, vault card)
+    // there is no server inactivity to watch: any liveness event that lands
+    // meanwhile must not restart the budget under the user's feet.
+    if (needsInput) {
+      _firstTokenTimer = null;
+      return;
+    }
     final secs = _idleTimeout.inSeconds;
     _firstTokenTimer = Timer(_idleTimeout, () {
-      if (!_streamingConfirmed && !_runTerminal) {
+      if (!_streamingConfirmed && !_runTerminal && !needsInput) {
         _failRun(
           'firstTokenTimeout: El servidor conectó pero lleva $secs s sin '
           'actividad (ni texto ni herramientas). El modelo puede estar cargando '

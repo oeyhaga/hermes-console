@@ -589,6 +589,43 @@ void main() {
   });
 
   test(
+    'el vigilante de primer token no se rearma mientras hay una tarjeta pendiente',
+    () async {
+      final gateway = _InteractiveGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
+      expect(chat.firstTokenWatchdogArmed, isTrue);
+
+      gateway.emit('clarify.request', const {
+        'request_id': 'clarify-wait',
+        'question': '¿Qué color?',
+        'choices': ['rojo', 'azul'],
+      });
+      await _waitUntil(() => chat.pendingInteractivePrompt != null);
+      expect(chat.firstTokenWatchdogArmed, isFalse);
+
+      // Liveness events keep arriving while the human thinks; none of them may
+      // restart the inactivity budget under the pending card.
+      gateway.emit('status.update', const {
+        'kind': 'status',
+        'text': 'waiting for clarification',
+      });
+      gateway.emit('tool.progress', const {'name': 'clarify'});
+      gateway.emit('session.info', const {
+        'info': {'session_id': 'runtime-interactive', 'running': true},
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(chat.firstTokenWatchdogArmed, isFalse);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+
+      await chat.respondToClarify(chat.pendingInteractivePrompt!.key, 'rojo');
+      expect(chat.needsInput, isFalse);
+      // Answered: the server is on the clock again.
+      expect(chat.firstTokenWatchdogArmed, isTrue);
+    },
+  );
+
+  test(
     'terminal.read se responde vacío por política y deduplica replay',
     () async {
       final gateway = _InteractiveGateway();
