@@ -5,23 +5,29 @@ import '../models/session_artifact.dart';
 
 final class ArtifactIndexScope {
   final String connectionId;
+  final String profileOwner;
   final String logicalSessionId;
 
   factory ArtifactIndexScope({
     required String connectionId,
+    required String profileOwner,
     required String logicalSessionId,
   }) {
-    if (!_isOpaqueId(connectionId) || !_isOpaqueId(logicalSessionId)) {
+    if (!_isOpaqueId(connectionId) ||
+        !_isOpaqueId(profileOwner) ||
+        !_isOpaqueId(logicalSessionId)) {
       throw const FormatException('Invalid artifact index scope');
     }
     return ArtifactIndexScope._(
       connectionId: connectionId,
+      profileOwner: profileOwner,
       logicalSessionId: logicalSessionId,
     );
   }
 
   const ArtifactIndexScope._({
     required this.connectionId,
+    required this.profileOwner,
     required this.logicalSessionId,
   });
 
@@ -30,10 +36,11 @@ final class ArtifactIndexScope {
       identical(this, other) ||
       other is ArtifactIndexScope &&
           connectionId == other.connectionId &&
+          profileOwner == other.profileOwner &&
           logicalSessionId == other.logicalSessionId;
 
   @override
-  int get hashCode => Object.hash(connectionId, logicalSessionId);
+  int get hashCode => Object.hash(connectionId, profileOwner, logicalSessionId);
 
   @override
   String toString() => 'ArtifactIndexScope(<redacted>)';
@@ -683,12 +690,11 @@ List<_ArtifactSeed> _extractMessage(
   return List.unmodifiable(seeds);
 }
 
-typedef _ContainerCollector =
-    void Function(
-      Object? raw,
-      SessionArtifactKind defaultKind, {
-      bool requireExplicitType,
-    });
+typedef _ContainerCollector = void Function(
+  Object? raw,
+  SessionArtifactKind defaultKind, {
+  bool requireExplicitType,
+});
 
 void _collectKnownContainers(
   Map<String, dynamic> map, {
@@ -862,9 +868,8 @@ String? _mimeType(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim().toLowerCase();
   if (value.length > 127 ||
-      !RegExp(
-        r"^[a-z0-9!#$&^_.+-]{1,64}/[a-z0-9!#$&^_.+-]{1,64}$",
-      ).hasMatch(value)) {
+      !RegExp(r"^[a-z0-9!#$&^_.+-]{1,64}/[a-z0-9!#$&^_.+-]{1,64}$")
+          .hasMatch(value)) {
     return null;
   }
   return value;

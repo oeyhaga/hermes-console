@@ -2,7 +2,122 @@ import 'dart:convert';
 
 import '../models/subagent_activity.dart';
 import '../utils/chat_turn.dart';
+import 'session_reconciler.dart';
 import 'subagent_activity_reducer.dart';
+
+const _historicalSubagentCompletionKey = '_subagent_completion_card';
+
+SubagentCompletionCardData? historicalSubagentCompletionOf(
+  Map<String, dynamic> message,
+) {
+  final value = message[_historicalSubagentCompletionKey];
+  return value is SubagentCompletionCardData ? value : null;
+}
+
+List<Map<String, dynamic>> projectHistoricalSubagentCompletions({
+  required List<Map<String, dynamic>> messagesNewestFirst,
+}) {
+  final durableIdsByDelegation = <String, List<String>>{};
+  for (final message in messagesNewestFirst) {
+    if (!_isToolRole((message['role'] ?? '').toString().toLowerCase()) ||
+        _normalizedToolName(message['tool_name'] ?? message['name']) !=
+            'delegate_task') {
+      continue;
+    }
+    final result = _decodedMap(message['content'] ?? message['result']);
+    if ((result?['status'] ?? '').toString().trim().toLowerCase() !=
+        'dispatched') {
+      continue;
+    }
+    final delegationId = _opaque(result?['delegation_id']);
+    final childIds = _safeOpaqueIds(result?['subagent_ids']);
+    if (delegationId != null && childIds.isNotEmpty) {
+      durableIdsByDelegation[delegationId] = childIds;
+    }
+  }
+
+  var changed = false;
+  final projected = <Map<String, dynamic>>[];
+  for (final message in messagesNewestFirst) {
+    if (effectiveUserDisplayKind(message) != 'async_delegation_complete') {
+      projected.add(message);
+      continue;
+    }
+    final metadata = sanitizeDelegationDisplayMetadata(
+      message['display_metadata'],
+    );
+    final delegationId =
+        _opaque(metadata?['delegation_id']) ?? _delegationIdFromMarker(message);
+    if (delegationId == null) {
+      projected.add(message);
+      continue;
+    }
+    final metadataIds = _safeOpaqueIds(metadata?['subagent_ids']);
+    final card = SubagentCompletionCardData(
+      completionKey: _eventIdentity(
+        message,
+        'historical-completion',
+        delegationId,
+      ),
+      delegationId: delegationId,
+      taskCount: _positiveInt(metadata?['task_count']),
+      completedCount: _nonNegativeInt(metadata?['completed_count']),
+      failedCount: _nonNegativeInt(metadata?['failed_count']),
+      durationSeconds: metadata?['duration_seconds'] is num
+          ? (metadata!['duration_seconds'] as num).toDouble()
+          : null,
+      subagentIds: metadataIds.isNotEmpty
+          ? metadataIds
+          : durableIdsByDelegation[delegationId] ?? const [],
+    );
+    final current = historicalSubagentCompletionOf(message);
+    if (_sameCompletionCard(current, card)) {
+      projected.add(message);
+      continue;
+    }
+    projected.add(
+      Map<String, dynamic>.unmodifiable({
+        ...message,
+        _historicalSubagentCompletionKey: card,
+      }),
+    );
+    changed = true;
+  }
+  return changed
+      ? List<Map<String, dynamic>>.unmodifiable(projected)
+      : messagesNewestFirst;
+}
+
+List<String> _safeOpaqueIds(Object? raw) {
+  if (raw is! List || raw.isEmpty || raw.length > 64) return const [];
+  final ids = <String>[];
+  for (final value in raw) {
+    final id = _opaque(value);
+    if (id == null || ids.contains(id)) return const [];
+    ids.add(id);
+  }
+  return List<String>.unmodifiable(ids);
+}
+
+bool _sameCompletionCard(
+  SubagentCompletionCardData? left,
+  SubagentCompletionCardData right,
+) {
+  if (left == null ||
+      left.completionKey != right.completionKey ||
+      left.delegationId != right.delegationId ||
+      left.taskCount != right.taskCount ||
+      left.completedCount != right.completedCount ||
+      left.failedCount != right.failedCount ||
+      left.durationSeconds != right.durationSeconds ||
+      left.subagentIds.length != right.subagentIds.length) {
+    return false;
+  }
+  for (var i = 0; i < left.subagentIds.length; i++) {
+    if (left.subagentIds[i] != right.subagentIds[i]) return false;
+  }
+  return true;
+}
 
 final class SubagentTranscriptProjection {
   final String? turnAnchor;
@@ -35,11 +150,21 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
     return SubagentTranscriptProjection(turnAnchor: null, state: current);
   }
 
-  final currentBelongsToTurn =
+  final currentHasLiveActivity =
+      current?.activities.any((activity) => !activity.isTerminal) ?? false;
+  final currentCrossedTurn =
       current != null &&
-      current.scope == scope &&
-      (currentTurnAnchor == null ||
-          _messageIdentitiesMatch(currentTurnAnchor, turnAnchor));
+      currentHasLiveActivity &&
+      current.scope != scope &&
+      current.scope.durableLineageKey == scope.durableLineageKey &&
+      current.scope.runtimeSessionId == scope.runtimeSessionId;
+  final currentScopeIsCompatible =
+      current != null && (current.scope == scope || currentCrossedTurn);
+  final currentBelongsToTurn =
+      currentScopeIsCompatible &&
+      ((currentTurnAnchor == null ||
+              _messageIdentitiesMatch(currentTurnAnchor, turnAnchor)) ||
+          currentCrossedTurn);
   var state = currentBelongsToTurn
       ? current
       : SubagentActivityState.empty(scope);
@@ -59,17 +184,9 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
         final callId = _opaque(call?['id'] ?? call?['tool_call_id']);
         if (name != 'delegate_task' || callId == null) continue;
         delegateNamesByCallId[callId] = 'delegate_task';
-        final event = SubagentActivityEvent.tryParseLegacyDelegateTool(
-          type: 'tool.start',
-          scope: scope,
-          payload: {'name': 'delegate_task', 'tool_id': callId},
-          toolName: 'delegate_task',
-          toolCallId: callId,
-          eventId: _eventIdentity(message, 'delegate-start', callId),
-        );
-        if (event == null) continue;
-        state = SubagentActivityReducer.reduce(state, event);
-        observed = true;
+        // A persisted invocation proves only that the parent requested the
+        // tool. It does not prove that any child was dispatched or remains
+        // live in the current runtime. Wait for the durable tool result.
       }
       continue;
     }
@@ -91,38 +208,31 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
           .whereType<String>()
           .toSet()
           .toList(growable: false);
-      final resultStatus = result?['status']?.toString().trim().toLowerCase();
-      final isAcceptedDispatch =
-          resultStatus == 'dispatched' && dispatchedIds.isNotEmpty;
       final perChildResults = dispatchedIds.isEmpty
           ? <Map<String, dynamic>?>[result]
           : dispatchedIds
-              .map(
-                (subagentId) => <String, dynamic>{
-                  ...?result,
-                  'subagent_ids': [subagentId],
-                },
-              )
-              .toList(growable: false);
+                .map(
+                  (subagentId) => <String, dynamic>{
+                    ...?result,
+                    'subagent_ids': [subagentId],
+                  },
+                )
+                .toList(growable: false);
       for (var index = 0; index < perChildResults.length; index += 1) {
         final childResult = perChildResults[index];
         final eventStableId = dispatchedIds.isEmpty
             ? callId
             : dispatchedIds[index];
         final event = SubagentActivityEvent.tryParseLegacyDelegateTool(
-          // Only a confirmed dispatch with a durable child id is a start. A
-          // rejected tool result must close the earlier aggregate tool.start;
-          // otherwise rehydration leaves a failed delegation running forever.
-          type: isAcceptedDispatch ? 'tool.start' : 'tool.complete',
-          scope: scope,
+          // Historical dispatch proves identity, not current liveness. The
+          // legacy completion parser maps `dispatched` to a neutral phase;
+          // terminal failures/completions remain terminal.
+          type: 'tool.complete',
+          scope: state.scope,
           payload: {'name': name, 'tool_id': callId, 'result': ?childResult},
           toolName: name,
           toolCallId: callId,
-          eventId: _eventIdentity(
-            message,
-            'delegate-complete',
-            eventStableId,
-          ),
+          eventId: _eventIdentity(message, 'delegate-complete', eventStableId),
         );
         if (event == null) continue;
         state = SubagentActivityReducer.reduce(state, event);
@@ -138,27 +248,32 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
       // is already fail-closed by effectiveUserDisplayKind; use that exact id
       // before falling back to an aggregate event.
       final delegationId =
-          _opaque(metadata?['delegation_id']) ?? _delegationIdFromMarker(message);
+          _opaque(metadata?['delegation_id']) ??
+          _delegationIdFromMarker(message);
       if (delegationId == null) continue;
       final failedCount = _nonNegativeInt(metadata?['failed_count']) ?? 0;
+      final completedCount = _nonNegativeInt(metadata?['completed_count']) ?? 0;
       final taskCount = _positiveInt(metadata?['task_count']);
-      // Completion metadata is aggregate. A partial failed_count does not name
-      // the child, so never paint every row as failed. Each known child is only
-      // known to have finished; the aggregate failure remains represented by
-      // the editorial completion card rather than fabricated per-child blame.
-      final terminalStatus =
-          taskCount != null && failedCount >= taskCount && failedCount > 0
-          ? 'failed'
-          : 'completed';
-      // children. Fan it out only across the durable child ids already proven
-      // by this same transcript; otherwise retain the aggregate event.
+      // Completion metadata is aggregate. Attribute a phase to every durable
+      // child only when the counters prove a homogeneous batch. Mixed,
+      // partial, missing-denominator or internally inconsistent aggregates
+      // retain the neutral dispatched rows; the editorial card owns totals.
+      final allCompleted =
+          taskCount != null && completedCount == taskCount && failedCount == 0;
+      final allFailed =
+          taskCount != null && failedCount == taskCount && completedCount == 0;
+      final terminalStatus = allFailed ? 'failed' : 'completed';
+      // Fan out only across the durable child ids already proven by this same
+      // transcript; otherwise retain a single aggregate event.
       final childIds = state.activities
           .where((activity) => activity.delegationId == delegationId)
           .map((activity) => activity.subagentId)
           .whereType<String>()
           .toSet()
           .toList(growable: false);
-      final terminalPayloads = childIds.isEmpty
+      final terminalPayloads = !allCompleted && !allFailed
+          ? const <Map<String, Object?>>[]
+          : childIds.isEmpty
           ? <Map<String, Object?>>[
               {
                 'delegation_id': delegationId,
@@ -168,20 +283,20 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
               },
             ]
           : childIds
-              .map(
-                (subagentId) => <String, Object?>{
-                  'subagent_id': subagentId,
-                  'delegation_id': delegationId,
-                  'status': terminalStatus,
-                  'task_count': _positiveInt(metadata?['task_count']),
-                  'duration_seconds': metadata?['duration_seconds'],
-                },
-              )
-              .toList(growable: false);
+                .map(
+                  (subagentId) => <String, Object?>{
+                    'subagent_id': subagentId,
+                    'delegation_id': delegationId,
+                    'status': terminalStatus,
+                    'task_count': _positiveInt(metadata?['task_count']),
+                    'duration_seconds': metadata?['duration_seconds'],
+                  },
+                )
+                .toList(growable: false);
       for (final payload in terminalPayloads) {
         final event = SubagentActivityEvent.tryParseNative(
           type: 'subagent.complete',
-          scope: scope,
+          scope: state.scope,
           payload: payload,
           eventId: _eventIdentity(
             message,

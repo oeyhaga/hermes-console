@@ -8,8 +8,9 @@ import '../voice_service.dart';
 import '../voice_settings.dart';
 import 'native_voice.dart';
 
-typedef NativeVoiceDashboardFactory =
-    DashboardClient Function(SavedConnection connection);
+typedef NativeVoiceDashboardFactory = DashboardClient Function(
+  SavedConnection connection,
+);
 
 enum HermesServerDictationConfigurationResult {
   configured,
@@ -105,14 +106,26 @@ Future<bool> configureAcceptedNativeVoiceSession({
   required SavedConnection connection,
   required SharedPreferences preferences,
   required String profile,
+  Object? owner,
+  NativeVoicePreparation? preparation,
+  bool Function()? isStillCurrent,
   DashboardClient? dashboardClient,
   NativeVoiceDashboardFactory? dashboardFactory,
   HermesPcmStreamSinkFactory? sinkFactory,
 }) async {
   assert(dashboardClient == null || dashboardFactory == null);
+  assert(preparation == null || owner != null);
   final createDashboard =
       dashboardFactory ?? (connection) => DashboardClient.lazy(connection);
   final dashboard = dashboardClient ?? createDashboard(connection);
+  final configurationOwner = owner ?? Object();
+  final reservation =
+      preparation ??
+      voice.beginNativeVoicePreparation(owner: configurationOwner);
+  if (reservation == null) {
+    dashboard.close();
+    return false;
+  }
   var transferredToVoice = false;
   try {
     final identity = nativeVoicePreferenceIdentity(
@@ -121,12 +134,10 @@ Future<bool> configureAcceptedNativeVoiceSession({
     );
     if (NativeVoiceModeStore(preferences).read(identity) !=
         NativeVoiceMode.server) {
-      voice.disableNativeVoice();
       return false;
     }
     if (NativeVoiceConsentStore(preferences).read(identity) !=
         NativeVoiceConsent.accepted) {
-      voice.disableNativeVoice();
       return false;
     }
 
@@ -142,7 +153,6 @@ Future<bool> configureAcceptedNativeVoiceSession({
       }
     }
     if (!capability.ok) {
-      voice.disableNativeVoice();
       return false;
     }
 
@@ -159,6 +169,17 @@ Future<bool> configureAcceptedNativeVoiceSession({
       // sigue siendo el fallback autoritativo si esta lectura falla.
     }
 
+    // La elección puede revocarse mientras responden el probe o las lecturas de
+    // configuración. La comprobación inicial no autoriza instalar callbacks
+    // después de esos awaits.
+    if (NativeVoiceModeStore(preferences).read(identity) !=
+            NativeVoiceMode.server ||
+        NativeVoiceConsentStore(preferences).read(identity) !=
+            NativeVoiceConsent.accepted ||
+        !(isStillCurrent?.call() ?? true)) {
+      return false;
+    }
+
     final speechStream = HermesSpeechStreamClient(
       dashboardBaseUrl: connection.effectiveDashboardUrl,
       auth: dashboard.webSocketAuth,
@@ -166,7 +187,9 @@ Future<bool> configureAcceptedNativeVoiceSession({
       ttsConfigurationSignature: ttsConfigurationSignature,
       sinkFactory: sinkFactory ?? MethodChannelHermesPcmStreamSink.new,
     );
-    transferredToVoice = voice.enableNativeVoice(
+    transferredToVoice = voice.enablePreparedNativeVoice(
+      owner: configurationOwner,
+      preparation: reservation,
       speak: (text) => dashboard.synthesizeSpeech(text, profile: profile),
       transcribe: (dataUrl, mimeType) => dashboard.transcribeAudio(
         dataUrl,
@@ -178,6 +201,9 @@ Future<bool> configureAcceptedNativeVoiceSession({
     );
     return transferredToVoice;
   } finally {
-    if (!transferredToVoice) dashboard.close();
+    if (!transferredToVoice) {
+      voice.cancelNativeVoicePreparation(reservation);
+      dashboard.close();
+    }
   }
 }

@@ -25,17 +25,21 @@ enum NewSessionLaunchDisposition {
   failedRecoverable,
 }
 
-typedef NewSessionConnectionSelector =
-    Future<SavedConnection?> Function(List<SavedConnection> candidates);
-typedef NewSessionDraftNavigator =
-    Future<void> Function(
-      SavedConnection connection,
-      Session draft,
-      NewSessionLaunchTarget target,
-    );
+enum NavigationDeliveryOutcome { delivered, deferred }
+
+typedef NewSessionConnectionSelector = Future<SavedConnection?> Function(
+  List<SavedConnection> candidates,
+);
+typedef NewSessionDraftNavigator = Future<NavigationDeliveryOutcome> Function(
+  SavedConnection connection,
+  Session draft,
+  NewSessionLaunchTarget target,
+);
 typedef WidgetRouteNavigator = Future<void> Function();
-typedef WidgetSessionNavigator =
-    Future<void> Function(SavedConnection connection, String sessionId);
+typedef WidgetSessionNavigator = Future<NavigationDeliveryOutcome> Function(
+  SavedConnection connection,
+  String sessionId,
+);
 
 /// Serializes shortcut/widget actions behind Splash, onboarding, App Lock and
 /// Navigator readiness without creating any remote session.
@@ -211,7 +215,10 @@ class NewSessionLaunchCoordinator {
           state = NewSessionLaunchCoordinatorState.failedRecoverable;
           return NewSessionLaunchDisposition.failedRecoverable;
         }
-        await sessionNavigator(selected, sessionId);
+        final outcome = await sessionNavigator(selected, sessionId);
+        if (outcome == NavigationDeliveryOutcome.deferred) {
+          return _deferNavigation();
+        }
         _consume(action);
         _recentlyDelivered[fingerprint] = _elapsedMs();
         _pruneDelivered();
@@ -219,7 +226,10 @@ class NewSessionLaunchCoordinator {
         return NewSessionLaunchDisposition.delivered;
       }
       final draft = factory.create(title: newChatTitle());
-      await navigate(selected, draft, action.target);
+      final outcome = await navigate(selected, draft, action.target);
+      if (outcome == NavigationDeliveryOutcome.deferred) {
+        return _deferNavigation();
+      }
       _consume(action);
       _recentlyDelivered[fingerprint] = _elapsedMs();
       _pruneDelivered();
@@ -232,6 +242,13 @@ class NewSessionLaunchCoordinator {
       _inFlightFingerprint = null;
       _draining = false;
     }
+  }
+
+  NewSessionLaunchDisposition _deferNavigation() {
+    state = unlocked()
+        ? NewSessionLaunchCoordinatorState.waitingForNavigator
+        : NewSessionLaunchCoordinatorState.waitingForUnlock;
+    return NewSessionLaunchDisposition.queued;
   }
 
   void _consume(NewSessionLaunchAction action) {

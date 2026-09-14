@@ -7,8 +7,9 @@ import '../models/agent_profile.dart';
 import '../theme/app_theme.dart';
 import 'hermes_bot_face.dart';
 
-typedef MissionAvatarLoader =
-    Future<AgentProfileAvatar?> Function(String profileName);
+typedef MissionAvatarLoader = Future<AgentProfileAvatar?> Function(
+  String profileName,
+);
 
 /// Caché de avatares por conexión/pantalla con concurrencia acotada.
 ///
@@ -93,6 +94,7 @@ class MissionProfileAvatar extends StatelessWidget {
   final String? shape;
   final String? colorHex;
   final String? imageKind;
+  final bool privacySafeElementKeys;
 
   const MissionProfileAvatar({
     super.key,
@@ -104,6 +106,7 @@ class MissionProfileAvatar extends StatelessWidget {
     this.shape,
     this.colorHex,
     this.imageKind,
+    this.privacySafeElementKeys = false,
   });
 
   @override
@@ -124,6 +127,7 @@ class MissionProfileAvatar extends StatelessWidget {
               avatar: snapshot.data,
               shape: shape,
               colorHex: colorHex,
+              privacySafeElementKeys: privacySafeElementKeys,
             ),
           )
         : _AvatarFace(
@@ -131,6 +135,7 @@ class MissionProfileAvatar extends StatelessWidget {
             size: size,
             shape: shape,
             colorHex: colorHex,
+            privacySafeElementKeys: privacySafeElementKeys,
           );
     return ExcludeSemantics(
       child: Container(
@@ -158,6 +163,7 @@ class _AvatarFace extends StatelessWidget {
   final AgentProfileAvatar? avatar;
   final String? shape;
   final String? colorHex;
+  final bool privacySafeElementKeys;
 
   const _AvatarFace({
     required this.profileName,
@@ -165,6 +171,7 @@ class _AvatarFace extends StatelessWidget {
     this.avatar,
     this.shape,
     this.colorHex,
+    this.privacySafeElementKeys = false,
   });
 
   @override
@@ -173,7 +180,11 @@ class _AvatarFace extends StatelessWidget {
     final visual = _faceVisual();
     final fallback = visual != null
         ? HermesBotFace(
-            key: ValueKey('mission-avatar-geometry-$profileName'),
+            key: ValueKey(
+              privacySafeElementKeys
+                  ? 'mission-avatar-geometry'
+                  : 'mission-avatar-geometry-$profileName',
+            ),
             visual: visual,
             size: size,
           )

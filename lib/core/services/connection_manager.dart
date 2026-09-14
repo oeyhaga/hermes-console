@@ -4,13 +4,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
 import '../models/agent_profile.dart';
 import '../models/capability_matrix.dart';
 import '../models/connection.dart';
+import '../models/core_read.dart';
 import '../utils/transport_privacy.dart';
 import '../models/memory_info.dart';
 import '../models/model_active_info.dart';
@@ -20,6 +23,7 @@ import '../models/moa_config.dart';
 import '../models/session.dart';
 import 'chat_draft_store.dart';
 import 'bridge_client.dart';
+import 'local_transcript_store.dart';
 import 'mission_bot_chat_store.dart';
 import 'secure_storage.dart';
 import 'turn_outbox_store.dart';
@@ -33,20 +37,24 @@ export '../models/model_info.dart';
 export '../models/model_provider.dart';
 export '../models/session.dart';
 
-typedef BridgeClientFactory =
-    BridgeClient Function({required String baseUrl, required String token});
-typedef BridgeProvisioner =
-    Future<String?> Function(String baseUrl, String gatewayKey);
-typedef DashboardClientFactory =
-    DashboardClient Function(SavedConnection connection);
+typedef BridgeClientFactory = BridgeClient Function({
+  required String baseUrl,
+  required String token,
+});
+typedef BridgeProvisioner = Future<String?> Function(
+  String baseUrl,
+  String gatewayKey,
+);
+typedef DashboardClientFactory = DashboardClient Function(
+  SavedConnection connection,
+);
 typedef ClearCancelledTurnsForConnection = Future<int> Function(String id);
 
 @visibleForTesting
 bool supportsKanbanTrackedCreateVersion(String? rawVersion) {
   final value = rawVersion?.trim() ?? '';
-  final match = RegExp(
-    r'(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:[^0-9]|$)',
-  ).firstMatch(value);
+  final match = RegExp(r'(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:[^0-9]|$)')
+      .firstMatch(value);
   if (match == null) return false;
   final major = int.tryParse(match.group(1)!);
   final minor = int.tryParse(match.group(2)!);
@@ -60,6 +68,18 @@ bool supportsKanbanTrackedCreateVersion(String? rawVersion) {
   }
 
   return major >= 2000 ? atLeast(2026, 5, 7) : atLeast(0, 13, 0);
+}
+
+class _ConnectionWillChangeNotifier extends ChangeNotifier {
+  void emit() => notifyListeners();
+}
+
+/// Frontera de una superficie de configuración concreta.
+///
+/// No representa la identidad de la conexión: solo permite que el editor que
+/// consume `/api/config` cierre su cliente antes de que cambie su acceso.
+class _ConfigAccessWillChangeNotifier extends ChangeNotifier {
+  void emit() => notifyListeners();
 }
 
 /// Manages saved remote connections.
@@ -95,6 +115,30 @@ class ConnectionManager {
   /// = perfil por defecto (sin scoping). Notifica para que Modelos/Skills y la
   /// cabecera reaccionen al cambio.
   final ValueNotifier<String?> activeProfile = ValueNotifier<String?>(null);
+
+  /// Revisión del perfil guardado para cada instancia.
+  ///
+  /// [activeProfile] conserva el valor global heredado y por ello no notifica
+  /// cuando dos instancias terminan usando el mismo nombre. Esta señal separada
+  /// permite que consumidores ligados a una conexión concreta vuelvan a leer
+  /// su scope aunque el valor global coincida.
+  final Map<String, ValueNotifier<int>> _activeProfileRevisions = {};
+
+  /// Revisión material aislada por instancia.
+  final Map<String, ValueNotifier<int>> _connectionRevisions = {};
+
+  /// Frontera síncrona previa a cambios que invalidan clientes autenticados.
+  final Map<String, _ConnectionWillChangeNotifier> _connectionWillChange = {};
+
+  /// Revisión aislada del acceso a `/api/config` que consume la tarjeta de
+  /// autocompresión. Los probes de capacidades no son cambios de identidad de
+  /// la conexión y nunca deben rearmar chats, outbox ni ownership de turnos.
+  final Map<String, ValueNotifier<int>> _configAccessRevisions = {};
+
+  /// Frontera previa a una transición material de configRead/configWrite.
+  final Map<String, _ConfigAccessWillChangeNotifier> _configAccessWillChange =
+      {};
+  bool _disposed = false;
 
   /// Id de la instancia activa. Cambia al activar otra instancia desde cualquier
   /// pantalla; el home (y quien escuche) se entera al instante sin reiniciar la
@@ -132,14 +176,117 @@ class ConnectionManager {
   String activeProfileFor(String connId) =>
       prefs.getString(_activeProfileKey(connId)) ?? '';
 
+  void _ensureNotDisposed() {
+    if (_disposed) throw StateError('ConnectionManager has been disposed');
+  }
+
+  ValueNotifier<int> _activeProfileRevisionNotifierFor(String connId) {
+    _ensureNotDisposed();
+    return _activeProfileRevisions.putIfAbsent(
+      connId,
+      () => ValueNotifier<int>(0),
+    );
+  }
+
+  /// Señal monotónica del perfil de [connId].
+  ValueListenable<int> activeProfileRevisionFor(String connId) =>
+      _activeProfileRevisionNotifierFor(connId);
+
+  ValueNotifier<int> _connectionRevisionNotifierFor(String connId) {
+    _ensureNotDisposed();
+    return _connectionRevisions.putIfAbsent(
+      connId,
+      () => ValueNotifier<int>(0),
+    );
+  }
+
+  /// Señal monotónica de cambios de metadatos o credenciales de [connId].
+  ValueListenable<int> connectionRevisionFor(String connId) =>
+      _connectionRevisionNotifierFor(connId);
+
+  _ConnectionWillChangeNotifier _connectionWillChangeNotifierFor(
+    String connId,
+  ) {
+    _ensureNotDisposed();
+    return _connectionWillChange.putIfAbsent(
+      connId,
+      _ConnectionWillChangeNotifier.new,
+    );
+  }
+
+  Listenable connectionWillChangeFor(String connId) =>
+      _connectionWillChangeNotifierFor(connId);
+
+  void _publishConnectionWillChange(String connId) {
+    _connectionWillChangeNotifierFor(connId).emit();
+  }
+
+  void _publishConnectionRevision(String connId) {
+    final revision = _connectionRevisionNotifierFor(connId);
+    revision.value += 1;
+  }
+
+  ValueNotifier<int> _configAccessRevisionNotifierFor(String connId) {
+    _ensureNotDisposed();
+    return _configAccessRevisions.putIfAbsent(
+      connId,
+      () => ValueNotifier<int>(0),
+    );
+  }
+
+  /// Revisión monotónica exclusiva de cambios de configRead/configWrite.
+  ///
+  /// Los consumidores deben reconstruir solo la superficie de Ajustes que
+  /// usa `/api/config`; no es una señal para ciclo de vida de chats.
+  ValueListenable<int> configAccessRevisionFor(String connId) =>
+      _configAccessRevisionNotifierFor(connId);
+
+  _ConfigAccessWillChangeNotifier _configAccessWillChangeNotifierFor(
+    String connId,
+  ) {
+    _ensureNotDisposed();
+    return _configAccessWillChange.putIfAbsent(
+      connId,
+      _ConfigAccessWillChangeNotifier.new,
+    );
+  }
+
+  /// Se emite antes de persistir un cambio material de acceso a `/api/config`.
+  Listenable configAccessWillChangeFor(String connId) =>
+      _configAccessWillChangeNotifierFor(connId);
+
+  void _publishConfigAccessWillChange(String connId) {
+    _configAccessWillChangeNotifierFor(connId).emit();
+  }
+
+  void _publishConfigAccessRevision(String connId) {
+    final revision = _configAccessRevisionNotifierFor(connId);
+    revision.value += 1;
+  }
+
+  void _disposeConnectionNotifiers(String connId) {
+    _activeProfileRevisions.remove(connId)?.dispose();
+    _connectionRevisions.remove(connId)?.dispose();
+    _connectionWillChange.remove(connId)?.dispose();
+    _configAccessRevisions.remove(connId)?.dispose();
+    _configAccessWillChange.remove(connId)?.dispose();
+  }
+
   /// Fija el perfil activo de [connId]. Pasa vacío/`default` para volver al
   /// home por defecto.
   Future<void> setActiveProfile(String connId, String profile) async {
     final normalized = (profile == 'default') ? '' : profile;
+    final previous = activeProfileFor(connId);
+    final changed = previous != normalized;
+    if (changed) _publishConnectionWillChange(connId);
     if (normalized.isEmpty) {
       await prefs.remove(_activeProfileKey(connId));
     } else {
       await prefs.setString(_activeProfileKey(connId), normalized);
+    }
+    if (changed) {
+      final revision = _activeProfileRevisionNotifierFor(connId);
+      revision.value += 1;
     }
     activeProfile.value = normalized.isEmpty ? null : normalized;
   }
@@ -307,6 +454,10 @@ class ConnectionManager {
   /// propague aunque se haga desde fuera del home.
   Future<void> setActiveConnection(String id) async {
     if (id.isEmpty) return;
+    final previous = activeConnectionId.value ?? prefs.getString(lastConnKey);
+    if (previous != null && previous.isNotEmpty && previous != id) {
+      _publishConnectionWillChange(previous);
+    }
     await prefs.setString(lastConnKey, id);
     activeConnectionId.value = id;
   }
@@ -475,13 +626,15 @@ class ConnectionManager {
     _apiKeyCache[conn.id] = apiKey;
     final current = getConnections();
     current.insert(0, conn);
-    await _saveAll(current);
+    await _saveAll(current, changedConnectionId: conn.id);
   }
 
   Future<void> updateApiKey(String connId, String apiKey) async {
+    _publishConnectionWillChange(connId);
     await _secure.writeApiKey(connId, apiKey);
     _apiKeyCache[connId] = apiKey;
     // SharedPrefs metadata does not include api_key — no update needed there
+    _publishConnectionRevision(connId);
     connectionsRevision.value += 1;
   }
 
@@ -497,42 +650,69 @@ class ConnectionManager {
     String? apiKey,
     bool? readOnly,
   }) async {
-    if (apiKey != null && apiKey.isNotEmpty) {
-      await _secure.writeApiKey(id, apiKey);
-      _apiKeyCache[id] = apiKey;
-    }
     final current = getConnections();
     final idx = current.indexWhere((c) => c.id == id);
     if (idx == -1) return;
     final existing = current[idx];
+    final nextApiKey = apiKey != null && apiKey.isNotEmpty
+        ? apiKey
+        : existing.apiKey;
     final updated = SavedConnection(
       id: id,
       label: label,
       host: host,
       port: port,
-      apiKey: _apiKeyCache[id] ?? existing.apiKey,
+      apiKey: nextApiKey,
       useHttps: useHttps,
       readOnly: readOnly ?? existing.readOnly,
       onDeviceLoopback: existing.onDeviceLoopback,
       kind: kind,
     );
+    final metadataChanged = !_samePersistedConnection(existing, updated);
+    final apiKeyChanged =
+        apiKey != null && apiKey.isNotEmpty && apiKey != existing.apiKey;
+    if (!metadataChanged && !apiKeyChanged) return;
+
+    // La tarjeta de Ajustes puede tener un debounce pendiente. La frontera se
+    // publica antes de tocar Keystore o prefs para que nunca use el cliente
+    // autenticado que corresponde a los metadatos anteriores.
+    _publishConnectionWillChange(id);
+    if (apiKeyChanged) {
+      await _secure.writeApiKey(id, nextApiKey);
+      _apiKeyCache[id] = nextApiKey;
+    }
     if (!_sameGatewayEndpoint(existing, updated)) {
       await prefs.remove(_capsKey(id));
     }
     current[idx] = updated;
-    await _saveAll(current);
+    await _saveAll(current, changedConnectionId: id);
   }
 
   /// Inserta o reemplaza una conexión completa (formato nuevo del editor de
   /// instancias). Los secretos van por separado: la API key del Gateway con
   /// [apiKey] y los del Dashboard con [setDashboardSecrets].
   Future<void> upsertConnection(SavedConnection conn) async {
+    final current = getConnections();
+    final idx = current.indexWhere((c) => c.id == conn.id);
+    final existing = idx == -1 ? null : current[idx];
+    final metadataChanged =
+        existing != null && !_samePersistedConnection(existing, conn);
+    final apiKeyChanged =
+        existing != null &&
+        conn.apiKey.isNotEmpty &&
+        conn.apiKey != existing.apiKey;
+    if (existing != null && !metadataChanged && !apiKeyChanged) return;
+
+    if (metadataChanged || apiKeyChanged) {
+      // Debe ocurrir antes de cualquier await de Keystore: los cambios de
+      // URL/auth/read-only no pueden dejar un PUT pendiente con el cliente
+      // autenticado anterior.
+      _publishConnectionWillChange(conn.id);
+    }
     if (conn.apiKey.isNotEmpty) {
       await _secure.writeApiKey(conn.id, conn.apiKey);
       _apiKeyCache[conn.id] = conn.apiKey;
     }
-    final current = getConnections();
-    final idx = current.indexWhere((c) => c.id == conn.id);
     if (idx == -1) {
       // Un id nuevo no puede heredar una matriz abandonada de otra instancia.
       await prefs.remove(_capsKey(conn.id));
@@ -543,7 +723,7 @@ class ConnectionManager {
       }
       current[idx] = conn;
     }
-    await _saveAll(current);
+    await _saveAll(current, changedConnectionId: conn.id);
   }
 
   // ── Secretos del Dashboard (Keystore) ─────────────────────────────────
@@ -563,6 +743,9 @@ class ConnectionManager {
     String? password,
   }) async {
     var changed = false;
+    if (sessionToken != null || username != null || password != null) {
+      _publishConnectionWillChange(connId);
+    }
     if (sessionToken != null) {
       await _secure.writeDashboardSecret(connId, 'token', sessionToken);
       changed = true;
@@ -575,7 +758,10 @@ class ConnectionManager {
       await _secure.writeDashboardSecret(connId, 'pass', password);
       changed = true;
     }
-    if (changed) connectionsRevision.value += 1;
+    if (changed) {
+      _publishConnectionRevision(connId);
+      connectionsRevision.value += 1;
+    }
   }
 
   // ── Mobile Bridge (Keystore) ──────────────────────────────────────────
@@ -625,6 +811,11 @@ class ConnectionManager {
       previous.port == next.port &&
       previous.useHttps == next.useHttps;
 
+  static bool _samePersistedConnection(
+    SavedConnection previous,
+    SavedConnection next,
+  ) => mapEquals(previous.toMap(), next.toMap());
+
   CapabilityMatrix loadCapabilities(String connId) {
     final raw = prefs.getString(_capsKey(connId));
     if (raw == null) return const CapabilityMatrix();
@@ -638,8 +829,24 @@ class ConnectionManager {
     }
   }
 
-  Future<void> saveCapabilities(String connId, CapabilityMatrix matrix) =>
-      prefs.setString(_capsKey(connId), jsonEncode(matrix.toJson()));
+  Future<void> saveCapabilities(String connId, CapabilityMatrix matrix) async {
+    final serialized = jsonEncode(matrix.toJson());
+    if (prefs.getString(_capsKey(connId)) == serialized) return;
+    final previous = loadCapabilities(connId);
+    final configAccessChanged =
+        previous.configRead != matrix.configRead ||
+        previous.configWrite != matrix.configWrite;
+    if (configAccessChanged) {
+      // La tarjeta puede tener un debounce o un PUT en curso. Cerrarla antes
+      // de persistir evita que escriba con permisos que ya no son válidos,
+      // pero no propaga una falsa invalidación de URL/auth al chat.
+      _publishConfigAccessWillChange(connId);
+    }
+    await prefs.setString(_capsKey(connId), serialized);
+    if (configAccessChanged) {
+      _publishConfigAccessRevision(connId);
+    }
+  }
 
   /// Marca streaming como confirmado tras el primer chat SSE exitoso.
   /// Estático porque ChatScreen no sostiene el manager.
@@ -711,8 +918,18 @@ class ConnectionManager {
   /// los metadatos de conexión. Tras esto, cada instancia pedirá la clave de
   /// nuevo.
   Future<void> wipeAllApiKeys() async {
+    final connectionIds = getConnections().map((connection) => connection.id);
+    for (final id in connectionIds) {
+      _publishConnectionWillChange(id);
+    }
     await _secure.clearAllConnectionSecrets();
     _apiKeyCache.clear();
+    // Invalida clientes ya hidratados: pueden conservar tokens/cookies aunque
+    // el Keystore se haya vaciado correctamente.
+    for (final id in connectionIds) {
+      _publishConnectionRevision(id);
+    }
+    connectionsRevision.value += 1;
   }
 
   // Prefijos de claves de SharedPreferences ligadas a UNA conexión (id UUID).
@@ -791,16 +1008,33 @@ class ConnectionManager {
   }
 
   Future<void> deleteConnection(String id) async {
-    // El resto de recovery local se mantiene best-effort por compatibilidad.
-    try {
-      await ChatDraftStore(prefs).deleteForConnection(id);
-      await TurnOutboxStore().deleteForConnection(id);
-      await MissionBotChatStore(prefs).deleteForConnection(id);
-    } catch (error) {
-      // Borrar la instancia no debe quedar bloqueado por un Keystore dañado.
-      // No se registra contenido, ids ni detalles del plugin.
-      debugPrint('[connection] recovery cleanup failed (${error.runtimeType})');
+    _publishConnectionWillChange(id);
+    // Cada authority local se limpia de forma independiente: un plugin dañado
+    // no puede impedir que los demás stores olviden la conexión.
+    Future<void> bestEffortCleanup(Future<void> Function() cleanup) async {
+      try {
+        await cleanup();
+      } catch (error) {
+        // Borrar la instancia no debe quedar bloqueado por un Keystore dañado.
+        // No se registra contenido, ids ni detalles del plugin.
+        debugPrint(
+          '[connection] recovery cleanup failed (${error.runtimeType})',
+        );
+      }
     }
+
+    await bestEffortCleanup(
+      () async => ChatDraftStore(prefs).deleteForConnection(id),
+    );
+    await bestEffortCleanup(
+      () async => TurnOutboxStore().deleteForConnection(id),
+    );
+    await bestEffortCleanup(
+      () async => LocalTranscriptStore.deleteForConnection(id),
+    );
+    await bestEffortCleanup(
+      () async => MissionBotChatStore(prefs).deleteForConnection(id),
+    );
     // Credenciales (Keystore).
     await _secure.deleteApiKey(id);
     await _secure.deleteDashboardSecrets(id);
@@ -826,6 +1060,7 @@ class ConnectionManager {
     }
     // La baja de la conexión se completa incluso si el cleanup quedó encolado.
     await _saveAll(current);
+    _disposeConnectionNotifiers(id);
     if (cleanupError != null) {
       debugPrint(
         '[connection] cancelled-turn cleanup queued after delete: '
@@ -834,11 +1069,45 @@ class ConnectionManager {
     }
   }
 
-  Future<void> _saveAll(List<SavedConnection> list) async {
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    for (final notifier in _activeProfileRevisions.values) {
+      notifier.dispose();
+    }
+    for (final notifier in _connectionRevisions.values) {
+      notifier.dispose();
+    }
+    for (final notifier in _connectionWillChange.values) {
+      notifier.dispose();
+    }
+    for (final notifier in _configAccessRevisions.values) {
+      notifier.dispose();
+    }
+    for (final notifier in _configAccessWillChange.values) {
+      notifier.dispose();
+    }
+    _activeProfileRevisions.clear();
+    _connectionRevisions.clear();
+    _connectionWillChange.clear();
+    _configAccessRevisions.clear();
+    _configAccessWillChange.clear();
+    activeProfile.dispose();
+    activeConnectionId.dispose();
+    connectionsRevision.dispose();
+  }
+
+  Future<void> _saveAll(
+    List<SavedConnection> list, {
+    String? changedConnectionId,
+  }) async {
     await prefs.setStringList(
       _key,
       list.map((c) => jsonEncode(c.toMap())).toList(),
     );
+    if (changedConnectionId != null) {
+      _publishConnectionRevision(changedConnectionId);
+    }
     connectionsRevision.value += 1;
   }
 }
@@ -876,9 +1145,21 @@ class SessionMessagesPage {
   /// anunció `pagination`, aunque su contenido estuviera incompleto o corrupto.
   final bool paginationProvided;
 
-  /// Solo es true si la metadata ausente es realmente legacy o si `limit` y
-  /// `offset` son enteros válidos (limit positivo y offset no negativo).
+  /// Solo es true si la metadata ausente es realmente legacy o si `limit`,
+  /// `offset` y cualquier `returned` presente son enteros válidos (limit
+  /// positivo; offset y returned no negativos).
   final bool paginationFullyParsed;
+
+  /// Number of upstream rows consumed by this page. Unlike the visible list,
+  /// this is safe to use as the next `latest` offset.
+  final int returned;
+
+  /// Tip selected by Hermes after resolving the requested stored session.
+  final String? resolvedTipId;
+
+  /// Honest limitations of this source; REST 8642 is tip-only and omits
+  /// display_metadata even when every returned row parsed successfully.
+  final Set<CoreReadCoverage> coverage;
 
   SessionMessagesPage({
     required this.messages,
@@ -886,7 +1167,13 @@ class SessionMessagesPage {
     bool? paginationProvided,
     int? rawMessageCount,
     bool? messagesFullyParsed,
+    this.resolvedTipId,
+    this.coverage = const <CoreReadCoverage>{},
   }) : rawMessageCount = rawMessageCount ?? messages.length,
+       returned =
+           _pageInt(pagination, 'returned') ??
+           rawMessageCount ??
+           messages.length,
        messagesFullyParsed =
            (messagesFullyParsed ?? true) &&
            (rawMessageCount == null || rawMessageCount == messages.length),
@@ -915,6 +1202,10 @@ class SessionMessagesPage {
     required Object? rawMessages,
     required Object? pagination,
     bool? paginationProvided,
+    int? requestedLimit,
+    int? requestedOffset,
+    String? resolvedTipId,
+    Set<CoreReadCoverage> coverage = const <CoreReadCoverage>{},
   }) {
     if (rawMessages is! List) {
       throw const FormatException('Invalid session transcript page');
@@ -932,12 +1223,21 @@ class SessionMessagesPage {
         fullyParsed = false;
       }
     }
+    final returned = _pageInt(pagination, 'returned');
+    final responseLimit = _pageInt(pagination, 'limit');
+    final responseOffset = _pageInt(pagination, 'offset');
+    final paginationConsistent =
+        (returned == null || returned == rawMessages.length) &&
+        (requestedLimit == null || responseLimit == requestedLimit) &&
+        (requestedOffset == null || responseOffset == requestedOffset);
     return SessionMessagesPage(
       messages: List.unmodifiable(messages),
-      pagination: pagination,
+      pagination: paginationConsistent ? pagination : const <String, Object?>{},
       paginationProvided: paginationProvided,
       rawMessageCount: rawMessages.length,
       messagesFullyParsed: fullyParsed,
+      resolvedTipId: resolvedTipId,
+      coverage: Set<CoreReadCoverage>.unmodifiable(coverage),
     );
   }
 
@@ -948,9 +1248,14 @@ class SessionMessagesPage {
     bool paginationProvided,
   ) {
     if (!paginationProvided) return true;
+    if (pagination is! Map) return false;
     final limit = _pageInt(pagination, 'limit');
     final offset = _pageInt(pagination, 'offset');
-    return limit != null && limit > 0 && offset != null;
+    final returned = _pageInt(pagination, 'returned');
+    return limit != null &&
+        limit > 0 &&
+        offset != null &&
+        (!pagination.containsKey('returned') || returned != null);
   }
 
   static int? _pageInt(Object? pagination, String key) {
@@ -1025,43 +1330,88 @@ class ApiClient {
     bool includeChildren = false,
     String? profile,
   }) async {
+    const pageLimit = 200;
     final owner = validateCronProfile(profile);
     final endpoint = profileEndpoint('api/sessions', profile: owner);
-    final res = await _http
-        .get(
-          Uri.parse(
-            '$baseUrl/$endpoint?limit=200'
-            '${includeChildren ? '&include_children=true' : ''}',
-          ),
-          headers: _headers,
-        )
-        .timeout(_requestTimeout);
-    if (res.statusCode != 200) {
-      throw Exception('HTTP ${res.statusCode}: ${res.body}');
+    final sessions = <Session>[];
+    final observed = <String>{};
+    final pageSignatures = <String>{};
+    int? positivePageInt(Object? value) =>
+        value is int && value > 0 ? value : null;
+    var offset = 0;
+
+    while (true) {
+      final query = <String, String>{
+        'limit': '$pageLimit',
+        'offset': '$offset',
+        if (includeChildren) 'include_children': 'true',
+      };
+      final uri = Uri.parse('$baseUrl/$endpoint')
+          .replace(queryParameters: query);
+      final res = await _http
+          .get(uri, headers: _headers)
+          .timeout(_requestTimeout);
+      if (res.statusCode != 200) {
+        throw CoreReadException(switch (res.statusCode) {
+          401 => CoreReadErrorKind.auth,
+          403 => CoreReadErrorKind.forbidden,
+          404 when owner != null => CoreReadErrorKind.profileUnavailable,
+          404 => CoreReadErrorKind.notFound,
+          503 => CoreReadErrorKind.temporarilyUnavailable,
+          _ => CoreReadErrorKind.malformed,
+        }, statusCode: res.statusCode);
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final rawRows = data['data'];
+      if (rawRows is! List) {
+        throw const FormatException('Invalid Gateway session page');
+      }
+      final pagination = data['pagination'];
+      final pageLimitPublished =
+          positivePageInt(data['limit']) ??
+          (pagination is Map ? positivePageInt(pagination['limit']) : null) ??
+          pageLimit;
+      final hasMore =
+          data['has_more'] == true ||
+          (pagination is Map && pagination['has_more'] == true);
+      final signature = rawRows
+          .map((row) => row is Map ? row['id']?.toString() ?? '' : '')
+          .join('\u001f');
+      if (hasMore && !pageSignatures.add(signature)) {
+        throw const CoreReadException(CoreReadErrorKind.paginationStalled);
+      }
+
+      var added = 0;
+      for (final row in rawRows.whereType<Map>()) {
+        final session = Session.fromJson(Map<String, dynamic>.from(row));
+        final publishedOwner = session.profile?.trim();
+        if (owner != null &&
+            publishedOwner != null &&
+            publishedOwner.isNotEmpty &&
+            publishedOwner != owner) {
+          throw const FormatException(
+            'Gateway session owner conflicts with the requested profile',
+          );
+        }
+        final scoped = owner != null && publishedOwner?.isNotEmpty != true
+            ? session.copyWith(profile: owner)
+            : session;
+        if (scoped.id.startsWith('mob-aux-')) continue;
+        final scopeOwner = Session.profileOwner(
+          scoped.profile,
+          fallback: owner,
+        );
+        if (observed.add('$scopeOwner\u001f${scoped.id}')) {
+          sessions.add(scoped);
+          added += 1;
+        }
+      }
+      if (!hasMore) return sessions;
+      if (added == 0 || pageLimitPublished <= 0) {
+        throw const CoreReadException(CoreReadErrorKind.paginationStalled);
+      }
+      offset += pageLimitPublished;
     }
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final list = data['data'] as List? ?? [];
-    return list
-        .whereType<Map<String, dynamic>>()
-        .map((row) {
-          final session = Session.fromJson(row);
-          final publishedOwner = session.profile?.trim();
-          if (owner != null &&
-              publishedOwner != null &&
-              publishedOwner.isNotEmpty &&
-              publishedOwner != owner) {
-            throw const FormatException(
-              'Gateway session owner conflicts with the requested profile',
-            );
-          }
-          return owner != null && publishedOwner?.isNotEmpty != true
-              ? session.copyWith(profile: owner)
-              : session;
-        })
-        // Compatibilidad de limpieza: versiones experimentales antiguas crearon
-        // sesiones internas con este prefijo. Nunca fueron chats del usuario.
-        .where((s) => !s.id.startsWith('mob-aux-'))
-        .toList();
   }
 
   // ── Messages ─────────────────────────────────────────────────────────
@@ -1070,18 +1420,41 @@ class ApiClient {
     String sessionId, {
     String? profile,
   }) async {
-    final endpoint = profileEndpoint(
-      'api/sessions/${Uri.encodeComponent(sessionId)}/messages',
-      profile: profile,
-    );
-    final res = await _http
-        .get(Uri.parse('$baseUrl/$endpoint'), headers: _headers)
-        .timeout(_requestTimeout);
-    if (res.statusCode != 200) {
-      throw Exception('HTTP ${res.statusCode}: ${res.body}');
+    const limit = 500;
+    var offset = 0;
+    final pagesNewestFirst = <List<Map<String, dynamic>>>[];
+    final signatures = <String>{};
+    while (true) {
+      final page = await getMessagesPage(
+        sessionId,
+        profile: profile,
+        limit: limit,
+        offset: offset,
+      );
+      if (!page.messagesFullyParsed || !page.paginationFullyParsed) {
+        throw const CoreReadException(CoreReadErrorKind.malformed);
+      }
+      pagesNewestFirst.add(page.messages);
+      if (!page.paginationProvided) break;
+      final responseLimit = page.limit;
+      if (responseLimit == null || responseLimit != limit) {
+        throw const CoreReadException(CoreReadErrorKind.malformed);
+      }
+      if (page.returned < responseLimit) break;
+      if (page.returned <= 0) {
+        throw const CoreReadException(CoreReadErrorKind.paginationStalled);
+      }
+      final signature = page.messages
+          .map((row) => '${row['message_id'] ?? ''}\u001f${row['id'] ?? ''}')
+          .join('\u001e');
+      if (!signatures.add(signature)) {
+        throw const CoreReadException(CoreReadErrorKind.paginationStalled);
+      }
+      offset += page.returned;
     }
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    return _strictTranscriptMessages(data['data']);
+    return List<Map<String, dynamic>>.unmodifiable([
+      for (final page in pagesNewestFirst.reversed) ...page,
+    ]);
   }
 
   /// Una página del transcript con la semántica `order=latest` de Hermes
@@ -1096,23 +1469,59 @@ class ApiClient {
     int limit = 120,
     int offset = 0,
   }) async {
+    if (offset < 0) {
+      throw const CoreReadException(CoreReadErrorKind.malformed);
+    }
+    final owner = validateCronProfile(profile);
+    final boundedLimit = limit.clamp(1, 500);
     final res = await _http
         .get(
           Uri.parse(
-            '$baseUrl/${profileEndpoint('api/sessions/${Uri.encodeComponent(sessionId)}/messages', profile: profile)}'
-            '?limit=$limit&order=latest&offset=$offset',
+            '$baseUrl/${profileEndpoint('api/sessions/${Uri.encodeComponent(sessionId)}/messages', profile: owner)}'
+            '?limit=$boundedLimit&order=latest&offset=$offset'
+            '&include_compacted=true',
           ),
           headers: _headers,
         )
         .timeout(_requestTimeout);
     if (res.statusCode != 200) {
-      throw Exception('HTTP ${res.statusCode}: ${res.body}');
+      throw CoreReadException(switch (res.statusCode) {
+        400 => CoreReadErrorKind.malformed,
+        401 => CoreReadErrorKind.auth,
+        403 => CoreReadErrorKind.forbidden,
+        404 when owner != null => CoreReadErrorKind.profileUnavailable,
+        404 => CoreReadErrorKind.notFound,
+        503 => CoreReadErrorKind.temporarilyUnavailable,
+        _ => CoreReadErrorKind.temporarilyUnavailable,
+      }, statusCode: res.statusCode);
     }
     final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final resolved = data['session_id'];
+    final rawMessages = data.containsKey('messages')
+        ? data['messages']
+        : data['data'];
+    final compactedProjectionProven =
+        resolved == sessionId &&
+        data.containsKey('messages') &&
+        rawMessages is List &&
+        rawMessages.whereType<Map>().any((message) {
+          final compacted = message['compacted'];
+          final active = message['active'];
+          return (compacted == true || compacted == 1) &&
+              (active == false || active == 0);
+        });
     return SessionMessagesPage.fromRaw(
-      rawMessages: data['data'],
+      rawMessages: rawMessages,
       pagination: data['pagination'],
       paginationProvided: data.containsKey('pagination'),
+      requestedLimit: boundedLimit,
+      requestedOffset: offset,
+      resolvedTipId: resolved is String && resolved.trim().isNotEmpty
+          ? resolved.trim()
+          : null,
+      coverage: compactedProjectionProven
+          ? const {CoreReadCoverage.full}
+          : const {CoreReadCoverage.tipOnly, CoreReadCoverage.metadataPartial},
     );
   }
 
@@ -1308,9 +1717,8 @@ class ApiClient {
     final ownerProfile = Session.profileOwner(profile);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await ChatDraftStore(
-        prefs,
-      ).clear(connectionId, sessionId, profile: ownerProfile);
+      await ChatDraftStore(prefs)
+          .clear(connectionId, sessionId, profile: ownerProfile);
       await TurnOutboxStore().deleteForChat(
         connectionId,
         sessionId,
@@ -1866,6 +2274,9 @@ enum DashboardWebSocketAuthFailureCode {
   final String stableCode;
 }
 
+/// Body-free producer classification for status-less ticket failures.
+enum DashboardWebSocketAuthFailureCause { unknown, transport, malformed }
+
 /// Fallo seguro y clasificable al obtener la credencial efímera del socket.
 ///
 /// Nunca conserva el body ni la excepción de transporte: esos valores pueden
@@ -1873,8 +2284,13 @@ enum DashboardWebSocketAuthFailureCode {
 class DashboardWebSocketAuthException implements Exception {
   final DashboardWebSocketAuthFailureCode code;
   final int? statusCode;
+  final DashboardWebSocketAuthFailureCause cause;
 
-  const DashboardWebSocketAuthException(this.code, {this.statusCode});
+  const DashboardWebSocketAuthException(
+    this.code, {
+    this.statusCode,
+    this.cause = DashboardWebSocketAuthFailureCause.unknown,
+  });
 
   @override
   String toString() => statusCode == null
@@ -1945,6 +2361,7 @@ class DashboardClient {
   String? _basicUser;
   String? _basicPass;
   String? _token;
+  bool _closed = false;
 
   /// Cookies de sesión de un Dashboard con login propio (`hermes_session_at`,
   /// `hermes_session_rt` y `hermes_session_provider`). Se establecen con un POST
@@ -2137,9 +2554,8 @@ class DashboardClient {
         'Dashboard not accessible at $_baseUrl (HTTP ${res.statusCode})',
       );
     }
-    final match = RegExp(
-      r'window\.__HERMES_SESSION_TOKEN__="([^"]+)";',
-    ).firstMatch(res.body);
+    final match = RegExp(r'window\.__HERMES_SESSION_TOKEN__="([^"]+)";')
+        .firstMatch(res.body);
     if (match == null) {
       // Sin token en la página: o no es el Dashboard, o exige login propio y
       // sirve la página de login (sin el token embebido). Si fuese login, el
@@ -2291,13 +2707,16 @@ class DashboardClient {
   }
 
   Future<Map<String, String>> _authHeaders() async {
+    _requireOpen();
     await _ensureSecrets();
+    _requireOpen();
     // Dashboard con login propio: autenticamos por COOKIE de sesión (POST
     // /auth/password-login con usuario+contraseña). Es lo que desbloquea la
     // lista completa de modelos/proveedores y el resto de la API nativa.
     if (_hasPasswordCreds && !_passwordLoginUnsupported) {
       try {
         await _ensurePasswordLogin();
+        _requireOpen();
         return <String, String>{
           'Cookie': ?_cookieHeader,
           'Content-Type': 'application/json',
@@ -2308,8 +2727,10 @@ class DashboardClient {
         if (!_passwordLoginUnsupported) rethrow;
       }
     }
+    final token = await _getToken();
+    _requireOpen();
     final headers = <String, String>{
-      'X-Hermes-Session-Token': await _getToken(),
+      'X-Hermes-Session-Token': token,
       'Content-Type': 'application/json',
     };
     final basic = _basicAuthHeader;
@@ -2341,6 +2762,7 @@ class DashboardClient {
       if (ticket is String && ticket.trim().isNotEmpty) return ticket;
       throw const DashboardWebSocketAuthException(
         DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.malformed,
       );
     } on DashboardHttpException catch (error) {
       if (error.statusCode == 404 || error.statusCode == 405) return null;
@@ -2351,6 +2773,33 @@ class DashboardClient {
     } on DashboardAuthException {
       // This error already carries the stable, body-free Dashboard auth code
       // that reconnect/UI recovery needs (for example loginRequired).
+      rethrow;
+    } on TimeoutException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
+    } on SocketException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
+    } on HttpException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
+    } on http.ClientException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
+    } on FormatException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.malformed,
+      );
+    } on DashboardWebSocketAuthException {
       rethrow;
     } on Exception {
       throw const DashboardWebSocketAuthException(
@@ -2404,6 +2853,7 @@ class DashboardClient {
     bool retried = false,
   }) async {
     final headers = await _authHeaders();
+    _requireOpen();
     final res = await _http
         .get(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
@@ -2597,6 +3047,100 @@ class DashboardClient {
       bytes: bytes,
       headers: Map<String, String>.unmodifiable(streamed.headers),
     );
+  }
+
+  /// Streams an authenticated download directly to [target]. Unlike
+  /// [apiDownload], this keeps memory bounded for generated videos while
+  /// preserving the same auth retry and response-size limits.
+  Future<Map<String, String>> apiDownloadToFile(
+    String endpoint,
+    File target, {
+    required int maxBytes,
+    String? profile,
+    bool retried = false,
+    Duration timeout = const Duration(minutes: 3),
+  }) async {
+    if (maxBytes < 1) {
+      throw RangeError.range(maxBytes, 1, null, 'maxBytes');
+    }
+    final scopedEndpoint = ApiClient.profileEndpoint(
+      'api/$endpoint',
+      profile: profile,
+    );
+    final request = http.Request('GET', Uri.parse('$_baseUrl/$scopedEndpoint'));
+    request.headers.addAll(await _authHeaders());
+    final streamed = await _http.send(request).timeout(timeout);
+    final responseMetadata = http.Response(
+      '',
+      streamed.statusCode,
+      headers: streamed.headers,
+    );
+    _ingestSetCookie(responseMetadata);
+    if (streamed.statusCode == 401 && !retried) {
+      await _cancelResponseStream(streamed.stream);
+      _resetSession();
+      return apiDownloadToFile(
+        endpoint,
+        target,
+        maxBytes: maxBytes,
+        profile: profile,
+        retried: true,
+        timeout: timeout,
+      );
+    }
+    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+      final errorBytes = await _readResponseStream(
+        streamed.stream,
+        maxBytes: 2048,
+        truncate: true,
+      );
+      throw DashboardHttpException(
+        streamed.statusCode,
+        body: utf8.decode(errorBytes, allowMalformed: true),
+      );
+    }
+    final declaredLength = streamed.contentLength;
+    if (declaredLength != null && declaredLength > maxBytes) {
+      await _cancelResponseStream(streamed.stream);
+      throw StateError('Dashboard download exceeds $maxBytes bytes');
+    }
+
+    final iterator = StreamIterator<List<int>>(streamed.stream);
+    IOSink? sink;
+    var completed = false;
+    var received = 0;
+    try {
+      sink = target.openWrite(mode: FileMode.writeOnly);
+      while (await iterator.moveNext()) {
+        final chunk = iterator.current;
+        received += chunk.length;
+        if (received > maxBytes) {
+          throw StateError('Dashboard download exceeds $maxBytes bytes');
+        }
+        sink.add(chunk);
+      }
+      await sink.flush();
+      await sink.close();
+      sink = null;
+      completed = true;
+      return Map<String, String>.unmodifiable(streamed.headers);
+    } finally {
+      await iterator.cancel();
+      if (sink != null) {
+        try {
+          await sink.close();
+        } catch (_) {
+          // Preserve the original transport/write failure.
+        }
+      }
+      if (!completed) {
+        try {
+          if (await target.exists()) await target.delete();
+        } catch (_) {
+          // Best effort: caller also owns cleanup of its temporary destination.
+        }
+      }
+    }
   }
 
   Future<void> _cancelResponseStream(Stream<List<int>> stream) async {
@@ -3085,6 +3629,7 @@ class DashboardClient {
     bool retried = false,
   }) async {
     final headers = await _authHeaders();
+    _requireOpen();
     final res = await _http
         .put(
           Uri.parse('$_baseUrl/api/config${_profileQuery(profile)}'),
@@ -3380,5 +3925,13 @@ class DashboardClient {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
-  void close() => _http.close();
+  void _requireOpen() {
+    if (_closed) throw http.ClientException('Dashboard client is closed');
+  }
+
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    _http.close();
+  }
 }

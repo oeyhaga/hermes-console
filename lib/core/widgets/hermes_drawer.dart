@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../screens/activity_screen.dart';
 import '../screens/agent_center_screen.dart';
 import '../screens/appearance_screen.dart';
@@ -36,6 +37,8 @@ enum DrawerSection {
   appearance,
   mascotas,
   sessions,
+  // A conversation is below the library, not the library itself.
+  chat,
   projects,
   kanban,
   tools,
@@ -793,9 +796,8 @@ class _DrawerHeader extends StatelessWidget {
             Strings.of(context).drawerSwitchInstance,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(
-              context,
-            ).textTheme.labelLarge?.copyWith(color: colors.textSecondary),
+            style: Theme.of(context).textTheme.labelLarge
+                ?.copyWith(color: colors.textSecondary),
           ),
         ),
         for (final saved in connections)

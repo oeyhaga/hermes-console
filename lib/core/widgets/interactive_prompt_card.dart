@@ -51,6 +51,7 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
   final Map<String, _StagedAnswer> _batchAnswers = {};
   final Map<String, TextEditingController> _batchControllers = {};
   bool _obscure = true;
+  bool _batchSubmissionStarted = false;
 
   InteractivePromptRequest get _request => widget.entry.request!;
 
@@ -107,6 +108,12 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
   @override
   void didUpdateWidget(covariant InteractivePromptCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (_batchSubmissionStarted &&
+        oldWidget.busy &&
+        !widget.busy &&
+        widget.entry.status == InteractivePromptStatus.pending) {
+      _batchSubmissionStarted = false;
+    }
     final request = widget.entry.request;
     final oldRequest = oldWidget.entry.request;
     if (request is! ClarifyPromptRequest || !request.isBatch) return;
@@ -149,7 +156,7 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
   }
 
   Future<void> _submitBatch() async {
-    if (widget.busy || !_isBatchClarify) return;
+    if (widget.busy || _batchSubmissionStarted || !_isBatchClarify) return;
     final request = _request as ClarifyPromptRequest;
     final answers = <String, String>{};
     for (final question in request.questions) {
@@ -159,11 +166,13 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
       if (answer == null || answer.isEmpty) return;
       answers[question.qid] = answer;
     }
+    setState(() => _batchSubmissionStarted = true);
     try {
       await widget.onSubmitBatch?.call(answers);
     } catch (_) {
       // Errors are reported and guarded by the host screen; this card only
       // ensures the async gap does not surface as an unawaited exception.
+      if (mounted) setState(() => _batchSubmissionStarted = false);
     }
   }
 
@@ -186,7 +195,7 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
       if (staged == null) return false;
       if (_batchAnswer(question, staged) == null) return false;
     }
-    return true;
+    return !_batchSubmissionStarted;
   }
 
   int get _batchAnsweredCount {
@@ -253,34 +262,44 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
       InteractivePromptKind.terminalRead => Icons.terminal_rounded,
     };
 
-    return HermesInlineActivity(
-      title: title,
-      leading: Icon(icon, size: 20, color: colors.warning),
-      status: widget.busy
-          ? Semantics(
-              label: strings.chaStatusWaiting,
-              liveRegion: true,
-              child: SizedBox.square(
-                dimension: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: colors.warning,
-                ),
-              ),
-            )
-          : null,
-      detail: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: _isBatchClarify
-            ? _batchBody(context)
-            : _requestBody(context, request, colors),
-      ),
-      actions: _isBatchClarify
-          ? _batchActions(strings)
-          : _legacyActions(strings),
-      semanticLabel: title,
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compactBatchActions =
+            _isBatchClarify &&
+            MediaQuery.textScalerOf(context).scale(1) > 1 &&
+            constraints.maxHeight.isFinite &&
+            constraints.maxHeight < 600;
+        return HermesInlineActivity(
+          title: title,
+          leading: Icon(icon, size: 20, color: colors.warning),
+          status: widget.busy
+              ? Semantics(
+                  label: strings.chaStatusWaiting,
+                  liveRegion: true,
+                  child: SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: colors.warning,
+                    ),
+                  ),
+                )
+              : null,
+          detail: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: _isBatchClarify
+                ? _batchBody(context)
+                : _requestBody(context, request, colors),
+          ),
+          actions: _isBatchClarify
+              ? _batchActions(strings, compact: compactBatchActions)
+              : _legacyActions(strings),
+          flexibleDetail: _isBatchClarify,
+          semanticLabel: title,
+          padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+        );
+      },
     );
   }
 
@@ -360,28 +379,19 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
         style: TextStyle(color: colors.textSecondary, fontSize: 12),
       ),
       const SizedBox(height: 10),
-      LayoutBuilder(
-        builder: (context, constraints) {
-          final maxHeight =
-              constraints.maxHeight.isFinite && constraints.maxHeight > 0
-              ? constraints.maxHeight
-              : 320.0;
-          return ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: maxHeight),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  for (final question in request.questions) ...[
-                    _batchQuestion(context, question, strings),
-                    const SizedBox(height: 12),
-                  ],
-                ],
-              ),
-            ),
-          );
-        },
+      Expanded(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final question in request.questions) ...[
+                _batchQuestion(context, question, strings),
+                const SizedBox(height: 12),
+              ],
+            ],
+          ),
+        ),
       ),
     ];
   }
@@ -482,17 +492,45 @@ class _InteractivePromptCardState extends State<InteractivePromptCard> {
     ),
   ];
 
-  List<Widget> _batchActions(Strings strings) => [
-    TextButton.icon(
-      onPressed: widget.busy ? null : widget.onCancel,
-      icon: const Icon(Icons.stop_circle_outlined, size: 18),
-      label: Text(strings.interactiveCancel),
-    ),
-    FilledButton.icon(
-      onPressed: widget.busy || !_batchComplete ? null : _submitBatch,
-      icon: const Icon(Icons.send_rounded, size: 17),
-      label: Text(strings.interactiveBatchConfirm),
-    ),
+  List<Widget> _batchActions(Strings strings, {required bool compact}) => [
+    if (compact)
+      Semantics(
+        label: strings.interactiveCancel,
+        button: true,
+        enabled: !widget.busy,
+        excludeSemantics: true,
+        child: TextButton(
+          key: const ValueKey('interactive-batch-cancel'),
+          onPressed: widget.busy ? null : widget.onCancel,
+          child: const Icon(Icons.stop_circle_outlined, size: 18),
+        ),
+      )
+    else
+      TextButton.icon(
+        key: const ValueKey('interactive-batch-cancel'),
+        onPressed: widget.busy ? null : widget.onCancel,
+        icon: const Icon(Icons.stop_circle_outlined, size: 18),
+        label: Text(strings.interactiveCancel),
+      ),
+    if (compact)
+      Semantics(
+        label: strings.interactiveBatchConfirm,
+        button: true,
+        enabled: !widget.busy && _batchComplete,
+        excludeSemantics: true,
+        child: FilledButton(
+          key: const ValueKey('interactive-batch-confirm'),
+          onPressed: widget.busy || !_batchComplete ? null : _submitBatch,
+          child: const Icon(Icons.send_rounded, size: 17),
+        ),
+      )
+    else
+      FilledButton.icon(
+        key: const ValueKey('interactive-batch-confirm'),
+        onPressed: widget.busy || !_batchComplete ? null : _submitBatch,
+        icon: const Icon(Icons.send_rounded, size: 17),
+        label: Text(strings.interactiveBatchConfirm),
+      ),
   ];
 
   Widget _input(String hint, {required bool sensitive}) => TextField(

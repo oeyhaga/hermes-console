@@ -9,8 +9,6 @@
 //   `profiles.configure disabled_skills` como paso best-effort posterior.
 // - La identidad visible (título + sello `created`) se publica en el
 //   namespace `hermes-bots` de `ui_meta`, como `saveBotMeta` de Desktop.
-// - Al crearse, Mission Control abre el Bot Chat del bot con el prompt
-//   kickoff de Desktop (`kBotChatKickoffPrompt`) para que se presente solo.
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -35,8 +33,9 @@ import '../widgets/hermes_ui.dart';
 import 'mission_control_copy.dart';
 
 typedef BotCreateImagePicker = Future<XFile?> Function();
-typedef BotCreateImageNormalizer =
-    Future<AgentProfileAvatar> Function(Uint8List bytes);
+typedef BotCreateImageNormalizer = Future<AgentProfileAvatar> Function(
+  Uint8List bytes,
+);
 
 enum _CreateIdentityMode { pet, image, face }
 
@@ -45,11 +44,6 @@ final class _BotCreateIdentityFailure implements Exception {
 
   const _BotCreateIdentityFailure({required this.uncertain});
 }
-
-/// Prompt de auto-presentación que Hermes Desktop envía al Bot Chat recién
-/// creado (`createCanonicalChat` en el plugin hermes-bots). El texto viaja al
-/// agente tal cual, sin localizar.
-const kBotChatKickoffPrompt = 'Hey, tell me about yourself!';
 
 /// Slug de profile con la misma normalización que `slugify` de Desktop.
 String slugifyBotName(String value) {
@@ -571,8 +565,7 @@ class _BotCreateScreenState extends State<BotCreateScreen> {
 
   /// Orden autoritativo: `profiles.create` primero y, solo después, identidad
   /// tipada (pet/asset/ui_meta). Si la identidad no queda confirmada la
-  /// pantalla permanece abierta: nunca dispara la auto-presentación como si
-  /// el bot estuviera completamente listo.
+  /// pantalla permanece abierta y no navega como si el bot estuviera listo.
   Future<void> _create() async {
     if (!_valid || _taken || _busy) return;
     final copy = MissionControlCopy.of(context);
@@ -673,10 +666,11 @@ class _BotCreateScreenState extends State<BotCreateScreen> {
           _ => false,
         };
         _error = switch (error) {
-          final _BotCreateIdentityFailure failure when failure.uncertain => _text(
-            'El bot existe, pero su identidad quedó en estado incierto. Revísala y vuelve a intentar.',
-            'The bot exists, but its identity is uncertain. Review it and try again.',
-          ),
+          final _BotCreateIdentityFailure failure when failure.uncertain =>
+            _text(
+              'El bot existe, pero su identidad quedó en estado incierto. Revísala y vuelve a intentar.',
+              'The bot exists, but its identity is uncertain. Review it and try again.',
+            ),
           _BotCreateIdentityFailure() => _text(
             'El bot existe, pero no se pudo aplicar su identidad. Corrige el problema y vuelve a intentar.',
             'The bot exists, but its identity could not be applied. Fix the issue and try again.',
@@ -1210,9 +1204,9 @@ class _BotCreateScreenState extends State<BotCreateScreen> {
               const SizedBox(height: 12),
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final scale = MediaQuery.textScalerOf(
-                    context,
-                  ).scale(1).clamp(1.0, 2.0);
+                  final scale = MediaQuery.textScalerOf(context)
+                      .scale(1)
+                      .clamp(1.0, 2.0);
                   return GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),

@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../utils/chat_turn.dart';
 import '../utils/markdown_clipboard.dart';
 import '../utils/session_timestamp.dart';
 
@@ -240,10 +241,17 @@ class Session implements SessionSortKey {
 
   /// Preview SIN preámbulos internos ni sintaxis Markdown visible.
   /// Para sesiones del Kanban, el preview es el prompt interno crudo: se oculta.
-  String get cleanPreview =>
-      isKanbanJob || _looksAsyncDelegationCarrier(preview)
-      ? ''
-      : markdownToCompactText(stripCronPreamble(preview));
+  String get cleanPreview {
+    if (isKanbanJob ||
+        _looksAsyncDelegationCarrier(preview) ||
+        isBackgroundProcessBackendPreview(preview) ||
+        isBackgroundProcessFlattenedPreview(preview)) {
+      return '';
+    }
+    return markdownToCompactText(
+      stripCronPreamble(stripBackgroundProcessCarrier(preview)),
+    );
+  }
 
   /// Removes Hermes' synthetic todo handoff from user-visible projections.
   ///

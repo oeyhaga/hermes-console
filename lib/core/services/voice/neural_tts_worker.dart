@@ -49,8 +49,9 @@ abstract interface class NeuralTtsWorker {
   Future<void> dispose();
 }
 
-typedef NeuralTtsWorkerFactory =
-    Future<NeuralTtsWorker> Function(NeuralTtsWorkerConfig config);
+typedef NeuralTtsWorkerFactory = Future<NeuralTtsWorker> Function(
+  NeuralTtsWorkerConfig config,
+);
 
 class NeuralTtsWorkerException implements Exception {
   final String message;
@@ -107,7 +108,9 @@ class IsolateNeuralTtsWorker implements NeuralTtsWorker {
       if (completer == null || completer.isCompleted) return;
       final error = message['error'];
       if (error != null) {
-        completer.completeError(NeuralTtsWorkerException(error.toString()));
+        completer.completeError(
+          const NeuralTtsWorkerException('Neural TTS worker failed.'),
+        );
         return;
       }
       final sampleRate = message['sampleRate'];
@@ -263,7 +266,7 @@ void _neuralTtsWorkerMain(Map<String, Object?> bootstrap) {
       try {
         tts?.free();
       } catch (error) {
-        debugPrint('[hermes-tts-worker] free failed: $error');
+        debugPrint('[hermes-tts-worker] free failed (${error.runtimeType})');
       }
       tts = null;
       replyTo.send(const {'type': 'disposed'});
@@ -307,23 +310,16 @@ void _neuralTtsWorkerMain(Map<String, Object?> bootstrap) {
         'wavePath': wavePath,
       });
     } catch (error) {
-      var detail = error.toString();
-      for (final key in const ['modelPath', 'tokensPath', 'dataDirPath']) {
-        final value = bootstrap[key];
-        if (value is String && value.isNotEmpty) {
-          detail = detail.replaceAll(value, '<$key>');
-        }
-      }
-      final spokenText = message['text'];
-      if (spokenText is String && spokenText.isNotEmpty) {
-        detail = detail.replaceAll(spokenText, '<text>');
-      }
-      if (detail.length > 300) detail = '${detail.substring(0, 300)}…';
       debugPrint(
         '[hermes-tts-worker] failed stage=$stage '
-        'type=${error.runtimeType} detail=$detail',
+        'type=${error.runtimeType}',
       );
-      replyTo.send({'id': id, 'error': '$stage: $detail'});
+      replyTo.send({
+        'id': id,
+        'error': true,
+        'stage': stage,
+        'errorType': error.runtimeType.toString(),
+      });
     }
   });
 }

@@ -20,7 +20,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart' as sqflite;
 
 import '../../models/kanban.dart';
-import '../../utils/home_recent_sessions.dart';
 import '../connection_manager.dart';
 import '../secure_storage.dart';
 import '../../utils/transport_privacy.dart';
@@ -786,26 +785,15 @@ class BackgroundCronWatch {
   notificationDestination(Session session) =>
       (sessionId: session.id, taskCenterRunId: null, profile: session.profile);
 
-  /// La lista ligera de sesiones de Agent 0.20 puede omitir el último turno.
-  /// Hermes Desktop abre entonces el transcript oficial de esa sesión; el
-  /// listener replica ese fallback solo para una ejecución recién terminada.
+  /// Solo usa el preview público anunciado por la lista ligera de sesiones.
+  /// Un resultado desconocido permanece ausente; el listener no reconstruye
+  /// texto de notificación leyendo el transcript privado de la sesión.
   @visibleForTesting
-  static Future<String?> notificationPreview(
-    Session? session,
-    Future<List<Map<String, dynamic>>> Function(
-      String sessionId,
-      String profile,
-    )
-    loadMessages,
-  ) async {
+  static String? notificationPreview(Session? session) {
     if (session == null) return null;
     final advertised = session.lastAssistantPreview?.trim();
     if (advertised != null && advertised.isNotEmpty) return advertised;
-    final messages = await loadMessages(
-      session.id,
-      session.profile?.trim() ?? '',
-    );
-    return latestAssistantPreview(messages);
+    return null;
   }
 
   /// Solo eleva al plano de interrupción un resultado material. Esta regla se
@@ -1699,11 +1687,7 @@ class _HermesTaskHandler extends TaskHandler {
               : BackgroundCronWatch.notificationDestination(session);
           String? preview;
           try {
-            preview = await BackgroundCronWatch.notificationPreview(
-              session,
-              (sessionId, profile) =>
-                  dashboard.getSessionMessages(sessionId, profile: profile),
-            );
+            preview = BackgroundCronWatch.notificationPreview(session);
           } catch (_) {
             // Preview is display-only; identity and cursor remain authoritative.
           }
