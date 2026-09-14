@@ -2082,6 +2082,303 @@
       "version": "1.1.0"
     },
     {
+      "bom-ref": "pkg:maven/androidx.media3/media3-common@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-common",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-common@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-container@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-container",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-container@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-database@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-database",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-database@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-datasource@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-datasource",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-datasource@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-decoder@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-decoder",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-decoder@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-exoplayer-dash@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-exoplayer-dash",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-exoplayer-dash@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-exoplayer-hls@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-exoplayer-hls",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-exoplayer-hls@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-exoplayer-rtsp@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-exoplayer-rtsp",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-exoplayer-rtsp@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-exoplayer-smoothstreaming@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-exoplayer-smoothstreaming",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-exoplayer-smoothstreaming@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-exoplayer@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-exoplayer",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-exoplayer@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
+      "bom-ref": "pkg:maven/androidx.media3/media3-extractor@1.9.2",
+      "group": "androidx.media3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "media3-extractor",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://android.googlesource.com/platform/frameworks/support/+/androidx-main/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/androidx.media3/media3-extractor@1.9.2",
+      "type": "library",
+      "version": "1.9.2"
+    },
+    {
       "bom-ref": "pkg:maven/androidx.navigationevent/navigationevent-android@1.0.2",
       "group": "androidx.navigationevent",
       "licenses": [
@@ -3081,7 +3378,61 @@
       "version": "2.41.0"
     },
     {
-      "bom-ref": "pkg:maven/com.google.guava/listenablefuture@1.0",
+      "bom-ref": "pkg:maven/com.google.guava/failureaccess@1.0.2",
+      "group": "com.google.guava",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "failureaccess",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://github.com/google/guava/blob/master/LICENSE"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/com.google.guava/failureaccess@1.0.2",
+      "type": "library",
+      "version": "1.0.2"
+    },
+    {
+      "bom-ref": "pkg:maven/com.google.guava/guava@33.3.1-android",
+      "group": "com.google.guava",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "guava",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://github.com/google/guava/blob/master/LICENSE"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/com.google.guava/guava@33.3.1-android",
+      "type": "library",
+      "version": "33.3.1-android"
+    },
+    {
+      "bom-ref": "pkg:maven/com.google.guava/listenablefuture@9999.0-empty-to-avoid-conflict-with-guava",
       "group": "com.google.guava",
       "licenses": [
         {
@@ -3103,9 +3454,9 @@
           "value": "curated-catalog"
         }
       ],
-      "purl": "pkg:maven/com.google.guava/listenablefuture@1.0",
+      "purl": "pkg:maven/com.google.guava/listenablefuture@9999.0-empty-to-avoid-conflict-with-guava",
       "type": "library",
-      "version": "1.0"
+      "version": "9999.0-empty-to-avoid-conflict-with-guava"
     },
     {
       "bom-ref": "pkg:maven/com.google.zxing/core@3.5.2",
@@ -3430,6 +3781,33 @@
       "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-android-extensions-runtime@1.9.22",
       "type": "library",
       "version": "1.9.22"
+    },
+    {
+      "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-bom@1.8.0",
+      "group": "org.jetbrains.kotlin",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "name": "kotlin-bom",
+      "properties": [
+        {
+          "name": "hermes.gradle.configuration",
+          "value": "fullReleaseRuntimeClasspath"
+        },
+        {
+          "name": "hermes.license.evidence",
+          "value": "https://github.com/JetBrains/kotlin/blob/master/license/LICENSE.txt"
+        },
+        {
+          "name": "hermes.license.evidenceKind",
+          "value": "curated-catalog"
+        }
+      ],
+      "purl": "pkg:maven/org.jetbrains.kotlin/kotlin-bom@1.8.0",
+      "type": "library",
+      "version": "1.8.0"
     },
     {
       "bom-ref": "pkg:maven/org.jetbrains.kotlin/kotlin-parcelize-runtime@1.9.22",
@@ -4588,6 +4966,32 @@
       "version": "3.0.7"
     },
     {
+      "bom-ref": "pkg:pub/csslib@1.0.2",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "csslib",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/csslib@1.0.2",
+      "type": "library",
+      "version": "1.0.2"
+    },
+    {
       "bom-ref": "pkg:pub/cupertino_icons@1.0.9",
       "licenses": [
         {
@@ -5680,7 +6084,7 @@
       "version": "2.2.0"
     },
     {
-      "bom-ref": "pkg:pub/hermes_android@1.2.10+4965",
+      "bom-ref": "pkg:pub/hermes_android@1.2.10+9004",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -5701,9 +6105,9 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@1.2.10+4965",
+      "purl": "pkg:pub/hermes_android@1.2.10+9004",
       "type": "application",
-      "version": "1.2.10+4965"
+      "version": "1.2.10+9004"
     },
     {
       "bom-ref": "pkg:pub/highlight@0.7.0",
@@ -5782,6 +6186,32 @@
       "purl": "pkg:pub/hooks@2.0.0",
       "type": "library",
       "version": "2.0.0"
+    },
+    {
+      "bom-ref": "pkg:pub/html@0.15.7",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "name": "html",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/html@0.15.7",
+      "type": "library",
+      "version": "0.15.7"
     },
     {
       "bom-ref": "pkg:pub/http@1.6.0",
@@ -8904,6 +9334,136 @@
       "version": "2.4.2"
     },
     {
+      "bom-ref": "pkg:pub/video_player@2.14.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "video_player",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "direct"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/video_player@2.14.0",
+      "type": "library",
+      "version": "2.14.0"
+    },
+    {
+      "bom-ref": "pkg:pub/video_player_android@2.12.2",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "video_player_android",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/video_player_android@2.12.2",
+      "type": "library",
+      "version": "2.12.2"
+    },
+    {
+      "bom-ref": "pkg:pub/video_player_avfoundation@2.12.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "video_player_avfoundation",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/video_player_avfoundation@2.12.0",
+      "type": "library",
+      "version": "2.12.0"
+    },
+    {
+      "bom-ref": "pkg:pub/video_player_platform_interface@6.9.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "video_player_platform_interface",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/video_player_platform_interface@6.9.0",
+      "type": "library",
+      "version": "6.9.0"
+    },
+    {
+      "bom-ref": "pkg:pub/video_player_web@2.4.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "name": "video_player_web",
+      "properties": [
+        {
+          "name": "hermes.dependency.kind",
+          "value": "transitive"
+        },
+        {
+          "name": "hermes.dependency.source",
+          "value": "hosted"
+        },
+        {
+          "name": "hermes.license.files",
+          "value": "LICENSE"
+        }
+      ],
+      "purl": "pkg:pub/video_player_web@2.4.0",
+      "type": "library",
+      "version": "2.4.0"
+    },
+    {
       "bom-ref": "pkg:pub/vm_service@15.2.0",
       "licenses": [
         {
@@ -9499,6 +10059,12 @@
       "ref": "pkg:pub/crypto@3.0.7"
     },
     {
+      "dependsOn": [
+        "pkg:pub/source_span@1.10.2"
+      ],
+      "ref": "pkg:pub/csslib@1.0.2"
+    },
+    {
       "dependsOn": [],
       "ref": "pkg:pub/cupertino_icons@1.0.9"
     },
@@ -9895,11 +10461,12 @@
         "pkg:pub/sqflite_common_ffi@2.4.2+1",
         "pkg:pub/url_launcher@6.3.2",
         "pkg:pub/uuid@4.5.3",
+        "pkg:pub/video_player@2.14.0",
         "pkg:pub/web_socket_channel@3.0.3",
         "pkg:pub/whisper_ggml_plus@1.5.2",
         "pkg:pub/xterm@4.0.0"
       ],
-      "ref": "pkg:pub/hermes_android@1.2.10+4965"
+      "ref": "pkg:pub/hermes_android@1.2.10+9004"
     },
     {
       "dependsOn": [
@@ -9926,6 +10493,13 @@
         "pkg:pub/yaml@3.1.3"
       ],
       "ref": "pkg:pub/hooks@2.0.0"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/csslib@1.0.2",
+        "pkg:pub/source_span@1.10.2"
+      ],
+      "ref": "pkg:pub/html@0.15.7"
     },
     {
       "dependsOn": [
@@ -10917,6 +11491,50 @@
       "ref": "pkg:pub/vector_math@2.4.2"
     },
     {
+      "dependsOn": [
+        "pkg:pub/collection@1.19.1",
+        "pkg:pub/flutter@0.0.0",
+        "pkg:pub/html@0.15.7",
+        "pkg:pub/video_player_android@2.12.2",
+        "pkg:pub/video_player_avfoundation@2.12.0",
+        "pkg:pub/video_player_platform_interface@6.9.0",
+        "pkg:pub/video_player_web@2.4.0"
+      ],
+      "ref": "pkg:pub/video_player@2.14.0"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/flutter@0.0.0",
+        "pkg:pub/meta@1.19.0",
+        "pkg:pub/video_player_platform_interface@6.9.0"
+      ],
+      "ref": "pkg:pub/video_player_android@2.12.2"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/flutter@0.0.0",
+        "pkg:pub/meta@1.19.0",
+        "pkg:pub/video_player_platform_interface@6.9.0"
+      ],
+      "ref": "pkg:pub/video_player_avfoundation@2.12.0"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/flutter@0.0.0",
+        "pkg:pub/plugin_platform_interface@2.1.8"
+      ],
+      "ref": "pkg:pub/video_player_platform_interface@6.9.0"
+    },
+    {
+      "dependsOn": [
+        "pkg:pub/flutter@0.0.0",
+        "pkg:pub/flutter_web_plugins@0.0.0",
+        "pkg:pub/video_player_platform_interface@6.9.0",
+        "pkg:pub/web@1.1.1"
+      ],
+      "ref": "pkg:pub/video_player_web@2.4.0"
+    },
+    {
       "dependsOn": [],
       "ref": "pkg:pub/vm_service@15.2.0"
     },
@@ -11010,7 +11628,7 @@
   ],
   "metadata": {
     "component": {
-      "bom-ref": "pkg:pub/hermes_android@1.2.10+4965",
+      "bom-ref": "pkg:pub/hermes_android@1.2.10+9004",
       "licenses": [
         {
           "expression": "GPL-3.0-only"
@@ -11031,14 +11649,14 @@
           "value": "LICENSE"
         }
       ],
-      "purl": "pkg:pub/hermes_android@1.2.10+4965",
+      "purl": "pkg:pub/hermes_android@1.2.10+9004",
       "type": "application",
-      "version": "1.2.10+4965"
+      "version": "1.2.10+9004"
     },
     "properties": [
       {
         "name": "hermes.input.sha256",
-        "value": "43781e902143011ee93c314d5a79e59ef5de4a85e7d03aed798c977816a3604d"
+        "value": "e7b7150b58defcce8b311142ced4ad6aadfc997c8f0d69f84f108c17e378e036"
       },
       {
         "name": "hermes.android.variant",
@@ -11050,7 +11668,7 @@
       }
     ]
   },
-  "serialNumber": "urn:uuid:ccb54403-a1e7-4a95-a652-ff7addf28d6c",
+  "serialNumber": "urn:uuid:2a9b5350-9be5-4dce-a3f5-83a7c4a8ad56",
   "specVersion": "1.6",
   "version": 1
 }

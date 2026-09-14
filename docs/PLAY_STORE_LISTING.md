@@ -99,16 +99,16 @@ sponsored by, or maintained by Nous Research or the Hermes Agent authors.
 
 La continuidad entre Desktop y Console es más fiable tras reconexiones, cambios
 de ownership y turnos interrumpidos. Los envíos no confirmados conservan el
-borrador sin duplicarse. La compactación nativa y las tarjetas de subagentes
-mantienen el chat legible, y los fallos de conexión ya no muestran detalles
-técnicos internos.
+borrador sin duplicarse. La compactación nativa y el historial persistido de
+subagentes mantienen el chat legible, y los fallos de conexión ya no muestran
+detalles técnicos internos.
 
 ### English (maximum 500 characters)
 
 Desktop-to-Console continuity is more reliable after reconnects, ownership
 changes, and interrupted turns. Unconfirmed sends preserve the draft without
-duplication. Native compression and subagent cards keep chats readable, while
-connection failures no longer expose internal technical details.
+duplication. Native compression and persisted subagent history keep chats
+readable, while connection failures no longer expose internal technical details.
 
 ## Recursos gráficos
 
