@@ -3,8 +3,14 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.10 (9006) — candidate, not distributed
+## 1.2.10 (9007) — candidate, not distributed
 
+- Redesigned the blocking prompt card (clarify, sudo, secret): it now rises as
+  a compact sheet above the composer over the dimmed transcript instead of
+  replacing the whole screen. Choices are full-width option rows with a
+  selection indicator and a "Recommended" tag parsed from the agent's label;
+  free-text answers use an inline field; the question list scrolls under the
+  keyboard instead of overflowing.
 - Fixed the false "Modelo sin respuesta" (`firstTokenTimeout`) while the agent
   waits on a human: liveness events (`status.update`, `tool.*`,
   `session.info`) no longer restart the 90 s inactivity watchdog under a

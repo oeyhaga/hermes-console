@@ -9340,33 +9340,51 @@ class _ChatScreenState extends State<ChatScreen>
                               ),
                               if (_chat.pendingInteractivePrompt != null)
                                 Positioned.fill(
-                                  child: ColoredBox(
-                                    color: colors.background,
-                                    child: InteractivePromptCard(
-                                      key: ValueKey(
-                                        'interactive-${_chat.pendingInteractivePrompt!.key.runtimeSessionId}-'
-                                        '${_chat.pendingInteractivePrompt!.key.requestId}',
+                                  child: Stack(
+                                    children: [
+                                      // Dim the transcript instead of hiding
+                                      // it: the question stays anchored above
+                                      // the composer like Desktop's inline
+                                      // clarify, not as a blank full screen.
+                                      Positioned.fill(
+                                        child: ColoredBox(
+                                          color: colors.background.withAlpha(
+                                            178,
+                                          ),
+                                        ),
                                       ),
-                                      entry: _chat.pendingInteractivePrompt!,
-                                      busy:
-                                          _resolvingInteractivePrompt ||
-                                          _chat
-                                                  .pendingInteractivePrompt!
-                                                  .status ==
-                                              InteractivePromptStatus
-                                                  .responding,
-                                      onSubmit: (value) {
-                                        unawaited(
-                                          _resolveInteractivePrompt(value),
-                                        );
-                                      },
-                                      onSubmitBatch: (answers) {
-                                        return _resolveInteractivePromptBatch(
-                                          answers,
-                                        );
-                                      },
-                                      onCancel: _cancelInteractivePrompt,
-                                    ),
+                                      Positioned(
+                                        left: 0,
+                                        right: 0,
+                                        bottom: 0,
+                                        child: InteractivePromptCard(
+                                          key: ValueKey(
+                                            'interactive-${_chat.pendingInteractivePrompt!.key.runtimeSessionId}-'
+                                            '${_chat.pendingInteractivePrompt!.key.requestId}',
+                                          ),
+                                          entry:
+                                              _chat.pendingInteractivePrompt!,
+                                          busy:
+                                              _resolvingInteractivePrompt ||
+                                              _chat
+                                                      .pendingInteractivePrompt!
+                                                      .status ==
+                                                  InteractivePromptStatus
+                                                      .responding,
+                                          onSubmit: (value) {
+                                            unawaited(
+                                              _resolveInteractivePrompt(value),
+                                            );
+                                          },
+                                          onSubmitBatch: (answers) {
+                                            return _resolveInteractivePromptBatch(
+                                              answers,
+                                            );
+                                          },
+                                          onCancel: _cancelInteractivePrompt,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                             ],

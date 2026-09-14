@@ -4901,6 +4901,7 @@
   },
   "interactiveBatchOtherHint": "Other",
   "interactiveBatchConfirm": "Confirm and continue",
+  "interactiveRecommended": "Recommended",
   "subagentActivityTitle": "Subagents",
   "subagentActivitySummary": "{active} active · {completed} finished",
   "@subagentActivitySummary": {

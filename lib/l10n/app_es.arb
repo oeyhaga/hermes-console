@@ -6063,6 +6063,7 @@
   },
   "interactiveBatchOtherHint": "Otro",
   "interactiveBatchConfirm": "Confirmar y continuar",
+  "interactiveRecommended": "Recomendado",
   "subagentActivityTitle": "Subagentes",
   "subagentActivitySummary": "{active} en curso · {completed} finalizados",
   "@subagentActivitySummary": {
