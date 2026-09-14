@@ -30,7 +30,8 @@ void main() {
                 width: 320,
                 child: AssistantMarkdownView(
                   isStreaming: streaming,
-                  data: '1. First\n2. Second\n\n- Bullet\n  - Nested\n\n```text\n999999. not a list\n```',
+                  data:
+                      '1. First\n2. Second\n\n- Bullet\n  - Nested\n\n```text\n999999. not a list\n```',
                 ),
               ),
             ),

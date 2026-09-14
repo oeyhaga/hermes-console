@@ -27,19 +27,20 @@ enum NewSessionLaunchDisposition {
 
 enum NavigationDeliveryOutcome { delivered, deferred }
 
-typedef NewSessionConnectionSelector = Future<SavedConnection?> Function(
-  List<SavedConnection> candidates,
-);
-typedef NewSessionDraftNavigator = Future<NavigationDeliveryOutcome> Function(
-  SavedConnection connection,
-  Session draft,
-  NewSessionLaunchTarget target,
-);
+typedef NewSessionConnectionSelector =
+    Future<SavedConnection?> Function(List<SavedConnection> candidates);
+typedef NewSessionDraftNavigator =
+    Future<NavigationDeliveryOutcome> Function(
+      SavedConnection connection,
+      Session draft,
+      NewSessionLaunchTarget target,
+    );
 typedef WidgetRouteNavigator = Future<void> Function();
-typedef WidgetSessionNavigator = Future<NavigationDeliveryOutcome> Function(
-  SavedConnection connection,
-  String sessionId,
-);
+typedef WidgetSessionNavigator =
+    Future<NavigationDeliveryOutcome> Function(
+      SavedConnection connection,
+      String sessionId,
+    );
 
 /// Serializes shortcut/widget actions behind Splash, onboarding, App Lock and
 /// Navigator readiness without creating any remote session.

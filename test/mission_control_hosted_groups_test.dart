@@ -86,92 +86,95 @@ void main() {
     },
   );
 
-  test('repository exposes every enabled official mutation only through generation', () async {
-    final calls = <String>[];
-    final caps = GroupsCapabilities.tryParse(
-      {
-        'protocol_version': 2,
-        'driver': true,
-        'methods': GroupMethod.values
-            .where((method) => method != GroupMethod.promote)
-            .map((method) => method.wire)
-            .toList(),
-        'max_log_limit': 50,
-      },
-      connectionId: 'connection-private',
-      generation: 11,
-    )!;
-    final room = _room(name: 'Shared', revision: 2);
-    final log = HostedGroupLogPage.fromJson(
-      {
-        'events': [_event(text: 'sent')],
-        'cursor': 1,
-        'latest_seq': 1,
-        'has_more': false,
-        'authority': {'gateway_id': 'gateway-private', 'epoch': 1},
-      },
-      expectedRoomId: 'room-private',
-      sinceSeq: 0,
-    );
-    final gateway = MissionHostedGroupsGateway.callbacks(
-      capabilities: () async => caps,
-      list: ({required generation}) async => [room],
-      state: (roomId, {required generation}) async => room,
-      log: (roomId, {required generation}) async => log,
-      create: ({required name, required members, required generation}) async {
-        calls.add('create:$generation:$name:${members.length}');
-        return room;
-      },
-      send:
-          (
-            roomId, {
-            required text,
-            required attempt,
-            required generation,
-          }) async {
-            calls.add('send:$generation:$text:${attempt.threadId}');
-            return log;
-          },
-      rename: (roomId, {required name, required generation}) async {
-        calls.add('rename:$generation:$name');
-        return room;
-      },
-      stop: (roomId, {required generation}) async {
-        calls.add('stop:$generation');
-        return room;
-      },
-      disband: (roomId, {required generation}) async {
-        calls.add('disband:$generation');
-        return _room(name: 'Shared', revision: 3, disbanded: true);
-      },
-    );
-    final repository = MissionControlRepository(
-      profilesLoader: () async => const [],
-      sessionsLoader: () async => const [],
-      boardLoader: () async => const KanbanBoard(columns: []),
-      hostedGroupsGateway: gateway,
-    );
-    final members = [
-      HostedGroupCreateMember.localProfile(profile: 'one', handle: 'one'),
-      HostedGroupCreateMember.localProfile(profile: 'two', handle: 'two'),
-    ];
+  test(
+    'repository exposes every enabled official mutation only through generation',
+    () async {
+      final calls = <String>[];
+      final caps = GroupsCapabilities.tryParse(
+        {
+          'protocol_version': 2,
+          'driver': true,
+          'methods': GroupMethod.values
+              .where((method) => method != GroupMethod.promote)
+              .map((method) => method.wire)
+              .toList(),
+          'max_log_limit': 50,
+        },
+        connectionId: 'connection-private',
+        generation: 11,
+      )!;
+      final room = _room(name: 'Shared', revision: 2);
+      final log = HostedGroupLogPage.fromJson(
+        {
+          'events': [_event(text: 'sent')],
+          'cursor': 1,
+          'latest_seq': 1,
+          'has_more': false,
+          'authority': {'gateway_id': 'gateway-private', 'epoch': 1},
+        },
+        expectedRoomId: 'room-private',
+        sinceSeq: 0,
+      );
+      final gateway = MissionHostedGroupsGateway.callbacks(
+        capabilities: () async => caps,
+        list: ({required generation}) async => [room],
+        state: (roomId, {required generation}) async => room,
+        log: (roomId, {required generation}) async => log,
+        create: ({required name, required members, required generation}) async {
+          calls.add('create:$generation:$name:${members.length}');
+          return room;
+        },
+        send:
+            (
+              roomId, {
+              required text,
+              required attempt,
+              required generation,
+            }) async {
+              calls.add('send:$generation:$text:${attempt.threadId}');
+              return log;
+            },
+        rename: (roomId, {required name, required generation}) async {
+          calls.add('rename:$generation:$name');
+          return room;
+        },
+        stop: (roomId, {required generation}) async {
+          calls.add('stop:$generation');
+          return room;
+        },
+        disband: (roomId, {required generation}) async {
+          calls.add('disband:$generation');
+          return _room(name: 'Shared', revision: 3, disbanded: true);
+        },
+      );
+      final repository = MissionControlRepository(
+        profilesLoader: () async => const [],
+        sessionsLoader: () async => const [],
+        boardLoader: () async => const KanbanBoard(columns: []),
+        hostedGroupsGateway: gateway,
+      );
+      final members = [
+        HostedGroupCreateMember.localProfile(profile: 'one', handle: 'one'),
+        HostedGroupCreateMember.localProfile(profile: 'two', handle: 'two'),
+      ];
 
-    await repository.createHostedGroup(
-      name: 'Shared',
-      members: members,
-      generation: 11,
-    );
-    await repository.renameHostedGroup(room, name: 'Renamed', generation: 11);
-    await repository.stopHostedGroup(room, generation: 11);
-    await repository.disbandHostedGroup(room, generation: 11);
+      await repository.createHostedGroup(
+        name: 'Shared',
+        members: members,
+        generation: 11,
+      );
+      await repository.renameHostedGroup(room, name: 'Renamed', generation: 11);
+      await repository.stopHostedGroup(room, generation: 11);
+      await repository.disbandHostedGroup(room, generation: 11);
 
-    expect(calls, [
-      'create:11:Shared:2',
-      'rename:11:Renamed',
-      'stop:11',
-      'disband:11',
-    ]);
-  });
+      expect(calls, [
+        'create:11:Shared:2',
+        'rename:11:Renamed',
+        'stop:11',
+        'disband:11',
+      ]);
+    },
+  );
 
   testWidgets(
     'real screen renders official rooms and hides unsupported controls',

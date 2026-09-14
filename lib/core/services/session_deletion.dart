@@ -5,14 +5,12 @@ import '../models/session.dart';
 
 typedef DeleteRemoteSession = Future<bool> Function(String sessionId);
 typedef DeleteLinkedCronJob = Future<void> Function(String jobId);
-typedef LoadSessionsForDeletion = Future<List<Session>> Function({
-  bool includeChildren,
-});
+typedef LoadSessionsForDeletion =
+    Future<List<Session>> Function({bool includeChildren});
 typedef ClearLocalSessionRecovery = Future<void> Function(String sessionId);
 typedef ClearConnectionConversationState = Future<int> Function();
-typedef ClearProfileConversationState = Future<int> Function({
-  required String profile,
-});
+typedef ClearProfileConversationState =
+    Future<int> Function({required String profile});
 
 class LocalConversationWriteRejected implements Exception {
   const LocalConversationWriteRejected();

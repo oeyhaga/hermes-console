@@ -34,10 +34,8 @@ const kHermesServerSttRecordConfig = RecordConfig(
 
 /// POST autenticado a `/api/audio/transcribe` del Dashboard de la conexión.
 /// Respuesta esperada: `{"ok": true, "transcript": "…", "provider": "…"}`.
-typedef HermesTranscribeRequest = Future<Map<String, dynamic>> Function(
-  String dataUrl,
-  String mimeType,
-);
+typedef HermesTranscribeRequest =
+    Future<Map<String, dynamic>> Function(String dataUrl, String mimeType);
 
 /// Runtime de [WhisperSttEngine] cuyo paso de transcripción es el servidor
 /// Hermes. La grabación es la misma que la local (WAV 16 kHz mono) y ningún

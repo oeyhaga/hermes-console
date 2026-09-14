@@ -707,13 +707,11 @@ void main() {
         },
       ];
 
-      final compacted = chat.pruneCompactedTerminalRowsForTesting(
-        candidate,
-        const [
-          TranscriptMessageIdentity(messageId: 'newer-removed-user'),
-          TranscriptMessageIdentity(messageId: 'older-removed-user'),
-        ],
-      );
+      final compacted = chat
+          .pruneCompactedTerminalRowsForTesting(candidate, const [
+            TranscriptMessageIdentity(messageId: 'newer-removed-user'),
+            TranscriptMessageIdentity(messageId: 'older-removed-user'),
+          ]);
 
       expect(
         compacted.where(
@@ -816,19 +814,42 @@ void main() {
     },
   );
 
-  test('terminal REST replaces live user when its first durable anchor is that user', () async {
-    final chat = ActiveChat(
-      compressionFenceStore: testCompressionFenceStore(),
-      connection: _conn(id: 'conn-terminal-inflight-user'),
-      sessionId: 'sess-terminal-inflight-user',
-      sessionTitle: 'Terminal inflight replacement',
-      notifications: null,
-      onTerminal: () {},
-      storedMessageLoader: (_, _) async => const [
+  test(
+    'terminal REST replaces live user when its first durable anchor is that user',
+    () async {
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: _conn(id: 'conn-terminal-inflight-user'),
+        sessionId: 'sess-terminal-inflight-user',
+        sessionTitle: 'Terminal inflight replacement',
+        notifications: null,
+        onTerminal: () {},
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'older-anchor',
+            'role': 'assistant',
+            'content': 'older terminal',
+          },
+          {
+            'message_id': 'remote-durable-user',
+            'role': 'user',
+            'content': 'same remote turn',
+          },
+          {
+            'message_id': 'remote-durable-assistant',
+            'role': 'assistant',
+            'content': 'remote terminal',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+      chat.internalMessagesForTesting = const [
+        {'role': 'assistant', 'content': 'remote terminal', '_pipeline': true},
         {
-          'message_id': 'older-anchor',
-          'role': 'assistant',
-          'content': 'older terminal',
+          'role': 'user',
+          'content': 'same remote turn',
+          '_desktopSnapshotKind': 'inflight',
+          '_desktopSnapshotKey': 'user-inflight-runtime-remote',
         },
         {
           'message_id': 'remote-durable-user',
@@ -836,48 +857,28 @@ void main() {
           'content': 'same remote turn',
         },
         {
-          'message_id': 'remote-durable-assistant',
+          'message_id': 'older-anchor',
           'role': 'assistant',
-          'content': 'remote terminal',
+          'content': 'older terminal',
         },
-      ],
-    );
-    addTearDown(chat.dispose);
-    chat.internalMessagesForTesting = const [
-      {'role': 'assistant', 'content': 'remote terminal', '_pipeline': true},
-      {
-        'role': 'user',
-        'content': 'same remote turn',
-        '_desktopSnapshotKind': 'inflight',
-        '_desktopSnapshotKey': 'user-inflight-runtime-remote',
-      },
-      {
-        'message_id': 'remote-durable-user',
-        'role': 'user',
-        'content': 'same remote turn',
-      },
-      {
-        'message_id': 'older-anchor',
-        'role': 'assistant',
-        'content': 'older terminal',
-      },
-    ];
+      ];
 
-    await chat.loadMessages(passiveOnly: true);
+      await chat.loadMessages(passiveOnly: true);
 
-    expect(
-      chat.messages.where(
-        (message) => message['content'] == 'same remote turn',
-      ),
-      hasLength(1),
-    );
-    expect(
-      chat.messages.singleWhere(
-        (message) => message['content'] == 'same remote turn',
-      )['message_id'],
-      'remote-durable-user',
-    );
-  });
+      expect(
+        chat.messages.where(
+          (message) => message['content'] == 'same remote turn',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.singleWhere(
+          (message) => message['content'] == 'same remote turn',
+        )['message_id'],
+        'remote-durable-user',
+      );
+    },
+  );
 
   test(
     'message.complete removes live user already represented by durable tail',
@@ -939,84 +940,87 @@ void main() {
     },
   );
 
-  test('message.complete uses pre-submit boundary for physical terminal pair', () async {
-    final gateway = _AttachmentDesktopGateway();
-    final chat = ActiveChat(
-      compressionFenceStore: testCompressionFenceStore(),
-      connection: _conn(id: 'conn-terminal-physical-pair'),
-      sessionId: 'sess-terminal-physical-pair',
-      sessionTitle: 'Terminal physical pair',
-      notifications: null,
-      onTerminal: () {},
-      desktopGateway: gateway,
-      terminalReconcileBudget: Duration.zero,
-    )..smoothStreaming = false;
-    addTearDown(chat.dispose);
-    addTearDown(gateway.close);
-    chat.internalMessagesForTesting = const [
-      {
-        'message_id': 'prior-durable-assistant',
-        'role': 'assistant',
-        'content': 'prior terminal',
-      },
-      {
-        'message_id': 'prior-durable-user',
-        'role': 'user',
-        'content': 'prior prompt',
-      },
-    ];
-    expect(
-      await chat.send(
-        fullText: 'same remote turn',
-        model: 'hermes-agent',
-        history: const [],
-      ),
-      isTrue,
-    );
-    // Exact newest-first shape observed on the Pixel at terminal closure:
-    // live assistant + live user + current durable assistant/user + prior tail.
-    chat.internalMessagesForTesting = const [
-      {'role': 'assistant', 'content': '', '_pipeline': true},
-      {
-        'role': 'user',
-        'content': 'same remote turn',
-        '_desktopSnapshotKind': 'inflight',
-        '_desktopSnapshotKey': 'user-inflight-runtime-current',
-      },
-      {
-        'message_id': 'current-durable-assistant',
-        'role': 'assistant',
-        'content': 'current terminal',
-      },
-      {
-        'message_id': 'current-durable-user',
-        'role': 'user',
-        'content': 'same remote turn',
-      },
-      {
-        'message_id': 'prior-durable-assistant',
-        'role': 'assistant',
-        'content': 'prior terminal',
-      },
-      {
-        'message_id': 'prior-durable-user',
-        'role': 'user',
-        'content': 'prior prompt',
-      },
-    ];
-    final done = chat.changes.firstWhere(
-      (event) => event == ActiveChatEvent.done,
-    );
+  test(
+    'message.complete uses pre-submit boundary for physical terminal pair',
+    () async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: _conn(id: 'conn-terminal-physical-pair'),
+        sessionId: 'sess-terminal-physical-pair',
+        sessionTitle: 'Terminal physical pair',
+        notifications: null,
+        onTerminal: () {},
+        desktopGateway: gateway,
+        terminalReconcileBudget: Duration.zero,
+      )..smoothStreaming = false;
+      addTearDown(chat.dispose);
+      addTearDown(gateway.close);
+      chat.internalMessagesForTesting = const [
+        {
+          'message_id': 'prior-durable-assistant',
+          'role': 'assistant',
+          'content': 'prior terminal',
+        },
+        {
+          'message_id': 'prior-durable-user',
+          'role': 'user',
+          'content': 'prior prompt',
+        },
+      ];
+      expect(
+        await chat.send(
+          fullText: 'same remote turn',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      // Exact newest-first shape observed on the Pixel at terminal closure:
+      // live assistant + live user + current durable assistant/user + prior tail.
+      chat.internalMessagesForTesting = const [
+        {'role': 'assistant', 'content': '', '_pipeline': true},
+        {
+          'role': 'user',
+          'content': 'same remote turn',
+          '_desktopSnapshotKind': 'inflight',
+          '_desktopSnapshotKey': 'user-inflight-runtime-current',
+        },
+        {
+          'message_id': 'current-durable-assistant',
+          'role': 'assistant',
+          'content': 'current terminal',
+        },
+        {
+          'message_id': 'current-durable-user',
+          'role': 'user',
+          'content': 'same remote turn',
+        },
+        {
+          'message_id': 'prior-durable-assistant',
+          'role': 'assistant',
+          'content': 'prior terminal',
+        },
+        {
+          'message_id': 'prior-durable-user',
+          'role': 'user',
+          'content': 'prior prompt',
+        },
+      ];
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
 
-    gateway.emit('message.complete', const {'text': 'current terminal'});
-    await done.timeout(const Duration(seconds: 1));
+      gateway.emit('message.complete', const {'text': 'current terminal'});
+      await done.timeout(const Duration(seconds: 1));
 
-    final currentUsers = chat.messages.where(
-      (message) => message['content'] == 'same remote turn',
-    );
-    expect(currentUsers, hasLength(1));
-    expect(currentUsers.single['message_id'], 'current-durable-user');
-  });
+      final currentUsers = chat.messages.where(
+        (message) => message['content'] == 'same remote turn',
+      );
+      expect(currentUsers, hasLength(1));
+      expect(currentUsers.single['message_id'], 'current-durable-user');
+    },
+  );
 
   test(
     'passive observer settles physical terminal pair from busy-edge boundary',
@@ -1191,83 +1195,86 @@ void main() {
     },
   );
 
-  test('message.complete preserves legitimate equal resend across durable boundary', () async {
-    final gateway = _AttachmentDesktopGateway();
-    final chat = ActiveChat(
-      compressionFenceStore: testCompressionFenceStore(),
-      connection: _conn(id: 'conn-terminal-equal-resend'),
-      sessionId: 'sess-terminal-equal-resend',
-      sessionTitle: 'Terminal equal resend',
-      notifications: null,
-      onTerminal: () {},
-      desktopGateway: gateway,
-      terminalReconcileBudget: Duration.zero,
-    )..smoothStreaming = false;
-    addTearDown(chat.dispose);
-    addTearDown(gateway.close);
-    chat.internalMessagesForTesting = const [
-      {
-        'message_id': 'prior-durable-assistant',
-        'role': 'assistant',
-        'content': 'prior terminal',
-      },
-      {
-        'message_id': 'prior-durable-user',
-        'role': 'user',
-        'content': 'same remote turn',
-      },
-    ];
-    expect(
-      await chat.send(
-        fullText: 'same remote turn',
-        model: 'hermes-agent',
-        history: const [],
-      ),
-      isTrue,
-    );
-    chat.internalMessagesForTesting = const [
-      {'role': 'assistant', 'content': '', '_pipeline': true},
-      {
-        'role': 'user',
-        'content': 'same remote turn',
-        '_desktopSnapshotKind': 'inflight',
-        '_desktopSnapshotKey': 'user-inflight-runtime-current',
-      },
-      {
-        'message_id': 'current-durable-assistant',
-        'role': 'assistant',
-        'content': 'current terminal',
-      },
-      {
-        'message_id': 'current-durable-user',
-        'role': 'user',
-        'content': 'same remote turn',
-      },
-      {
-        'message_id': 'prior-durable-assistant',
-        'role': 'assistant',
-        'content': 'prior terminal',
-      },
-      {
-        'message_id': 'prior-durable-user',
-        'role': 'user',
-        'content': 'same remote turn',
-      },
-    ];
-    final done = chat.changes.firstWhere(
-      (event) => event == ActiveChatEvent.done,
-    );
+  test(
+    'message.complete preserves legitimate equal resend across durable boundary',
+    () async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: _conn(id: 'conn-terminal-equal-resend'),
+        sessionId: 'sess-terminal-equal-resend',
+        sessionTitle: 'Terminal equal resend',
+        notifications: null,
+        onTerminal: () {},
+        desktopGateway: gateway,
+        terminalReconcileBudget: Duration.zero,
+      )..smoothStreaming = false;
+      addTearDown(chat.dispose);
+      addTearDown(gateway.close);
+      chat.internalMessagesForTesting = const [
+        {
+          'message_id': 'prior-durable-assistant',
+          'role': 'assistant',
+          'content': 'prior terminal',
+        },
+        {
+          'message_id': 'prior-durable-user',
+          'role': 'user',
+          'content': 'same remote turn',
+        },
+      ];
+      expect(
+        await chat.send(
+          fullText: 'same remote turn',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      chat.internalMessagesForTesting = const [
+        {'role': 'assistant', 'content': '', '_pipeline': true},
+        {
+          'role': 'user',
+          'content': 'same remote turn',
+          '_desktopSnapshotKind': 'inflight',
+          '_desktopSnapshotKey': 'user-inflight-runtime-current',
+        },
+        {
+          'message_id': 'current-durable-assistant',
+          'role': 'assistant',
+          'content': 'current terminal',
+        },
+        {
+          'message_id': 'current-durable-user',
+          'role': 'user',
+          'content': 'same remote turn',
+        },
+        {
+          'message_id': 'prior-durable-assistant',
+          'role': 'assistant',
+          'content': 'prior terminal',
+        },
+        {
+          'message_id': 'prior-durable-user',
+          'role': 'user',
+          'content': 'same remote turn',
+        },
+      ];
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
 
-    gateway.emit('message.complete', const {'text': 'current terminal'});
-    await done.timeout(const Duration(seconds: 1));
+      gateway.emit('message.complete', const {'text': 'current terminal'});
+      await done.timeout(const Duration(seconds: 1));
 
-    expect(
-      chat.messages.where(
-        (message) => message['content'] == 'same remote turn',
-      ),
-      hasLength(2),
-    );
-  });
+      expect(
+        chat.messages.where(
+          (message) => message['content'] == 'same remote turn',
+        ),
+        hasLength(2),
+      );
+    },
+  );
 
   test('known-missing flag cannot cross a disallowed boundary capture', () {
     final chat = ActiveChat(
@@ -2005,8 +2012,9 @@ void main() {
           type: AttachmentType.image,
         );
         final delivery = ActiveTurnDelivery(
-          prepared: _attachmentTurn(first)
-              .copyWith(attachments: [first, second]),
+          prepared: _attachmentTurn(
+            first,
+          ).copyWith(attachments: [first, second]),
           store: _AttachmentMemoryOutbox(),
         );
         final gateway = _AttachmentDesktopGateway()
@@ -3204,8 +3212,9 @@ void main() {
           'Voy a revisar los archivos. No hay errores críticos.',
         );
         expect(
-          RegExp('Voy a revisar los archivos')
-              .allMatches(chat.assistantNarrationContent),
+          RegExp(
+            'Voy a revisar los archivos',
+          ).allMatches(chat.assistantNarrationContent),
           hasLength(1),
         );
         expect(chat.assistantNarrationContent, isNot(contains('shell')));
@@ -3224,101 +3233,104 @@ void main() {
       },
     );
 
-    test('message.complete warning preserves final and requests durable reconciliation once', () async {
-      final gateway = _AttachmentDesktopGateway();
-      final requests = <Uri>[];
-      final api = ApiClient(
-        baseUrl: 'http://127.0.0.1:8642',
-        apiKey: String.fromCharCodes(const [113, 97]),
-        httpClient: MockClient((request) async {
-          requests.add(request.url);
-          return http.Response(
-            jsonEncode({
-              'object': 'list',
-              'session_id': 'sess-warning-terminal',
-              'messages': const [
-                {
-                  'id': 'user-warning',
-                  'message_id': 'user-warning',
-                  'role': 'user',
-                  'content': 'Revisa',
+    test(
+      'message.complete warning preserves final and requests durable reconciliation once',
+      () async {
+        final gateway = _AttachmentDesktopGateway();
+        final requests = <Uri>[];
+        final api = ApiClient(
+          baseUrl: 'http://127.0.0.1:8642',
+          apiKey: String.fromCharCodes(const [113, 97]),
+          httpClient: MockClient((request) async {
+            requests.add(request.url);
+            return http.Response(
+              jsonEncode({
+                'object': 'list',
+                'session_id': 'sess-warning-terminal',
+                'messages': const [
+                  {
+                    'id': 'user-warning',
+                    'message_id': 'user-warning',
+                    'role': 'user',
+                    'content': 'Revisa',
+                  },
+                  {
+                    'id': 'assistant-warning',
+                    'message_id': 'assistant-warning',
+                    'role': 'assistant',
+                    'content': 'Resultado visible',
+                  },
+                ],
+                'pagination': const {
+                  'limit': 500,
+                  'offset': 0,
+                  'order': 'latest',
+                  'returned': 2,
                 },
-                {
-                  'id': 'assistant-warning',
-                  'message_id': 'assistant-warning',
-                  'role': 'assistant',
-                  'content': 'Resultado visible',
-                },
-              ],
-              'pagination': const {
-                'limit': 500,
-                'offset': 0,
-                'order': 'latest',
-                'returned': 2,
-              },
-            }),
-            200,
-            headers: const {'content-type': 'application/json'},
-          );
-        }),
-      );
-      var terminalCalls = 0;
-      final chat = ActiveChat(
-        compressionFenceStore: testCompressionFenceStore(),
-        connection: _conn(id: 'conn-warning-terminal'),
-        sessionId: 'sess-warning-terminal',
-        sessionTitle: 'Warning terminal',
-        notifications: null,
-        onTerminal: () => terminalCalls += 1,
-        desktopGateway: gateway,
-        api: api,
-        terminalReconcileBudget: const Duration(seconds: 1),
-      )..smoothStreaming = false;
-      addTearDown(chat.dispose);
-      addTearDown(gateway.close);
-      final events = <ActiveChatEvent>[];
-      final subscription = chat.changes.listen(events.add);
-      addTearDown(subscription.cancel);
+              }),
+              200,
+              headers: const {'content-type': 'application/json'},
+            );
+          }),
+        );
+        var terminalCalls = 0;
+        final chat = ActiveChat(
+          compressionFenceStore: testCompressionFenceStore(),
+          connection: _conn(id: 'conn-warning-terminal'),
+          sessionId: 'sess-warning-terminal',
+          sessionTitle: 'Warning terminal',
+          notifications: null,
+          onTerminal: () => terminalCalls += 1,
+          desktopGateway: gateway,
+          api: api,
+          terminalReconcileBudget: const Duration(seconds: 1),
+        )..smoothStreaming = false;
+        addTearDown(chat.dispose);
+        addTearDown(gateway.close);
+        final events = <ActiveChatEvent>[];
+        final subscription = chat.changes.listen(events.add);
+        addTearDown(subscription.cancel);
 
-      expect(
-        await chat.send(
-          fullText: 'Revisa',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-        isTrue,
-      );
-      final done = chat.changes.firstWhere(
-        (event) => event == ActiveChatEvent.done,
-      );
-      final terminalSettled = chat.changes.firstWhere(
-        (event) => event == ActiveChatEvent.messagesHydrated,
-      );
-      gateway.emit('message.complete', {
-        'text': 'Resultado visible',
-        'warning':
-            'History changed while turn was running; '
-            '${List.filled(40, 'history resynchronized').join(' ')}',
-      });
+        expect(
+          await chat.send(
+            fullText: 'Revisa',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+          isTrue,
+        );
+        final done = chat.changes.firstWhere(
+          (event) => event == ActiveChatEvent.done,
+        );
+        final terminalSettled = chat.changes.firstWhere(
+          (event) => event == ActiveChatEvent.messagesHydrated,
+        );
+        gateway.emit('message.complete', {
+          'text': 'Resultado visible',
+          'warning':
+              'History changed while turn was running; '
+              '${List.filled(40, 'history resynchronized').join(' ')}',
+        });
 
-      await done.timeout(const Duration(seconds: 2));
-      await terminalSettled.timeout(const Duration(seconds: 2));
+        await done.timeout(const Duration(seconds: 2));
+        await terminalSettled.timeout(const Duration(seconds: 2));
 
-      expect(chat.assistantContent, 'Resultado visible');
-      expect(events.where((event) => event.name == 'warning'), hasLength(1));
-      final warning = (chat as dynamic).takeTerminalWarning() as String?;
-      expect(warning, isNotNull);
-      expect(warning!.length, lessThanOrEqualTo(240));
-      expect(warning, contains('History changed'));
-      expect(terminalCalls, 1);
-      expect(requests, isNotEmpty);
-      expect(requests.first.queryParameters, containsPair('limit', '500'));
-      expect(
-        requests.first.queryParameters,
-        containsPair('include_compacted', 'true'),
-      );
-      expect(chat.messages.first['content'], 'Resultado visible');
-    });
+        expect(chat.assistantContent, 'Resultado visible');
+        expect(events.where((event) => event.name == 'warning'), hasLength(1));
+        final warning = (chat as dynamic).takeTerminalWarning() as String?;
+        expect(warning, isNotNull);
+        expect(warning!.length, lessThanOrEqualTo(240));
+        expect(warning, contains('History changed'));
+        expect(terminalCalls, 1);
+        expect(requests, isNotEmpty);
+        expect(requests.first.queryParameters, containsPair('limit', '500'));
+        expect(
+          requests.first.queryParameters,
+          containsPair('include_compacted', 'true'),
+        );
+        expect(chat.messages.first['content'], 'Resultado visible');
+      },
+    );
 
     test(
       'Desktop conserva final, interim y usuario en orden sin duplicados',
@@ -3639,71 +3651,78 @@ void main() {
       },
     );
 
-    test('send → tokens → run.completed refresca mensajes sin vigilancia diferida', () async {
-      final hits = <String>[];
-      final api = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
-        apiKey: 'test-key',
-        httpClient: _gateway(
-          hitLog: hits,
-          events: _sse([
-            {'event': 'message.delta', 'delta': 'Hola'},
-            {'event': 'message.delta', 'delta': ' mundo'},
-            {'event': 'run.completed', 'output': 'Hola mundo'},
-          ]),
-          finalMessages: [
-            {'role': 'user', 'content': 'di hola'},
-            {'role': 'assistant', 'content': 'Hola mundo'},
-          ],
-        ),
-      );
+    test(
+      'send → tokens → run.completed refresca mensajes sin vigilancia diferida',
+      () async {
+        final hits = <String>[];
+        final api = ApiClient(
+          baseUrl: 'http://hermes.local:8642',
+          apiKey: 'test-key',
+          httpClient: _gateway(
+            hitLog: hits,
+            events: _sse([
+              {'event': 'message.delta', 'delta': 'Hola'},
+              {'event': 'message.delta', 'delta': ' mundo'},
+              {'event': 'run.completed', 'output': 'Hola mundo'},
+            ]),
+            finalMessages: [
+              {'role': 'user', 'content': 'di hola'},
+              {'role': 'assistant', 'content': 'Hola mundo'},
+            ],
+          ),
+        );
 
-      final service = ActiveChatService(
-        compressionFenceStore: testCompressionFenceStore(),
-      );
-      final chat = service.attach(
-        connection: _conn(),
-        sessionId: 'sess-1',
-        sessionTitle: 'Saludo',
-        api: api,
-      );
+        final service = ActiveChatService(
+          compressionFenceStore: testCompressionFenceStore(),
+        );
+        final chat = service.attach(
+          connection: _conn(),
+          sessionId: 'sess-1',
+          sessionTitle: 'Saludo',
+          api: api,
+        );
 
-      final done = chat.changes.firstWhere((e) => e == ActiveChatEvent.done);
+        final done = chat.changes.firstWhere((e) => e == ActiveChatEvent.done);
 
-      chat.send(fullText: 'di hola', model: 'hermes-agent', history: const []);
+        chat.send(
+          fullText: 'di hola',
+          model: 'hermes-agent',
+          history: const [],
+        );
 
-      // En la candidata conservadora no se persiste vigilancia automática.
-      await Future<void>.delayed(const Duration(milliseconds: 30));
-      final prefsMid = await SharedPreferences.getInstance();
-      await prefsMid.reload();
-      expect(
-        prefsMid.getString(_kWatchKey),
-        anyOf(isNull, equals('[]')),
-        reason: '1.2.8 difiere la vigilancia automática',
-      );
+        // En la candidata conservadora no se persiste vigilancia automática.
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        final prefsMid = await SharedPreferences.getInstance();
+        await prefsMid.reload();
+        expect(
+          prefsMid.getString(_kWatchKey),
+          anyOf(isNull, equals('[]')),
+          reason: '1.2.8 difiere la vigilancia automática',
+        );
 
-      await done.timeout(const Duration(seconds: 5));
+        await done.timeout(const Duration(seconds: 5));
 
-      // Estado final: mensajes refrescados desde el servidor, pipeline cerrado.
-      expect(chat.state, ChatPipelineState.completed);
-      expect(chat.messages.first['role'], 'assistant');
-      expect(chat.messages.first['content'], 'Hola mundo');
-      expect(hits, contains('GET /api/sessions/sess-1/messages'));
+        // Estado final: mensajes refrescados desde el servidor, pipeline cerrado.
+        expect(chat.state, ChatPipelineState.completed);
+        expect(chat.messages.first['role'], 'assistant');
+        expect(chat.messages.first['content'], 'Hola mundo');
+        expect(hits, contains('GET /api/sessions/sess-1/messages'));
 
-      // La limpieza terminal (_onTerminal) ocurre ~800ms tras `done`; esperamos
-      // a que la vigilancia en 2º plano se retire (no debe acumular runs).
-      await Future<void>.delayed(const Duration(milliseconds: 1100));
-      final prefsEnd = await SharedPreferences.getInstance();
-      await prefsEnd.reload();
-      final raw = prefsEnd.getString(_kWatchKey) ?? '[]';
-      expect(
-        raw.contains('run_1'),
-        isFalse,
-        reason: 'al terminar debe dejar de vigilarse el run',
-      );
+        // La limpieza terminal (_onTerminal) ocurre ~800ms tras `done`; esperamos
+        // a que la vigilancia en 2º plano se retire (no debe acumular runs).
+        await Future<void>.delayed(const Duration(milliseconds: 1100));
+        final prefsEnd = await SharedPreferences.getInstance();
+        await prefsEnd.reload();
+        final raw = prefsEnd.getString(_kWatchKey) ?? '[]';
+        expect(
+          raw.contains('run_1'),
+          isFalse,
+          reason: 'al terminar debe dejar de vigilarse el run',
+        );
 
-      service.dispose();
-    });
+        service.dispose();
+      },
+    );
 
     test(
       'un 404 terminal transitorio conserva el chat y reconcilia después',
@@ -4124,144 +4143,154 @@ void main() {
       );
     }
 
-    test('RED-A consulta un tail assistant final y adopta un turno externo una vez', () async {
-      var serverMessages = <Map<String, dynamic>>[
-        {'message_id': 'user-1', 'role': 'user', 'content': 'Primer turno'},
-        {
-          'message_id': 'assistant-1',
-          'role': 'assistant',
-          'content': 'Primera respuesta',
-        },
-      ];
-      var reads = 0;
-      final chat = chatWithLoader((sessionId, profile) async {
-        expect(sessionId, 'sess-1');
-        expect(profile, 'default');
-        reads += 1;
-        return serverMessages;
-      });
-      addTearDown(chat.dispose);
+    test(
+      'RED-A consulta un tail assistant final y adopta un turno externo una vez',
+      () async {
+        var serverMessages = <Map<String, dynamic>>[
+          {'message_id': 'user-1', 'role': 'user', 'content': 'Primer turno'},
+          {
+            'message_id': 'assistant-1',
+            'role': 'assistant',
+            'content': 'Primera respuesta',
+          },
+        ];
+        var reads = 0;
+        final chat = chatWithLoader((sessionId, profile) async {
+          expect(sessionId, 'sess-1');
+          expect(profile, 'default');
+          reads += 1;
+          return serverMessages;
+        });
+        addTearDown(chat.dispose);
 
-      await chat.loadMessages(profile: 'default');
-      chat.state = ChatPipelineState.completed;
-      reads = 0;
-      final events = <ActiveChatEvent>[];
-      final subscription = chat.changes.listen(events.add);
-      addTearDown(subscription.cancel);
+        await chat.loadMessages(profile: 'default');
+        chat.state = ChatPipelineState.completed;
+        reads = 0;
+        final events = <ActiveChatEvent>[];
+        final subscription = chat.changes.listen(events.add);
+        addTearDown(subscription.cancel);
 
-      serverMessages = <Map<String, dynamic>>[
-        ...serverMessages,
-        {'message_id': 'user-2', 'role': 'user', 'content': 'Turno externo'},
-        {
-          'message_id': 'assistant-2',
-          'role': 'assistant',
-          'content': 'Respuesta externa',
-        },
-      ];
+        serverMessages = <Map<String, dynamic>>[
+          ...serverMessages,
+          {'message_id': 'user-2', 'role': 'user', 'content': 'Turno externo'},
+          {
+            'message_id': 'assistant-2',
+            'role': 'assistant',
+            'content': 'Respuesta externa',
+          },
+        ];
 
-      final changed = await chat.reconcileAfterResume();
-      await Future<void>.delayed(Duration.zero);
+        final changed = await chat.reconcileAfterResume();
+        await Future<void>.delayed(Duration.zero);
 
-      expect(changed, isTrue);
-      expect(reads, 1);
-      expect(
-        chat.messages.where((message) => message['content'] == 'Turno externo'),
-        hasLength(1),
-      );
-      expect(
-        chat.messages.where(
-          (message) => message['content'] == 'Respuesta externa',
-        ),
-        hasLength(1),
-      );
-      expect(
-        events.where((event) => event == ActiveChatEvent.messagesHydrated),
-        hasLength(1),
-      );
-    });
+        expect(changed, isTrue);
+        expect(reads, 1);
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'Turno externo',
+          ),
+          hasLength(1),
+        );
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'Respuesta externa',
+          ),
+          hasLength(1),
+        );
+        expect(
+          events.where((event) => event == ActiveChatEvent.messagesHydrated),
+          hasLength(1),
+        );
+      },
+    );
 
-    test('RED-D el servicio retenido converge como una instancia nueva y es idempotente', () async {
-      var serverMessages = <Map<String, dynamic>>[
-        {
-          'message_id': 'cached-user-1',
-          'role': 'user',
-          'content': 'Turno cacheado',
-        },
-        {
-          'message_id': 'cached-assistant-1',
-          'role': 'assistant',
-          'content': 'Respuesta cacheada',
-        },
-      ];
-      var retainedReads = 0;
-      Future<List<Map<String, dynamic>>> retainedLoader(
-        String sessionId,
-        String profile,
-      ) async {
-        retainedReads += 1;
-        return serverMessages;
-      }
+    test(
+      'RED-D el servicio retenido converge como una instancia nueva y es idempotente',
+      () async {
+        var serverMessages = <Map<String, dynamic>>[
+          {
+            'message_id': 'cached-user-1',
+            'role': 'user',
+            'content': 'Turno cacheado',
+          },
+          {
+            'message_id': 'cached-assistant-1',
+            'role': 'assistant',
+            'content': 'Respuesta cacheada',
+          },
+        ];
+        var retainedReads = 0;
+        Future<List<Map<String, dynamic>>> retainedLoader(
+          String sessionId,
+          String profile,
+        ) async {
+          retainedReads += 1;
+          return serverMessages;
+        }
 
-      ActiveChat attach(
-        ActiveChatService service,
-        StoredSessionMessageLoader loader,
-      ) => service.attach(
-        connection: _conn(id: 'resume-cache-connection'),
-        sessionId: 'resume-cache-session',
-        sessionTitle: 'Resume cache',
-        sessionProfile: 'default',
-        api: ApiClient(
-          baseUrl: 'http://hermes.local:8642',
-          apiKey: 'k',
-          httpClient: MockClient((_) async => http.Response('not found', 404)),
-        ),
-        storedMessageLoader: loader,
-        disableForegroundKeepAlive: true,
-      );
+        ActiveChat attach(
+          ActiveChatService service,
+          StoredSessionMessageLoader loader,
+        ) => service.attach(
+          connection: _conn(id: 'resume-cache-connection'),
+          sessionId: 'resume-cache-session',
+          sessionTitle: 'Resume cache',
+          sessionProfile: 'default',
+          api: ApiClient(
+            baseUrl: 'http://hermes.local:8642',
+            apiKey: 'k',
+            httpClient: MockClient(
+              (_) async => http.Response('not found', 404),
+            ),
+          ),
+          storedMessageLoader: loader,
+          disableForegroundKeepAlive: true,
+        );
 
-      final retainedService = ActiveChatService();
-      final freshService = ActiveChatService();
-      addTearDown(retainedService.dispose);
-      addTearDown(freshService.dispose);
-      final retained = attach(retainedService, retainedLoader);
-      await retained.loadMessages(profile: 'default');
-      retained.state = ChatPipelineState.completed;
-      retainedReads = 0;
+        final retainedService = ActiveChatService();
+        final freshService = ActiveChatService();
+        addTearDown(retainedService.dispose);
+        addTearDown(freshService.dispose);
+        final retained = attach(retainedService, retainedLoader);
+        await retained.loadMessages(profile: 'default');
+        retained.state = ChatPipelineState.completed;
+        retainedReads = 0;
 
-      serverMessages = <Map<String, dynamic>>[
-        ...serverMessages,
-        {
-          'message_id': 'cached-user-2',
-          'role': 'user',
-          'content': 'Turno durable externo',
-        },
-        {
-          'message_id': 'cached-assistant-2',
-          'role': 'assistant',
-          'content': 'Terminal durable externo',
-        },
-      ];
-      final fresh = attach(freshService, (_, _) async => serverMessages);
-      await fresh.loadMessages(profile: 'default');
+        serverMessages = <Map<String, dynamic>>[
+          ...serverMessages,
+          {
+            'message_id': 'cached-user-2',
+            'role': 'user',
+            'content': 'Turno durable externo',
+          },
+          {
+            'message_id': 'cached-assistant-2',
+            'role': 'assistant',
+            'content': 'Terminal durable externo',
+          },
+        ];
+        final fresh = attach(freshService, (_, _) async => serverMessages);
+        await fresh.loadMessages(profile: 'default');
 
-      await retainedService.reconcileAfterResume();
+        await retainedService.reconcileAfterResume();
 
-      final reattached = attach(retainedService, retainedLoader);
-      expect(reattached, same(retained));
-      expect(retained.messages, fresh.messages);
-      expect(retainedReads, 1);
+        final reattached = attach(retainedService, retainedLoader);
+        expect(reattached, same(retained));
+        expect(retained.messages, fresh.messages);
+        expect(retainedReads, 1);
 
-      await retainedService.reconcileAfterResume();
+        await retainedService.reconcileAfterResume();
 
-      expect(retainedReads, 2);
-      expect(retained.messages, fresh.messages);
-      expect(
-        retained.messages.where(
-          (message) => message['content'] == 'Terminal durable externo',
-        ),
-        hasLength(1),
-      );
-    });
+        expect(retainedReads, 2);
+        expect(retained.messages, fresh.messages);
+        expect(
+          retained.messages.where(
+            (message) => message['content'] == 'Terminal durable externo',
+          ),
+          hasLength(1),
+        );
+      },
+    );
 
     test('re-sincroniza un turno a medias (placeholder sin cerrar)', () async {
       final chat = chatWith([
@@ -4787,18 +4816,15 @@ void main() {
     );
   });
 
-  test(
-    'redacta errores de socket persistidos antes de proyectarlos en chat',
-    () {
-      const raw =
-          'ClientException with SocketException: Connection failed '
-          '(OS Error: Network is unreachable, errno = 101)';
-      expect(
-        activeChatStoredErrorUiMessage(raw),
-        'Se perdió la conexión con Hermes. El mensaje no se confirmó; revisa el borrador y reintenta.',
-      );
-    },
-  );
+  test('redacta errores de socket persistidos antes de proyectarlos en chat', () {
+    const raw =
+        'ClientException with SocketException: Connection failed '
+        '(OS Error: Network is unreachable, errno = 101)';
+    expect(
+      activeChatStoredErrorUiMessage(raw),
+      'Se perdió la conexión con Hermes. El mensaje no se confirmó; revisa el borrador y reintenta.',
+    );
+  });
 
   group('activeChatSteerFailureIsSafeToQueue', () {
     test('solo encola rechazos RPC que prueban que steering no existe', () {

@@ -96,12 +96,15 @@ void main() {
   });
 
   group('classifyChatError — "modelo" español no debe clasificar como model', () {
-    test('"modelo" en mensaje local no activa model si hay señal local primero', () {
-      // Caso que fallaba antes del fix: "modelo" contenía "model" en inglés.
-      const msg =
-          'El agente local tardó demasiado. El modelo puede estar cargándose.';
-      expect(classifyChatError(msg), ChatErrorKind.localColdStart);
-    });
+    test(
+      '"modelo" en mensaje local no activa model si hay señal local primero',
+      () {
+        // Caso que fallaba antes del fix: "modelo" contenía "model" en inglés.
+        const msg =
+            'El agente local tardó demasiado. El modelo puede estar cargándose.';
+        expect(classifyChatError(msg), ChatErrorKind.localColdStart);
+      },
+    );
 
     test('"modelo" sin señal local → model (comportamiento esperado)', () {
       // Un mensaje genérico sobre el modelo sin señal local sí debe ir a model.
@@ -149,12 +152,15 @@ void main() {
   });
 
   group('classifyChatError — firstTokenTimeout (remoto)', () {
-    test('prefijo firstTokenTimeout emitido por active_chat_service → firstTokenTimeout', () {
-      const msg =
-          'firstTokenTimeout: El servidor conectó pero no empezó a generar '
-          'respuesta en 90 s. El modelo puede estar cargando.';
-      expect(classifyChatError(msg), ChatErrorKind.firstTokenTimeout);
-    });
+    test(
+      'prefijo firstTokenTimeout emitido por active_chat_service → firstTokenTimeout',
+      () {
+        const msg =
+            'firstTokenTimeout: El servidor conectó pero no empezó a generar '
+            'respuesta en 90 s. El modelo puede estar cargando.';
+        expect(classifyChatError(msg), ChatErrorKind.firstTokenTimeout);
+      },
+    );
   });
 
   group('classifyChatError — searchToolUnavailable', () {

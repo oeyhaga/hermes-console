@@ -334,55 +334,62 @@ void main() {
     );
   });
 
-  test('legacy batch completion without delegation id closes its only durable batch', () {
-    final messagesNewestFirst = <Map<String, dynamic>>[
-      {
-        'message_id': 'legacy-completion',
-        'role': 'user',
-        'display_kind': 'async_delegation_complete',
-        'display_metadata': jsonEncode({
-          'task_count': 3,
-          'completed_count': 3,
-          'failed_count': 0,
-        }),
-        'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_12345678]',
-      },
-      {
-        'message_id': 'legacy-result',
-        'role': 'tool',
-        'tool_call_id': 'call-legacy',
-        'tool_name': 'delegate_task',
-        'content': jsonEncode({
-          'status': 'dispatched',
-          'delegation_id': 'deleg_12345678',
-          'subagent_ids': ['sa-legacy-one', 'sa-legacy-two', 'sa-legacy-three'],
-        }),
-      },
-      {
-        'message_id': 'legacy-assistant',
-        'role': 'assistant',
-        'content': '',
-        'tool_calls': [
-          {
-            'id': 'call-legacy',
-            'function': {'name': 'delegate_task', 'arguments': '{}'},
-          },
-        ],
-      },
-      {'message_id': 'legacy-user', 'role': 'user', 'content': 'Haz tres.'},
-    ];
+  test(
+    'legacy batch completion without delegation id closes its only durable batch',
+    () {
+      final messagesNewestFirst = <Map<String, dynamic>>[
+        {
+          'message_id': 'legacy-completion',
+          'role': 'user',
+          'display_kind': 'async_delegation_complete',
+          'display_metadata': jsonEncode({
+            'task_count': 3,
+            'completed_count': 3,
+            'failed_count': 0,
+          }),
+          'content': '[ASYNC DELEGATION BATCH COMPLETE — deleg_12345678]',
+        },
+        {
+          'message_id': 'legacy-result',
+          'role': 'tool',
+          'tool_call_id': 'call-legacy',
+          'tool_name': 'delegate_task',
+          'content': jsonEncode({
+            'status': 'dispatched',
+            'delegation_id': 'deleg_12345678',
+            'subagent_ids': [
+              'sa-legacy-one',
+              'sa-legacy-two',
+              'sa-legacy-three',
+            ],
+          }),
+        },
+        {
+          'message_id': 'legacy-assistant',
+          'role': 'assistant',
+          'content': '',
+          'tool_calls': [
+            {
+              'id': 'call-legacy',
+              'function': {'name': 'delegate_task', 'arguments': '{}'},
+            },
+          ],
+        },
+        {'message_id': 'legacy-user', 'role': 'user', 'content': 'Haz tres.'},
+      ];
 
-    final projection = projectSubagentsFromTranscript(
-      messagesNewestFirst: messagesNewestFirst,
-      scope: scope,
-    );
+      final projection = projectSubagentsFromTranscript(
+        messagesNewestFirst: messagesNewestFirst,
+        scope: scope,
+      );
 
-    expect(projection.state?.activities, hasLength(3));
-    expect(
-      projection.state?.activities.map((activity) => activity.phase),
-      everyElement(SubagentActivityPhase.completed),
-    );
-  });
+      expect(projection.state?.activities, hasLength(3));
+      expect(
+        projection.state?.activities.map((activity) => activity.phase),
+        everyElement(SubagentActivityPhase.completed),
+      );
+    },
+  );
 
   test('partial batch failure never attributes the failure to every child', () {
     final messagesNewestFirst = <Map<String, dynamic>>[

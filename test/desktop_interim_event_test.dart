@@ -551,26 +551,29 @@ void main() {
       );
     });
 
-    test('un final idéntico sin response_previewed se asienta en el mismo segmento', () async {
-      final fixture = await _startChat();
-      addTearDown(fixture.dispose);
+    test(
+      'un final idéntico sin response_previewed se asienta en el mismo segmento',
+      () async {
+        final fixture = await _startChat();
+        addTearDown(fixture.dispose);
 
-      await _emitAndSettle(fixture, 'message.interim', const {
-        'text': 'Resultado listo.',
-      });
-      final interimKey = fixture.chat.internalMessagesForTesting.firstWhere(
-        (message) => message['_desktopInterim'] == true,
-      )['_desktopInterimKey'];
-      await _complete(fixture, const {'text': 'Resultado listo.'});
+        await _emitAndSettle(fixture, 'message.interim', const {
+          'text': 'Resultado listo.',
+        });
+        final interimKey = fixture.chat.internalMessagesForTesting.firstWhere(
+          (message) => message['_desktopInterim'] == true,
+        )['_desktopInterimKey'];
+        await _complete(fixture, const {'text': 'Resultado listo.'});
 
-      // Paridad con Desktop (#63679): continuidad de prefijo basta para
-      // saber que es el MISMO mensaje; duplicarlo en una segunda burbuja
-      // pintaba el parcial y el final limpio a la vez.
-      final assistants = _internalAssistantMessages(fixture.chat);
-      expect(_nonEmptyAssistantTexts(fixture.chat), ['Resultado listo.']);
-      expect(assistants, hasLength(1));
-      expect(assistants.single['_desktopInterimKey'], interimKey);
-    });
+        // Paridad con Desktop (#63679): continuidad de prefijo basta para
+        // saber que es el MISMO mensaje; duplicarlo en una segunda burbuja
+        // pintaba el parcial y el final limpio a la vez.
+        final assistants = _internalAssistantMessages(fixture.chat);
+        expect(_nonEmptyAssistantTexts(fixture.chat), ['Resultado listo.']);
+        expect(assistants, hasLength(1));
+        expect(assistants.single['_desktopInterimKey'], interimKey);
+      },
+    );
 
     test(
       'sin response_previewed asienta un final que continúa el interim',

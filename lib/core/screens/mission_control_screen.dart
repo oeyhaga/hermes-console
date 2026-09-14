@@ -914,8 +914,9 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         '${agent.profile.name}: $error',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(copy.botRosterUpdateFailed)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(copy.botRosterUpdateFailed)));
     }
   }
 
@@ -1324,8 +1325,9 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     }
     if (mounted) {
       final copy = MissionControlCopy.of(context);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(copy.roomOperationPending)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(copy.roomOperationPending)));
     }
     return true;
   }
@@ -1899,8 +1901,9 @@ class _MissionControlScreenState extends State<MissionControlScreen>
               onPressed: () => _load(refresh: true),
               icon: const Icon(Icons.refresh_rounded),
               style: IconButton.styleFrom(
-                backgroundColor: Theme.of(context).hermes.surfaceVariant
-                    .withValues(alpha: 0.44),
+                backgroundColor: Theme.of(
+                  context,
+                ).hermes.surfaceVariant.withValues(alpha: 0.44),
                 minimumSize: const Size.square(48),
                 shape: const CircleBorder(),
               ),
@@ -2233,8 +2236,10 @@ class _WorkspaceSheet extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 14),
             child: Text(
               copy.workspaces,
-              style: Theme.of(context).textTheme.titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -0.25),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.25,
+              ),
             ),
           ),
           Material(
@@ -2596,8 +2601,9 @@ class _BotsTabState extends State<_BotsTab> {
           left.profile.botPinned ? 1 : 0,
         );
         if (byPinned != 0) return byPinned;
-        final byActivity = _missionBotActivityMs(right)
-            .compareTo(_missionBotActivityMs(left));
+        final byActivity = _missionBotActivityMs(
+          right,
+        ).compareTo(_missionBotActivityMs(left));
         return byActivity != 0
             ? byActivity
             : left.profile.name.compareTo(right.profile.name);
@@ -2633,12 +2639,14 @@ class _BotsTabState extends State<_BotsTab> {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).hermes.warning
-                      .withValues(alpha: 0.07),
+                  color: Theme.of(
+                    context,
+                  ).hermes.warning.withValues(alpha: 0.07),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: Theme.of(context).hermes.warning
-                        .withValues(alpha: 0.24),
+                    color: Theme.of(
+                      context,
+                    ).hermes.warning.withValues(alpha: 0.24),
                   ),
                 ),
                 child: Row(
@@ -3110,8 +3118,9 @@ class _RoomDetailSection extends StatelessWidget {
     children: [
       Text(
         title,
-        style: Theme.of(context).textTheme.titleMedium
-            ?.copyWith(fontWeight: FontWeight.w700),
+        style: Theme.of(
+          context,
+        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
       ),
       const SizedBox(height: 8),
       child,
@@ -3814,8 +3823,9 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
                   alignment: AlignmentDirectional.centerStart,
                   child: Text(
                     widget.copy.roomConversation,
-                    style: Theme.of(context).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ),
@@ -3979,8 +3989,9 @@ class _HostedRoomCard extends StatelessWidget {
                     decoration: BoxDecoration(
                       border: Border(
                         bottom: BorderSide(
-                          color: Theme.of(context).hermes.divider
-                              .withValues(alpha: 0.46),
+                          color: Theme.of(
+                            context,
+                          ).hermes.divider.withValues(alpha: 0.46),
                         ),
                       ),
                     ),
@@ -4029,8 +4040,9 @@ class _HostedRoomCard extends StatelessWidget {
                             key: ValueKey(
                               'mission-hosted-more-${_indexFromKey()}',
                             ),
-                            tooltip: MaterialLocalizations.of(context)
-                                .moreButtonTooltip,
+                            tooltip: MaterialLocalizations.of(
+                              context,
+                            ).moreButtonTooltip,
                             constraints: const BoxConstraints(
                               minWidth: 48,
                               minHeight: 48,
@@ -4109,9 +4121,9 @@ class _GlobalWorkTray extends StatelessWidget {
             .where((item) => item.destination is TaskDestination)
             .toList(growable: false)
           ..sort(
-            (left, right) =>
-                _globalTaskPriority(left.attention)
-                    .compareTo(_globalTaskPriority(right.attention)),
+            (left, right) => _globalTaskPriority(
+              left.attention,
+            ).compareTo(_globalTaskPriority(right.attention)),
           );
     final boardItems = items
         .where((item) => item.destination is BoardDestination)
@@ -5525,9 +5537,9 @@ class _RoomEditorState extends State<_RoomEditor> {
                                     profile.name.toLowerCase().contains(
                                       query,
                                     ) ||
-                                    _displayName(profile)
-                                        .toLowerCase()
-                                        .contains(query) ||
+                                    _displayName(
+                                      profile,
+                                    ).toLowerCase().contains(query) ||
                                     profile.description.toLowerCase().contains(
                                       query,
                                     ),
@@ -5896,8 +5908,9 @@ class _AgentDetail extends StatelessWidget {
           const SizedBox(height: 16),
           Text(
             copy.assignedTasks(assignedTasks.length),
-            style: Theme.of(context).textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w700),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),
           for (final task in assignedTasks)

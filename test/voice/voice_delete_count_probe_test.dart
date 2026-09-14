@@ -45,7 +45,9 @@ class Playback implements TtsAudioPlayback {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   test('adversarial count cleanup attempts on one worker WAV', () async {
-    final dir = await Directory.systemTemp.createTemp('adversarial-delete-count-');
+    final dir = await Directory.systemTemp.createTemp(
+      'adversarial-delete-count-',
+    );
     final f = File('${dir.path}/owned.wav')..writeAsBytesSync([82, 73, 70, 70]);
     final tracked = CountedFile(f);
     final e = OnDeviceNeuralTtsEngine(

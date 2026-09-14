@@ -650,39 +650,42 @@ void main() {
     expect(secureStore.containsKey(ordinaryKey), isFalse);
   });
 
-  test('solo limpia la copia privada cuando desaparece el último owner', () async {
-    final prefs = await SharedPreferences.getInstance();
-    final cleaned = <String>[];
-    final store = ChatDraftStore(
-      prefs,
-      deletePrivateCopy: (attachment) async {
-        cleaned.add(attachment.localId);
-        return true;
-      },
-    );
-    final file = File(
-      '${Directory.systemTemp.path}/hermes-shared-${DateTime.now().microsecondsSinceEpoch}.pdf',
-    );
-    await file.writeAsBytes([1]);
-    addTearDown(() async {
-      if (await file.exists()) await file.delete();
-    });
-    final shared = AttachmentDraft(
-      localId: 'shared-owner',
-      type: AttachmentType.document,
-      name: 'shared.pdf',
-      mimeType: 'application/pdf',
-      sizeBytes: 1,
-      localPath: file.path,
-    );
-    await store.save('conn-a', 'session-a', 'a', [shared]);
-    await store.save('conn-a', 'session-b', 'b', [shared]);
+  test(
+    'solo limpia la copia privada cuando desaparece el último owner',
+    () async {
+      final prefs = await SharedPreferences.getInstance();
+      final cleaned = <String>[];
+      final store = ChatDraftStore(
+        prefs,
+        deletePrivateCopy: (attachment) async {
+          cleaned.add(attachment.localId);
+          return true;
+        },
+      );
+      final file = File(
+        '${Directory.systemTemp.path}/hermes-shared-${DateTime.now().microsecondsSinceEpoch}.pdf',
+      );
+      await file.writeAsBytes([1]);
+      addTearDown(() async {
+        if (await file.exists()) await file.delete();
+      });
+      final shared = AttachmentDraft(
+        localId: 'shared-owner',
+        type: AttachmentType.document,
+        name: 'shared.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 1,
+        localPath: file.path,
+      );
+      await store.save('conn-a', 'session-a', 'a', [shared]);
+      await store.save('conn-a', 'session-b', 'b', [shared]);
 
-    await store.clear('conn-a', 'session-a');
-    expect(cleaned, isEmpty);
-    await store.clear('conn-a', 'session-b');
-    expect(cleaned, ['shared-owner']);
-  });
+      await store.clear('conn-a', 'session-a');
+      expect(cleaned, isEmpty);
+      await store.clear('conn-a', 'session-b');
+      expect(cleaned, ['shared-owner']);
+    },
+  );
 
   test('un tombstone de outbox no conserva la copia retirada', () async {
     final prefs = await SharedPreferences.getInstance();
@@ -718,112 +721,119 @@ void main() {
     expect(cleaned, ['removed-cross-store']);
   });
 
-  test('REGRESSION_LIVE_OUTBOX_RACE: un save ya invocado conserva la copia cuando '
-      'clear se intercala antes de que persista', () async {
-    TurnOutboxStore.resetSerializationForTesting();
-    final outboxWriteStarted = Completer<void>();
-    final releaseOutboxWrite = Completer<void>();
-    final draftKeyDeleted = Completer<void>();
-    final draftCopyDeleted = Completer<void>();
-    TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-          const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
-          (call) async {
-            final args =
-                (call.arguments as Map?)?.cast<String, dynamic>() ?? {};
-            switch (call.method) {
-              case 'write':
-                final value = args['value'] as String;
-                if (!outboxWriteStarted.isCompleted &&
-                    args['key'] == 'chat_turn_outbox_v1' &&
-                    value.contains('turn-adversarial-live-race')) {
-                  outboxWriteStarted.complete();
-                  await releaseOutboxWrite.future;
-                }
-                secureStore[args['key'] as String] = value;
-                return null;
-              case 'read':
-                return secureStore[args['key'] as String];
-              case 'delete':
-                final key = args['key'] as String;
-                secureStore.remove(key);
-                if (key.startsWith('chat_draft_v3.')) {
-                  draftKeyDeleted.complete();
-                }
-                return null;
-              case 'readAll':
-                return Map<String, String>.from(secureStore);
-            }
-            return null;
-          },
-        );
-    final prefs = await SharedPreferences.getInstance();
-    final drafts = ChatDraftStore(
-      prefs,
-      deletePrivateCopy: (item) async {
-        final managed = File(item.localPath);
-        if (await managed.exists()) await managed.delete();
-        draftCopyDeleted.complete();
-        return true;
-      },
-    );
-    final outbox = TurnOutboxStore();
-    final file = File(
-      '${Directory.systemTemp.path}/adversarial-live-race-${DateTime.now().microsecondsSinceEpoch}.txt',
-    );
-    await file.writeAsString('privado');
-    addTearDown(() async {
-      if (await file.exists()) await file.delete();
-    });
-    final attachment = AttachmentDraft(
-      localId: 'adversarial-live-race',
-      type: AttachmentType.document,
-      name: 'adversarial-live-race.txt',
-      mimeType: 'text/plain',
-      sizeBytes: 7,
-      localPath: file.path,
-    );
-    await drafts.save('conn-a', 'session-a', 'borrador', [attachment]);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final saving = outbox.save(
-      PreparedTurn(
-        connectionId: 'conn-a',
-        sessionId: 'session-a',
-        clientTurnId: 'turn-adversarial-live-race',
-        createdAtMs: now,
-        updatedAtMs: now,
-        text: 'mensaje queued',
-        attachments: [attachment],
-        model: 'modelo',
+  test(
+    'REGRESSION_LIVE_OUTBOX_RACE: un save ya invocado conserva la copia cuando '
+    'clear se intercala antes de que persista',
+    () async {
+      TurnOutboxStore.resetSerializationForTesting();
+      final outboxWriteStarted = Completer<void>();
+      final releaseOutboxWrite = Completer<void>();
+      final draftKeyDeleted = Completer<void>();
+      final draftCopyDeleted = Completer<void>();
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('plugins.it_nomads.com/flutter_secure_storage'),
+            (call) async {
+              final args =
+                  (call.arguments as Map?)?.cast<String, dynamic>() ?? {};
+              switch (call.method) {
+                case 'write':
+                  final value = args['value'] as String;
+                  if (!outboxWriteStarted.isCompleted &&
+                      args['key'] == 'chat_turn_outbox_v1' &&
+                      value.contains('turn-adversarial-live-race')) {
+                    outboxWriteStarted.complete();
+                    await releaseOutboxWrite.future;
+                  }
+                  secureStore[args['key'] as String] = value;
+                  return null;
+                case 'read':
+                  return secureStore[args['key'] as String];
+                case 'delete':
+                  final key = args['key'] as String;
+                  secureStore.remove(key);
+                  if (key.startsWith('chat_draft_v3.')) {
+                    draftKeyDeleted.complete();
+                  }
+                  return null;
+                case 'readAll':
+                  return Map<String, String>.from(secureStore);
+              }
+              return null;
+            },
+          );
+      final prefs = await SharedPreferences.getInstance();
+      final drafts = ChatDraftStore(
+        prefs,
+        deletePrivateCopy: (item) async {
+          final managed = File(item.localPath);
+          if (await managed.exists()) await managed.delete();
+          draftCopyDeleted.complete();
+          return true;
+        },
+      );
+      final outbox = TurnOutboxStore();
+      final file = File(
+        '${Directory.systemTemp.path}/adversarial-live-race-${DateTime.now().microsecondsSinceEpoch}.txt',
+      );
+      await file.writeAsString('privado');
+      addTearDown(() async {
+        if (await file.exists()) await file.delete();
+      });
+      final attachment = AttachmentDraft(
+        localId: 'adversarial-live-race',
+        type: AttachmentType.document,
+        name: 'adversarial-live-race.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 7,
+        localPath: file.path,
+      );
+      await drafts.save('conn-a', 'session-a', 'borrador', [attachment]);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final saving = outbox.save(
+        PreparedTurn(
+          connectionId: 'conn-a',
+          sessionId: 'session-a',
+          clientTurnId: 'turn-adversarial-live-race',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: 'mensaje queued',
+          attachments: [attachment],
+          model: 'modelo',
+          profile: 'default',
+          queued: true,
+        ),
+      );
+      await outboxWriteStarted.future;
+
+      final clearing = drafts.clear('conn-a', 'session-a');
+      await draftKeyDeleted.future;
+      // Drenaje determinista y acotado del event loop, con el write de la
+      // outbox todavía bloqueado. Si no existiera el coordinador de ownership,
+      // el clear tendría vía libre para que su readAll de inventario alcanzara
+      // el borrado de la copia privada antes de liberar el write.
+      for (
+        var round = 0;
+        round < 64 && !draftCopyDeleted.isCompleted;
+        round++
+      ) {
+        await pumpEventQueue(times: 1);
+      }
+      expect(draftCopyDeleted.isCompleted, isFalse);
+
+      releaseOutboxWrite.complete();
+      await saving;
+      await clearing;
+      final restored = await outbox.loadForChat(
+        'conn-a',
+        'session-a',
         profile: 'default',
-        queued: true,
-      ),
-    );
-    await outboxWriteStarted.future;
-
-    final clearing = drafts.clear('conn-a', 'session-a');
-    await draftKeyDeleted.future;
-    // Drenaje determinista y acotado del event loop, con el write de la
-    // outbox todavía bloqueado. Si no existiera el coordinador de ownership,
-    // el clear tendría vía libre para que su readAll de inventario alcanzara
-    // el borrado de la copia privada antes de liberar el write.
-    for (var round = 0; round < 64 && !draftCopyDeleted.isCompleted; round++) {
-      await pumpEventQueue(times: 1);
-    }
-    expect(draftCopyDeleted.isCompleted, isFalse);
-
-    releaseOutboxWrite.complete();
-    await saving;
-    await clearing;
-    final restored = await outbox.loadForChat(
-      'conn-a',
-      'session-a',
-      profile: 'default',
-    );
-    expect(restored, isNotNull);
-    expect(restored!.attachments.single.localPath, file.path);
-    expect(await file.exists(), isTrue);
-  });
+      );
+      expect(restored, isNotNull);
+      expect(restored!.attachments.single.localPath, file.path);
+      expect(await file.exists(), isTrue);
+    },
+  );
 
   test('save de draft admitido antes de clear no puede resucitarlo', () async {
     final drafts = ChatDraftStore(await SharedPreferences.getInstance());
@@ -971,63 +981,68 @@ void main() {
     );
   });
 
-  test('REGRESSION_LIVE_OUTBOX_ATTACHMENT: limpiar el draft no borra la copia viva '
-      'de un turno queued de la outbox', () async {
-    TurnOutboxStore.resetSerializationForTesting();
-    final prefs = await SharedPreferences.getInstance();
-    final store = ChatDraftStore(
-      prefs,
-      deletePrivateCopy: (item) async {
-        final managed = File(item.localPath);
-        if (await managed.exists()) await managed.delete();
-        return true;
-      },
-    );
-    final outbox = TurnOutboxStore();
-    final file = File(
-      '${Directory.systemTemp.path}/adversarial-live-outbox-${DateTime.now().microsecondsSinceEpoch}.txt',
-    );
-    await file.writeAsString('privado');
-    addTearDown(() async {
-      if (await file.exists()) await file.delete();
-    });
-    final attachment = AttachmentDraft(
-      localId: 'adversarial-live-shared',
-      type: AttachmentType.document,
-      name: 'adversarial-live.txt',
-      mimeType: 'text/plain',
-      sizeBytes: 7,
-      localPath: file.path,
-    );
-    await store.save('conn-a', 'session-a', 'borrador a medias', [attachment]);
-    final now = DateTime.now().millisecondsSinceEpoch;
-    await outbox.save(
-      PreparedTurn(
-        connectionId: 'conn-a',
-        sessionId: 'session-a',
-        clientTurnId: 'turn-adversarial-live',
-        createdAtMs: now,
-        updatedAtMs: now,
-        text: 'mensaje queued',
-        attachments: [attachment],
-        model: 'modelo',
+  test(
+    'REGRESSION_LIVE_OUTBOX_ATTACHMENT: limpiar el draft no borra la copia viva '
+    'de un turno queued de la outbox',
+    () async {
+      TurnOutboxStore.resetSerializationForTesting();
+      final prefs = await SharedPreferences.getInstance();
+      final store = ChatDraftStore(
+        prefs,
+        deletePrivateCopy: (item) async {
+          final managed = File(item.localPath);
+          if (await managed.exists()) await managed.delete();
+          return true;
+        },
+      );
+      final outbox = TurnOutboxStore();
+      final file = File(
+        '${Directory.systemTemp.path}/adversarial-live-outbox-${DateTime.now().microsecondsSinceEpoch}.txt',
+      );
+      await file.writeAsString('privado');
+      addTearDown(() async {
+        if (await file.exists()) await file.delete();
+      });
+      final attachment = AttachmentDraft(
+        localId: 'adversarial-live-shared',
+        type: AttachmentType.document,
+        name: 'adversarial-live.txt',
+        mimeType: 'text/plain',
+        sizeBytes: 7,
+        localPath: file.path,
+      );
+      await store.save('conn-a', 'session-a', 'borrador a medias', [
+        attachment,
+      ]);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await outbox.save(
+        PreparedTurn(
+          connectionId: 'conn-a',
+          sessionId: 'session-a',
+          clientTurnId: 'turn-adversarial-live',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: 'mensaje queued',
+          attachments: [attachment],
+          model: 'modelo',
+          profile: 'default',
+          queued: true,
+        ),
+      );
+
+      await store.clear('conn-a', 'session-a');
+
+      expect(await file.exists(), isTrue);
+      final restored = await outbox.loadForChat(
+        'conn-a',
+        'session-a',
         profile: 'default',
-        queued: true,
-      ),
-    );
-
-    await store.clear('conn-a', 'session-a');
-
-    expect(await file.exists(), isTrue);
-    final restored = await outbox.loadForChat(
-      'conn-a',
-      'session-a',
-      profile: 'default',
-    );
-    expect(restored, isNotNull);
-    expect(restored!.attachments.single.localId, 'adversarial-live-shared');
-    expect(restored.attachments.single.localPath, file.path);
-  });
+      );
+      expect(restored, isNotNull);
+      expect(restored!.attachments.single.localId, 'adversarial-live-shared');
+      expect(restored.attachments.single.localPath, file.path);
+    },
+  );
 
   test('REGRESSION_LIVE_OUTBOX_ATTACHMENT: un tombstone removed de la outbox no '
       'retiene la copia privada', () async {
@@ -1842,9 +1857,9 @@ void main() {
     expect(reopened.messages, hasLength(120));
     expect(reopened.messages.first['content'], 'mensaje 31');
     expect(reopened.messages.last['content'], 'mensaje 150');
-    final envelope = jsonDecode(
-      secureStore[_transcriptKey('conn-count', 'session-count')]!,
-    ) as Map<String, dynamic>;
+    final envelope =
+        jsonDecode(secureStore[_transcriptKey('conn-count', 'session-count')]!)
+            as Map<String, dynamic>;
     expect(envelope['older_history_truncated'], isTrue);
   });
 
@@ -2043,45 +2058,48 @@ void main() {
     },
   );
 
-  test('cleanup default de transcript omite legacy ambiguo y conserva otros owners', () async {
-    final prefs = await SharedPreferences.getInstance();
-    await LocalTranscriptStore.saveFromNewestFirst(
-      'conn-a',
-      'default-session',
-      const [
-        {'role': 'assistant', 'content': 'default'},
-      ],
-    );
-    await LocalTranscriptStore.saveFromNewestFirst(
-      'conn-a',
-      'manager-session',
-      const [
-        {'role': 'assistant', 'content': 'manager'},
-      ],
-      profile: 'manager',
-    );
-    await prefs.setString(
-      'local_transcript_conn-a_$_legacyTranscriptSession',
-      jsonEncode(const [
-        {'role': 'assistant', 'content': 'legacy'},
-      ]),
-    );
-
-    expect(await LocalTranscriptStore.deleteForProfile('conn-a', ''), 1);
-
-    expect(
-      await LocalTranscriptStore.load(
+  test(
+    'cleanup default de transcript omite legacy ambiguo y conserva otros owners',
+    () async {
+      final prefs = await SharedPreferences.getInstance();
+      await LocalTranscriptStore.saveFromNewestFirst(
+        'conn-a',
+        'default-session',
+        const [
+          {'role': 'assistant', 'content': 'default'},
+        ],
+      );
+      await LocalTranscriptStore.saveFromNewestFirst(
         'conn-a',
         'manager-session',
+        const [
+          {'role': 'assistant', 'content': 'manager'},
+        ],
         profile: 'manager',
-      ),
-      isNotEmpty,
-    );
-    expect(
-      prefs.containsKey('local_transcript_conn-a_$_legacyTranscriptSession'),
-      isTrue,
-    );
-  });
+      );
+      await prefs.setString(
+        'local_transcript_conn-a_$_legacyTranscriptSession',
+        jsonEncode(const [
+          {'role': 'assistant', 'content': 'legacy'},
+        ]),
+      );
+
+      expect(await LocalTranscriptStore.deleteForProfile('conn-a', ''), 1);
+
+      expect(
+        await LocalTranscriptStore.load(
+          'conn-a',
+          'manager-session',
+          profile: 'manager',
+        ),
+        isNotEmpty,
+      );
+      expect(
+        prefs.containsKey('local_transcript_conn-a_$_legacyTranscriptSession'),
+        isTrue,
+      );
+    },
+  );
 
   test('listado local incluye transcripts no-default con su perfil', () async {
     await LocalTranscriptStore.saveFromNewestFirst(

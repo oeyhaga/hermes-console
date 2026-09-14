@@ -796,8 +796,9 @@ class _DrawerHeader extends StatelessWidget {
             Strings.of(context).drawerSwitchInstance,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.labelLarge
-                ?.copyWith(color: colors.textSecondary),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: colors.textSecondary),
           ),
         ),
         for (final saved in connections)

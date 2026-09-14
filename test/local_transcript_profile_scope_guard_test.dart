@@ -28,23 +28,26 @@ void main() {
     expect(calls, hasLength(1));
   });
 
-  test('every production transcript save load snapshot clear and list binds profile', () {
-    final production = Directory('lib')
-        .listSync(recursive: true)
-        .whereType<File>()
-        .where((file) => file.path.endsWith('.dart'));
-    final calls = <String>[];
-    for (final file in production) {
-      calls.addAll(_localTranscriptInvocations(file.readAsStringSync()));
-    }
+  test(
+    'every production transcript save load snapshot clear and list binds profile',
+    () {
+      final production = Directory('lib')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.dart'));
+      final calls = <String>[];
+      for (final file in production) {
+        calls.addAll(_localTranscriptInvocations(file.readAsStringSync()));
+      }
 
-    expect(calls, isNotEmpty);
-    for (final invocation in calls) {
-      expect(
-        invocation,
-        contains('profile:'),
-        reason: 'Unscoped local transcript call:\n$invocation',
-      );
-    }
-  });
+      expect(calls, isNotEmpty);
+      for (final invocation in calls) {
+        expect(
+          invocation,
+          contains('profile:'),
+          reason: 'Unscoped local transcript call:\n$invocation',
+        );
+      }
+    },
+  );
 }

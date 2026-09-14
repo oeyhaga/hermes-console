@@ -100,16 +100,15 @@ class BridgeMaintenanceResult {
   );
 }
 
-typedef BridgeUpdateChecker = Future<BridgeUpdateCheck> Function(
-  SavedConnection connection,
-);
-typedef BridgeUpdater = Future<({bool ok, String detail})> Function(
-  SavedConnection connection,
-);
-typedef BridgeReleaseInstaller = Future<({bool ok, String detail})> Function(
-  BridgeRelease release,
-  void Function(String message)? onProgress,
-);
+typedef BridgeUpdateChecker =
+    Future<BridgeUpdateCheck> Function(SavedConnection connection);
+typedef BridgeUpdater =
+    Future<({bool ok, String detail})> Function(SavedConnection connection);
+typedef BridgeReleaseInstaller =
+    Future<({bool ok, String detail})> Function(
+      BridgeRelease release,
+      void Function(String message)? onProgress,
+    );
 typedef BridgeSelfUpdater =
     Future<({bool supported, bool ok, String detail})> Function(
       SavedConnection connection,

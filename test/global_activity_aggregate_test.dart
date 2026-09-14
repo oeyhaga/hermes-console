@@ -141,82 +141,88 @@ void main() {
     expect(activity.sequence, isNull);
   });
 
-  test('private bounded journal restores stale public progress after process death', () async {
-    String? encryptedEnvelope;
-    final journal = GlobalActivityJournal(
-      read: () async => encryptedEnvelope,
-      write: (value) async => encryptedEnvelope = value,
-      now: () => DateTime.utc(2026, 1, 1, 12),
-      maxEntries: 2,
-      ttl: const Duration(hours: 1),
-    );
-    final writer = GlobalActivityAggregate(
-      journal: journal,
-      now: () => DateTime.utc(2026, 1, 1, 12),
-    );
-    await writer.initialize();
-    writer.observeEvent(
-      scope: scope,
-      event: const TuiGatewayEvent(
-        type: 'approval.request',
-        sessionId: 'runtime-a',
-        sequence: 9,
-        payload: {
-          'prompt': 'PRIVATE_MARKER',
-          'tool': 'PRIVATE_TOOL',
-          'path': '/private/path',
-        },
-      ),
-    );
-    await writer.flushJournal();
-    expect(encryptedEnvelope, isNot(contains('PRIVATE_MARKER')));
-    expect(encryptedEnvelope, isNot(contains('PRIVATE_TOOL')));
-    expect(encryptedEnvelope, isNot(contains('/private/path')));
-
-    final reader = GlobalActivityAggregate(
-      journal: GlobalActivityJournal(
+  test(
+    'private bounded journal restores stale public progress after process death',
+    () async {
+      String? encryptedEnvelope;
+      final journal = GlobalActivityJournal(
         read: () async => encryptedEnvelope,
-        write: (_) async {},
-        now: () => DateTime.utc(2026, 1, 1, 12, 30),
+        write: (value) async => encryptedEnvelope = value,
+        now: () => DateTime.utc(2026, 1, 1, 12),
         maxEntries: 2,
         ttl: const Duration(hours: 1),
-      ),
-      now: () => DateTime.utc(2026, 1, 1, 12, 30),
-    );
-    await reader.initialize();
-    final restored = reader.activityFor(
-      'connection-a',
-      'default',
-      'durable-a',
-    )!;
-    expect(restored.phase, GlobalActivityPhase.waitingForUser);
-    expect(restored.requiresAction, isTrue);
-    expect(restored.stale, isTrue);
-    expect(restored.authority, GlobalActivityAuthority.journal);
-  });
+      );
+      final writer = GlobalActivityAggregate(
+        journal: journal,
+        now: () => DateTime.utc(2026, 1, 1, 12),
+      );
+      await writer.initialize();
+      writer.observeEvent(
+        scope: scope,
+        event: const TuiGatewayEvent(
+          type: 'approval.request',
+          sessionId: 'runtime-a',
+          sequence: 9,
+          payload: {
+            'prompt': 'PRIVATE_MARKER',
+            'tool': 'PRIVATE_TOOL',
+            'path': '/private/path',
+          },
+        ),
+      );
+      await writer.flushJournal();
+      expect(encryptedEnvelope, isNot(contains('PRIVATE_MARKER')));
+      expect(encryptedEnvelope, isNot(contains('PRIVATE_TOOL')));
+      expect(encryptedEnvelope, isNot(contains('/private/path')));
 
-  test('journal fails closed for expired, corrupt, terminal and foreign-profile rows', () async {
-    final journal = GlobalActivityJournal(
-      read: () async => '''{"version":1,"entries":[
+      final reader = GlobalActivityAggregate(
+        journal: GlobalActivityJournal(
+          read: () async => encryptedEnvelope,
+          write: (_) async {},
+          now: () => DateTime.utc(2026, 1, 1, 12, 30),
+          maxEntries: 2,
+          ttl: const Duration(hours: 1),
+        ),
+        now: () => DateTime.utc(2026, 1, 1, 12, 30),
+      );
+      await reader.initialize();
+      final restored = reader.activityFor(
+        'connection-a',
+        'default',
+        'durable-a',
+      )!;
+      expect(restored.phase, GlobalActivityPhase.waitingForUser);
+      expect(restored.requiresAction, isTrue);
+      expect(restored.stale, isTrue);
+      expect(restored.authority, GlobalActivityAuthority.journal);
+    },
+  );
+
+  test(
+    'journal fails closed for expired, corrupt, terminal and foreign-profile rows',
+    () async {
+      final journal = GlobalActivityJournal(
+        read: () async => '''{"version":1,"entries":[
         {"connection":"connection-a","profile":"default","durable":"expired","runtime":"r","epoch":"e","phase":"generating","terminal":false,"requires_action":false,"tools":0,"subagents":0,"processes":0,"observed_at":1},
         {"connection":"connection-a","profile":"other","durable":"other","runtime":"r","epoch":"e","phase":"generating","terminal":false,"requires_action":false,"tools":0,"subagents":0,"processes":0,"observed_at":1767268800000},
         {"connection":"connection-a","profile":"default","durable":"terminal","runtime":"r","epoch":"e","phase":"completed","terminal":true,"requires_action":false,"tools":0,"subagents":0,"processes":0,"observed_at":1767268800000},
         {"connection":"connection-a","profile":"default","durable":"bad","runtime":"r","epoch":"e","phase":"prompt text","terminal":false,"requires_action":false,"tools":0,"subagents":0,"processes":0,"observed_at":1767268800000}
       ]}''',
-      write: (_) async {},
-      now: () => DateTime.utc(2026, 1, 1, 13),
-      ttl: const Duration(minutes: 30),
-    );
-    final aggregate = GlobalActivityAggregate(
-      journal: journal,
-      now: () => DateTime.utc(2026, 1, 1, 13),
-    );
-    await aggregate.initialize(
-      connectionId: 'connection-a',
-      profile: 'default',
-    );
-    expect(aggregate.activities, isEmpty);
-  });
+        write: (_) async {},
+        now: () => DateTime.utc(2026, 1, 1, 13),
+        ttl: const Duration(minutes: 30),
+      );
+      final aggregate = GlobalActivityAggregate(
+        journal: journal,
+        now: () => DateTime.utc(2026, 1, 1, 13),
+      );
+      await aggregate.initialize(
+        connectionId: 'connection-a',
+        profile: 'default',
+      );
+      expect(aggregate.activities, isEmpty);
+    },
+  );
 
   test(
     'recovery retains live state then invalidates watermark on epoch rotation',

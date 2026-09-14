@@ -245,8 +245,10 @@ class HermesEmptyState extends StatelessWidget {
       Text(
         body,
         textAlign: TextAlign.center,
-        style: Theme.of(context).textTheme.bodyMedium
-            ?.copyWith(color: colors.textSecondary, height: 1.42),
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: colors.textSecondary,
+          height: 1.42,
+        ),
       ),
       if (primaryLabel != null && onPrimary != null) ...[
         const SizedBox(height: 20),
@@ -683,8 +685,9 @@ class HermesSegmentedControl<T> extends StatelessWidget {
       label: semanticLabel,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: Theme.of(context).hermes.surfaceVariant
-              .withValues(alpha: 0.46),
+          color: Theme.of(
+            context,
+          ).hermes.surfaceVariant.withValues(alpha: 0.46),
           borderRadius: BorderRadius.circular(
             Theme.of(context).hermesComponents.profile.shape.fieldRadius,
           ),
@@ -1230,8 +1233,10 @@ class _HermesEditorialStatus extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
     return DefaultTextStyle.merge(
-      style: Theme.of(context).textTheme.labelMedium
-          ?.copyWith(color: colors.textSecondary, fontWeight: FontWeight.w600),
+      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+        color: colors.textSecondary,
+        fontWeight: FontWeight.w600,
+      ),
       child: IconTheme.merge(
         data: IconThemeData(size: 16, color: colors.textSecondary),
         child: child,

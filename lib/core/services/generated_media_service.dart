@@ -251,11 +251,10 @@ class GeneratedMediaService {
 
   /// Text suitable for copy, read-aloud and notification previews: prose is
   /// preserved while server-local paths and signed media URLs stay private.
-  static String stripDirectives(String content) =>
-      parseSegments(content)
-          .whereType<GeneratedMediaTextSegment>()
-          .map((segment) => segment.text)
-          .join();
+  static String stripDirectives(String content) => parseSegments(content)
+      .whereType<GeneratedMediaTextSegment>()
+      .map((segment) => segment.text)
+      .join();
 
   static Future<File> ensureDownloaded(
     String connectionId,

@@ -333,8 +333,9 @@ void main() {
           ], profile: profile);
         }
         expect(
-          (await LocalTranscriptStore.listForConnection('profiles'))
-              .map((session) => session.profile),
+          (await LocalTranscriptStore.listForConnection(
+            'profiles',
+          )).map((session) => session.profile),
           unorderedEquals(['default', ' default ', 'p', ' p ', ' ']),
         );
         expect(
@@ -645,27 +646,30 @@ void main() {
       },
     );
 
-    test('bulk cleanup continues secure after prefs initialization fails and preserves first error', () async {
-      final key = _v3Key('prefs-failure', 'default', 'session');
-      secure[key] = jsonEncode(const [_message]);
-      failingDeleteKey = key;
-      SharedPreferencesStorePlatform.instance = _FailingGetAllPrefs();
-      SharedPreferences.resetStatic();
+    test(
+      'bulk cleanup continues secure after prefs initialization fails and preserves first error',
+      () async {
+        final key = _v3Key('prefs-failure', 'default', 'session');
+        secure[key] = jsonEncode(const [_message]);
+        failingDeleteKey = key;
+        SharedPreferencesStorePlatform.instance = _FailingGetAllPrefs();
+        SharedPreferences.resetStatic();
 
-      await expectLater(
-        LocalTranscriptStore.deleteForConnection('prefs-failure'),
-        throwsA(
-          isA<StateError>().having(
-            (error) => error.message,
-            'message',
-            'getAll failure',
+        await expectLater(
+          LocalTranscriptStore.deleteForConnection('prefs-failure'),
+          throwsA(
+            isA<StateError>().having(
+              (error) => error.message,
+              'message',
+              'getAll failure',
+            ),
           ),
-        ),
-      );
+        );
 
-      expect(deletedSecureKeys, contains(key));
-      expect(secure[key], isNotNull);
-    });
+        expect(deletedSecureKeys, contains(key));
+        expect(secure[key], isNotNull);
+      },
+    );
 
     test('ConnectionManager deletion removes v3 transcript recovery', () async {
       final prefs = await SharedPreferences.getInstance();
@@ -692,31 +696,34 @@ void main() {
       expect(secure[key], isNull);
     });
 
-    test('ConnectionManager continues v3 transcript cleanup after outbox read failure', () async {
-      final prefs = await SharedPreferences.getInstance();
-      final manager = await ConnectionManager.create(prefs);
-      addTearDown(manager.dispose);
-      await manager.saveConnection(
-        'local',
-        '127.0.0.1',
-        9119,
-        String.fromCharCodes(const [116, 101, 115, 116]),
-        kind: InstanceKind.localhost,
-      );
-      final connection = manager.getConnections().single;
-      await LocalTranscriptStore.saveFromNewestFirst(
-        connection.id,
-        'session_after_failure',
-        const [_message],
-      );
-      final key = _v3Key(connection.id, 'default', 'session_after_failure');
-      expect(secure[key], isNotNull);
-      failingReadKey = 'chat_turn_outbox_v1';
+    test(
+      'ConnectionManager continues v3 transcript cleanup after outbox read failure',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        final manager = await ConnectionManager.create(prefs);
+        addTearDown(manager.dispose);
+        await manager.saveConnection(
+          'local',
+          '127.0.0.1',
+          9119,
+          String.fromCharCodes(const [116, 101, 115, 116]),
+          kind: InstanceKind.localhost,
+        );
+        final connection = manager.getConnections().single;
+        await LocalTranscriptStore.saveFromNewestFirst(
+          connection.id,
+          'session_after_failure',
+          const [_message],
+        );
+        final key = _v3Key(connection.id, 'default', 'session_after_failure');
+        expect(secure[key], isNotNull);
+        failingReadKey = 'chat_turn_outbox_v1';
 
-      await manager.deleteConnection(connection.id);
+        await manager.deleteConnection(connection.id);
 
-      expect(secure[key], isNull);
-    });
+        expect(secure[key], isNull);
+      },
+    );
 
     test('clear reports false and thrown plaintext removal', () async {
       final key = _v3Key('remove', 'default', 'session');

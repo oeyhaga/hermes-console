@@ -29,20 +29,14 @@ final class SubagentSteerView {
   bool get queued => status == 'queued';
 }
 
-typedef SubagentTailLoader = Future<SubagentTailView> Function(
-  SubagentActivity activity,
-);
-typedef SubagentSteerSender = Future<SubagentSteerView> Function(
-  SubagentActivity activity,
-  String text,
-);
-typedef SubagentStopRequester = Future<bool> Function(
-  SubagentActivity activity,
-);
-typedef SubagentTailScheduler = VoidCallback Function(
-  Duration delay,
-  VoidCallback callback,
-);
+typedef SubagentTailLoader =
+    Future<SubagentTailView> Function(SubagentActivity activity);
+typedef SubagentSteerSender =
+    Future<SubagentSteerView> Function(SubagentActivity activity, String text);
+typedef SubagentStopRequester =
+    Future<bool> Function(SubagentActivity activity);
+typedef SubagentTailScheduler =
+    VoidCallback Function(Duration delay, VoidCallback callback);
 
 /// Compact, bounded mobile control surface for delegated work.
 class SubagentActivityCard extends StatefulWidget {

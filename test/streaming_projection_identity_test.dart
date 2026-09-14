@@ -109,7 +109,8 @@ void main() {
             expect(
               identityAfterDelta,
               isTrue,
-              reason: 'After a delta, repeated reads must retain the live host identity',
+              reason:
+                  'After a delta, repeated reads must retain the live host identity',
             );
             if (liveCalls) {
               final oldHead = deltaSecond.first;

@@ -174,9 +174,9 @@ class _AgentCenterScreenState extends State<AgentCenterScreen> {
                                   ),
                                   HermesBadge(
                                     _agentStatusLabel(node.status, strings),
-                                    color: Theme.of(context)
-                                        .hermes
-                                        .textSecondary,
+                                    color: Theme.of(
+                                      context,
+                                    ).hermes.textSecondary,
                                   ),
                                 ],
                               ),

@@ -872,8 +872,9 @@ String friendlyModelName(String id) {
   final lower = raw.toLowerCase();
 
   // Familia Claude: "claude-familia-major-minor[-fecha]" → "Familia major.minor".
-  final claude = RegExp(r'^claude-(opus|sonnet|haiku)-(\d+)-(\d+)')
-      .firstMatch(lower);
+  final claude = RegExp(
+    r'^claude-(opus|sonnet|haiku)-(\d+)-(\d+)',
+  ).firstMatch(lower);
   if (claude != null) {
     final family = claude.group(1)!;
     final capitalized = family[0].toUpperCase() + family.substring(1);
@@ -1857,8 +1858,9 @@ class _ChatScreenState extends State<ChatScreen>
           worker != room.managerProfile &&
           room.memberProfiles.contains(worker) &&
           intentId != null &&
-          RegExp('(^|\\s)@${RegExp.escape(worker)}(?=\\s|\$|[.,;:!?])')
-              .hasMatch(draft.text)) {
+          RegExp(
+            '(^|\\s)@${RegExp.escape(worker)}(?=\\s|\$|[.,;:!?])',
+          ).hasMatch(draft.text)) {
         _selectedRoomMentions
           ..clear()
           ..add(worker);
@@ -2591,9 +2593,9 @@ class _ChatScreenState extends State<ChatScreen>
     final roomSuggestions = _missionRoomSuggestions(text);
     final selectedBefore = Set<String>.of(_selectedRoomMentions);
     _selectedRoomMentions.removeWhere(
-      (profile) =>
-          !RegExp('(^|\\s)@${RegExp.escape(profile)}(?=\\s|\$|[.,;:!?])')
-              .hasMatch(text),
+      (profile) => !RegExp(
+        '(^|\\s)@${RegExp.escape(profile)}(?=\\s|\$|[.,;:!?])',
+      ).hasMatch(text),
     );
     if (_selectedRoomMentions.isEmpty) {
       _roomTaskBoardId = null;
@@ -4780,8 +4782,9 @@ class _ChatScreenState extends State<ChatScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              Strings.of(context)
-                  .interactiveRespondFailed(humanizeApiError(error)),
+              Strings.of(
+                context,
+              ).interactiveRespondFailed(humanizeApiError(error)),
             ),
           ),
         );
@@ -4809,8 +4812,9 @@ class _ChatScreenState extends State<ChatScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              Strings.of(context)
-                  .interactiveRespondFailed(humanizeApiError(error)),
+              Strings.of(
+                context,
+              ).interactiveRespondFailed(humanizeApiError(error)),
             ),
           ),
         );
@@ -6921,8 +6925,9 @@ class _ChatScreenState extends State<ChatScreen>
       final message = failure is DashboardAuthException
           ? localizedApiError(Strings.of(context), failure)
           : Strings.of(context).chaEditFailed;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -8585,8 +8590,9 @@ class _ChatScreenState extends State<ChatScreen>
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                Strings.of(context)
-                    .chaAttachmentImageLimitReached(_maxPendingImages),
+                Strings.of(
+                  context,
+                ).chaAttachmentImageLimitReached(_maxPendingImages),
               ),
             ),
           );
@@ -8697,8 +8703,9 @@ class _ChatScreenState extends State<ChatScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              Strings.of(context)
-                  .chaImageTooBig(AttachmentUploader.maxBytes ~/ (1024 * 1024)),
+              Strings.of(
+                context,
+              ).chaImageTooBig(AttachmentUploader.maxBytes ~/ (1024 * 1024)),
             ),
           ),
         );
@@ -9617,8 +9624,9 @@ class _ChatScreenState extends State<ChatScreen>
       if (catalog != null) {
         _modelSource = _ModelSource.bridge;
         _modelOptionsFuture = Future.value(catalog);
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(res.detail)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(res.detail)));
         _showModelSheet();
         return;
       }
@@ -9662,8 +9670,9 @@ class _ChatScreenState extends State<ChatScreen>
                       final messenger = ScaffoldMessenger.of(context);
                       final nav = Navigator.of(dctx);
                       final strConnected = Strings.of(context).bridgeConnected;
-                      final strNotDetected = Strings.of(context)
-                          .bridgeNotDetected;
+                      final strNotDetected = Strings.of(
+                        context,
+                      ).bridgeNotDetected;
                       verifying.value = true;
                       final ok = await _verifyBridge();
                       verifying.value = false;
@@ -9777,8 +9786,9 @@ class _ChatScreenState extends State<ChatScreen>
                                 ),
                                 Text(
                                   active == null
-                                      ? Strings.of(ctx)
-                                            .chaModelSheetSubtitleDefault
+                                      ? Strings.of(
+                                          ctx,
+                                        ).chaModelSheetSubtitleDefault
                                       : (active.provider.isNotEmpty
                                             ? Strings.of(
                                                 ctx,
@@ -9864,8 +9874,9 @@ class _ChatScreenState extends State<ChatScreen>
                                 Padding(
                                   padding: const EdgeInsets.only(top: 5),
                                   child: Text(
-                                    Strings.of(ctx)
-                                        .chaModelReasoningUnavailable,
+                                    Strings.of(
+                                      ctx,
+                                    ).chaModelReasoningUnavailable,
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: colors.textSecondary,
@@ -9955,8 +9966,9 @@ class _ChatScreenState extends State<ChatScreen>
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
-                                        Strings.of(context)
-                                            .chatInstallBridgeModels,
+                                        Strings.of(
+                                          context,
+                                        ).chatInstallBridgeModels,
                                         style: TextStyle(
                                           fontSize: 12.5,
                                           color: colors.textPrimary,
@@ -10766,8 +10778,9 @@ class _ChatScreenState extends State<ChatScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              Strings.of(context)
-                  .chaVoiceError(localizedVoiceError(Strings.of(context), e)),
+              Strings.of(
+                context,
+              ).chaVoiceError(localizedVoiceError(Strings.of(context), e)),
             ),
           ),
         );
@@ -11278,8 +11291,9 @@ class _ChatScreenState extends State<ChatScreen>
                     const SizedBox(width: 7),
                     Text(
                       _chat.queueParked
-                          ? Strings.of(context)
-                                .chaQueuedPausedCount(queuedCount)
+                          ? Strings.of(
+                              context,
+                            ).chaQueuedPausedCount(queuedCount)
                           : Strings.of(context).chaQueuedCount(queuedCount),
                       style: TextStyle(
                         fontSize: 10.5,
@@ -11804,13 +11818,15 @@ class _ChatScreenState extends State<ChatScreen>
                                     : null,
                                 decoration: InputDecoration(
                                   hintText: _attachmentSubmitting
-                                      ? Strings.of(context)
-                                            .chaUploadingAttachment
+                                      ? Strings.of(
+                                          context,
+                                        ).chaUploadingAttachment
                                       : _pendingAttachments.isNotEmpty
                                       ? Strings.of(context).chaHintSystem
                                       : widget.missionRoom != null
-                                      ? (Localizations.localeOf(context)
-                                                    .languageCode ==
+                                      ? (Localizations.localeOf(
+                                                  context,
+                                                ).languageCode ==
                                                 'en'
                                             ? 'Message the team…'
                                             : 'Escribe al equipo…')
@@ -11878,10 +11894,12 @@ class _ChatScreenState extends State<ChatScreen>
                                     color: colors.textSecondary,
                                     mutedColor: colors.textDisabled,
                                     transcribing: _transcribing,
-                                    listeningLabel: Strings.of(context)
-                                        .chaVoiceListeningLabel,
-                                    transcribingLabel: Strings.of(context)
-                                        .chaVoiceTranscribingLabel,
+                                    listeningLabel: Strings.of(
+                                      context,
+                                    ).chaVoiceListeningLabel,
+                                    transcribingLabel: Strings.of(
+                                      context,
+                                    ).chaVoiceTranscribingLabel,
                                   ),
                                 ),
                               ),
@@ -13756,11 +13774,13 @@ class _AttachmentPreviewStrip extends StatelessWidget {
                         changing ||
                         attachment.uploadState == AttachmentUploadState.error,
                     label: changing
-                        ? Strings.of(context)
-                              .chaAttachmentUploadInProgress(attachment.name)
+                        ? Strings.of(
+                            context,
+                          ).chaAttachmentUploadInProgress(attachment.name)
                         : previewable
-                        ? Strings.of(context)
-                              .chaPreviewAttachment(attachment.name)
+                        ? Strings.of(
+                            context,
+                          ).chaPreviewAttachment(attachment.name)
                         : null,
                     button: previewable,
                     onTap: openPreview,
@@ -18506,8 +18526,9 @@ class ChatRefreshStatusOverlay extends StatelessWidget {
             child: Semantics(
               key: const ValueKey('chat-refresh-progress'),
               liveRegion: true,
-              label: MaterialLocalizations.of(context)
-                  .refreshIndicatorSemanticLabel,
+              label: MaterialLocalizations.of(
+                context,
+              ).refreshIndicatorSemanticLabel,
               child: ExcludeSemantics(
                 child: LinearProgressIndicator(
                   minHeight: 2,

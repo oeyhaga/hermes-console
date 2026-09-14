@@ -49,10 +49,11 @@ class BridgeRepairResult {
   }) : success = false;
 }
 
-typedef BridgeRepairUpdater = Future<BridgeUpdateResult> Function(
-  SavedConnection connection, {
-  void Function(BridgeRepairStage stage)? onProgress,
-});
+typedef BridgeRepairUpdater =
+    Future<BridgeUpdateResult> Function(
+      SavedConnection connection, {
+      void Function(BridgeRepairStage stage)? onProgress,
+    });
 
 /// State-driven repair policy. It never provisions an endpoint already proven
 /// unreachable; remote process repair goes through BridgeUpdateService instead.

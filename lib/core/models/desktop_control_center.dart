@@ -511,8 +511,9 @@ final class BackgroundProcessEntry {
     return BackgroundProcessEntry(
       opaqueId: id,
       status: _parseAgentCenterStatus(json['status'] ?? json['phase']),
-      uptimeSeconds: _safeInt(json['uptime_seconds'] ?? json['uptime'])
-          .clamp(0, 315360000),
+      uptimeSeconds: _safeInt(
+        json['uptime_seconds'] ?? json['uptime'],
+      ).clamp(0, 315360000),
     );
   }
 }
@@ -575,9 +576,9 @@ final class SpawnTreeDetail {
       SpawnTreeDetail(
         startedAt: _safeDouble(json['started_at']),
         finishedAt: _safeDouble(json['finished_at']),
-        subagents: _objectRows(json['subagents'])
-            .map(SpawnTreeSubagentEntry.fromJson)
-            .toList(growable: false),
+        subagents: _objectRows(
+          json['subagents'],
+        ).map(SpawnTreeSubagentEntry.fromJson).toList(growable: false),
       );
 }
 
@@ -663,8 +664,9 @@ final class ProjectRepositoryNode {
       id: id,
       label: _cleanText(json['label']),
       path: _cleanText(json['path'], max: 2048),
-      sessionCount: _safeInt(json['sessionCount'] ?? json['session_count'])
-          .clamp(0, 100000),
+      sessionCount: _safeInt(
+        json['sessionCount'] ?? json['session_count'],
+      ).clamp(0, 100000),
       lanes: _objectRows(json['groups'])
           .map(ProjectLane.tryParse)
           .whereType<ProjectLane>()
@@ -714,8 +716,9 @@ final class ProjectNode {
       archived: json['archived'] == true,
       automatic: json['isAuto'] == true || json['is_auto'] == true,
       noProject: json['isNoProject'] == true || json['is_no_project'] == true,
-      sessionCount: _safeInt(json['sessionCount'] ?? json['session_count'])
-          .clamp(0, 100000),
+      sessionCount: _safeInt(
+        json['sessionCount'] ?? json['session_count'],
+      ).clamp(0, 100000),
       lastActive: _safeDouble(json['lastActive'] ?? json['last_active']),
       previewSessions:
           _objectRows(json['previewSessions'] ?? json['preview_sessions'])

@@ -372,8 +372,9 @@ class _ThemesEntry extends StatefulWidget {
 
 class _ThemesEntryState extends State<_ThemesEntry> {
   Future<void> _open() async {
-    await Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => const ThemesScreen()));
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const ThemesScreen()));
     if (mounted) setState(() {}); // refresca el nombre/preview al volver
   }
 
@@ -1078,8 +1079,9 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
         profile: targetProfile,
         clearDrafts: ({required String profile}) async {
           final prefs = await SharedPreferences.getInstance();
-          return ChatDraftStore(prefs)
-              .deleteForProfile(targetConnection.id, profile);
+          return ChatDraftStore(
+            prefs,
+          ).deleteForProfile(targetConnection.id, profile);
         },
         clearTranscripts: ({required String profile}) =>
             LocalTranscriptStore.deleteForProfile(targetConnection.id, profile),
@@ -1111,8 +1113,9 @@ class _HistoryCleanupSectionState extends State<HistoryCleanupSection> {
     } catch (_) {
       if (!mounted) return;
       final s = Strings.of(context);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(s.setLocalClearFailures(3))));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(s.setLocalClearFailures(3))));
     } finally {
       if (mounted) setState(() => _clearingNormal = false);
     }
@@ -1627,8 +1630,9 @@ class _MaintenanceSectionState extends State<_MaintenanceSection> {
           backgroundColor: colors.surface,
           title: Text(Strings.of(context).setUpdateHermes),
           content: Text(
-            Strings.of(context)
-                .setUpdateBody(behind > 0 ? ' ($behind commits)' : '', method),
+            Strings.of(
+              context,
+            ).setUpdateBody(behind > 0 ? ' ($behind commits)' : '', method),
             style: TextStyle(fontSize: 13, color: colors.textSecondary),
           ),
           actions: [
@@ -1859,8 +1863,9 @@ class _MaintenanceSectionState extends State<_MaintenanceSection> {
     for (final e in _platforms.entries) {
       if (e.value != 'connected') {
         w.add(
-          Strings.of(context)
-              .setPlatformStatus(e.key, _platformStateEs(e.value)),
+          Strings.of(
+            context,
+          ).setPlatformStatus(e.key, _platformStateEs(e.value)),
         );
       }
     }
@@ -2297,8 +2302,9 @@ class _AboutCardState extends State<_AboutCard> {
           style: TextStyle(fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          Strings.of(context)
-              .setClientVersion(_version.isNotEmpty ? _version : '…'),
+          Strings.of(
+            context,
+          ).setClientVersion(_version.isNotEmpty ? _version : '…'),
           style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
         trailing: Icon(Icons.chevron_right, color: colors.textDisabled),

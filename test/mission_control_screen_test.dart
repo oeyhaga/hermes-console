@@ -1752,76 +1752,75 @@ void main() {
     expect(find.text('Cached native task'), findsOneWidget);
   });
 
-  testWidgets(
-    'unsupported refresh discards cached data without saying offline',
-    (tester) async {
-      final manager = await _manager();
-      final initial = _snapshot(
-        profiles: const [AgentProfile(name: 'infra')],
-        sessions: [_session('s-infra', 'infra')],
-        board: const KanbanBoard(
-          columns: [
-            KanbanColumn(
-              name: 'running',
-              tasks: [
-                KanbanTask(
-                  id: 'old-task',
-                  title: 'Old cached task',
-                  body: '',
-                  status: 'running',
-                  assignee: 'infra',
-                ),
-              ],
-            ),
-          ],
-        ),
-      );
-      final unsupported = MissionBackendSnapshot(
-        profilesCapability: MissionCapabilityState.unsupported,
-        sessionsCapability: MissionCapabilityState.unsupported,
-        kanbanCapability: MissionCapabilityState.unsupported,
-        failures: const {
-          'profiles': 'HTTP 404',
-          'sessions': 'HTTP 404',
-          'kanban': 'HTTP 404',
-        },
-        loadedAt: DateTime.fromMillisecondsSinceEpoch(122000),
-      );
-      final source = _SequenceSource([
-        Future.value(initial),
-        Future.value(unsupported),
-      ]);
-      await tester.pumpWidget(
-        _host(manager: manager, snapshot: initial, dataSource: source),
-      );
-      await tester.pumpAndSettle();
+  testWidgets('unsupported refresh discards cached data without saying offline', (
+    tester,
+  ) async {
+    final manager = await _manager();
+    final initial = _snapshot(
+      profiles: const [AgentProfile(name: 'infra')],
+      sessions: [_session('s-infra', 'infra')],
+      board: const KanbanBoard(
+        columns: [
+          KanbanColumn(
+            name: 'running',
+            tasks: [
+              KanbanTask(
+                id: 'old-task',
+                title: 'Old cached task',
+                body: '',
+                status: 'running',
+                assignee: 'infra',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    final unsupported = MissionBackendSnapshot(
+      profilesCapability: MissionCapabilityState.unsupported,
+      sessionsCapability: MissionCapabilityState.unsupported,
+      kanbanCapability: MissionCapabilityState.unsupported,
+      failures: const {
+        'profiles': 'HTTP 404',
+        'sessions': 'HTTP 404',
+        'kanban': 'HTTP 404',
+      },
+      loadedAt: DateTime.fromMillisecondsSinceEpoch(122000),
+    );
+    final source = _SequenceSource([
+      Future.value(initial),
+      Future.value(unsupported),
+    ]);
+    await tester.pumpWidget(
+      _host(manager: manager, snapshot: initial, dataSource: source),
+    );
+    await tester.pumpAndSettle();
 
-      await tester.tap(find.byIcon(Icons.refresh_rounded).last);
-      await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.refresh_rounded).last);
+    await tester.pumpAndSettle();
 
-      expect(
-        find.text(
-          'Hermes no está disponible. Los datos existentes del equipo siguen visibles.',
-        ),
-        findsNothing,
-      );
-      await _openDestination(tester, 'work');
-      expect(
-        find.text(
-          'Hermes no puede verificar el equipo ahora. Las salas guardadas siguen visibles en modo consulta.',
-        ),
-        findsOneWidget,
-      );
-      await _openWork(tester);
-      expect(find.text('Old cached task'), findsNothing);
-      expect(
-        find.text(
-          'El tablero de tareas no está disponible en esta instalación de Hermes.',
-        ),
-        findsOneWidget,
-      );
-    },
-  );
+    expect(
+      find.text(
+        'Hermes no está disponible. Los datos existentes del equipo siguen visibles.',
+      ),
+      findsNothing,
+    );
+    await _openDestination(tester, 'work');
+    expect(
+      find.text(
+        'Hermes no puede verificar el equipo ahora. Las salas guardadas siguen visibles en modo consulta.',
+      ),
+      findsOneWidget,
+    );
+    await _openWork(tester);
+    expect(find.text('Old cached task'), findsNothing);
+    expect(
+      find.text(
+        'El tablero de tareas no está disponible en esta instalación de Hermes.',
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('read-only Mission Control disables profile management', (
     tester,

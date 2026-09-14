@@ -188,7 +188,8 @@ void main() {
         expect(
           existsAfterFailure,
           isTrue,
-          reason: 'Live producer retains attachment and no clear/delete was requested',
+          reason:
+              'Live producer retains attachment and no clear/delete was requested',
         );
         expect(attachments, hasLength(1));
       },
@@ -281,56 +282,69 @@ void main() {
       },
     );
   }
-  test('B1 withdrawing one cancelled owner preserves second pending and durable owner', () async {
-    final a = await item();
-    await drafts.save('c', 's', 'original', [a], profile: 'p');
-    final lifeA = helpers.life(s: 'a'), lifeB = helpers.life(s: 'b');
-    final outboxA = TurnOutboxStore(lifecycle: lifeA, deletePrivateCopy: erase);
-    final outboxB = TurnOutboxStore(lifecycle: lifeB, deletePrivateCopy: erase);
-    final release = Completer<void>();
-    final blocker = LocalConversationCleanupFence.write(
-      connectionId: 'other',
-      operation: () => release.future,
-    );
-    final savingA = helpers.result(
-      outboxA.save(helpers.turn(s: 'a', attachments: [a])),
-    );
-    final savingB = helpers.result(
-      outboxB.save(helpers.turn(s: 'b', attachments: [a])),
-    );
-    await drafts.clear('c', 's', profile: 'p');
-    LocalConversationCleanupFence.endLifecycle(lifeA);
-    release.complete();
-    await blocker;
-    expect(await savingA, isA<LocalConversationWriteRejected>());
-    expect(await savingB, isNull);
-    expect(await File(a.localPath).exists(), isTrue);
-    expect(
-      (await outboxB.loadForChat('c', 'b', profile: 'p'))!.attachments,
-      hasLength(1),
-    );
-    await outboxB.delete(helpers.turn(s: 'b', attachments: [a]));
-    expect(await File(a.localPath).exists(), isFalse);
-  });
-  test('B1 failed outbox save does not erase copy still referenced by legacy prefs', () async {
-    final a = await item();
-    final raw = jsonEncode({
-      'text': 'legacy retained',
-      'savedAt': DateTime.now().millisecondsSinceEpoch,
-      'attachments': [a.toJson()],
-    });
-    await prefs.setString('chat_draft_v1_legacy_session', raw);
-    hook = (call) async {
-      if (call.method == 'write') throw PlatformException(code: 'injected');
-    };
-    final outcome = await helpers.result(
-      TurnOutboxStore(deletePrivateCopy: erase)
-          .save(helpers.turn(attachments: [a])),
-    );
-    expect(outcome, isA<PlatformException>());
-    expect(prefs.getString('chat_draft_v1_legacy_session'), raw);
-    expect(await File(a.localPath).exists(), isTrue);
-  });
+  test(
+    'B1 withdrawing one cancelled owner preserves second pending and durable owner',
+    () async {
+      final a = await item();
+      await drafts.save('c', 's', 'original', [a], profile: 'p');
+      final lifeA = helpers.life(s: 'a'), lifeB = helpers.life(s: 'b');
+      final outboxA = TurnOutboxStore(
+        lifecycle: lifeA,
+        deletePrivateCopy: erase,
+      );
+      final outboxB = TurnOutboxStore(
+        lifecycle: lifeB,
+        deletePrivateCopy: erase,
+      );
+      final release = Completer<void>();
+      final blocker = LocalConversationCleanupFence.write(
+        connectionId: 'other',
+        operation: () => release.future,
+      );
+      final savingA = helpers.result(
+        outboxA.save(helpers.turn(s: 'a', attachments: [a])),
+      );
+      final savingB = helpers.result(
+        outboxB.save(helpers.turn(s: 'b', attachments: [a])),
+      );
+      await drafts.clear('c', 's', profile: 'p');
+      LocalConversationCleanupFence.endLifecycle(lifeA);
+      release.complete();
+      await blocker;
+      expect(await savingA, isA<LocalConversationWriteRejected>());
+      expect(await savingB, isNull);
+      expect(await File(a.localPath).exists(), isTrue);
+      expect(
+        (await outboxB.loadForChat('c', 'b', profile: 'p'))!.attachments,
+        hasLength(1),
+      );
+      await outboxB.delete(helpers.turn(s: 'b', attachments: [a]));
+      expect(await File(a.localPath).exists(), isFalse);
+    },
+  );
+  test(
+    'B1 failed outbox save does not erase copy still referenced by legacy prefs',
+    () async {
+      final a = await item();
+      final raw = jsonEncode({
+        'text': 'legacy retained',
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+        'attachments': [a.toJson()],
+      });
+      await prefs.setString('chat_draft_v1_legacy_session', raw);
+      hook = (call) async {
+        if (call.method == 'write') throw PlatformException(code: 'injected');
+      };
+      final outcome = await helpers.result(
+        TurnOutboxStore(
+          deletePrivateCopy: erase,
+        ).save(helpers.turn(attachments: [a])),
+      );
+      expect(outcome, isA<PlatformException>());
+      expect(prefs.getString('chat_draft_v1_legacy_session'), raw);
+      expect(await File(a.localPath).exists(), isTrue);
+    },
+  );
   test(
     'B1 clearForSession admitted before save must preserve newer draft',
     () async {
@@ -479,48 +493,58 @@ void main() {
       expect(after.map((row) => row['content']), ['FRESH_AFTER_CLEANUP']);
     },
   );
-  test('B5 alias-only overlap fences shared destination but preserves disjoint owner', () async {
-    final a = helpers.life(s: 'a', aliases: ['shared', 'only-a']);
-    final b = helpers.life(s: 'b', aliases: ['shared']);
-    expect(LocalConversationCleanupFence.rehydrate(a), isTrue);
-    expect(LocalConversationCleanupFence.rehydrate(b), isTrue);
-    await drafts.save(
-      'c',
-      'shared',
-      'new',
-      const [],
-      profile: 'p',
-      lifecycle: b,
-    );
-    expect(
-      await helpers.result(
-        drafts.save('c', 'shared', 'old', const [], profile: 'p', lifecycle: a),
-      ),
-      isA<LocalConversationWriteRejected>(),
-    );
-    await drafts.save(
-      'c',
-      'only-a',
-      'survivor',
-      const [],
-      profile: 'p',
-      lifecycle: a,
-    );
-    expect((await drafts.load('c', 'shared', profile: 'p')).text, 'new');
-    expect((await drafts.load('c', 'only-a', profile: 'p')).text, 'survivor');
-    LocalConversationCleanupFence.endLifecycle(b);
-    expect(
-      await helpers.result(
-        drafts.save(
-          'c',
-          'shared',
-          'old after end',
-          const [],
-          profile: 'p',
-          lifecycle: a,
+  test(
+    'B5 alias-only overlap fences shared destination but preserves disjoint owner',
+    () async {
+      final a = helpers.life(s: 'a', aliases: ['shared', 'only-a']);
+      final b = helpers.life(s: 'b', aliases: ['shared']);
+      expect(LocalConversationCleanupFence.rehydrate(a), isTrue);
+      expect(LocalConversationCleanupFence.rehydrate(b), isTrue);
+      await drafts.save(
+        'c',
+        'shared',
+        'new',
+        const [],
+        profile: 'p',
+        lifecycle: b,
+      );
+      expect(
+        await helpers.result(
+          drafts.save(
+            'c',
+            'shared',
+            'old',
+            const [],
+            profile: 'p',
+            lifecycle: a,
+          ),
         ),
-      ),
-      isA<LocalConversationWriteRejected>(),
-    );
-  });
+        isA<LocalConversationWriteRejected>(),
+      );
+      await drafts.save(
+        'c',
+        'only-a',
+        'survivor',
+        const [],
+        profile: 'p',
+        lifecycle: a,
+      );
+      expect((await drafts.load('c', 'shared', profile: 'p')).text, 'new');
+      expect((await drafts.load('c', 'only-a', profile: 'p')).text, 'survivor');
+      LocalConversationCleanupFence.endLifecycle(b);
+      expect(
+        await helpers.result(
+          drafts.save(
+            'c',
+            'shared',
+            'old after end',
+            const [],
+            profile: 'p',
+            lifecycle: a,
+          ),
+        ),
+        isA<LocalConversationWriteRejected>(),
+      );
+    },
+  );
 }

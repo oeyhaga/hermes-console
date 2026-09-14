@@ -60,86 +60,89 @@ final class _RecordingCommandGateway implements HermesDesktopCommandGateway {
 
 void main() {
   for (final fallback in [false, true]) {
-    test('REGRESSION_COMP_FIX3_LEGACY parser evidence fallback=$fallback', () async {
-      final cases = <(Map<String, Object?>, DesktopCompressionOutcome)>[
-        ({'accepted': false}, DesktopCompressionOutcome.terminalRejected),
-        ({'status': 'rejected'}, DesktopCompressionOutcome.terminalRejected),
-        (
-          {'type': 'error', 'accepted': false, 'status': 'rejected'},
-          DesktopCompressionOutcome.terminalRejected,
-        ),
-        (
-          {
-            'type': 'exec',
-            'accepted': false,
-            'status': 'pending',
-            'output': 'queued',
-          },
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': false, 'type': 'exec'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': false, 'status': 'pending'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': false, 'output': 'rejected'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': true, 'status': 'rejected'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': 'false', 'status': 'rejected'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': null, 'status': 'rejected'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        ({'accepted': false, 'type': 1}, DesktopCompressionOutcome.ambiguous),
-        (
-          {'accepted': false, 'status': 'failed'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': false, 'status': 'REJECTED'},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        (
-          {'accepted': false, 'pending': true},
-          DesktopCompressionOutcome.ambiguous,
-        ),
-        ({}, DesktopCompressionOutcome.ambiguous),
-      ];
-      for (final (payload, expected) in cases) {
-        final parsed = DesktopCommandRpcResult.fromJson(payload);
-        final gateway = _RecordingCommandGateway()
-          ..slashResult = parsed
-          ..dispatchResult = parsed;
-        if (fallback) {
-          gateway.slashError = const TuiGatewayRpcError(
-            'slash.exec',
-            'unavailable',
-            code: -32601,
+    test(
+      'REGRESSION_COMP_FIX3_LEGACY parser evidence fallback=$fallback',
+      () async {
+        final cases = <(Map<String, Object?>, DesktopCompressionOutcome)>[
+          ({'accepted': false}, DesktopCompressionOutcome.terminalRejected),
+          ({'status': 'rejected'}, DesktopCompressionOutcome.terminalRejected),
+          (
+            {'type': 'error', 'accepted': false, 'status': 'rejected'},
+            DesktopCompressionOutcome.terminalRejected,
+          ),
+          (
+            {
+              'type': 'exec',
+              'accepted': false,
+              'status': 'pending',
+              'output': 'queued',
+            },
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': false, 'type': 'exec'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': false, 'status': 'pending'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': false, 'output': 'rejected'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': true, 'status': 'rejected'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': 'false', 'status': 'rejected'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': null, 'status': 'rejected'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          ({'accepted': false, 'type': 1}, DesktopCompressionOutcome.ambiguous),
+          (
+            {'accepted': false, 'status': 'failed'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': false, 'status': 'REJECTED'},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          (
+            {'accepted': false, 'pending': true},
+            DesktopCompressionOutcome.ambiguous,
+          ),
+          ({}, DesktopCompressionOutcome.ambiguous),
+        ];
+        for (final (payload, expected) in cases) {
+          final parsed = DesktopCommandRpcResult.fromJson(payload);
+          final gateway = _RecordingCommandGateway()
+            ..slashResult = parsed
+            ..dispatchResult = parsed;
+          if (fallback) {
+            gateway.slashError = const TuiGatewayRpcError(
+              'slash.exec',
+              'unavailable',
+              code: -32601,
+            );
+          }
+          final result = await CompressionDispatcher(gateway).dispatch(
+            'runtime',
+            focusTopic: '',
+            connectionEpoch: 1,
+            sessionEpoch: 1,
+            stillValid: () => true,
+            matchesRoot: (_) => true,
           );
+          expect(result.evidence.outcome, expected, reason: '$payload');
+          expect(gateway.calls, hasLength(fallback ? 2 : 1));
         }
-        final result = await CompressionDispatcher(gateway).dispatch(
-          'runtime',
-          focusTopic: '',
-          connectionEpoch: 1,
-          sessionEpoch: 1,
-          stillValid: () => true,
-          matchesRoot: (_) => true,
-        );
-        expect(result.evidence.outcome, expected, reason: '$payload');
-        expect(gateway.calls, hasLength(fallback ? 2 : 1));
-      }
-    });
+      },
+    );
   }
 
   test(
@@ -162,13 +165,16 @@ void main() {
       expect(gateway.calls, hasLength(1));
     },
   );
-  test('REGRESSION_COMP_TYPED_LEGACY_INVALID_ACCEPTED never proves acceptance', () {
-    final evidence = DesktopCompressionLegacyEvidence.fromWire({
-      'output': 'free text must be irrelevant',
-      'accepted': 'yes',
-    });
-    expect(evidence.outcome, DesktopCompressionOutcome.ambiguous);
-  });
+  test(
+    'REGRESSION_COMP_TYPED_LEGACY_INVALID_ACCEPTED never proves acceptance',
+    () {
+      final evidence = DesktopCompressionLegacyEvidence.fromWire({
+        'output': 'free text must be irrelevant',
+        'accepted': 'yes',
+      });
+      expect(evidence.outcome, DesktopCompressionOutcome.ambiguous);
+    },
+  );
 
   test('REGRESSION_COMP_TYPED_LEGACY_CONTRADICTION stays ambiguous', () {
     final evidence = DesktopCompressionLegacyEvidence.fromWire({
@@ -179,29 +185,71 @@ void main() {
     expect(evidence.outcome, DesktopCompressionOutcome.ambiguous);
   });
 
-  test('REGRESSION_COMP_TYPED_LEGACY_REJECTED contradictory positive signals stay ambiguous', () {
-    for (final wire in <Map<String, Object>>[
-      {'accepted': false, 'type': 'exec'},
-      {'accepted': false, 'status': 'pending'},
-      {'accepted': false, 'output': 'presentation text'},
-    ]) {
-      expect(
-        DesktopCompressionLegacyEvidence.fromWire(wire).outcome,
-        DesktopCompressionOutcome.ambiguous,
-        reason: '$wire',
-      );
-    }
-  });
+  test(
+    'REGRESSION_COMP_TYPED_LEGACY_REJECTED contradictory positive signals stay ambiguous',
+    () {
+      for (final wire in <Map<String, Object>>[
+        {'accepted': false, 'type': 'exec'},
+        {'accepted': false, 'status': 'pending'},
+        {'accepted': false, 'output': 'presentation text'},
+      ]) {
+        expect(
+          DesktopCompressionLegacyEvidence.fromWire(wire).outcome,
+          DesktopCompressionOutcome.ambiguous,
+          reason: '$wire',
+        );
+      }
+    },
+  );
 
-  test('REGRESSION_COMP_TYPED evidence precedence and route exclusion', () async {
-    for (final message in ['neutral', 'timeout', 'transport', 'sesión ajena']) {
-      final error = TuiGatewayRpcError('slash.exec', message, code: 4090);
+  test(
+    'REGRESSION_COMP_TYPED evidence precedence and route exclusion',
+    () async {
+      for (final message in [
+        'neutral',
+        'timeout',
+        'transport',
+        'sesión ajena',
+      ]) {
+        final error = TuiGatewayRpcError('slash.exec', message, code: 4090);
+        expect(
+          CompressionDispatcher.failureOutcome(error),
+          DesktopCompressionOutcome.ownershipLost,
+        );
+        final gateway = _RecordingCommandGateway()
+          ..slashError = error
+          ..dispatchError = const TuiGatewayRpcError(
+            'command.dispatch',
+            'denied',
+            origin: CompressionFailureOrigin.localPreflight,
+          );
+        final result = await CompressionDispatcher(gateway).dispatch(
+          'runtime',
+          focusTopic: '',
+          connectionEpoch: 1,
+          sessionEpoch: 1,
+          stillValid: () => true,
+          matchesRoot: (_) => true,
+        );
+        expect(gateway.calls, hasLength(1));
+        expect(
+          result.evidence.outcome,
+          DesktopCompressionOutcome.ownershipLost,
+        );
+      }
       expect(
-        CompressionDispatcher.failureOutcome(error),
-        DesktopCompressionOutcome.ownershipLost,
+        CompressionDispatcher.failureOutcome(
+          const TuiGatewayRpcError(
+            'session.compress',
+            'x',
+            code: 4090,
+            origin: CompressionFailureOrigin.malformed,
+          ),
+        ),
+        DesktopCompressionOutcome.ambiguous,
       );
       final gateway = _RecordingCommandGateway()
-        ..slashError = error
+        ..slashError = const FormatException('unknown')
         ..dispatchError = const TuiGatewayRpcError(
           'command.dispatch',
           'denied',
@@ -215,42 +263,14 @@ void main() {
         stillValid: () => true,
         matchesRoot: (_) => true,
       );
-      expect(gateway.calls, hasLength(1));
-      expect(result.evidence.outcome, DesktopCompressionOutcome.ownershipLost);
-    }
-    expect(
-      CompressionDispatcher.failureOutcome(
-        const TuiGatewayRpcError(
-          'session.compress',
-          'x',
-          code: 4090,
-          origin: CompressionFailureOrigin.malformed,
-        ),
-      ),
-      DesktopCompressionOutcome.ambiguous,
-    );
-    final gateway = _RecordingCommandGateway()
-      ..slashError = const FormatException('unknown')
-      ..dispatchError = const TuiGatewayRpcError(
-        'command.dispatch',
-        'denied',
-        origin: CompressionFailureOrigin.localPreflight,
+      expect(
+        gateway.calls,
+        hasLength(1),
+        reason: 'later preflight cannot erase possible acceptance',
       );
-    final result = await CompressionDispatcher(gateway).dispatch(
-      'runtime',
-      focusTopic: '',
-      connectionEpoch: 1,
-      sessionEpoch: 1,
-      stillValid: () => true,
-      matchesRoot: (_) => true,
-    );
-    expect(
-      gateway.calls,
-      hasLength(1),
-      reason: 'later preflight cannot erase possible acceptance',
-    );
-    expect(result.evidence.outcome, DesktopCompressionOutcome.ambiguous);
-  });
+      expect(result.evidence.outcome, DesktopCompressionOutcome.ambiguous);
+    },
+  );
   test('slash.exec aceptado no ejecuta ningún fallback', () async {
     final gateway = _RecordingCommandGateway();
     final result = await CompressionDispatcher(gateway).compress(
@@ -318,8 +338,9 @@ void main() {
           accepted: DesktopCommandAcceptance.accepted,
         );
 
-      final result = await CompressionDispatcher(gateway)
-          .compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
+      final result = await CompressionDispatcher(
+        gateway,
+      ).compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
 
       expect(gateway.calls, hasLength(1));
       expect(result.dispatchKind, DesktopCommandDispatchKind.none);
@@ -335,8 +356,9 @@ void main() {
           'Timeout waiting for JSON-RPC response',
         );
 
-      final result = await CompressionDispatcher(gateway)
-          .compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
+      final result = await CompressionDispatcher(
+        gateway,
+      ).compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
 
       expect(gateway.calls.map((call) => call.$1), ['slash.exec']);
       expect(result.attemptedRoute, DesktopCommandRoute.slashExec);
@@ -385,8 +407,9 @@ void main() {
     final gateway = _RecordingCommandGateway()
       ..slashError = StateError('websocket closed before response');
 
-    final result = await CompressionDispatcher(gateway)
-        .compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
+    final result = await CompressionDispatcher(
+      gateway,
+    ).compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
 
     expect(gateway.calls.map((call) => call.$1), ['slash.exec']);
     expect(result.accepted, DesktopCommandAcceptance.unknown);
@@ -403,8 +426,9 @@ void main() {
           'Sensitive response transport failed',
         );
 
-      final result = await CompressionDispatcher(gateway)
-          .compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
+      final result = await CompressionDispatcher(
+        gateway,
+      ).compress('runtime-047', connectionEpoch: 1, sessionEpoch: 1);
 
       expect(gateway.calls.map((call) => call.$1), ['slash.exec']);
       expect(result.accepted, DesktopCommandAcceptance.unknown);

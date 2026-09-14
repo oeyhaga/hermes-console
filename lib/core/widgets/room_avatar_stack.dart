@@ -42,8 +42,9 @@ List<RoomAvatarOfficialMember> sortedOfficialRoomAvatarMembers(
   };
   final result = byOwner.values.toList(growable: false)
     ..sort((left, right) {
-      final byDisplay = _fold(left.displayName)
-          .compareTo(_fold(right.displayName));
+      final byDisplay = _fold(
+        left.displayName,
+      ).compareTo(_fold(right.displayName));
       if (byDisplay != 0) return byDisplay;
       final byConnection = left.owner.connectionId.compareTo(
         right.owner.connectionId,

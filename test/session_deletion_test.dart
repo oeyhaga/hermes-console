@@ -92,8 +92,9 @@ void main() {
     expect(chat, contains('localRecoverySessionId: widget.session.id'));
     expect(chat, contains('clearLocalRecovery: _clearDeletedChatRecovery'));
 
-    final home = File('lib/core/screens/home_dashboard_screen.dart')
-        .readAsStringSync();
+    final home = File(
+      'lib/core/screens/home_dashboard_screen.dart',
+    ).readAsStringSync();
     expect(home, isNot(contains('deleteSession: client.deleteSession')));
     expect(
       home,
@@ -105,16 +106,18 @@ void main() {
     );
     expect(home, contains('profile: ownerProfile'));
 
-    final detail = File('lib/core/screens/session_detail_screen.dart')
-        .readAsStringSync();
+    final detail = File(
+      'lib/core/screens/session_detail_screen.dart',
+    ).readAsStringSync();
     expect(
       detail,
       contains('final ownerProfile = Session.profileOwner(_session.profile);'),
     );
     expect(detail, contains('profile: ownerProfile'));
 
-    final list = File('lib/core/screens/session_list_screen.dart')
-        .readAsStringSync();
+    final list = File(
+      'lib/core/screens/session_list_screen.dart',
+    ).readAsStringSync();
     expect(
       list,
       matches(
@@ -124,8 +127,9 @@ void main() {
       ),
     );
 
-    final service = File('lib/core/services/session_deletion.dart')
-        .readAsStringSync();
+    final service = File(
+      'lib/core/services/session_deletion.dart',
+    ).readAsStringSync();
     expect(service, isNot(contains('No se pudo identificar el cron')));
     expect(service, isNot(contains('No hay acceso al gestor de cron')));
   });
@@ -231,36 +235,39 @@ void main() {
     ]);
   });
 
-  test('REGRESSION_CLEANUP_BARRIER continúa stores tras error parcial', () async {
-    final calls = <String>[];
-    final result = await clearProfileLocalConversationState(
-      connectionId: 'instance-a',
-      profile: 'team_alpha',
-      clearDrafts: ({required String profile}) async {
-        calls.add('draft:$profile');
-        return 2;
-      },
-      clearTranscripts: ({required String profile}) async {
-        calls.add('transcript:$profile');
-        throw StateError('sensitive keystore detail');
-      },
-      clearOutbox: ({required String profile}) async {
-        calls.add('outbox:$profile');
-        return 1;
-      },
-    );
+  test(
+    'REGRESSION_CLEANUP_BARRIER continúa stores tras error parcial',
+    () async {
+      final calls = <String>[];
+      final result = await clearProfileLocalConversationState(
+        connectionId: 'instance-a',
+        profile: 'team_alpha',
+        clearDrafts: ({required String profile}) async {
+          calls.add('draft:$profile');
+          return 2;
+        },
+        clearTranscripts: ({required String profile}) async {
+          calls.add('transcript:$profile');
+          throw StateError('sensitive keystore detail');
+        },
+        clearOutbox: ({required String profile}) async {
+          calls.add('outbox:$profile');
+          return 1;
+        },
+      );
 
-    expect(calls, [
-      'draft:team_alpha',
-      'transcript:team_alpha',
-      'outbox:team_alpha',
-    ]);
-    expect(result.drafts.removed, 2);
-    expect(result.transcripts.succeeded, isFalse);
-    expect(result.outbox.removed, 1);
-    expect(result.localFailureCount, 1);
-    expect(result.allSucceeded, isFalse);
-  });
+      expect(calls, [
+        'draft:team_alpha',
+        'transcript:team_alpha',
+        'outbox:team_alpha',
+      ]);
+      expect(result.drafts.removed, 2);
+      expect(result.transcripts.succeeded, isFalse);
+      expect(result.outbox.removed, 1);
+      expect(result.localFailureCount, 1);
+      expect(result.allSucceeded, isFalse);
+    },
+  );
 
   test('borra primero el cron vinculado y después su conversación', () async {
     final calls = <String>[];
@@ -748,8 +755,9 @@ void main() {
   );
 
   test('ActiveChat captura y transporta lifecycle antes del primer await', () {
-    final source = File('lib/core/services/active_chat_service.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/services/active_chat_service.dart',
+    ).readAsStringSync();
     final capture = source.indexOf(
       'final transcriptLifecycle = _localConversationLifecycle;',
     );

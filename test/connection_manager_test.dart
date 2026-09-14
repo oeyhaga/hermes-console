@@ -512,42 +512,45 @@ void main() {
       client.close();
     });
 
-    test('startRun inyecta el contexto en input si el gateway rechaza (422)', () async {
-      final bodies = <Map<String, dynamic>>[];
-      final client = ApiClient(
-        baseUrl: 'http://hermes.local:8642',
-        apiKey: 'k',
-        httpClient: MockClient((request) async {
-          final b = jsonDecode(request.body) as Map<String, dynamic>;
-          bodies.add(b);
-          // Gateway estricto: rechaza cualquier cuerpo con campos de historial.
-          if (b.containsKey('conversation_history') ||
-              b.containsKey('messages')) {
-            return http.Response('{"error":"unexpected field"}', 422);
-          }
-          return http.Response(jsonEncode({'run_id': 'run_2'}), 200);
-        }),
-      );
+    test(
+      'startRun inyecta el contexto en input si el gateway rechaza (422)',
+      () async {
+        final bodies = <Map<String, dynamic>>[];
+        final client = ApiClient(
+          baseUrl: 'http://hermes.local:8642',
+          apiKey: 'k',
+          httpClient: MockClient((request) async {
+            final b = jsonDecode(request.body) as Map<String, dynamic>;
+            bodies.add(b);
+            // Gateway estricto: rechaza cualquier cuerpo con campos de historial.
+            if (b.containsKey('conversation_history') ||
+                b.containsKey('messages')) {
+              return http.Response('{"error":"unexpected field"}', 422);
+            }
+            return http.Response(jsonEncode({'run_id': 'run_2'}), 200);
+          }),
+        );
 
-      final runId = await client.startRun(
-        input: '¿cómo me llamo?',
-        sessionId: 'sess-1',
-        history: const [
-          {'role': 'user', 'content': 'me llamo Zorglub'},
-          {'role': 'assistant', 'content': 'Hola Zorglub'},
-        ],
-      );
+        final runId = await client.startRun(
+          input: '¿cómo me llamo?',
+          sessionId: 'sess-1',
+          history: const [
+            {'role': 'user', 'content': 'me llamo Zorglub'},
+            {'role': 'assistant', 'content': 'Hola Zorglub'},
+          ],
+        );
 
-      expect(runId, 'run_2');
-      // El reintento NO debe perder el contexto: va inyectado en `input`.
-      final retry = bodies.last;
-      expect(retry.containsKey('conversation_history'), isFalse);
-      expect(retry.containsKey('messages'), isFalse);
-      expect(retry['input'], contains('me llamo Zorglub'));
-      expect(retry['input'], contains('Hola Zorglub'));
-      expect(retry['input'], contains('¿cómo me llamo?'));
-      client.close();
-    });
+        expect(runId, 'run_2');
+        // El reintento NO debe perder el contexto: va inyectado en `input`.
+        final retry = bodies.last;
+        expect(retry.containsKey('conversation_history'), isFalse);
+        expect(retry.containsKey('messages'), isFalse);
+        expect(retry['input'], contains('me llamo Zorglub'));
+        expect(retry['input'], contains('Hola Zorglub'));
+        expect(retry['input'], contains('¿cómo me llamo?'));
+        client.close();
+      },
+    );
 
     test('getModelInfoList returns fallback for malformed JSON', () async {
       final client = ApiClient(
@@ -1060,38 +1063,41 @@ void main() {
       expect(connection.dashboardUrl, 'http://127.0.0.1:9119');
     });
 
-    test('mixed legacy+corrupt entries: does not throw, re-saves only the clean valid entry', () async {
-      const prefsKey = 'saved_connections';
+    test(
+      'mixed legacy+corrupt entries: does not throw, re-saves only the clean valid entry',
+      () async {
+        const prefsKey = 'saved_connections';
 
-      SharedPreferences.setMockInitialValues({
-        prefsKey: [
-          jsonEncode({
-            'id': 'conn-1',
-            'label': 'Home',
-            'host': '192.168.1.50',
-            'port': 8642,
-            'api_key': 'secret',
-          }),
-          '{NOT_VALID_JSON',
-        ],
-      });
+        SharedPreferences.setMockInitialValues({
+          prefsKey: [
+            jsonEncode({
+              'id': 'conn-1',
+              'label': 'Home',
+              'host': '192.168.1.50',
+              'port': 8642,
+              'api_key': 'secret',
+            }),
+            '{NOT_VALID_JSON',
+          ],
+        });
 
-      final prefs = await SharedPreferences.getInstance();
+        final prefs = await SharedPreferences.getInstance();
 
-      // Must not throw despite the corrupt entry
-      await ConnectionManager.create(prefs);
+        // Must not throw despite the corrupt entry
+        await ConnectionManager.create(prefs);
 
-      final saved = prefs.getStringList(prefsKey)!;
+        final saved = prefs.getStringList(prefsKey)!;
 
-      // Corrupt entry excluded, valid entry preserved
-      expect(saved, hasLength(1));
+        // Corrupt entry excluded, valid entry preserved
+        expect(saved, hasLength(1));
 
-      final entry = jsonDecode(saved.first) as Map<String, dynamic>;
-      expect(entry['id'], 'conn-1');
+        final entry = jsonDecode(saved.first) as Map<String, dynamic>;
+        expect(entry['id'], 'conn-1');
 
-      // api_key must not appear in the re-saved JSON
-      expect(entry.containsKey('api_key'), isFalse);
-    });
+        // api_key must not appear in the re-saved JSON
+        expect(entry.containsKey('api_key'), isFalse);
+      },
+    );
 
     test(
       'pruneOrphanData quita restos de instancias borradas y conserva el resto',
@@ -1168,41 +1174,50 @@ void main() {
       },
     );
 
-    test('pruneOrphanData poda las preferencias de mascota con scope connId.profile', () async {
-      SharedPreferences.setMockInitialValues({
-        'saved_connections': [
-          jsonEncode({
-            'id': 'keep',
-            'label': 'Viva',
-            'host': '192.168.1.50',
-            'port': 8642,
-          }),
-        ],
-        // Scoped a la conexión viva: se conservan.
-        'companion.selected_slug.keep.alpha': 'nimbus',
-        'companion.enabled.keep.alpha': false,
-        // Huérfanas de una instancia borrada: se eliminan.
-        'companion.selected_slug.gone.alpha': 'jinx',
-        'companion.scale.gone.beta': 'large',
-        'companion.size_multiplier.gone.beta': 1.25,
-        // Globales (legado y ajustes de app): nunca se tocan.
-        'companion.selected_slug': 'boba',
-        'companion.enabled': true,
-        'companion.presence_level': 'minimal',
-        'companion.animation_speed.nimbus': 0.8,
-      });
-      final prefs = await SharedPreferences.getInstance();
-      await ConnectionManager.create(prefs);
+    test(
+      'pruneOrphanData poda las preferencias de mascota con scope connId.profile',
+      () async {
+        SharedPreferences.setMockInitialValues({
+          'saved_connections': [
+            jsonEncode({
+              'id': 'keep',
+              'label': 'Viva',
+              'host': '192.168.1.50',
+              'port': 8642,
+            }),
+          ],
+          // Scoped a la conexión viva: se conservan.
+          'companion.selected_slug.keep.alpha': 'nimbus',
+          'companion.enabled.keep.alpha': false,
+          // Huérfanas de una instancia borrada: se eliminan.
+          'companion.selected_slug.gone.alpha': 'jinx',
+          'companion.scale.gone.beta': 'large',
+          'companion.size_multiplier.gone.beta': 1.25,
+          // Globales (legado y ajustes de app): nunca se tocan.
+          'companion.selected_slug': 'boba',
+          'companion.enabled': true,
+          'companion.presence_level': 'minimal',
+          'companion.animation_speed.nimbus': 0.8,
+        });
+        final prefs = await SharedPreferences.getInstance();
+        await ConnectionManager.create(prefs);
 
-      expect(prefs.containsKey('companion.selected_slug.gone.alpha'), isFalse);
-      expect(prefs.containsKey('companion.scale.gone.beta'), isFalse);
-      expect(prefs.containsKey('companion.size_multiplier.gone.beta'), isFalse);
-      expect(prefs.containsKey('companion.selected_slug.keep.alpha'), isTrue);
-      expect(prefs.getString('companion.selected_slug'), 'boba');
-      expect(prefs.getBool('companion.enabled'), isTrue);
-      expect(prefs.getString('companion.presence_level'), 'minimal');
-      expect(prefs.getDouble('companion.animation_speed.nimbus'), 0.8);
-    });
+        expect(
+          prefs.containsKey('companion.selected_slug.gone.alpha'),
+          isFalse,
+        );
+        expect(prefs.containsKey('companion.scale.gone.beta'), isFalse);
+        expect(
+          prefs.containsKey('companion.size_multiplier.gone.beta'),
+          isFalse,
+        );
+        expect(prefs.containsKey('companion.selected_slug.keep.alpha'), isTrue);
+        expect(prefs.getString('companion.selected_slug'), 'boba');
+        expect(prefs.getBool('companion.enabled'), isTrue);
+        expect(prefs.getString('companion.presence_level'), 'minimal');
+        expect(prefs.getDouble('companion.animation_speed.nimbus'), 0.8);
+      },
+    );
   });
 
   group('ConnectionManager.findConnectionByEndpoint', () {
@@ -1859,14 +1874,17 @@ void main() {
       expect(info.configuredCount, 0);
     });
 
-    test('fromJson handles null active, empty providers, and missing builtin files', () {
-      final info = MemoryInfo.fromJson({'active': null, 'providers': []});
+    test(
+      'fromJson handles null active, empty providers, and missing builtin files',
+      () {
+        final info = MemoryInfo.fromJson({'active': null, 'providers': []});
 
-      expect(info.active, '');
-      expect(info.providers, isEmpty);
-      expect(info.builtinFiles, isEmpty);
-      expect(info.activeProvider, isNull);
-    });
+        expect(info.active, '');
+        expect(info.providers, isEmpty);
+        expect(info.builtinFiles, isEmpty);
+        expect(info.activeProvider, isNull);
+      },
+    );
 
     test('MemoryProvider.fromJson captures all fields', () {
       final p = MemoryProvider.fromJson({
@@ -2014,8 +2032,9 @@ void main() {
     });
 
     test('la ruta usa la normalización central y Uri.encodeComponent', () {
-      final source = File('lib/core/services/connection_manager.dart')
-          .readAsStringSync();
+      final source = File(
+        'lib/core/services/connection_manager.dart',
+      ).readAsStringSync();
 
       expect(source, contains('validateCronJobId(jobId)'));
       expect(source, contains('Uri.encodeComponent(id)'));
@@ -2560,34 +2579,37 @@ void main() {
       client.close();
     });
 
-    test('falls back to legacy token scrape when login endpoint is 404', () async {
-      final client = DashboardClient(
-        host: 'hermes.local',
-        port: 9119,
-        basicUser: 'admin',
-        basicPass: 's3cret',
-        httpClientOverride: MockClient((request) async {
-          if (request.url.path == '/auth/password-login') {
+    test(
+      'falls back to legacy token scrape when login endpoint is 404',
+      () async {
+        final client = DashboardClient(
+          host: 'hermes.local',
+          port: 9119,
+          basicUser: 'admin',
+          basicPass: 's3cret',
+          httpClientOverride: MockClient((request) async {
+            if (request.url.path == '/auth/password-login') {
+              return http.Response('not found', 404);
+            }
+            if (request.url.path == '/') {
+              return http.Response(
+                '<script>window.__HERMES_SESSION_TOKEN__="legacy-tok";</script>',
+                200,
+              );
+            }
+            if (request.url.path == '/api/model/options') {
+              expect(request.headers['x-hermes-session-token'], 'legacy-tok');
+              return http.Response(jsonEncode({'providers': {}}), 200);
+            }
             return http.Response('not found', 404);
-          }
-          if (request.url.path == '/') {
-            return http.Response(
-              '<script>window.__HERMES_SESSION_TOKEN__="legacy-tok";</script>',
-              200,
-            );
-          }
-          if (request.url.path == '/api/model/options') {
-            expect(request.headers['x-hermes-session-token'], 'legacy-tok');
-            return http.Response(jsonEncode({'providers': {}}), 200);
-          }
-          return http.Response('not found', 404);
-        }),
-      );
+          }),
+        );
 
-      final providers = await client.getModelOptions();
-      expect(providers, isEmpty);
-      client.close();
-    });
+        final providers = await client.getModelOptions();
+        expect(providers, isEmpty);
+        client.close();
+      },
+    );
   });
 
   group('DashboardClient.getMemoryInfo', () {

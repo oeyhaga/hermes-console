@@ -315,188 +315,197 @@ class _MountedSubagentProbeState extends State<_MountedSubagentProbe> {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('presentation owner tokens isolate sibling release and scrub only on 1 to 0', () async {
-    final gateway = _SubagentGateway();
-    final chat = ActiveChat(
-      compressionFenceStore: testCompressionFenceStore(),
-      connection: SavedConnection(
-        id: 'conn-subagent',
-        label: 'Subagent',
-        host: 'example.invalid',
-        port: 443,
-        apiKey: 'test-key',
-        useHttps: true,
-        kind: InstanceKind.vps,
-      ),
-      sessionId: 'stored-subagent',
-      sessionTitle: 'Subagent',
-      notifications: null,
-      onTerminal: () {},
-      api: ApiClient(
-        baseUrl: 'https://example.invalid',
-        apiKey: 'test-key',
-        httpClient: MockClient((_) async => http.Response('unused', 500)),
-      ),
-      desktopGateway: gateway,
-    );
-    addTearDown(chat.dispose);
+  test(
+    'presentation owner tokens isolate sibling release and scrub only on 1 to 0',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: SavedConnection(
+          id: 'conn-subagent',
+          label: 'Subagent',
+          host: 'example.invalid',
+          port: 443,
+          apiKey: 'test-key',
+          useHttps: true,
+          kind: InstanceKind.vps,
+        ),
+        sessionId: 'stored-subagent',
+        sessionTitle: 'Subagent',
+        notifications: null,
+        onTerminal: () {},
+        api: ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-key',
+          httpClient: MockClient((_) async => http.Response('unused', 500)),
+        ),
+        desktopGateway: gateway,
+      );
+      addTearDown(chat.dispose);
 
-    final ownerA = chat.acquireSubagentForegroundPresentation();
-    expect(
-      await chat.send(
-        fullText: 'delegar',
-        model: 'hermes-agent',
-        history: const [],
-      ),
-      isTrue,
-    );
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'shared-owner-child',
-      'status': 'running',
-    });
-    await _settle();
-    expect(chat.subagentActivities, hasLength(1));
+      final ownerA = chat.acquireSubagentForegroundPresentation();
+      expect(
+        await chat.send(
+          fullText: 'delegar',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'shared-owner-child',
+        'status': 'running',
+      });
+      await _settle();
+      expect(chat.subagentActivities, hasLength(1));
 
-    final ownerB = chat.acquireSubagentForegroundPresentation();
-    expect(ownerB, isNot(same(ownerA)));
-    expect(chat.releaseSubagentForegroundPresentation(ownerA), isTrue);
-    expect(chat.subagentActivities, hasLength(1));
-    expect(chat.canTailSubagent(chat.subagentActivities.single), isTrue);
+      final ownerB = chat.acquireSubagentForegroundPresentation();
+      expect(ownerB, isNot(same(ownerA)));
+      expect(chat.releaseSubagentForegroundPresentation(ownerA), isTrue);
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.canTailSubagent(chat.subagentActivities.single), isTrue);
 
-    final activity = chat.subagentActivities.single;
-    expect(chat.releaseSubagentForegroundPresentation(ownerA), isFalse);
-    expect(chat.subagentActivities, hasLength(1));
-    expect(chat.releaseSubagentForegroundPresentation(ownerB), isTrue);
-    expect(chat.subagentActivities, isEmpty);
-    expect(chat.canTailSubagent(activity), isFalse);
-  });
+      final activity = chat.subagentActivities.single;
+      expect(chat.releaseSubagentForegroundPresentation(ownerA), isFalse);
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.releaseSubagentForegroundPresentation(ownerB), isTrue);
+      expect(chat.subagentActivities, isEmpty);
+      expect(chat.canTailSubagent(activity), isFalse);
+    },
+  );
 
-  test('zero-owner ingestion stays private and fresh empty proof publishes terminal history', () async {
-    final gateway = _SubagentGateway()
-      ..listGate = Completer<List<DesktopSubagentSnapshot>>();
-    final chat = ActiveChat(
-      compressionFenceStore: testCompressionFenceStore(),
-      connection: SavedConnection(
-        id: 'conn-private-ingestion',
-        label: 'Private ingestion',
-        host: 'example.invalid',
-        port: 443,
-        apiKey: 'test-key',
-        useHttps: true,
-        kind: InstanceKind.vps,
-      ),
-      sessionId: 'stored-private-ingestion',
-      sessionTitle: 'Private ingestion',
-      notifications: null,
-      onTerminal: () {},
-      api: ApiClient(
-        baseUrl: 'https://example.invalid',
-        apiKey: 'test-key',
-        httpClient: MockClient((_) async => http.Response('unused', 500)),
-      ),
-      desktopGateway: gateway,
-    );
-    addTearDown(chat.dispose);
-    expect(
-      await chat.send(
-        fullText: 'delegar en privado',
-        model: 'hermes-agent',
-        history: const [],
-      ),
-      isTrue,
-    );
+  test(
+    'zero-owner ingestion stays private and fresh empty proof publishes terminal history',
+    () async {
+      final gateway = _SubagentGateway()
+        ..listGate = Completer<List<DesktopSubagentSnapshot>>();
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: SavedConnection(
+          id: 'conn-private-ingestion',
+          label: 'Private ingestion',
+          host: 'example.invalid',
+          port: 443,
+          apiKey: 'test-key',
+          useHttps: true,
+          kind: InstanceKind.vps,
+        ),
+        sessionId: 'stored-private-ingestion',
+        sessionTitle: 'Private ingestion',
+        notifications: null,
+        onTerminal: () {},
+        api: ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-key',
+          httpClient: MockClient((_) async => http.Response('unused', 500)),
+        ),
+        desktopGateway: gateway,
+      );
+      addTearDown(chat.dispose);
+      expect(
+        await chat.send(
+          fullText: 'delegar en privado',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
 
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'PRIVATE_RETAINED_ID',
-      'delegation_id': 'PRIVATE_RETAINED_DELEGATION',
-      'goal': 'PRIVATE_RETAINED_GOAL',
-      'model': 'PRIVATE_RETAINED_MODEL',
-      'status': 'running',
-    });
-    await _settle();
-    expect(chat.subagentActivities, isEmpty);
-    expect(chat.subagentAggregate.activeCount, 1);
-    expect(chat.subagentAggregate.phase, SubagentAggregatePhase.active);
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'PRIVATE_RETAINED_ID',
+        'delegation_id': 'PRIVATE_RETAINED_DELEGATION',
+        'goal': 'PRIVATE_RETAINED_GOAL',
+        'model': 'PRIVATE_RETAINED_MODEL',
+        'status': 'running',
+      });
+      await _settle();
+      expect(chat.subagentActivities, isEmpty);
+      expect(chat.subagentAggregate.activeCount, 1);
+      expect(chat.subagentAggregate.phase, SubagentAggregatePhase.active);
 
-    gateway.emit('subagent.complete', const {
-      'subagent_id': 'PRIVATE_RETAINED_ID',
-      'delegation_id': 'PRIVATE_RETAINED_DELEGATION',
-      'summary': 'PRIVATE_TERMINAL_SUMMARY',
-      'status': 'completed',
-    });
-    await _settle();
-    expect(chat.subagentActivities, isEmpty);
-    expect(chat.subagentAggregate.activeCount, 0);
-    expect(chat.subagentAggregate.terminalCount, 1);
-    expect(chat.subagentAggregate.phase, SubagentAggregatePhase.terminalOnly);
+      gateway.emit('subagent.complete', const {
+        'subagent_id': 'PRIVATE_RETAINED_ID',
+        'delegation_id': 'PRIVATE_RETAINED_DELEGATION',
+        'summary': 'PRIVATE_TERMINAL_SUMMARY',
+        'status': 'completed',
+      });
+      await _settle();
+      expect(chat.subagentActivities, isEmpty);
+      expect(chat.subagentAggregate.activeCount, 0);
+      expect(chat.subagentAggregate.terminalCount, 1);
+      expect(chat.subagentAggregate.phase, SubagentAggregatePhase.terminalOnly);
 
-    final owner = chat.acquireSubagentForegroundPresentation();
-    expect(chat.subagentActivities, isEmpty);
-    final proof = chat.refreshSubagentsForTesting();
-    gateway.listGate!.complete(const []);
-    await proof;
+      final owner = chat.acquireSubagentForegroundPresentation();
+      expect(chat.subagentActivities, isEmpty);
+      final proof = chat.refreshSubagentsForTesting();
+      gateway.listGate!.complete(const []);
+      await proof;
 
-    expect(chat.subagentActivities, hasLength(1));
-    expect(chat.subagentActivities.single.isTerminal, isTrue);
-    expect(
-      chat.subagentActivities.single.resultPreview,
-      'PRIVATE_TERMINAL_SUMMARY',
-    );
-    expect(chat.releaseSubagentForegroundPresentation(owner), isTrue);
-    expect(chat.subagentActivities, isEmpty);
-  });
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.subagentActivities.single.isTerminal, isTrue);
+      expect(
+        chat.subagentActivities.single.resultPreview,
+        'PRIVATE_TERMINAL_SUMMARY',
+      );
+      expect(chat.releaseSubagentForegroundPresentation(owner), isTrue);
+      expect(chat.subagentActivities, isEmpty);
+    },
+  );
 
-  test('revoking an empty foreground fences pending list and later native canaries', () async {
-    final gateway = _SubagentGateway();
-    final chat = await _start(gateway);
-    addTearDown(chat.dispose);
-    await _settle();
-    gateway.listGate = Completer<List<DesktopSubagentSnapshot>>();
-    final pending = chat.refreshSubagentsForTesting();
-    chat.suspendSubagentForegroundPresentation();
-    gateway.listGate!.complete(const [
-      DesktopSubagentSnapshot(
-        subagentId: 'CANARY_SUBAGENT_ID',
-        parentId: 'CANARY_PARENT_ID',
-        depth: 7,
-        goal: 'CANARY_GOAL_PROMPT',
-        delegationId: 'CANARY_DELEGATION_ID',
-        model: 'CANARY_MODEL',
-        status: 'tool',
-        toolCount: 9,
-        lastTool: 'CANARY_TOOL_PATH',
-        acceptingSteer: true,
-      ),
-    ]);
-    await pending;
-    gateway.emit('subagent.complete', const {
-      'subagent_id': 'CANARY_POST_REVOKE_ID',
-      'delegation_id': 'CANARY_POST_REVOKE_DELEGATION',
-      'child_session_id': 'CANARY_CHILD_SESSION',
-      'parent_id': 'CANARY_POST_REVOKE_PARENT',
-      'goal': 'CANARY_POST_REVOKE_GOAL',
-      'summary': 'CANARY_RAW_ERROR_RESULT',
-      'output_tail': 'CANARY_POST_REVOKE_TAIL',
-      'tool_name': 'CANARY_POST_REVOKE_TOOL',
-      'tool_preview': '/CANARY/private/path',
-      'model': 'CANARY_POST_REVOKE_MODEL',
-      'status': 'failed',
-    });
-    await _settle();
+  test(
+    'revoking an empty foreground fences pending list and later native canaries',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
+      await _settle();
+      gateway.listGate = Completer<List<DesktopSubagentSnapshot>>();
+      final pending = chat.refreshSubagentsForTesting();
+      chat.suspendSubagentForegroundPresentation();
+      gateway.listGate!.complete(const [
+        DesktopSubagentSnapshot(
+          subagentId: 'CANARY_SUBAGENT_ID',
+          parentId: 'CANARY_PARENT_ID',
+          depth: 7,
+          goal: 'CANARY_GOAL_PROMPT',
+          delegationId: 'CANARY_DELEGATION_ID',
+          model: 'CANARY_MODEL',
+          status: 'tool',
+          toolCount: 9,
+          lastTool: 'CANARY_TOOL_PATH',
+          acceptingSteer: true,
+        ),
+      ]);
+      await pending;
+      gateway.emit('subagent.complete', const {
+        'subagent_id': 'CANARY_POST_REVOKE_ID',
+        'delegation_id': 'CANARY_POST_REVOKE_DELEGATION',
+        'child_session_id': 'CANARY_CHILD_SESSION',
+        'parent_id': 'CANARY_POST_REVOKE_PARENT',
+        'goal': 'CANARY_POST_REVOKE_GOAL',
+        'summary': 'CANARY_RAW_ERROR_RESULT',
+        'output_tail': 'CANARY_POST_REVOKE_TAIL',
+        'tool_name': 'CANARY_POST_REVOKE_TOOL',
+        'tool_preview': '/CANARY/private/path',
+        'model': 'CANARY_POST_REVOKE_MODEL',
+        'status': 'failed',
+      });
+      await _settle();
 
-    final projection = chat.subagentActivities;
-    expect(projection, isEmpty);
-    final haystack = _publicSubagentCanaryHaystack(projection);
-    for (final canary in const [
-      'CANARY_',
-      '/CANARY/private/path',
-      'runtime-subagent',
-      'stored-subagent',
-      'conn-subagent',
-    ]) {
-      expect(haystack, isNot(contains(canary)));
-    }
-  });
+      final projection = chat.subagentActivities;
+      expect(projection, isEmpty);
+      final haystack = _publicSubagentCanaryHaystack(projection);
+      for (final canary in const [
+        'CANARY_',
+        '/CANARY/private/path',
+        'runtime-subagent',
+        'stored-subagent',
+        'conn-subagent',
+      ]) {
+        expect(haystack, isNot(contains(canary)));
+      }
+    },
+  );
 
   test('subagent list hydrates only live normalized rows after bind', () async {
     final gateway = _SubagentGateway()
@@ -733,34 +742,37 @@ void main() {
     expect(chat.activeSubagentCount, 1);
   });
 
-  test('recycled child id without secondary proof remains distinct across runtimes', () async {
-    final gateway = _SubagentGateway();
-    final chat = await _start(gateway);
-    addTearDown(chat.dispose);
+  test(
+    'recycled child id without secondary proof remains distinct across runtimes',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
 
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'recycled-x',
-      'status': 'running',
-      'goal': 'runtime R1 row',
-    });
-    await _settle();
-    chat.adoptDesktopRuntimeForTesting('runtime-r2-distinct');
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'recycled-x',
-      'status': 'running',
-      'goal': 'runtime R2 row',
-    }, sessionId: 'runtime-r2-distinct');
-    await _settle();
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'recycled-x',
+        'status': 'running',
+        'goal': 'runtime R1 row',
+      });
+      await _settle();
+      chat.adoptDesktopRuntimeForTesting('runtime-r2-distinct');
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'recycled-x',
+        'status': 'running',
+        'goal': 'runtime R2 row',
+      }, sessionId: 'runtime-r2-distinct');
+      await _settle();
 
-    // Runtime rotation revokes the predecessor disclosure cut. The exact R2
-    // event proves only the successor incarnation; retained R1 evidence stays
-    // private until an authoritative current roster proves it publishable.
-    expect(chat.subagentActivities, hasLength(1));
-    final successor = chat.subagentActivities.single;
-    expect(successor.goalPreview, 'runtime R2 row');
-    expect(successor.phase, SubagentActivityPhase.running);
-    expect(successor.key.scope.runtimeSessionId, 'runtime-r2-distinct');
-  });
+      // Runtime rotation revokes the predecessor disclosure cut. The exact R2
+      // event proves only the successor incarnation; retained R1 evidence stays
+      // private until an authoritative current roster proves it publishable.
+      expect(chat.subagentActivities, hasLength(1));
+      final successor = chat.subagentActivities.single;
+      expect(successor.goalPreview, 'runtime R2 row');
+      expect(successor.phase, SubagentActivityPhase.running);
+      expect(successor.key.scope.runtimeSessionId, 'runtime-r2-distinct');
+    },
+  );
 
   test(
     'runtime rotation starts a clean incarnation for a reused child id',
@@ -949,45 +961,48 @@ void main() {
     },
   );
 
-  test('same runtime recycled subagent id starts a mounted successor row in next turn', () async {
-    final gateway = _SubagentGateway();
-    final chat = await _start(gateway);
-    addTearDown(chat.dispose);
+  test(
+    'same runtime recycled subagent id starts a mounted successor row in next turn',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
 
-    gateway.emit('subagent.complete', const {
-      'subagent_id': 'turn-recycled-child',
-      'status': 'completed',
-      'event_revision': 1,
-    });
-    gateway.emit('message.complete', const {'text': 'turn E complete'});
-    await _settle();
-    expect(
-      chat.subagentActivities.single.phase,
-      SubagentActivityPhase.completed,
-    );
+      gateway.emit('subagent.complete', const {
+        'subagent_id': 'turn-recycled-child',
+        'status': 'completed',
+        'event_revision': 1,
+      });
+      gateway.emit('message.complete', const {'text': 'turn E complete'});
+      await _settle();
+      expect(
+        chat.subagentActivities.single.phase,
+        SubagentActivityPhase.completed,
+      );
 
-    expect(
-      await chat.send(
-        fullText: 'turn E plus one',
-        model: 'hermes-agent',
-        history: chat.messages,
-      ),
-      isTrue,
-    );
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'turn-recycled-child',
-      'status': 'running',
-      'event_revision': 1,
-    });
-    await _settle();
+      expect(
+        await chat.send(
+          fullText: 'turn E plus one',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'turn-recycled-child',
+        'status': 'running',
+        'event_revision': 1,
+      });
+      await _settle();
 
-    expect(chat.subagentActivities, hasLength(2));
-    final successor = chat.subagentActivities.singleWhere(
-      (activity) => activity.phase == SubagentActivityPhase.running,
-    );
-    expect(successor.subagentId, 'turn-recycled-child');
-    expect(successor.key.scope.turnEpoch, greaterThan(0));
-  });
+      expect(chat.subagentActivities, hasLength(2));
+      final successor = chat.subagentActivities.singleWhere(
+        (activity) => activity.phase == SubagentActivityPhase.running,
+      );
+      expect(successor.subagentId, 'turn-recycled-child');
+      expect(successor.key.scope.turnEpoch, greaterThan(0));
+    },
+  );
 
   test(
     '[console-state 6/7] terminal subagent tombstone absorbs late live event',
@@ -1429,118 +1444,130 @@ void main() {
     },
   );
 
-  test('completed child survives next local turn until exact durable card dedupes it', () async {
-    final gateway = _SubagentGateway();
-    final chat = await _start(gateway);
-    addTearDown(chat.dispose);
+  test(
+    'completed child survives next local turn until exact durable card dedupes it',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
 
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'child-terminal-history',
-      'delegation_id': 'deleg_terminal_history',
-      'child_session_id': 'child-session-terminal-history',
-      'status': 'running',
-      'event_revision': 1,
-      'goal': 'Historical child evidence',
-    });
-    gateway.emit('subagent.complete', const {
-      'subagent_id': 'child-terminal-history',
-      'delegation_id': 'deleg_terminal_history',
-      'child_session_id': 'child-session-terminal-history',
-      'status': 'completed',
-      'event_revision': 2,
-      'summary': 'Historical completion',
-    });
-    gateway.emit('message.complete', const {'text': 'parent completed'});
-    await _settle();
-    final terminal = chat.subagentActivities.single;
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'child-terminal-history',
+        'delegation_id': 'deleg_terminal_history',
+        'child_session_id': 'child-session-terminal-history',
+        'status': 'running',
+        'event_revision': 1,
+        'goal': 'Historical child evidence',
+      });
+      gateway.emit('subagent.complete', const {
+        'subagent_id': 'child-terminal-history',
+        'delegation_id': 'deleg_terminal_history',
+        'child_session_id': 'child-session-terminal-history',
+        'status': 'completed',
+        'event_revision': 2,
+        'summary': 'Historical completion',
+      });
+      gateway.emit('message.complete', const {'text': 'parent completed'});
+      await _settle();
+      final terminal = chat.subagentActivities.single;
 
-    expect(
-      await chat.send(
-        fullText: 'next local turn',
-        model: 'hermes-agent',
-        history: chat.messages,
-      ),
-      isTrue,
-    );
+      expect(
+        await chat.send(
+          fullText: 'next local turn',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
 
-    expect(chat.subagentActivities, hasLength(1));
-    expect(chat.subagentActivities.single, same(terminal));
-    expect(chat.subagentActivities.single.isTerminal, isTrue);
-    expect(chat.canSteerSubagent(terminal), isFalse);
-    expect(chat.canTailSubagent(terminal), isFalse);
-    expect(chat.canInterruptSubagent(terminal), isFalse);
+      expect(chat.subagentActivities, hasLength(1));
+      expect(chat.subagentActivities.single, same(terminal));
+      expect(chat.subagentActivities.single.isTerminal, isTrue);
+      expect(chat.canSteerSubagent(terminal), isFalse);
+      expect(chat.canTailSubagent(terminal), isFalse);
+      expect(chat.canInterruptSubagent(terminal), isFalse);
 
-    chat.internalMessagesForTesting = projectHistoricalSubagentCompletions(
-      messagesNewestFirst: [
-        {
-          'message_id': 'durable-terminal-history',
-          'role': 'user',
-          'content':
-              '[ASYNC DELEGATION BATCH COMPLETE — deleg_terminal_history]',
-          'display_kind': 'async_delegation_complete',
-          'display_metadata': {
-            'delegation_id': 'deleg_terminal_history',
-            'task_count': 1,
-            'completed_count': 1,
-            'failed_count': 0,
-            'subagent_ids': ['child-terminal-history'],
+      chat.internalMessagesForTesting = projectHistoricalSubagentCompletions(
+        messagesNewestFirst: [
+          {
+            'message_id': 'durable-terminal-history',
+            'role': 'user',
+            'content':
+                '[ASYNC DELEGATION BATCH COMPLETE — deleg_terminal_history]',
+            'display_kind': 'async_delegation_complete',
+            'display_metadata': {
+              'delegation_id': 'deleg_terminal_history',
+              'task_count': 1,
+              'completed_count': 1,
+              'failed_count': 0,
+              'subagent_ids': ['child-terminal-history'],
+            },
           },
-        },
-        ...chat.internalMessagesForTesting,
-      ],
-    );
+          ...chat.internalMessagesForTesting,
+        ],
+      );
 
-    expect(chat.subagentActivities, isEmpty);
-    expect(
-      chat.messages
-          .map(historicalSubagentCompletionOf)
-          .whereType<SubagentCompletionCardData>(),
-      hasLength(1),
-    );
-  });
+      expect(chat.subagentActivities, isEmpty);
+      expect(
+        chat.messages
+            .map(historicalSubagentCompletionOf)
+            .whereType<SubagentCompletionCardData>(),
+        hasLength(1),
+      );
+    },
+  );
 
-  test('runtime rotation withholds predecessor evidence until B proves one live row', () async {
-    final gateway = _SubagentGateway();
-    final chat = await _start(gateway);
-    addTearDown(chat.dispose);
+  test(
+    'runtime rotation withholds predecessor evidence until B proves one live row',
+    () async {
+      final gateway = _SubagentGateway();
+      final chat = await _start(gateway);
+      addTearDown(chat.dispose);
 
-    gateway.emit('subagent.start', const {
-      'subagent_id': 'child-rotation',
-      'delegation_id': 'deleg_rotation',
-      'goal': 'inspect continuity',
-      'status': 'running',
-      'event_id': 'rotation-a-start',
-      'event_revision': 1,
-    });
-    await _settle();
-    expect(chat.subagentActivities.single.phase, SubagentActivityPhase.running);
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'child-rotation',
+        'delegation_id': 'deleg_rotation',
+        'goal': 'inspect continuity',
+        'status': 'running',
+        'event_id': 'rotation-a-start',
+        'event_revision': 1,
+      });
+      await _settle();
+      expect(
+        chat.subagentActivities.single.phase,
+        SubagentActivityPhase.running,
+      );
 
-    gateway.listGate = Completer<List<DesktopSubagentSnapshot>>();
-    chat.adoptDesktopRuntimeForTesting('runtime-2');
-    await _settle();
+      gateway.listGate = Completer<List<DesktopSubagentSnapshot>>();
+      chat.adoptDesktopRuntimeForTesting('runtime-2');
+      await _settle();
 
-    expect(chat.subagentActivities, isEmpty);
+      expect(chat.subagentActivities, isEmpty);
 
-    gateway.listGate!.complete(const []);
-    await _settle();
-    expect(chat.subagentActivities, isEmpty);
+      gateway.listGate!.complete(const []);
+      await _settle();
+      expect(chat.subagentActivities, isEmpty);
 
-    gateway.emit('subagent.progress', const {
-      'subagent_id': 'child-rotation',
-      'delegation_id': 'deleg_rotation',
-      'status': 'running',
-      'event_id': 'rotation-b-progress',
-      'event_revision': 2,
-      'tool_count': 3,
-    }, sessionId: 'runtime-2');
-    await _settle();
+      gateway.emit('subagent.progress', const {
+        'subagent_id': 'child-rotation',
+        'delegation_id': 'deleg_rotation',
+        'status': 'running',
+        'event_id': 'rotation-b-progress',
+        'event_revision': 2,
+        'tool_count': 3,
+      }, sessionId: 'runtime-2');
+      await _settle();
 
-    expect(chat.subagentActivities, hasLength(1));
-    expect(chat.subagentActivities.single.phase, SubagentActivityPhase.running);
-    expect(chat.subagentActivities.single.eventRevision, 2);
-    expect(chat.subagentActivities.single.details.toolCount, 3);
-    expect(chat.canInterruptSubagent(chat.subagentActivities.single), isTrue);
-  });
+      expect(chat.subagentActivities, hasLength(1));
+      expect(
+        chat.subagentActivities.single.phase,
+        SubagentActivityPhase.running,
+      );
+      expect(chat.subagentActivities.single.eventRevision, 2);
+      expect(chat.subagentActivities.single.details.toolCount, 3);
+      expect(chat.canInterruptSubagent(chat.subagentActivities.single), isTrue);
+    },
+  );
 
   test(
     '[console-state 7/7] subagent id alone cannot tombstone a successor turn',

@@ -1578,47 +1578,50 @@ void main() {
     },
   );
 
-  test('genuine empty canonical page preserves visible complete transcript', () async {
-    var request = 0;
-    final client = MockClient((_) async {
-      final response = request++ == 0
-          ? const <Object?>[
-              {
-                'message_id': 'durable-row',
-                'role': 'user',
-                'content': 'fila durable',
-                'compacted': 1,
-                'active': 0,
-              },
-            ]
-          : const <Object?>[];
-      return http.Response(
-        jsonEncode({
-          'session_id': 'stored-chat',
-          'messages': response,
-          'pagination': {
-            'limit': 120,
-            'offset': 0,
-            'returned': response.length,
-          },
-          'coverage': ['full'],
-        }),
-        200,
-        headers: const {'content-type': 'application/json'},
-      );
-    });
-    final chat = _chat('genuine-empty-preserves-transcript', client);
-    addTearDown(chat.dispose);
+  test(
+    'genuine empty canonical page preserves visible complete transcript',
+    () async {
+      var request = 0;
+      final client = MockClient((_) async {
+        final response = request++ == 0
+            ? const <Object?>[
+                {
+                  'message_id': 'durable-row',
+                  'role': 'user',
+                  'content': 'fila durable',
+                  'compacted': 1,
+                  'active': 0,
+                },
+              ]
+            : const <Object?>[];
+        return http.Response(
+          jsonEncode({
+            'session_id': 'stored-chat',
+            'messages': response,
+            'pagination': {
+              'limit': 120,
+              'offset': 0,
+              'returned': response.length,
+            },
+            'coverage': ['full'],
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      });
+      final chat = _chat('genuine-empty-preserves-transcript', client);
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages();
-    await chat.loadMessages();
+      await chat.loadMessages();
+      await chat.loadMessages();
 
-    expect(chat.messages.map(canonicalTranscriptMessageId), ['durable-row']);
-    expect(chat.coreReadLineageComplete, isTrue);
-    // Una página sin filas no acredita metadata full por sí sola, pero tampoco
-    // crea un hueco de parseo ni habilita un cursor de backfill inventado.
-    expect(chat.hasEarlierMessages, isFalse);
-  });
+      expect(chat.messages.map(canonicalTranscriptMessageId), ['durable-row']);
+      expect(chat.coreReadLineageComplete, isTrue);
+      // Una página sin filas no acredita metadata full por sí sola, pero tampoco
+      // crea un hueco de parseo ni habilita un cursor de backfill inventado.
+      expect(chat.hasEarlierMessages, isFalse);
+    },
+  );
 
   test('empty canonical page keeps expected-count failure', () async {
     final client = MockClient(
@@ -1951,52 +1954,55 @@ void main() {
     }
   });
 
-  test('backfill iniciado tras refresh no aplica un cursor que el refresh rebobinó', () async {
-    final server = _OutOfOrderTranscriptServer();
-    final chat = _chat('refresh-backfill-revision', server.client());
-    addTearDown(chat.dispose);
+  test(
+    'backfill iniciado tras refresh no aplica un cursor que el refresh rebobinó',
+    () async {
+      final server = _OutOfOrderTranscriptServer();
+      final chat = _chat('refresh-backfill-revision', server.client());
+      addTearDown(chat.dispose);
 
-    final initialLoad = chat.loadMessages(expectedMessageCount: 500);
-    await server.waitForRequests(1);
-    server.complete(0, _rows(120, from: 381), paginated: true);
-    await initialLoad;
+      final initialLoad = chat.loadMessages(expectedMessageCount: 500);
+      await server.waitForRequests(1);
+      server.complete(0, _rows(120, from: 381), paginated: true);
+      await initialLoad;
 
-    final firstBackfill = chat.loadEarlierMessages();
-    await server.waitForRequests(2);
-    expect(server.requests[1].url.queryParameters['offset'], '120');
-    server.complete(1, _rows(120, from: 261), paginated: true);
-    expect(await firstBackfill, isTrue);
-    expect(
-      chat.messages.map((message) => message['id']),
-      orderedEquals(List<int>.generate(240, (index) => 500 - index)),
-    );
+      final firstBackfill = chat.loadEarlierMessages();
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '120');
+      server.complete(1, _rows(120, from: 261), paginated: true);
+      expect(await firstBackfill, isTrue);
+      expect(
+        chat.messages.map((message) => message['id']),
+        orderedEquals(List<int>.generate(240, (index) => 500 - index)),
+      );
 
-    final refresh = chat.loadMessages(expectedMessageCount: 500);
-    await server.waitForRequests(3);
-    final staleBackfill = chat.loadEarlierMessages();
-    await server.waitForRequests(4);
-    expect(server.requests[3].url.queryParameters['offset'], '240');
+      final refresh = chat.loadMessages(expectedMessageCount: 500);
+      await server.waitForRequests(3);
+      final staleBackfill = chat.loadEarlierMessages();
+      await server.waitForRequests(4);
+      expect(server.requests[3].url.queryParameters['offset'], '240');
 
-    // El refresh termina primero y vuelve a declarar que la cola autoritativa
-    // empieza en offset cero. La página pedida con el cursor viejo ya no puede
-    // modificar ni el orden visible ni el siguiente offset.
-    server.complete(2, _rows(120, from: 381), paginated: true);
-    await refresh;
-    server.complete(3, _rows(120, from: 141), paginated: true);
-    expect(await staleBackfill, isFalse);
+      // El refresh termina primero y vuelve a declarar que la cola autoritativa
+      // empieza en offset cero. La página pedida con el cursor viejo ya no puede
+      // modificar ni el orden visible ni el siguiente offset.
+      server.complete(2, _rows(120, from: 381), paginated: true);
+      await refresh;
+      server.complete(3, _rows(120, from: 141), paginated: true);
+      expect(await staleBackfill, isFalse);
 
-    expect(
-      chat.messages.map((message) => message['id']),
-      orderedEquals(List<int>.generate(240, (index) => 500 - index)),
-    );
-    expect(chat.messages.any((message) => message['id'] == 260), isFalse);
+      expect(
+        chat.messages.map((message) => message['id']),
+        orderedEquals(List<int>.generate(240, (index) => 500 - index)),
+      );
+      expect(chat.messages.any((message) => message['id'] == 260), isFalse);
 
-    final retry = chat.loadEarlierMessages();
-    await server.waitForRequests(5);
-    expect(server.requests[4].url.queryParameters['offset'], '120');
-    server.complete(4, _rows(120, from: 261), paginated: true);
-    await retry;
-  });
+      final retry = chat.loadEarlierMessages();
+      await server.waitForRequests(5);
+      expect(server.requests[4].url.queryParameters['offset'], '120');
+      server.complete(4, _rows(120, from: 261), paginated: true);
+      await retry;
+    },
+  );
 
   test(
     'Stop invalida un refresh pendiente y su snapshot running obsoleto',
@@ -2686,50 +2692,53 @@ void main() {
     }
   });
 
-  test('resume_progress con REST aún vacío conserva cobertura parcial y Stop seguro', () async {
-    final server = _OutOfOrderTranscriptServer();
-    final snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-empty-progress-retry',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: 300,
-      hydrating: true,
-      running: true,
-      inflight: DesktopInflightTurn(
-        user: 'turno sintético sin transcript durable',
-        streaming: true,
-      ),
-    );
-    final gateway = _DeferrableGateway()..snapshot = snapshot;
-    final recorded = <CancelledTurnTombstone>[];
-    final chat = _chat(
-      'empty-progress-retry',
-      server.client(),
-      gateway: gateway,
-      onCancelledTurn: (tombstone) async => recorded.add(tombstone),
-    );
-    addTearDown(chat.dispose);
+  test(
+    'resume_progress con REST aún vacío conserva cobertura parcial y Stop seguro',
+    () async {
+      final server = _OutOfOrderTranscriptServer();
+      final snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-empty-progress-retry',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 300,
+        hydrating: true,
+        running: true,
+        inflight: DesktopInflightTurn(
+          user: 'turno sintético sin transcript durable',
+          streaming: true,
+        ),
+      );
+      final gateway = _DeferrableGateway()..snapshot = snapshot;
+      final recorded = <CancelledTurnTombstone>[];
+      final chat = _chat(
+        'empty-progress-retry',
+        server.client(),
+        gateway: gateway,
+        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
+      );
+      addTearDown(chat.dispose);
 
-    final load = chat.loadMessages(expectedMessageCount: 300);
-    await server.waitForRequests(1);
-    server.complete(0, const [], paginated: true);
-    await load;
-    expect(chat.hasEarlierMessages, isTrue);
+      final load = chat.loadMessages(expectedMessageCount: 300);
+      await server.waitForRequests(1);
+      server.complete(0, const [], paginated: true);
+      await load;
+      expect(chat.hasEarlierMessages, isTrue);
 
-    gateway.emitResumeProgress('complete', messageCount: 300);
-    await server.waitForRequests(2);
-    expect(server.requests[1].url.queryParameters['offset'], '0');
-    server.complete(1, const [], paginated: true);
-    for (var tick = 0; tick < 20; tick++) {
-      await Future<void>.delayed(Duration.zero);
-    }
+      gateway.emitResumeProgress('complete', messageCount: 300);
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '0');
+      server.complete(1, const [], paginated: true);
+      for (var tick = 0; tick < 20; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
 
-    expect(chat.hasEarlierMessages, isTrue);
-    await expectLater(chat.cancel(), throwsStateError);
-    expect(recorded.where((tombstone) => tombstone.firstUser), isEmpty);
-    expect(chat.isStreaming, isTrue);
-  });
+      expect(chat.hasEarlierMessages, isTrue);
+      await expectLater(chat.cancel(), throwsStateError);
+      expect(recorded.where((tombstone) => tombstone.firstUser), isEmpty);
+      expect(chat.isStreaming, isTrue);
+    },
+  );
 
   test(
     'resume_progress complete sustituye count viejo tras compactación 300 a 2',
@@ -2778,58 +2787,61 @@ void main() {
     },
   );
 
-  test('scroll y resume_progress solapados no rebobinan la cola hidratada a offset cero', () async {
-    final server = _OutOfOrderTranscriptServer();
-    final gateway = _DeferrableGateway()
-      ..snapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-overlapping-tail-hydration',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: false,
-        messageCount: 300,
-        hydrating: true,
+  test(
+    'scroll y resume_progress solapados no rebobinan la cola hidratada a offset cero',
+    () async {
+      final server = _OutOfOrderTranscriptServer();
+      final gateway = _DeferrableGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-overlapping-tail-hydration',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: 300,
+          hydrating: true,
+        );
+      final chat = _chat(
+        'overlapping-tail-hydration',
+        server.client(),
+        gateway: gateway,
       );
-    final chat = _chat(
-      'overlapping-tail-hydration',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
+      addTearDown(chat.dispose);
 
-    final initialLoad = chat.loadMessages(expectedMessageCount: 300);
-    await server.waitForRequests(1);
-    server.complete(0, _rows(120, from: 181), paginated: true);
-    await initialLoad;
-    expect(chat.hasEarlierMessages, isTrue);
+      final initialLoad = chat.loadMessages(expectedMessageCount: 300);
+      await server.waitForRequests(1);
+      server.complete(0, _rows(120, from: 181), paginated: true);
+      await initialLoad;
+      expect(chat.hasEarlierMessages, isTrue);
 
-    final scrollHydration = chat.loadEarlierMessages();
-    await server.waitForRequests(2);
-    expect(server.requests[1].url.queryParameters['offset'], '0');
+      final scrollHydration = chat.loadEarlierMessages();
+      await server.waitForRequests(2);
+      expect(server.requests[1].url.queryParameters['offset'], '0');
 
-    gateway.emitResumeProgress('complete', messageCount: 300);
-    await server.waitForRequests(3);
-    expect(server.requests[2].url.queryParameters['offset'], '0');
+      gateway.emitResumeProgress('complete', messageCount: 300);
+      await server.waitForRequests(3);
+      expect(server.requests[2].url.queryParameters['offset'], '0');
 
-    // El gesto publica primero una cola válida llena (cursor siguiente 120).
-    server.complete(1, _rows(120, from: 181), paginated: true);
-    expect(await scrollHydration, isTrue);
+      // El gesto publica primero una cola válida llena (cursor siguiente 120).
+      server.complete(1, _rows(120, from: 181), paginated: true);
+      expect(await scrollHydration, isTrue);
 
-    // La rehidratación diferida, pedida bajo la revisión anterior, termina
-    // después con una cola corta todavía no lista. No puede rebobinar a 0.
-    server.complete(2, const [
-      {'id': 299, 'role': 'user', 'content': 'msg 299'},
-      {'id': 300, 'role': 'assistant', 'content': 'msg 300'},
-    ], paginated: true);
-    for (var tick = 0; tick < 10; tick++) {
-      await Future<void>.delayed(Duration.zero);
-    }
+      // La rehidratación diferida, pedida bajo la revisión anterior, termina
+      // después con una cola corta todavía no lista. No puede rebobinar a 0.
+      server.complete(2, const [
+        {'id': 299, 'role': 'user', 'content': 'msg 299'},
+        {'id': 300, 'role': 'assistant', 'content': 'msg 300'},
+      ], paginated: true);
+      for (var tick = 0; tick < 10; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
 
-    final nextBackfill = chat.loadEarlierMessages();
-    await server.waitForRequests(4);
-    expect(server.requests[3].url.queryParameters['offset'], '120');
-    server.complete(3, _rows(120, from: 61), paginated: true);
-    expect(await nextBackfill, isTrue);
-  });
+      final nextBackfill = chat.loadEarlierMessages();
+      await server.waitForRequests(4);
+      expect(server.requests[3].url.queryParameters['offset'], '120');
+      server.complete(3, _rows(120, from: 61), paginated: true);
+      expect(await nextBackfill, isTrue);
+    },
+  );
 
   test(
     'snapshot running omitido sin ancla no revive el primer turno ya terminal',
@@ -2893,72 +2905,75 @@ void main() {
     },
   );
 
-  test('REST con solo user canónico no borra el assistant terminal local sin ancla', () async {
-    final server = _TranscriptServer(paginate: true);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
+  test(
+    'REST con solo user canónico no borra el assistant terminal local sin ancla',
+    () async {
+      final server = _TranscriptServer(paginate: true);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-first-user-only-after-terminal',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: 2,
+          hydrating: true,
+          running: true,
+          inflight: DesktopInflightTurn(
+            user: 'primer turno sin ancla durable',
+            assistant: 'parcial local',
+            streaming: true,
+          ),
+        );
+      final chat = _chat(
+        'first-user-only-after-terminal',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 2);
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'respuesta final local sin ancla'},
+      );
+      for (
+        var attempt = 0;
+        attempt < 200 && chat.state != ChatPipelineState.completed;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(chat.state, ChatPipelineState.completed);
+
+      server.rows.add(const {
+        'id': 'first-user-canonical-only',
+        'role': 'user',
+        'content': 'primer turno sin ancla durable',
+      });
+      gateway.snapshot = const DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-first-user-only-after-terminal',
         storedSessionId: 'stored-chat',
         created: false,
         messagesProvided: false,
-        messageCount: 2,
-        hydrating: true,
-        running: true,
-        inflight: DesktopInflightTurn(
-          user: 'primer turno sin ancla durable',
-          assistant: 'parcial local',
-          streaming: true,
-        ),
+        messageCount: 1,
       );
-    final chat = _chat(
-      'first-user-only-after-terminal',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
+      await chat.loadMessages(expectedMessageCount: 1);
 
-    await chat.loadMessages(expectedMessageCount: 2);
-    gateway.emit(
-      'message.complete',
-      payload: const {'text': 'respuesta final local sin ancla'},
-    );
-    for (
-      var attempt = 0;
-      attempt < 200 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-    expect(chat.state, ChatPipelineState.completed);
-
-    server.rows.add(const {
-      'id': 'first-user-canonical-only',
-      'role': 'user',
-      'content': 'primer turno sin ancla durable',
-    });
-    gateway.snapshot = const DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-first-user-only-after-terminal',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: 1,
-    );
-    await chat.loadMessages(expectedMessageCount: 1);
-
-    expect(chat.isStreaming, isFalse);
-    expect(
-      chat.messages.where(
-        (message) => message['content'] == 'respuesta final local sin ancla',
-      ),
-      hasLength(1),
-    );
-    expect(
-      chat.messages.any(
-        (message) => message['_localTerminalProjectionId'] != null,
-      ),
-      isFalse,
-    );
-  });
+      expect(chat.isStreaming, isFalse);
+      expect(
+        chat.messages.where(
+          (message) => message['content'] == 'respuesta final local sin ancla',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.any(
+          (message) => message['_localTerminalProjectionId'] != null,
+        ),
+        isFalse,
+      );
+    },
+  );
 
   test(
     'REST histórico completo no borra un terminal local todavía sin ancla',
@@ -3180,45 +3195,49 @@ void main() {
     },
   );
 
-  test('count hydrating bajo o exacto no sella una cola llena ni bloquea offset 120', () async {
-    for (final announcedCount in const [2, 120]) {
-      final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(240));
-      final gateway = _DeferrableGateway()
-        ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-stale-count-$announcedCount',
-          storedSessionId: 'stored-chat',
-          created: false,
-          messagesProvided: false,
-          messageCount: announcedCount,
-          hydrating: true,
+  test(
+    'count hydrating bajo o exacto no sella una cola llena ni bloquea offset 120',
+    () async {
+      for (final announcedCount in const [2, 120]) {
+        final server = _TranscriptServer(paginate: true)
+          ..rows.addAll(_rows(240));
+        final gateway = _DeferrableGateway()
+          ..snapshot = DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-stale-count-$announcedCount',
+            storedSessionId: 'stored-chat',
+            created: false,
+            messagesProvided: false,
+            messageCount: announcedCount,
+            hydrating: true,
+          );
+        final chat = _chat(
+          'stale-hydration-count-$announcedCount',
+          server.client(),
+          gateway: gateway,
         );
-      final chat = _chat(
-        'stale-hydration-count-$announcedCount',
-        server.client(),
-        gateway: gateway,
-      );
-      addTearDown(chat.dispose);
+        addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: announcedCount);
-      expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
+        await chat.loadMessages(expectedMessageCount: announcedCount);
+        expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
 
-      expect(
-        await chat.loadEarlierMessages(),
-        isTrue,
-        reason: '$announcedCount',
-      );
-      expect(server.requests.last.queryParameters['offset'], '0');
-      expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
+        expect(
+          await chat.loadEarlierMessages(),
+          isTrue,
+          reason: '$announcedCount',
+        );
+        expect(server.requests.last.queryParameters['offset'], '0');
+        expect(chat.hasEarlierMessages, isTrue, reason: '$announcedCount');
 
-      expect(
-        await chat.loadEarlierMessages(),
-        isTrue,
-        reason: '$announcedCount',
-      );
-      expect(server.requests.last.queryParameters['offset'], '120');
-      expect(chat.messages.last['id'], 1, reason: '$announcedCount');
-    }
-  });
+        expect(
+          await chat.loadEarlierMessages(),
+          isTrue,
+          reason: '$announcedCount',
+        );
+        expect(server.requests.last.queryParameters['offset'], '120');
+        expect(chat.messages.last['id'], 1, reason: '$announcedCount');
+      }
+    },
+  );
 
   test(
     'refresh vacío con count duro conserva filas y arma recuperación',
@@ -4098,72 +4117,231 @@ void main() {
     },
   );
 
-  test('dos refresh stale no limpian la valla y durable la retira sin bloquear cola', () async {
-    final server = _TranscriptServer(paginate: false)
-      ..rows.addAll(const [
+  test(
+    'dos refresh stale no limpian la valla y durable la retira sin bloquear cola',
+    () async {
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(const [
+          {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
+          {
+            'id': 'old-answer',
+            'role': 'assistant',
+            'content': 'respuesta anterior',
+          },
+        ]);
+      DesktopSessionSnapshot snapshotFor(List<Map<String, dynamic>> rows) =>
+          DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-terminal-fence-lifetime',
+            storedSessionId: 'stored-chat',
+            created: false,
+            messagesProvided: true,
+            messageCount: rows.length,
+            messages: rows
+                .map((row) => DesktopSessionMessage.tryParse(row)!)
+                .toList(growable: false),
+          );
+
+      final gateway = _DeferrableGateway()..snapshot = snapshotFor(server.rows);
+      final chat = _chat(
+        'terminal-fence-lifetime',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: server.rows.length);
+      await chat.send(
+        fullText: 'turno A aún no persistido',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'respuesta final A aún local'},
+      );
+      for (
+        var attempt = 0;
+        attempt < 100 && chat.state != ChatPipelineState.completed;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(chat.state, ChatPipelineState.completed);
+
+      await chat.send(
+        fullText: 'turno B activo',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+      for (var refresh = 0; refresh < 2; refresh++) {
+        await chat.loadMessages(expectedMessageCount: server.rows.length);
+        expect(
+          chat.messages.any(
+            (message) => message['content'] == 'turno A aún no persistido',
+          ),
+          isTrue,
+        );
+        expect(
+          chat.messages.any(
+            (message) => message['content'] == 'respuesta final A aún local',
+          ),
+          isTrue,
+        );
+        expect(
+          chat.messages.any(
+            (message) => message['_localTerminalProjectionId'] != null,
+          ),
+          isFalse,
+        );
+        expect(
+          chat.coreReadLineageComplete,
+          isFalse,
+          reason:
+              'un graft rechazado conserva filas visibles pero no completitud',
+        );
+        expect(
+          chat.hasEarlierMessages,
+          isTrue,
+          reason: 'la reparación debe reiniciarse desde offset cero',
+        );
+      }
+
+      server.rows.addAll(const [
+        {'id': 'user-a', 'role': 'user', 'content': 'turno A ya durable'},
+        {
+          'id': 'answer-a',
+          'role': 'assistant',
+          'content': 'respuesta final A ya durable',
+        },
+      ]);
+      gateway.snapshot = snapshotFor(server.rows);
+      await chat.loadMessages(expectedMessageCount: server.rows.length);
+
+      expect(
+        chat.messages.any(
+          (message) => message['_localTerminalProjectionId'] != null,
+        ),
+        isFalse,
+      );
+
+      final shiftedRows = _rows(130, from: 1000);
+      server.paginate = true;
+      server.rows
+        ..clear()
+        ..addAll(shiftedRows);
+      gateway.snapshot = snapshotFor(shiftedRows);
+      await chat.loadMessages(expectedMessageCount: shiftedRows.length);
+
+      expect(chat.messages.any((message) => message['id'] == 1129), isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages.any((message) => message['id'] == 1000), isTrue);
+    },
+  );
+
+  test(
+    'valla terminal atraviesa más de 120 tools hasta acreditar su user canónico',
+    () async {
+      final initialRows = <Map<String, dynamic>>[
         {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
         {
           'id': 'old-answer',
           'role': 'assistant',
           'content': 'respuesta anterior',
         },
-      ]);
-    DesktopSessionSnapshot snapshotFor(List<Map<String, dynamic>> rows) =>
-        DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-terminal-fence-lifetime',
+      ];
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(initialRows);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-terminal-tool-overflow',
           storedSessionId: 'stored-chat',
           created: false,
           messagesProvided: true,
-          messageCount: rows.length,
-          messages: rows
+          messageCount: initialRows.length,
+          messages: initialRows
               .map((row) => DesktopSessionMessage.tryParse(row)!)
               .toList(growable: false),
         );
+      final chat = _chat(
+        'terminal-tool-overflow',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
 
-    final gateway = _DeferrableGateway()..snapshot = snapshotFor(server.rows);
-    final chat = _chat(
-      'terminal-fence-lifetime',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
+      await chat.loadMessages(expectedMessageCount: initialRows.length);
+      await chat.send(
+        fullText: 'turno A con muchas tools',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'respuesta final A'},
+      );
+      for (
+        var attempt = 0;
+        attempt < 100 && chat.state != ChatPipelineState.completed;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(chat.state, ChatPipelineState.completed);
 
-    await chat.loadMessages(expectedMessageCount: server.rows.length);
-    await chat.send(
-      fullText: 'turno A aún no persistido',
-      model: 'hermes-agent',
-      history: chat.buildHistory(),
-    );
-    gateway.emit(
-      'message.complete',
-      payload: const {'text': 'respuesta final A aún local'},
-    );
-    for (
-      var attempt = 0;
-      attempt < 100 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-    expect(chat.state, ChatPipelineState.completed);
+      server
+        ..paginate = true
+        ..rows.addAll([
+          const {
+            'id': 'user-a-overflow',
+            'role': 'user',
+            'content': 'turno A con muchas tools',
+          },
+          const {
+            'id': 'answer-a-overflow',
+            'role': 'assistant',
+            'content': 'respuesta final A',
+          },
+          for (var index = 0; index < 120; index++)
+            {
+              'id': 'tool-a-$index',
+              'role': 'tool',
+              'content': 'resultado tool $index',
+            },
+        ]);
+      gateway.snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-terminal-tool-overflow',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: server.rows.length,
+        hydrating: true,
+      );
 
-    await chat.send(
-      fullText: 'turno B activo',
-      model: 'hermes-agent',
-      history: chat.buildHistory(),
-    );
-    for (var refresh = 0; refresh < 2; refresh++) {
       await chat.loadMessages(expectedMessageCount: server.rows.length);
+      expect(chat.hasEarlierMessages, isTrue);
       expect(
         chat.messages.any(
-          (message) => message['content'] == 'turno A aún no persistido',
+          (message) => message['content'] == 'respuesta final A',
         ),
         isTrue,
       );
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(server.requests.last.queryParameters['offset'], '0');
+      expect(chat.hasEarlierMessages, isTrue);
       expect(
         chat.messages.any(
-          (message) => message['content'] == 'respuesta final A aún local',
+          (message) => message['_localTerminalProjectionId'] != null,
         ),
+        isFalse,
+      );
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(server.requests.last.queryParameters['offset'], '120');
+      expect(chat.hasEarlierMessages, isFalse);
+      expect(
+        chat.messages.any((message) => message['id'] == 'user-a-overflow'),
         isTrue,
       );
       expect(
@@ -4172,430 +4350,290 @@ void main() {
         ),
         isFalse,
       );
-      expect(
-        chat.coreReadLineageComplete,
-        isFalse,
-        reason:
-            'un graft rechazado conserva filas visibles pero no completitud',
-      );
-      expect(
-        chat.hasEarlierMessages,
-        isTrue,
-        reason: 'la reparación debe reiniciarse desde offset cero',
-      );
-    }
+    },
+  );
 
-    server.rows.addAll(const [
-      {'id': 'user-a', 'role': 'user', 'content': 'turno A ya durable'},
-      {
-        'id': 'answer-a',
-        'role': 'assistant',
-        'content': 'respuesta final A ya durable',
-      },
-    ]);
-    gateway.snapshot = snapshotFor(server.rows);
-    await chat.loadMessages(expectedMessageCount: server.rows.length);
-
-    expect(
-      chat.messages.any(
-        (message) => message['_localTerminalProjectionId'] != null,
-      ),
-      isFalse,
-    );
-
-    final shiftedRows = _rows(130, from: 1000);
-    server.paginate = true;
-    server.rows
-      ..clear()
-      ..addAll(shiftedRows);
-    gateway.snapshot = snapshotFor(shiftedRows);
-    await chat.loadMessages(expectedMessageCount: shiftedRows.length);
-
-    expect(chat.messages.any((message) => message['id'] == 1129), isTrue);
-    expect(chat.hasEarlierMessages, isTrue);
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(chat.messages.any((message) => message['id'] == 1000), isTrue);
-  });
-
-  test('valla terminal atraviesa más de 120 tools hasta acreditar su user canónico', () async {
-    final initialRows = <Map<String, dynamic>>[
-      {'id': 'old-user', 'role': 'user', 'content': 'turno anterior'},
-      {
-        'id': 'old-answer',
-        'role': 'assistant',
-        'content': 'respuesta anterior',
-      },
-    ];
-    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-terminal-tool-overflow',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: true,
-        messageCount: initialRows.length,
-        messages: initialRows
-            .map((row) => DesktopSessionMessage.tryParse(row)!)
-            .toList(growable: false),
-      );
-    final chat = _chat(
-      'terminal-tool-overflow',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages(expectedMessageCount: initialRows.length);
-    await chat.send(
-      fullText: 'turno A con muchas tools',
-      model: 'hermes-agent',
-      history: chat.buildHistory(),
-    );
-    gateway.emit(
-      'message.complete',
-      payload: const {'text': 'respuesta final A'},
-    );
-    for (
-      var attempt = 0;
-      attempt < 100 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-    expect(chat.state, ChatPipelineState.completed);
-
-    server
-      ..paginate = true
-      ..rows.addAll([
-        const {
-          'id': 'user-a-overflow',
-          'role': 'user',
-          'content': 'turno A con muchas tools',
-        },
-        const {
-          'id': 'answer-a-overflow',
+  test(
+    'valla provisional poda IDs viejos si la cola de 120 pertenece a una compactación',
+    () async {
+      final initialRows = <Map<String, dynamic>>[
+        {'id': 'ghost-user', 'role': 'user', 'content': 'turno compactado'},
+        {
+          'id': 'ghost-answer',
           'role': 'assistant',
-          'content': 'respuesta final A',
+          'content': 'respuesta compactada',
         },
-        for (var index = 0; index < 120; index++)
-          {
-            'id': 'tool-a-$index',
-            'role': 'tool',
-            'content': 'resultado tool $index',
+      ];
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(initialRows);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-terminal-tool-compaction',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: true,
+          messageCount: initialRows.length,
+          messages: initialRows
+              .map((row) => DesktopSessionMessage.tryParse(row)!)
+              .toList(growable: false),
+        );
+      final chat = _chat(
+        'terminal-tool-compaction',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: initialRows.length);
+      await chat.send(
+        fullText: 'turno después de compactar',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'respuesta local tras compactar'},
+      );
+      for (
+        var attempt = 0;
+        attempt < 100 && chat.state != ChatPipelineState.completed;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+
+      server.paginate = true;
+      server.rows
+        ..clear()
+        ..addAll([
+          const {
+            'id': 'compact-current-user',
+            'role': 'user',
+            'content': 'turno después de compactar',
           },
-      ]);
-    gateway.snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-terminal-tool-overflow',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: server.rows.length,
-      hydrating: true,
-    );
-
-    await chat.loadMessages(expectedMessageCount: server.rows.length);
-    expect(chat.hasEarlierMessages, isTrue);
-    expect(
-      chat.messages.any((message) => message['content'] == 'respuesta final A'),
-      isTrue,
-    );
-
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(server.requests.last.queryParameters['offset'], '0');
-    expect(chat.hasEarlierMessages, isTrue);
-    expect(
-      chat.messages.any(
-        (message) => message['_localTerminalProjectionId'] != null,
-      ),
-      isFalse,
-    );
-
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(server.requests.last.queryParameters['offset'], '120');
-    expect(chat.hasEarlierMessages, isFalse);
-    expect(
-      chat.messages.any((message) => message['id'] == 'user-a-overflow'),
-      isTrue,
-    );
-    expect(
-      chat.messages.any(
-        (message) => message['_localTerminalProjectionId'] != null,
-      ),
-      isFalse,
-    );
-  });
-
-  test('valla provisional poda IDs viejos si la cola de 120 pertenece a una compactación', () async {
-    final initialRows = <Map<String, dynamic>>[
-      {'id': 'ghost-user', 'role': 'user', 'content': 'turno compactado'},
-      {
-        'id': 'ghost-answer',
-        'role': 'assistant',
-        'content': 'respuesta compactada',
-      },
-    ];
-    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
+          const {
+            'id': 'compact-current-answer',
+            'role': 'assistant',
+            'content': 'respuesta local tras compactar',
+          },
+          for (var index = 0; index < 120; index++)
+            {
+              'id': 'compact-tool-$index',
+              'role': 'tool',
+              'content': 'tool compactada $index',
+            },
+        ]);
+      gateway.snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-terminal-tool-compaction',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: true,
-        messageCount: initialRows.length,
-        messages: initialRows
-            .map((row) => DesktopSessionMessage.tryParse(row)!)
-            .toList(growable: false),
-      );
-    final chat = _chat(
-      'terminal-tool-compaction',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages(expectedMessageCount: initialRows.length);
-    await chat.send(
-      fullText: 'turno después de compactar',
-      model: 'hermes-agent',
-      history: chat.buildHistory(),
-    );
-    gateway.emit(
-      'message.complete',
-      payload: const {'text': 'respuesta local tras compactar'},
-    );
-    for (
-      var attempt = 0;
-      attempt < 100 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-
-    server.paginate = true;
-    server.rows
-      ..clear()
-      ..addAll([
-        const {
-          'id': 'compact-current-user',
-          'role': 'user',
-          'content': 'turno después de compactar',
-        },
-        const {
-          'id': 'compact-current-answer',
-          'role': 'assistant',
-          'content': 'respuesta local tras compactar',
-        },
-        for (var index = 0; index < 120; index++)
-          {
-            'id': 'compact-tool-$index',
-            'role': 'tool',
-            'content': 'tool compactada $index',
-          },
-      ]);
-    gateway.snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-terminal-tool-compaction',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: server.rows.length,
-      hydrating: true,
-    );
-
-    await chat.loadMessages(expectedMessageCount: server.rows.length);
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(server.requests.last.queryParameters['offset'], '0');
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(server.requests.last.queryParameters['offset'], '120');
-
-    expect(chat.hasEarlierMessages, isFalse);
-    expect(
-      chat.messages.any((message) => message['id'] == 'ghost-user'),
-      isFalse,
-    );
-    expect(
-      chat.messages.any((message) => message['id'] == 'ghost-answer'),
-      isFalse,
-    );
-    expect(
-      chat.messages.any(
-        (message) => message['content'] == 'respuesta local tras compactar',
-      ),
-      isTrue,
-    );
-  });
-
-  test('compactación conserva inflight y assistant terminal sin fusionarlo por texto', () async {
-    final server = _TranscriptServer(paginate: true)..healthy = false;
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-canonical-terminal-compaction',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: true,
-        messageCount: 121,
+        messagesProvided: false,
+        messageCount: server.rows.length,
         hydrating: true,
-        messages: [
-          DesktopSessionMessage.tryParse(const {
-            'message_id': 'canonical-current-user',
-            'role': 'user',
-            'content': 'turno canónico aún no compactado',
-          })!,
-        ],
-        running: true,
-        inflight: DesktopInflightTurn(
-          user: 'turno canónico aún no compactado',
-          assistant: 'respuesta parcial de Desktop',
-          streaming: true,
-        ),
       );
-    final chat = _chat(
-      'canonical-terminal-compaction',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
 
-    await chat.loadMessages(expectedMessageCount: 121);
-    expect(
-      chat.internalMessagesForTesting.where(
-        (message) =>
-            canonicalTranscriptMessageId(message) == 'canonical-current-user',
-      ),
-      hasLength(1),
-    );
-    gateway.emit(
-      'message.complete',
-      payload: const {'text': 'respuesta terminal local completa'},
-    );
-    for (
-      var attempt = 0;
-      attempt < 200 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-    expect(chat.state, ChatPipelineState.completed);
-
-    // El transcript sufrió una compactación que ya no contiene el turno
-    // terminal. La cola llena lo conserva provisionalmente y la página corta
-    // acredita el inicio, pero no acredita esa valla concreta.
-    server
-      ..healthy = true
-      ..rows.addAll(_rows(121, from: 5000));
-    gateway.resumeError = StateError('snapshot todavía no disponible');
-    gateway.snapshot = const DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-canonical-terminal-compaction',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: 121,
-      hydrating: true,
-    );
-
-    await chat.loadMessages(expectedMessageCount: 121);
-    expect(
-      chat.messages.any(
-        (message) => message['content'] == 'respuesta terminal local completa',
-      ),
-      isTrue,
-    );
-    expect(await chat.loadEarlierMessages(), isTrue);
-    expect(server.requests.last.queryParameters['offset'], '120');
-
-    expect(chat.hasEarlierMessages, isFalse);
-    expect(
-      chat.internalMessagesForTesting.where(
-        (message) =>
-            canonicalTranscriptMessageId(message) == 'canonical-current-user',
-      ),
-      isEmpty,
-    );
-    expect(
-      chat.messages.where(
-        (message) => message['content'] == 'respuesta terminal local completa',
-      ),
-      hasLength(1),
-    );
-    expect(
-      chat.messages.where(
-        (message) =>
-            isRealUserTurn(message) &&
-            message['content'] == 'turno canónico aún no compactado',
-      ),
-      hasLength(1),
-    );
-    final terminalAssistantIndex = chat.messages.indexWhere(
-      (message) => message['content'] == 'respuesta terminal local completa',
-    );
-    final terminalUserIndex = chat.messages.indexWhere(
-      (message) =>
-          isRealUserTurn(message) &&
-          message['content'] == 'turno canónico aún no compactado',
-    );
-    expect(terminalAssistantIndex + 1, terminalUserIndex);
-
-    server.rows.addAll(const [
-      {
-        'id': 5121,
-        'message_id': 'newer-durable-user',
-        'role': 'user',
-        'content': 'turno durable posterior',
-      },
-      {
-        'id': 5122,
-        'message_id': 'newer-durable-assistant',
-        'role': 'assistant',
-        'content': 'respuesta durable posterior',
-      },
-    ]);
-
-    Future<void> expectStableChronology() async {
       await chat.loadMessages(expectedMessageCount: server.rows.length);
-      final messages = chat.internalMessagesForTesting;
-      final newerAssistant = messages.indexWhere(
-        (message) => message['message_id'] == 'newer-durable-assistant',
-      );
-      final newerUser = messages.indexWhere(
-        (message) => message['message_id'] == 'newer-durable-user',
-      );
-      final compactedAssistant = messages.indexWhere(
-        (message) => message['content'] == 'respuesta terminal local completa',
-      );
-      final compactedUser = messages.indexWhere(
-        (message) =>
-            isRealUserTurn(message) &&
-            message['content'] == 'turno canónico aún no compactado',
-      );
-      expect(newerAssistant, greaterThanOrEqualTo(0));
-      expect(newerUser, newerAssistant + 1);
-      expect(compactedAssistant, greaterThan(newerUser));
-      expect(compactedUser, compactedAssistant + 1);
-      final compacted = messages.where(
-        (message) => message['_localCompactedTerminalProjection'] != null,
-      );
-      expect(compacted, hasLength(2));
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(server.requests.last.queryParameters['offset'], '0');
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(server.requests.last.queryParameters['offset'], '120');
+
+      expect(chat.hasEarlierMessages, isFalse);
       expect(
-        compacted.every(
-          (message) =>
-              canonicalTranscriptIdentity(message) == null &&
-              message['_localTerminalProjectionId'] == null,
+        chat.messages.any((message) => message['id'] == 'ghost-user'),
+        isFalse,
+      );
+      expect(
+        chat.messages.any((message) => message['id'] == 'ghost-answer'),
+        isFalse,
+      );
+      expect(
+        chat.messages.any(
+          (message) => message['content'] == 'respuesta local tras compactar',
         ),
         isTrue,
       );
-    }
+    },
+  );
 
-    await expectStableChronology();
-    await expectStableChronology();
-    expect(
-      chat.messages.where(
+  test(
+    'compactación conserva inflight y assistant terminal sin fusionarlo por texto',
+    () async {
+      final server = _TranscriptServer(paginate: true)..healthy = false;
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-canonical-terminal-compaction',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: true,
+          messageCount: 121,
+          hydrating: true,
+          messages: [
+            DesktopSessionMessage.tryParse(const {
+              'message_id': 'canonical-current-user',
+              'role': 'user',
+              'content': 'turno canónico aún no compactado',
+            })!,
+          ],
+          running: true,
+          inflight: DesktopInflightTurn(
+            user: 'turno canónico aún no compactado',
+            assistant: 'respuesta parcial de Desktop',
+            streaming: true,
+          ),
+        );
+      final chat = _chat(
+        'canonical-terminal-compaction',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 121);
+      expect(
+        chat.internalMessagesForTesting.where(
+          (message) =>
+              canonicalTranscriptMessageId(message) == 'canonical-current-user',
+        ),
+        hasLength(1),
+      );
+      gateway.emit(
+        'message.complete',
+        payload: const {'text': 'respuesta terminal local completa'},
+      );
+      for (
+        var attempt = 0;
+        attempt < 200 && chat.state != ChatPipelineState.completed;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(chat.state, ChatPipelineState.completed);
+
+      // El transcript sufrió una compactación que ya no contiene el turno
+      // terminal. La cola llena lo conserva provisionalmente y la página corta
+      // acredita el inicio, pero no acredita esa valla concreta.
+      server
+        ..healthy = true
+        ..rows.addAll(_rows(121, from: 5000));
+      gateway.resumeError = StateError('snapshot todavía no disponible');
+      gateway.snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-canonical-terminal-compaction',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 121,
+        hydrating: true,
+      );
+
+      await chat.loadMessages(expectedMessageCount: 121);
+      expect(
+        chat.messages.any(
+          (message) =>
+              message['content'] == 'respuesta terminal local completa',
+        ),
+        isTrue,
+      );
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(server.requests.last.queryParameters['offset'], '120');
+
+      expect(chat.hasEarlierMessages, isFalse);
+      expect(
+        chat.internalMessagesForTesting.where(
+          (message) =>
+              canonicalTranscriptMessageId(message) == 'canonical-current-user',
+        ),
+        isEmpty,
+      );
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['content'] == 'respuesta terminal local completa',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.where(
+          (message) =>
+              isRealUserTurn(message) &&
+              message['content'] == 'turno canónico aún no compactado',
+        ),
+        hasLength(1),
+      );
+      final terminalAssistantIndex = chat.messages.indexWhere(
+        (message) => message['content'] == 'respuesta terminal local completa',
+      );
+      final terminalUserIndex = chat.messages.indexWhere(
         (message) =>
-            message['content'] == 'respuesta terminal local completa' ||
-            (isRealUserTurn(message) &&
-                message['content'] == 'turno canónico aún no compactado'),
-      ),
-      hasLength(2),
-    );
-  });
+            isRealUserTurn(message) &&
+            message['content'] == 'turno canónico aún no compactado',
+      );
+      expect(terminalAssistantIndex + 1, terminalUserIndex);
+
+      server.rows.addAll(const [
+        {
+          'id': 5121,
+          'message_id': 'newer-durable-user',
+          'role': 'user',
+          'content': 'turno durable posterior',
+        },
+        {
+          'id': 5122,
+          'message_id': 'newer-durable-assistant',
+          'role': 'assistant',
+          'content': 'respuesta durable posterior',
+        },
+      ]);
+
+      Future<void> expectStableChronology() async {
+        await chat.loadMessages(expectedMessageCount: server.rows.length);
+        final messages = chat.internalMessagesForTesting;
+        final newerAssistant = messages.indexWhere(
+          (message) => message['message_id'] == 'newer-durable-assistant',
+        );
+        final newerUser = messages.indexWhere(
+          (message) => message['message_id'] == 'newer-durable-user',
+        );
+        final compactedAssistant = messages.indexWhere(
+          (message) =>
+              message['content'] == 'respuesta terminal local completa',
+        );
+        final compactedUser = messages.indexWhere(
+          (message) =>
+              isRealUserTurn(message) &&
+              message['content'] == 'turno canónico aún no compactado',
+        );
+        expect(newerAssistant, greaterThanOrEqualTo(0));
+        expect(newerUser, newerAssistant + 1);
+        expect(compactedAssistant, greaterThan(newerUser));
+        expect(compactedUser, compactedAssistant + 1);
+        final compacted = messages.where(
+          (message) => message['_localCompactedTerminalProjection'] != null,
+        );
+        expect(compacted, hasLength(2));
+        expect(
+          compacted.every(
+            (message) =>
+                canonicalTranscriptIdentity(message) == null &&
+                message['_localTerminalProjectionId'] == null,
+          ),
+          isTrue,
+        );
+      }
+
+      await expectStableChronology();
+      await expectStableChronology();
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['content'] == 'respuesta terminal local completa' ||
+              (isRealUserTurn(message) &&
+                  message['content'] == 'turno canónico aún no compactado'),
+        ),
+        hasLength(2),
+      );
+    },
+  );
 
   test('tombstone huérfano no fuerza paginar fuera de la cola', () async {
     final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
@@ -5190,60 +5228,64 @@ void main() {
     expect(chat.messages.any((message) => message['id'] == 179), isTrue);
   });
 
-  test('backfill asocia tool result con su image_generate al cruzar el corte de página', () async {
-    final server = _TranscriptServer(paginate: true)
-      ..rows.addAll([
-        for (var id = 1; id <= 178; id++)
-          {'id': id, 'role': 'system', 'content': 'relleno $id'},
-        {'id': 179, 'role': 'user', 'content': 'genera una imagen'},
-        {
-          'id': 180,
-          'role': 'assistant',
-          'content': '',
-          'tool_calls': [
-            {
-              'id': 'call-page-image',
-              'type': 'function',
-              'function': {
-                'name': 'image_generate',
-                'arguments': '{"prompt":"page boundary"}',
+  test(
+    'backfill asocia tool result con su image_generate al cruzar el corte de página',
+    () async {
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll([
+          for (var id = 1; id <= 178; id++)
+            {'id': id, 'role': 'system', 'content': 'relleno $id'},
+          {'id': 179, 'role': 'user', 'content': 'genera una imagen'},
+          {
+            'id': 180,
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': [
+              {
+                'id': 'call-page-image',
+                'type': 'function',
+                'function': {
+                  'name': 'image_generate',
+                  'arguments': '{"prompt":"page boundary"}',
+                },
               },
-            },
-          ],
-        },
-        {
-          'id': 181,
-          'role': 'tool',
-          'tool_call_id': 'call-page-image',
-          'content': '{"success":true,"host_image":"/home/hermes/.hermes/cache/images/page-boundary.png"}',
-        },
-        {'id': 182, 'role': 'assistant', 'content': 'Imagen terminada.'},
-        for (var id = 183; id <= 300; id++)
-          {'id': id, 'role': 'system', 'content': 'relleno $id'},
-      ]);
-    final chat = _chat('image-page-boundary', server.client());
-    addTearDown(chat.dispose);
+            ],
+          },
+          {
+            'id': 181,
+            'role': 'tool',
+            'tool_call_id': 'call-page-image',
+            'content':
+                '{"success":true,"host_image":"/home/hermes/.hermes/cache/images/page-boundary.png"}',
+          },
+          {'id': 182, 'role': 'assistant', 'content': 'Imagen terminada.'},
+          for (var id = 183; id <= 300; id++)
+            {'id': id, 'role': 'system', 'content': 'relleno $id'},
+        ]);
+      final chat = _chat('image-page-boundary', server.client());
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(expectedMessageCount: 300);
+      await chat.loadMessages(expectedMessageCount: 300);
 
-    final finalAssistant = chat.messages.singleWhere(
-      (message) => message['id'] == 182,
-    );
-    final initialRefs = _generatedImageRefs(finalAssistant);
-    expect(initialRefs, hasLength(1));
-    expect(initialRefs.single['basename'], 'page-boundary.png');
-    expect(initialRefs.single['tool_call_id'], 'call-page-image');
+      final finalAssistant = chat.messages.singleWhere(
+        (message) => message['id'] == 182,
+      );
+      final initialRefs = _generatedImageRefs(finalAssistant);
+      expect(initialRefs, hasLength(1));
+      expect(initialRefs.single['basename'], 'page-boundary.png');
+      expect(initialRefs.single['tool_call_id'], 'call-page-image');
 
-    expect(await chat.loadEarlierMessages(), isTrue);
+      expect(await chat.loadEarlierMessages(), isTrue);
 
-    final hydratedAssistant = chat.messages.singleWhere(
-      (message) => message['id'] == 182,
-    );
-    final refs = _generatedImageRefs(hydratedAssistant);
-    expect(refs, hasLength(1));
-    expect(refs.single['basename'], 'page-boundary.png');
-    expect(refs.single['tool_call_id'], 'call-page-image');
-  });
+      final hydratedAssistant = chat.messages.singleWhere(
+        (message) => message['id'] == 182,
+      );
+      final refs = _generatedImageRefs(hydratedAssistant);
+      expect(refs, hasLength(1));
+      expect(refs.single['basename'], 'page-boundary.png');
+      expect(refs.single['tool_call_id'], 'call-page-image');
+    },
+  );
 
   test('gateway legacy sin metadata pagination: transcript one-shot', () async {
     final server = _TranscriptServer(paginate: false)..rows.addAll(_rows(300));
@@ -6310,135 +6352,46 @@ void main() {
     },
   );
 
-  test('resume_progress no fusiona canonical e inflight idénticos sin ID compartido', () async {
-    final server = _TranscriptServer(paginate: true);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-live-canonical-overlay',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: false,
-        messageCount: 2,
-        hydrating: true,
-        running: true,
-        inflight: DesktopInflightTurn(
-          user: 'turno current canónico',
-          assistant: 'respuesta parcial current suficientemente larga',
-          streaming: true,
-        ),
-      );
-    final chat = _chat(
-      'live-canonical-overlay',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages(expectedMessageCount: 2);
-    server.rows.addAll(const [
-      {
-        'id': 'current-user',
-        'role': 'user',
-        'content': 'turno current canónico',
-      },
-      {
-        'id': 'current-answer',
-        'role': 'assistant',
-        'content': 'respuesta parcial current suficientemente larga',
-      },
-    ]);
-    gateway.emitResumeProgress('complete', messageCount: 2);
-    for (
-      var attempt = 0;
-      attempt < 100 && server.requests.length < 2;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 1));
-    }
-    for (var attempt = 0; attempt < 20; attempt++) {
-      await Future<void>.delayed(Duration.zero);
-    }
-
-    expect(
-      chat.messages.where(
-        (message) => message['content'] == 'turno current canónico',
-      ),
-      hasLength(2),
-    );
-    expect(
-      chat.messages.where(
-        (message) =>
-            message['content'] ==
-            'respuesta parcial current suficientemente larga',
-      ),
-      hasLength(2),
-    );
-    expect(chat.isStreaming, isTrue);
-    expect(
-      chat.internalMessagesForTesting.where(
-        (message) => message['_desktopSnapshotKind'] == 'inflight',
-      ),
-      hasLength(2),
-    );
-    expect(
-      chat.messages.where((message) => message['id'] == 'current-user'),
-      hasLength(1),
-    );
-    expect(
-      chat.messages.where((message) => message['id'] == 'current-answer'),
-      hasLength(1),
-    );
-  });
-
-  test('hidratación live no inventa equivalencia si falta assistant o cambia su texto', () async {
-    for (final durableRows in <List<Map<String, dynamic>>>[
-      const [
-        {
-          'id': 'ambiguous-user-only',
-          'role': 'user',
-          'content': 'prompt repetido ambiguo',
-        },
-      ],
-      const [
-        {
-          'id': 'old-repeated-user',
-          'role': 'user',
-          'content': 'prompt repetido ambiguo',
-        },
-        {
-          'id': 'old-repeated-answer',
-          'role': 'assistant',
-          'content': 'respuesta anterior distinta',
-        },
-      ],
-    ]) {
+  test(
+    'resume_progress no fusiona canonical e inflight idénticos sin ID compartido',
+    () async {
       final server = _TranscriptServer(paginate: true);
-      final suffix = durableRows.length;
       final gateway = _DeferrableGateway()
         ..snapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-ambiguous-live-$suffix',
+          runtimeSessionId: 'runtime-live-canonical-overlay',
           storedSessionId: 'stored-chat',
           created: false,
           messagesProvided: false,
-          messageCount: durableRows.length,
+          messageCount: 2,
           hydrating: true,
           running: true,
           inflight: DesktopInflightTurn(
-            user: 'prompt repetido ambiguo',
-            assistant: 'respuesta nueva current claramente distinta',
+            user: 'turno current canónico',
+            assistant: 'respuesta parcial current suficientemente larga',
             streaming: true,
           ),
         );
       final chat = _chat(
-        'ambiguous-live-$suffix',
+        'live-canonical-overlay',
         server.client(),
         gateway: gateway,
       );
       addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: durableRows.length);
-      server.rows.addAll(durableRows);
-      gateway.emitResumeProgress('complete', messageCount: durableRows.length);
+      await chat.loadMessages(expectedMessageCount: 2);
+      server.rows.addAll(const [
+        {
+          'id': 'current-user',
+          'role': 'user',
+          'content': 'turno current canónico',
+        },
+        {
+          'id': 'current-answer',
+          'role': 'assistant',
+          'content': 'respuesta parcial current suficientemente larga',
+        },
+      ]);
+      gateway.emitResumeProgress('complete', messageCount: 2);
       for (
         var attempt = 0;
         attempt < 100 && server.requests.length < 2;
@@ -6452,13 +6405,111 @@ void main() {
 
       expect(
         chat.messages.where(
-          (message) => message['content'] == 'prompt repetido ambiguo',
+          (message) => message['content'] == 'turno current canónico',
         ),
         hasLength(2),
-        reason: 'durableRows=${durableRows.length}',
       );
-    }
-  });
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['content'] ==
+              'respuesta parcial current suficientemente larga',
+        ),
+        hasLength(2),
+      );
+      expect(chat.isStreaming, isTrue);
+      expect(
+        chat.internalMessagesForTesting.where(
+          (message) => message['_desktopSnapshotKind'] == 'inflight',
+        ),
+        hasLength(2),
+      );
+      expect(
+        chat.messages.where((message) => message['id'] == 'current-user'),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.where((message) => message['id'] == 'current-answer'),
+        hasLength(1),
+      );
+    },
+  );
+
+  test(
+    'hidratación live no inventa equivalencia si falta assistant o cambia su texto',
+    () async {
+      for (final durableRows in <List<Map<String, dynamic>>>[
+        const [
+          {
+            'id': 'ambiguous-user-only',
+            'role': 'user',
+            'content': 'prompt repetido ambiguo',
+          },
+        ],
+        const [
+          {
+            'id': 'old-repeated-user',
+            'role': 'user',
+            'content': 'prompt repetido ambiguo',
+          },
+          {
+            'id': 'old-repeated-answer',
+            'role': 'assistant',
+            'content': 'respuesta anterior distinta',
+          },
+        ],
+      ]) {
+        final server = _TranscriptServer(paginate: true);
+        final suffix = durableRows.length;
+        final gateway = _DeferrableGateway()
+          ..snapshot = DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-ambiguous-live-$suffix',
+            storedSessionId: 'stored-chat',
+            created: false,
+            messagesProvided: false,
+            messageCount: durableRows.length,
+            hydrating: true,
+            running: true,
+            inflight: DesktopInflightTurn(
+              user: 'prompt repetido ambiguo',
+              assistant: 'respuesta nueva current claramente distinta',
+              streaming: true,
+            ),
+          );
+        final chat = _chat(
+          'ambiguous-live-$suffix',
+          server.client(),
+          gateway: gateway,
+        );
+        addTearDown(chat.dispose);
+
+        await chat.loadMessages(expectedMessageCount: durableRows.length);
+        server.rows.addAll(durableRows);
+        gateway.emitResumeProgress(
+          'complete',
+          messageCount: durableRows.length,
+        );
+        for (
+          var attempt = 0;
+          attempt < 100 && server.requests.length < 2;
+          attempt++
+        ) {
+          await Future<void>.delayed(const Duration(milliseconds: 1));
+        }
+        for (var attempt = 0; attempt < 20; attempt++) {
+          await Future<void>.delayed(Duration.zero);
+        }
+
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'prompt repetido ambiguo',
+          ),
+          hasLength(2),
+          reason: 'durableRows=${durableRows.length}',
+        );
+      }
+    },
+  );
 
   test('REST id-less más inflight homónimo falla cerrado ante Stop', () async {
     final rows = <Map<String, dynamic>>[
@@ -6640,78 +6691,87 @@ void main() {
     },
   );
 
-  test('Stop no confunde con el turno actual una fila histórica tardía homónima', () async {
-    final initialRows = <Map<String, dynamic>>[
-      {'id': 101, 'role': 'user', 'content': 'turno anterior', 'timestamp': 10},
-      {
-        'id': 102,
-        'role': 'assistant',
-        'content': 'respuesta anterior',
-        'timestamp': 20,
-      },
-      {
+  test(
+    'Stop no confunde con el turno actual una fila histórica tardía homónima',
+    () async {
+      final initialRows = <Map<String, dynamic>>[
+        {
+          'id': 101,
+          'role': 'user',
+          'content': 'turno anterior',
+          'timestamp': 10,
+        },
+        {
+          'id': 102,
+          'role': 'assistant',
+          'content': 'respuesta anterior',
+          'timestamp': 20,
+        },
+        {
+          'role': 'user',
+          'content': 'turno histórico sin identidad',
+          'timestamp': 30,
+        },
+      ];
+      final server = _TranscriptServer(paginate: true)
+        ..rows.addAll(initialRows);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-used-session-stop',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: initialRows.length,
+        );
+      final recorded = <CancelledTurnTombstone>[];
+      final chat = _chat(
+        'used-session-stop',
+        server.client(),
+        gateway: gateway,
+        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: initialRows.length);
+      await chat.send(
+        fullText: 'turno actual que debe parar',
+        model: 'hermes-agent',
+        history: chat.buildHistory(),
+      );
+      server.rows.add(const {
+        'id': 301,
         'role': 'user',
-        'content': 'turno histórico sin identidad',
-        'timestamp': 30,
-      },
-    ];
-    final server = _TranscriptServer(paginate: true)..rows.addAll(initialRows);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
+        'content': 'turno actual que debe parar',
+        'timestamp': 99,
+      });
+      gateway.snapshot = DesktopSessionSnapshot(
         runtimeSessionId: 'runtime-used-session-stop',
         storedSessionId: 'stored-chat',
         created: false,
         messagesProvided: false,
-        messageCount: initialRows.length,
+        messageCount: server.rows.length,
+        running: true,
+        inflight: DesktopInflightTurn(
+          user: 'turno actual que debe parar',
+          streaming: true,
+          startedAt: DateTime.fromMillisecondsSinceEpoch(100000, isUtc: true),
+        ),
       );
-    final recorded = <CancelledTurnTombstone>[];
-    final chat = _chat(
-      'used-session-stop',
-      server.client(),
-      gateway: gateway,
-      onCancelledTurn: (tombstone) async => recorded.add(tombstone),
-    );
-    addTearDown(chat.dispose);
 
-    await chat.loadMessages(expectedMessageCount: initialRows.length);
-    await chat.send(
-      fullText: 'turno actual que debe parar',
-      model: 'hermes-agent',
-      history: chat.buildHistory(),
-    );
-    server.rows.add(const {
-      'id': 301,
-      'role': 'user',
-      'content': 'turno actual que debe parar',
-      'timestamp': 99,
-    });
-    gateway.snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-used-session-stop',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: server.rows.length,
-      running: true,
-      inflight: DesktopInflightTurn(
-        user: 'turno actual que debe parar',
-        streaming: true,
-        startedAt: DateTime.fromMillisecondsSinceEpoch(100000, isUtc: true),
-      ),
-    );
+      final requestsBeforeStop = server.requests.length;
+      await expectLater(chat.cancel(), throwsStateError);
 
-    final requestsBeforeStop = server.requests.length;
-    await expectLater(chat.cancel(), throwsStateError);
-
-    expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
-    expect(
-      server.requests,
-      hasLength(requestsBeforeStop + 1),
-      reason:
-          'la página se consulta, pero su fila anterior a inflight.started_at '
-          'no acredita el turno vivo',
-    );
-  });
+      expect(recorded, isEmpty);
+      expect(chat.isStreaming, isTrue);
+      expect(
+        server.requests,
+        hasLength(requestsBeforeStop + 1),
+        reason:
+            'la página se consulta, pero su fila anterior a inflight.started_at '
+            'no acredita el turno vivo',
+      );
+    },
+  );
 
   test(
     'Stop acepta una frontera homónima acreditada antes del submit',
@@ -7529,140 +7589,148 @@ void main() {
     },
   );
 
-  test('snapshot omitido con count mayor degrada un fallback completo sin borrarlo', () async {
-    final initialRows = <Map<String, dynamic>>[
-      {'message_id': 'fallback-user', 'role': 'user', 'content': 'pregunta'},
-      {
-        'message_id': 'fallback-answer',
-        'role': 'assistant',
-        'content': 'respuesta',
-      },
-    ];
-    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-fallback-complete',
+  test(
+    'snapshot omitido con count mayor degrada un fallback completo sin borrarlo',
+    () async {
+      final initialRows = <Map<String, dynamic>>[
+        {'message_id': 'fallback-user', 'role': 'user', 'content': 'pregunta'},
+        {
+          'message_id': 'fallback-answer',
+          'role': 'assistant',
+          'content': 'respuesta',
+        },
+      ];
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(initialRows);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-fallback-complete',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: true,
+          messages: initialRows
+              .map((row) => DesktopSessionMessage.tryParse(row)!)
+              .toList(growable: false),
+          messageCount: 2,
+        );
+      final chat = _chat(
+        'omitted-larger-count',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 2);
+      expect(chat.messages, hasLength(2));
+      expect(chat.hasEarlierMessages, isFalse);
+
+      server.healthy = false;
+      gateway.snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-fallback-omitted',
         storedSessionId: 'stored-chat',
         created: false,
-        messagesProvided: true,
-        messages: initialRows
-            .map((row) => DesktopSessionMessage.tryParse(row)!)
-            .toList(growable: false),
-        messageCount: 2,
-      );
-    final chat = _chat(
-      'omitted-larger-count',
-      server.client(),
-      gateway: gateway,
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages(expectedMessageCount: 2);
-    expect(chat.messages, hasLength(2));
-    expect(chat.hasEarlierMessages, isFalse);
-
-    server.healthy = false;
-    gateway.snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-fallback-omitted',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: 300,
-      inflight: DesktopInflightTurn(
-        user: 'turno posterior activo',
-        streaming: true,
-      ),
-      running: true,
-    );
-    await chat.loadMessages(expectedMessageCount: 300);
-
-    expect(
-      chat.messages.any(
-        (message) => message['message_id'] == 'fallback-answer',
-      ),
-      isTrue,
-    );
-    expect(chat.hasEarlierMessages, isTrue);
-  });
-
-  test('snapshot omitido con count menor degrada un fallback completo sin borrarlo', () async {
-    final initialRows = <Map<String, dynamic>>[
-      {
-        'message_id': 'compacted-fallback-user',
-        'role': 'user',
-        'content': 'prompt original',
-      },
-      {
-        'message_id': 'compacted-fallback-answer',
-        'role': 'assistant',
-        'content': 'respuesta legítima',
-      },
-    ];
-    final server = _TranscriptServer(paginate: false)..rows.addAll(initialRows);
-    final gateway = _DeferrableGateway()
-      ..snapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-before-compaction',
-        storedSessionId: 'stored-chat',
-        created: false,
-        messagesProvided: true,
-        messages: initialRows
-            .map((row) => DesktopSessionMessage.tryParse(row)!)
-            .toList(growable: false),
-        messageCount: 2,
-      );
-    final chat = _chat(
-      'omitted-smaller-count',
-      server.client(),
-      gateway: gateway,
-      initialCancelledTurnTombstones: const [
-        CancelledTurnTombstone(
-          content: 'prompt repetido tras compactación',
-          firstUser: true,
+        messagesProvided: false,
+        messageCount: 300,
+        inflight: DesktopInflightTurn(
+          user: 'turno posterior activo',
+          streaming: true,
         ),
-      ],
-    );
-    addTearDown(chat.dispose);
+        running: true,
+      );
+      await chat.loadMessages(expectedMessageCount: 300);
 
-    await chat.loadMessages(expectedMessageCount: 2);
-    expect(chat.messages, hasLength(2));
-    expect(chat.hasEarlierMessages, isFalse);
+      expect(
+        chat.messages.any(
+          (message) => message['message_id'] == 'fallback-answer',
+        ),
+        isTrue,
+      );
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
 
-    final userIndex = chat.messages.indexWhere(
-      (message) => message['message_id'] == 'compacted-fallback-user',
-    );
-    chat.internalMessagesForTesting[userIndex] = {
-      ...chat.messages[userIndex],
-      'content': 'prompt repetido tras compactación',
-    };
-    server.healthy = false;
-    gateway.snapshot = DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-after-compaction',
-      storedSessionId: 'stored-chat',
-      created: false,
-      messagesProvided: false,
-      messageCount: 1,
-    );
+  test(
+    'snapshot omitido con count menor degrada un fallback completo sin borrarlo',
+    () async {
+      final initialRows = <Map<String, dynamic>>[
+        {
+          'message_id': 'compacted-fallback-user',
+          'role': 'user',
+          'content': 'prompt original',
+        },
+        {
+          'message_id': 'compacted-fallback-answer',
+          'role': 'assistant',
+          'content': 'respuesta legítima',
+        },
+      ];
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(initialRows);
+      final gateway = _DeferrableGateway()
+        ..snapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-before-compaction',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: true,
+          messages: initialRows
+              .map((row) => DesktopSessionMessage.tryParse(row)!)
+              .toList(growable: false),
+          messageCount: 2,
+        );
+      final chat = _chat(
+        'omitted-smaller-count',
+        server.client(),
+        gateway: gateway,
+        initialCancelledTurnTombstones: const [
+          CancelledTurnTombstone(
+            content: 'prompt repetido tras compactación',
+            firstUser: true,
+          ),
+        ],
+      );
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(expectedMessageCount: 1);
+      await chat.loadMessages(expectedMessageCount: 2);
+      expect(chat.messages, hasLength(2));
+      expect(chat.hasEarlierMessages, isFalse);
 
-    expect(
-      chat.messages.any(
-        (message) =>
-            message['message_id'] == 'compacted-fallback-answer' &&
-            message['content'] == 'respuesta legítima',
-      ),
-      isTrue,
-    );
-    expect(
-      chat.messages
-          .singleWhere(
-            (message) => message['message_id'] == 'compacted-fallback-user',
-          )
-          .containsKey('_cancelledUser'),
-      isFalse,
-    );
-    expect(chat.hasEarlierMessages, isTrue);
-  });
+      final userIndex = chat.messages.indexWhere(
+        (message) => message['message_id'] == 'compacted-fallback-user',
+      );
+      chat.internalMessagesForTesting[userIndex] = {
+        ...chat.messages[userIndex],
+        'content': 'prompt repetido tras compactación',
+      };
+      server.healthy = false;
+      gateway.snapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-after-compaction',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 1,
+      );
+
+      await chat.loadMessages(expectedMessageCount: 1);
+
+      expect(
+        chat.messages.any(
+          (message) =>
+              message['message_id'] == 'compacted-fallback-answer' &&
+              message['content'] == 'respuesta legítima',
+        ),
+        isTrue,
+      );
+      expect(
+        chat.messages
+            .singleWhere(
+              (message) => message['message_id'] == 'compacted-fallback-user',
+            )
+            .containsKey('_cancelledUser'),
+        isFalse,
+      );
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
 
   test(
     'snapshot omitido no acredita count contra una fila durable sin id',

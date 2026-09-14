@@ -57,8 +57,9 @@ void main() {
   });
 
   test('owning screen declares no sub-48 interactive constraints', () {
-    final source = File('lib/core/screens/mission_control_screen.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/screens/mission_control_screen.dart',
+    ).readAsStringSync();
     expect(source, isNot(contains('minimumSize: const Size.square(44)')));
     expect(source, isNot(contains('minimumSize: const Size(44, 40)')));
     expect(source, isNot(contains('minWidth: 44')));

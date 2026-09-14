@@ -202,8 +202,9 @@ void main() {
       final icon = tester.widget<Icon>(
         find.byIcon(Icons.account_tree_outlined),
       );
-      final colors = Theme.of(tester.element(find.byType(SubagentActivityCard)))
-          .hermes;
+      final colors = Theme.of(
+        tester.element(find.byType(SubagentActivityCard)),
+      ).hermes;
       expect(icon.color, colors.error);
     },
   );
@@ -344,8 +345,9 @@ void main() {
     expect(find.text('estado desconocido'), findsOneWidget);
     expect(find.textContaining('unknown-private'), findsNothing);
     final icon = tester.widget<Icon>(find.byIcon(Icons.account_tree_outlined));
-    final colors = Theme.of(tester.element(find.byType(SubagentActivityCard)))
-        .hermes;
+    final colors = Theme.of(
+      tester.element(find.byType(SubagentActivityCard)),
+    ).hermes;
     expect(icon.color, colors.textSecondary);
   });
 
@@ -818,8 +820,9 @@ void main() {
     await tester.pumpAndSettle();
 
     final completed = tester.widget<Text>(find.text('completado').last);
-    final colors = Theme.of(tester.element(find.byType(SubagentActivityCard)))
-        .hermes;
+    final colors = Theme.of(
+      tester.element(find.byType(SubagentActivityCard)),
+    ).hermes;
     expect(completed.style?.color, colors.textSecondary);
     expect(completed.style?.fontSize, 12);
   });

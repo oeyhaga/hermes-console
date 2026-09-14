@@ -356,14 +356,17 @@ void main() {
       expect(ev.kind, ChatEventKind.text);
     });
 
-    test('JSON bare sin claves internas se trata como texto (sin falsos positivos)', () {
-      final msg = {
-        'role': 'assistant',
-        'content': jsonEncode({'foo': 'bar', 'n': 1}),
-      };
-      final ev = ChatEventInfo.classify(msg);
-      expect(ev.kind, ChatEventKind.text);
-    });
+    test(
+      'JSON bare sin claves internas se trata como texto (sin falsos positivos)',
+      () {
+        final msg = {
+          'role': 'assistant',
+          'content': jsonEncode({'foo': 'bar', 'n': 1}),
+        };
+        final ev = ChatEventInfo.classify(msg);
+        expect(ev.kind, ChatEventKind.text);
+      },
+    );
 
     test('mensaje de usuario nunca se estructura aunque parezca payload', () {
       // El llamador (chat) ya excluye role==user; aquí validamos que el rol

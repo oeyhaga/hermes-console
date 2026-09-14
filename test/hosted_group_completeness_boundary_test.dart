@@ -15,10 +15,8 @@ final class _Dashboard extends DashboardClient {
       const DashboardWebSocketAuth(queryName: 'ticket', credential: 'test');
 }
 
-typedef _ResultBuilder = FutureOr<Object?> Function(
-  String method,
-  Map<String, dynamic> params,
-);
+typedef _ResultBuilder =
+    FutureOr<Object?> Function(String method, Map<String, dynamic> params);
 
 final class _HostedBoundaryHarness {
   final HttpServer server;
@@ -268,59 +266,71 @@ void main() {
     );
   });
 
-  test('groups.list follows official offsets through an empty terminal page and publishes once', () async {
-    final terminalRequested = Completer<void>();
-    final releaseTerminal = Completer<void>();
-    final harness = await _HostedBoundaryHarness.start((method, params) async {
-      if (method != 'groups.list') return _validResult(method, params);
-      final offset = params['offset'] as int;
-      if (offset == 257) {
-        if (!terminalRequested.isCompleted) terminalRequested.complete();
-        await releaseTerminal.future;
-        return {'rooms': <Object?>[], 'next_offset': null};
-      }
-      final end = switch (offset) {
-        0 => 100,
-        100 => 200,
-        200 => 257,
-        _ => throw StateError('unexpected list offset $offset'),
-      };
-      return {
-        'rooms': [for (var index = offset; index < end; index++) _room(index)],
-        'next_offset': end,
-      };
-    });
-    addTearDown(harness.close);
-    var published = false;
-    final loading = harness.client
-        .listGroups(generation: harness.generation)
-        .then((value) {
-          published = true;
-          return value;
-        });
+  test(
+    'groups.list follows official offsets through an empty terminal page and publishes once',
+    () async {
+      final terminalRequested = Completer<void>();
+      final releaseTerminal = Completer<void>();
+      final harness = await _HostedBoundaryHarness.start((
+        method,
+        params,
+      ) async {
+        if (method != 'groups.list') return _validResult(method, params);
+        final offset = params['offset'] as int;
+        if (offset == 257) {
+          if (!terminalRequested.isCompleted) terminalRequested.complete();
+          await releaseTerminal.future;
+          return {'rooms': <Object?>[], 'next_offset': null};
+        }
+        final end = switch (offset) {
+          0 => 100,
+          100 => 200,
+          200 => 257,
+          _ => throw StateError('unexpected list offset $offset'),
+        };
+        return {
+          'rooms': [
+            for (var index = offset; index < end; index++) _room(index),
+          ],
+          'next_offset': end,
+        };
+      });
+      addTearDown(harness.close);
+      var published = false;
+      final loading = harness.client
+          .listGroups(generation: harness.generation)
+          .then((value) {
+            published = true;
+            return value;
+          });
 
-    await terminalRequested.future.timeout(const Duration(seconds: 2));
-    await Future<void>.delayed(Duration.zero);
-    expect(published, isFalse, reason: 'no intermediate page may be published');
-    releaseTerminal.complete();
-    final rooms = await loading;
+      await terminalRequested.future.timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        published,
+        isFalse,
+        reason: 'no intermediate page may be published',
+      );
+      releaseTerminal.complete();
+      final rooms = await loading;
 
-    expect(rooms, hasLength(257));
-    expect(rooms.map((room) => room.roomId), [
-      for (var index = 0; index < 257; index++) _roomId(index),
-    ]);
-    final listRequests = harness.requests
-        .where((request) => request['method'] == 'groups.list')
-        .toList();
-    expect(
-      listRequests.map((request) => (request['params'] as Map)['offset']),
-      [0, 100, 200, 257],
-    );
-    expect(
-      listRequests.map((request) => (request['params'] as Map)['limit']),
-      everyElement(500),
-    );
-  });
+      expect(rooms, hasLength(257));
+      expect(rooms.map((room) => room.roomId), [
+        for (var index = 0; index < 257; index++) _roomId(index),
+      ]);
+      final listRequests = harness.requests
+          .where((request) => request['method'] == 'groups.list')
+          .toList();
+      expect(
+        listRequests.map((request) => (request['params'] as Map)['offset']),
+        [0, 100, 200, 257],
+      );
+      expect(
+        listRequests.map((request) => (request['params'] as Map)['limit']),
+        everyElement(500),
+      );
+    },
+  );
 
   group('groups.list rejects incomplete or ambiguous pagination', () {
     final cases = <String, _ResultBuilder>{

@@ -153,70 +153,73 @@ void main() {
     },
   );
 
-  test('empty initial cron discovery seeds cursor and later terminal dispatches once', () async {
-    final prefs = await SharedPreferences.getInstance();
-    final service = testService(prefs)..appInForeground = false;
-    const scope = 'demo-node/default/cron/discovery';
+  test(
+    'empty initial cron discovery seeds cursor and later terminal dispatches once',
+    () async {
+      final prefs = await SharedPreferences.getInstance();
+      final service = testService(prefs)..appInForeground = false;
+      const scope = 'demo-node/default/cron/discovery';
 
-    await service.deliverDiscoveryBatch(
-      scopeKey: scope,
-      connId: 'demo-node',
-      profile: 'default',
-      sourceKind: 'cron',
-      objectId: 'discovery',
-      sourceVersion: 'empty-snapshot',
-      lastState: 'snapshot',
-      events: const <DurableDiscoveryNotification>[],
-      suppressByPolicy: false,
-    );
-    expect(calls.where((call) => call.method == 'show'), isEmpty);
+      await service.deliverDiscoveryBatch(
+        scopeKey: scope,
+        connId: 'demo-node',
+        profile: 'default',
+        sourceKind: 'cron',
+        objectId: 'discovery',
+        sourceVersion: 'empty-snapshot',
+        lastState: 'snapshot',
+        events: const <DurableDiscoveryNotification>[],
+        suppressByPolicy: false,
+      );
+      expect(calls.where((call) => call.method == 'show'), isEmpty);
 
-    const identity = NotificationEventIdentity(
-      connId: 'demo-node',
-      profile: 'default',
-      sourceKind: 'cron',
-      objectId: 'execution-later',
-      eventKind: 'terminal',
-      sourceVersion: 'execution-later:completed',
-    );
-    const event = DurableDiscoveryNotification(
-      identity: identity,
-      destinationKind: 'cron_terminal',
-      kind: NotificationKind.run,
-      title: 'Cron completed',
-      body: 'Done',
-      jobId: 'job-later',
-    );
-    await service.deliverDiscoveryBatch(
-      scopeKey: scope,
-      connId: 'demo-node',
-      profile: 'default',
-      sourceKind: 'cron',
-      objectId: 'discovery',
-      sourceVersion: 'terminal-snapshot',
-      lastState: 'snapshot',
-      events: const <DurableDiscoveryNotification>[event],
-      suppressByPolicy: false,
-    );
-    await service.deliverDiscoveryBatch(
-      scopeKey: scope,
-      connId: 'demo-node',
-      profile: 'default',
-      sourceKind: 'cron',
-      objectId: 'discovery',
-      sourceVersion: 'terminal-snapshot',
-      lastState: 'snapshot',
-      events: const <DurableDiscoveryNotification>[event],
-      suppressByPolicy: false,
-    );
+      const identity = NotificationEventIdentity(
+        connId: 'demo-node',
+        profile: 'default',
+        sourceKind: 'cron',
+        objectId: 'execution-later',
+        eventKind: 'terminal',
+        sourceVersion: 'execution-later:completed',
+      );
+      const event = DurableDiscoveryNotification(
+        identity: identity,
+        destinationKind: 'cron_terminal',
+        kind: NotificationKind.run,
+        title: 'Cron completed',
+        body: 'Done',
+        jobId: 'job-later',
+      );
+      await service.deliverDiscoveryBatch(
+        scopeKey: scope,
+        connId: 'demo-node',
+        profile: 'default',
+        sourceKind: 'cron',
+        objectId: 'discovery',
+        sourceVersion: 'terminal-snapshot',
+        lastState: 'snapshot',
+        events: const <DurableDiscoveryNotification>[event],
+        suppressByPolicy: false,
+      );
+      await service.deliverDiscoveryBatch(
+        scopeKey: scope,
+        connId: 'demo-node',
+        profile: 'default',
+        sourceKind: 'cron',
+        objectId: 'discovery',
+        sourceVersion: 'terminal-snapshot',
+        lastState: 'snapshot',
+        events: const <DurableDiscoveryNotification>[event],
+        suppressByPolicy: false,
+      );
 
-    final shown = calls.where((call) => call.method == 'show').toList();
-    expect(shown, hasLength(1));
-    final args = Map<String, dynamic>.from(shown.single.arguments as Map);
-    final open = NotificationOpen.tryParse(args['payload'] as String?);
-    expect(open?.jobId, 'job-later');
-    await service.closeDelivery();
-  });
+      final shown = calls.where((call) => call.method == 'show').toList();
+      expect(shown, hasLength(1));
+      final args = Map<String, dynamic>.from(shown.single.arguments as Map);
+      final open = NotificationOpen.tryParse(args['payload'] as String?);
+      expect(open?.jobId, 'job-later');
+      await service.closeDelivery();
+    },
+  );
 
   test('unknown cron terminal is accepted by the durable store', () async {
     final prefs = await SharedPreferences.getInstance();

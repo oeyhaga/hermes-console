@@ -33,9 +33,8 @@ import '../widgets/hermes_ui.dart';
 import 'mission_control_copy.dart';
 
 typedef BotCreateImagePicker = Future<XFile?> Function();
-typedef BotCreateImageNormalizer = Future<AgentProfileAvatar> Function(
-  Uint8List bytes,
-);
+typedef BotCreateImageNormalizer =
+    Future<AgentProfileAvatar> Function(Uint8List bytes);
 
 enum _CreateIdentityMode { pet, image, face }
 
@@ -666,11 +665,10 @@ class _BotCreateScreenState extends State<BotCreateScreen> {
           _ => false,
         };
         _error = switch (error) {
-          final _BotCreateIdentityFailure failure when failure.uncertain =>
-            _text(
-              'El bot existe, pero su identidad quedó en estado incierto. Revísala y vuelve a intentar.',
-              'The bot exists, but its identity is uncertain. Review it and try again.',
-            ),
+          final _BotCreateIdentityFailure failure when failure.uncertain => _text(
+            'El bot existe, pero su identidad quedó en estado incierto. Revísala y vuelve a intentar.',
+            'The bot exists, but its identity is uncertain. Review it and try again.',
+          ),
           _BotCreateIdentityFailure() => _text(
             'El bot existe, pero no se pudo aplicar su identidad. Corrige el problema y vuelve a intentar.',
             'The bot exists, but its identity could not be applied. Fix the issue and try again.',
@@ -1204,9 +1202,9 @@ class _BotCreateScreenState extends State<BotCreateScreen> {
               const SizedBox(height: 12),
               LayoutBuilder(
                 builder: (context, constraints) {
-                  final scale = MediaQuery.textScalerOf(context)
-                      .scale(1)
-                      .clamp(1.0, 2.0);
+                  final scale = MediaQuery.textScalerOf(
+                    context,
+                  ).scale(1).clamp(1.0, 2.0);
                   return GridView.builder(
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),

@@ -326,8 +326,9 @@ class BridgeClient {
       await request.sink.addStream(file.openRead());
       await request.sink.close();
       final streamed = await sendFuture;
-      final response = await http.Response.fromStream(streamed)
-          .timeout(timeout);
+      final response = await http.Response.fromStream(
+        streamed,
+      ).timeout(timeout);
       final data = _decode(response);
       final path = (data['path'] ?? '').toString();
       if (!path.startsWith('/')) {

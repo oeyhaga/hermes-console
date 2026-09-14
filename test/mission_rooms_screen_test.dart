@@ -454,8 +454,9 @@ void main() {
       matching: find.text('Manager · @manager'),
     );
     expect(selectedManager, findsOneWidget);
-    final managerStyle = DefaultTextStyle.of(tester.element(selectedManager))
-        .style;
+    final managerStyle = DefaultTextStyle.of(
+      tester.element(selectedManager),
+    ).style;
     expect(managerStyle.color, titleTheme.hermes.textPrimary);
     expect(managerStyle.fontWeight, FontWeight.w500);
     expect(find.text('@manager · Manager'), findsOneWidget);

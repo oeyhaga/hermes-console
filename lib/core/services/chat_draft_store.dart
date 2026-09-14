@@ -419,13 +419,14 @@ class ChatDraftStore {
               preparedTurnClientTurnId,
             );
             if (safePreparedTurnId != null &&
-                await TurnOutboxStore(secureStorage: _secure)
-                    .isFailedBeforeAcceptanceDiscarded(
-                      connectionId: connectionId,
-                      profile: owner,
-                      sessionId: sessionId,
-                      clientTurnId: safePreparedTurnId,
-                    )) {
+                await TurnOutboxStore(
+                  secureStorage: _secure,
+                ).isFailedBeforeAcceptanceDiscarded(
+                  connectionId: connectionId,
+                  profile: owner,
+                  sessionId: sessionId,
+                  clientTurnId: safePreparedTurnId,
+                )) {
               return;
             }
             final previous = await _secure.read(key: key);

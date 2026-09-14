@@ -194,9 +194,9 @@ final class SessionRepository {
     final before = _sessions.length;
     _sessions = List<Session>.unmodifiable(
       _sessions.where(
-        (session) =>
-            _sessionIdentityAliases(session)
-                .every((alias) => !aliases.contains(alias)),
+        (session) => _sessionIdentityAliases(
+          session,
+        ).every((alias) => !aliases.contains(alias)),
       ),
     );
     final removed = before - _sessions.length;

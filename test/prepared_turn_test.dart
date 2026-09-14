@@ -111,9 +111,9 @@ void main() {
       'state': 'prepared',
     };
 
-    final ids = PreparedTurn.fromJson(legacy).attachments
-        .map((item) => item.localId)
-        .toList();
+    final ids = PreparedTurn.fromJson(
+      legacy,
+    ).attachments.map((item) => item.localId).toList();
     expect(ids.toSet(), hasLength(2));
     expect(
       () => PreparedTurn.fromJson({...legacy, 'schema_version': 5}),

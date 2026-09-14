@@ -411,29 +411,35 @@ void main() {
       expect(s.displayTitle, quoted);
     });
 
-    test('displayTitle conserva una consulta que empieza citando la cabecera', () {
-      const title =
-          '[Your active task list was preserved across context compression] ¿qué significa?';
-      final s = Session.fromJson({
-        'id': '20260828_question',
-        'title': title,
-        'preview': 'Explícame esa cabecera',
-        'source': 'mobile',
-      });
-      expect(s.displayTitle, title);
-    });
+    test(
+      'displayTitle conserva una consulta que empieza citando la cabecera',
+      () {
+        const title =
+            '[Your active task list was preserved across context compression] ¿qué significa?';
+        final s = Session.fromJson({
+          'id': '20260828_question',
+          'title': title,
+          'preview': 'Explícame esa cabecera',
+          'source': 'mobile',
+        });
+        expect(s.displayTitle, title);
+      },
+    );
 
-    test('displayTitle oculta el snapshot con preview truncado por SessionDB', () {
-      final s = Session.fromJson({
-        'id': '20260828_todo_truncated',
-        'title':
-            '[Your active task list was preserved across context compression]',
-        'preview':
-            '[Your active task list was preserved across context compress...',
-        'source': 'mobile',
-      });
-      expect(s.displayTitle, 'Conversación');
-    });
+    test(
+      'displayTitle oculta el snapshot con preview truncado por SessionDB',
+      () {
+        final s = Session.fromJson({
+          'id': '20260828_todo_truncated',
+          'title':
+              '[Your active task list was preserved across context compression]',
+          'preview':
+              '[Your active task list was preserved across context compress...',
+          'source': 'mobile',
+        });
+        expect(s.displayTitle, 'Conversación');
+      },
+    );
 
     test('displayTitle de job sin contenido legible → "Tarea programada"', () {
       final s = Session.fromJson({

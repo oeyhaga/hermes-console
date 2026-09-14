@@ -19,9 +19,9 @@ import 'voice_conversation_runtime.dart';
 const int _maxVoicePublicCommentaryRunes = 160;
 
 String _voicePublicCommentary(String raw) {
-  final clean = SpokenText.fromMarkdown(raw)
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+  final clean = SpokenText.fromMarkdown(
+    raw,
+  ).replaceAll(RegExp(r'\s+'), ' ').trim();
   final runes = clean.runes.toList(growable: false);
   if (runes.length <= _maxVoicePublicCommentaryRunes) return clean;
   return '${String.fromCharCodes(runes.take(_maxVoicePublicCommentaryRunes - 1)).trimRight()}…';

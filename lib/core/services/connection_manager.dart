@@ -37,24 +37,20 @@ export '../models/model_info.dart';
 export '../models/model_provider.dart';
 export '../models/session.dart';
 
-typedef BridgeClientFactory = BridgeClient Function({
-  required String baseUrl,
-  required String token,
-});
-typedef BridgeProvisioner = Future<String?> Function(
-  String baseUrl,
-  String gatewayKey,
-);
-typedef DashboardClientFactory = DashboardClient Function(
-  SavedConnection connection,
-);
+typedef BridgeClientFactory =
+    BridgeClient Function({required String baseUrl, required String token});
+typedef BridgeProvisioner =
+    Future<String?> Function(String baseUrl, String gatewayKey);
+typedef DashboardClientFactory =
+    DashboardClient Function(SavedConnection connection);
 typedef ClearCancelledTurnsForConnection = Future<int> Function(String id);
 
 @visibleForTesting
 bool supportsKanbanTrackedCreateVersion(String? rawVersion) {
   final value = rawVersion?.trim() ?? '';
-  final match = RegExp(r'(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:[^0-9]|$)')
-      .firstMatch(value);
+  final match = RegExp(
+    r'(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:[^0-9]|$)',
+  ).firstMatch(value);
   if (match == null) return false;
   final major = int.tryParse(match.group(1)!);
   final minor = int.tryParse(match.group(2)!);
@@ -1346,8 +1342,9 @@ class ApiClient {
         'offset': '$offset',
         if (includeChildren) 'include_children': 'true',
       };
-      final uri = Uri.parse('$baseUrl/$endpoint')
-          .replace(queryParameters: query);
+      final uri = Uri.parse(
+        '$baseUrl/$endpoint',
+      ).replace(queryParameters: query);
       final res = await _http
           .get(uri, headers: _headers)
           .timeout(_requestTimeout);
@@ -1717,8 +1714,9 @@ class ApiClient {
     final ownerProfile = Session.profileOwner(profile);
     try {
       final prefs = await SharedPreferences.getInstance();
-      await ChatDraftStore(prefs)
-          .clear(connectionId, sessionId, profile: ownerProfile);
+      await ChatDraftStore(
+        prefs,
+      ).clear(connectionId, sessionId, profile: ownerProfile);
       await TurnOutboxStore().deleteForChat(
         connectionId,
         sessionId,
@@ -2554,8 +2552,9 @@ class DashboardClient {
         'Dashboard not accessible at $_baseUrl (HTTP ${res.statusCode})',
       );
     }
-    final match = RegExp(r'window\.__HERMES_SESSION_TOKEN__="([^"]+)";')
-        .firstMatch(res.body);
+    final match = RegExp(
+      r'window\.__HERMES_SESSION_TOKEN__="([^"]+)";',
+    ).firstMatch(res.body);
     if (match == null) {
       // Sin token en la página: o no es el Dashboard, o exige login propio y
       // sirve la página de login (sin el token embebido). Si fuese login, el

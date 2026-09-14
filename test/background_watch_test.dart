@@ -1093,95 +1093,98 @@ void main() {
     expect(session.objectId, 'session_discovery.$opaqueId');
   });
 
-  test('legacy cron routing ignores colliding ids and picks the latest exact job session', () {
-    const opaqueId =
-        'e437ea2e9a36d2c99bdc53649913c440cab390549314077e3476527b3346dde7';
-    final execution = CronExecutionSnapshot(
-      jobKey: 'research::job-1',
-      jobId: 'job-1',
-      title: 'Housing search',
-      profile: 'research',
-      executionId: opaqueId,
-      status: 'completed',
-      syntheticExecutionId: true,
-    );
-    const collidingModernSession = Session(
-      id: opaqueId,
-      title: 'Different modern execution',
-      model: '',
-      source: 'cron',
-      messageCount: 2,
-      isActive: false,
-      preview: 'wrong',
-      startedAt: 300,
-      profile: 'research',
-      isDefaultProfile: false,
-    );
-    const staleJobSession = Session(
-      id: 'cron_job-1_old',
-      title: 'Old job execution',
-      model: '',
-      source: 'cron',
-      messageCount: 2,
-      isActive: false,
-      preview: 'old',
-      startedAt: 100,
-      profile: 'research',
-      isDefaultProfile: false,
-    );
-    const latestJobSession = Session(
-      id: 'cron_job-1_latest',
-      title: 'Latest job execution',
-      model: '',
-      source: 'cron',
-      messageCount: 2,
-      isActive: false,
-      preview: 'latest',
-      startedAt: 200,
-      profile: 'research',
-      isDefaultProfile: false,
-    );
-    const activeJobSession = Session(
-      id: 'cron_job-1_active',
-      title: 'Still running',
-      model: '',
-      source: 'cron',
-      messageCount: 1,
-      isActive: true,
-      preview: 'working',
-      startedAt: 400,
-      profile: 'research',
-      isDefaultProfile: false,
-    );
-    const otherProfileSession = Session(
-      id: 'cron_job-1_other',
-      title: 'Other profile',
-      model: '',
-      source: 'cron',
-      messageCount: 2,
-      isActive: false,
-      preview: 'other',
-      startedAt: 500,
-      profile: 'default',
-    );
+  test(
+    'legacy cron routing ignores colliding ids and picks the latest exact job session',
+    () {
+      const opaqueId =
+          'e437ea2e9a36d2c99bdc53649913c440cab390549314077e3476527b3346dde7';
+      final execution = CronExecutionSnapshot(
+        jobKey: 'research::job-1',
+        jobId: 'job-1',
+        title: 'Housing search',
+        profile: 'research',
+        executionId: opaqueId,
+        status: 'completed',
+        syntheticExecutionId: true,
+      );
+      const collidingModernSession = Session(
+        id: opaqueId,
+        title: 'Different modern execution',
+        model: '',
+        source: 'cron',
+        messageCount: 2,
+        isActive: false,
+        preview: 'wrong',
+        startedAt: 300,
+        profile: 'research',
+        isDefaultProfile: false,
+      );
+      const staleJobSession = Session(
+        id: 'cron_job-1_old',
+        title: 'Old job execution',
+        model: '',
+        source: 'cron',
+        messageCount: 2,
+        isActive: false,
+        preview: 'old',
+        startedAt: 100,
+        profile: 'research',
+        isDefaultProfile: false,
+      );
+      const latestJobSession = Session(
+        id: 'cron_job-1_latest',
+        title: 'Latest job execution',
+        model: '',
+        source: 'cron',
+        messageCount: 2,
+        isActive: false,
+        preview: 'latest',
+        startedAt: 200,
+        profile: 'research',
+        isDefaultProfile: false,
+      );
+      const activeJobSession = Session(
+        id: 'cron_job-1_active',
+        title: 'Still running',
+        model: '',
+        source: 'cron',
+        messageCount: 1,
+        isActive: true,
+        preview: 'working',
+        startedAt: 400,
+        profile: 'research',
+        isDefaultProfile: false,
+      );
+      const otherProfileSession = Session(
+        id: 'cron_job-1_other',
+        title: 'Other profile',
+        model: '',
+        source: 'cron',
+        messageCount: 2,
+        isActive: false,
+        preview: 'other',
+        startedAt: 500,
+        profile: 'default',
+      );
 
-    final match = BackgroundCronWatch.sessionForExecution(execution, const [
-      collidingModernSession,
-      activeJobSession,
-      staleJobSession,
-      otherProfileSession,
-      latestJobSession,
-    ]);
-
-    expect(match?.id, latestJobSession.id);
-    expect(
-      BackgroundCronWatch.sessionForExecution(execution, const [
-        latestJobSession,
+      final match = BackgroundCronWatch.sessionForExecution(execution, const [
+        collidingModernSession,
+        activeJobSession,
         staleJobSession,
-      ])?.id,
-      latestJobSession.id,
-    );
-  });
+        otherProfileSession,
+        latestJobSession,
+      ]);
+
+      expect(match?.id, latestJobSession.id);
+      expect(
+        BackgroundCronWatch.sessionForExecution(execution, const [
+          latestJobSession,
+          staleJobSession,
+        ])?.id,
+        latestJobSession.id,
+      );
+    },
+  );
 
   test('cron notification opens its chat instead of Task Center', () {
     const session = Session(

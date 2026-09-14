@@ -2134,8 +2134,9 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
       }
 
       final sessionId = GatewayChatClient.generateSessionId();
-      await ChatDraftStore(widget.connManager.prefs)
-          .save(connection.id, sessionId, content.text, content.attachments);
+      await ChatDraftStore(
+        widget.connManager.prefs,
+      ).save(connection.id, sessionId, content.text, content.attachments);
       await _shareInbox.acknowledge(content.id);
       if (!mounted) return;
 

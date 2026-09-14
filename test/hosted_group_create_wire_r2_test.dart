@@ -63,25 +63,27 @@ void main() {
     }
   });
 
-  test('exact external upstream parser accepts local fixture and rejects mixed fields', () async {
-    final upstream = Platform.environment['HERMES_UPSTREAM_CHECKOUT'];
-    expect(
-      upstream,
-      isNotNull,
-      reason: 'set HERMES_UPSTREAM_CHECKOUT to the exact upstream checkout',
-    );
-    final upstreamPath = upstream!;
-    final roster = [
-      HostedGroupCreateMember.localProfile(
-        profile: 'builder',
-        handle: 'Builder',
-      ).toWire(memberId: 'member-1'),
-      HostedGroupCreateMember.localProfile(
-        profile: 'reviewer',
-        handle: 'Reviewer',
-      ).toWire(memberId: 'member-2'),
-    ];
-    final script = r'''
+  test(
+    'exact external upstream parser accepts local fixture and rejects mixed fields',
+    () async {
+      final upstream = Platform.environment['HERMES_UPSTREAM_CHECKOUT'];
+      expect(
+        upstream,
+        isNotNull,
+        reason: 'set HERMES_UPSTREAM_CHECKOUT to the exact upstream checkout',
+      );
+      final upstreamPath = upstream!;
+      final roster = [
+        HostedGroupCreateMember.localProfile(
+          profile: 'builder',
+          handle: 'Builder',
+        ).toWire(memberId: 'member-1'),
+        HostedGroupCreateMember.localProfile(
+          profile: 'reviewer',
+          handle: 'Reviewer',
+        ).toWire(memberId: 'member-2'),
+      ];
+      final script = r'''
 import json, os, sys
 sys.path.insert(0, os.environ["HERMES_UPSTREAM_CHECKOUT"])
 from gateway.hosted_room_discussion import DiscussionValidationError, validate_roster
@@ -104,23 +106,27 @@ for candidate in invalid:
     raise AssertionError(candidate)
 print("upstream-compatible=1 invalid-rejected=4")
 ''';
-    final argumentScript = '$script\n';
-    final check = await Process.run(
-      'python3',
-      [
-        '-c',
-        argumentScript.replaceFirst(
-          'json.loads(sys.stdin.read())',
-          'json.loads(sys.argv[1])',
-        ),
-        jsonEncode(roster),
-      ],
-      environment: {
-        ...Platform.environment,
-        'HERMES_UPSTREAM_CHECKOUT': upstreamPath,
-      },
-    );
-    expect(check.exitCode, 0, reason: '${check.stdout}\n${check.stderr}');
-    expect(check.stdout, contains('upstream-compatible=1 invalid-rejected=4'));
-  });
+      final argumentScript = '$script\n';
+      final check = await Process.run(
+        'python3',
+        [
+          '-c',
+          argumentScript.replaceFirst(
+            'json.loads(sys.stdin.read())',
+            'json.loads(sys.argv[1])',
+          ),
+          jsonEncode(roster),
+        ],
+        environment: {
+          ...Platform.environment,
+          'HERMES_UPSTREAM_CHECKOUT': upstreamPath,
+        },
+      );
+      expect(check.exitCode, 0, reason: '${check.stdout}\n${check.stderr}');
+      expect(
+        check.stdout,
+        contains('upstream-compatible=1 invalid-rejected=4'),
+      );
+    },
+  );
 }

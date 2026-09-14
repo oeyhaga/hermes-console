@@ -267,72 +267,75 @@ void main() {
     );
   }
 
-  test('B2 real ActiveChat admission before cleanup cannot borrow reattach lifecycle', () async {
-    final slow = SlowFenceStorage();
-    final service = ActiveChatService(
-      compressionFenceStore: DesktopCompressionFenceStore(storage: slow),
-    );
-    final connection = SavedConnection(
-      id: 'c',
-      label: 'synthetic',
-      host: '127.0.0.1',
-      port: 8642,
-      apiKey: '',
-      kind: InstanceKind.localhost,
-      onDeviceLoopback: true,
-    );
-    final old = life(p: 'default');
-    final chat = service.attach(
-      connection: connection,
-      sessionId: 's',
-      sessionTitle: 'test',
-      sessionProfile: 'default',
-      localConversationLifecycle: old,
-      disableForegroundKeepAlive: true,
-    );
-    addTearDown(service.dispose);
-    await pumpEventQueue(times: 20);
-    slow.entered = Completer<void>();
-    slow.release = Completer<void>();
-    final sending = result(
-      chat.send(
-        fullText: 'admitted before cleanup',
-        model: 'm',
-        history: const [],
-      ),
-    );
-    await slow.entered!.future;
-    await LocalTranscriptStore.deleteForProfile('c', 'default');
-    LocalConversationCleanupFence.endLifecycle(old);
-    final fresh = life(p: 'default');
-    expect(LocalConversationCleanupFence.rehydrate(fresh), isTrue);
-    expect(
-      identical(
-        chat,
-        service.attach(
-          connection: connection,
-          sessionId: 's',
-          sessionTitle: 'test',
-          sessionProfile: 'default',
-          localConversationLifecycle: fresh,
-          disableForegroundKeepAlive: true,
+  test(
+    'B2 real ActiveChat admission before cleanup cannot borrow reattach lifecycle',
+    () async {
+      final slow = SlowFenceStorage();
+      final service = ActiveChatService(
+        compressionFenceStore: DesktopCompressionFenceStore(storage: slow),
+      );
+      final connection = SavedConnection(
+        id: 'c',
+        label: 'synthetic',
+        host: '127.0.0.1',
+        port: 8642,
+        apiKey: '',
+        kind: InstanceKind.localhost,
+        onDeviceLoopback: true,
+      );
+      final old = life(p: 'default');
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 's',
+        sessionTitle: 'test',
+        sessionProfile: 'default',
+        localConversationLifecycle: old,
+        disableForegroundKeepAlive: true,
+      );
+      addTearDown(service.dispose);
+      await pumpEventQueue(times: 20);
+      slow.entered = Completer<void>();
+      slow.release = Completer<void>();
+      final sending = result(
+        chat.send(
+          fullText: 'admitted before cleanup',
+          model: 'm',
+          history: const [],
         ),
-      ),
-      isTrue,
-    );
-    // Stop at the secure write seam, before any Bridge or network operation.
-    hook = (call) async {
-      if (call.method == 'write') chat.dispose();
-    };
-    slow.release!.complete();
-    await sending.timeout(const Duration(seconds: 3));
-    final stored = await LocalTranscriptStore.load(
-      'c',
-      's',
-      profile: 'default',
-    );
-    expect(stored, isEmpty);
-  });
+      );
+      await slow.entered!.future;
+      await LocalTranscriptStore.deleteForProfile('c', 'default');
+      LocalConversationCleanupFence.endLifecycle(old);
+      final fresh = life(p: 'default');
+      expect(LocalConversationCleanupFence.rehydrate(fresh), isTrue);
+      expect(
+        identical(
+          chat,
+          service.attach(
+            connection: connection,
+            sessionId: 's',
+            sessionTitle: 'test',
+            sessionProfile: 'default',
+            localConversationLifecycle: fresh,
+            disableForegroundKeepAlive: true,
+          ),
+        ),
+        isTrue,
+      );
+      // Stop at the secure write seam, before any Bridge or network operation.
+      hook = (call) async {
+        if (call.method == 'write') chat.dispose();
+      };
+      slow.release!.complete();
+      await sending.timeout(const Duration(seconds: 3));
+      final stored = await LocalTranscriptStore.load(
+        'c',
+        's',
+        profile: 'default',
+      );
+      expect(stored, isEmpty);
+    },
+  );
 
   test(
     'B4 dispose also revokes outbox queued behind inner ownership queue',
@@ -468,39 +471,42 @@ void main() {
     },
   );
 
-  test('B2 admitted queued write is rejected by cleanup and unrelated writer survives', () async {
-    final release = Completer<void>();
-    final blocker = LocalConversationCleanupFence.write(
-      connectionId: 'unrelated',
-      operation: () => release.future,
-    );
-    final stale = result(
-      LocalTranscriptStore.saveFromNewestFirst(
-        'c',
+  test(
+    'B2 admitted queued write is rejected by cleanup and unrelated writer survives',
+    () async {
+      final release = Completer<void>();
+      final blocker = LocalConversationCleanupFence.write(
+        connectionId: 'unrelated',
+        operation: () => release.future,
+      );
+      final stale = result(
+        LocalTranscriptStore.saveFromNewestFirst(
+          'c',
+          's',
+          rows,
+          profile: 'p',
+          lifecycle: life(),
+        ),
+      );
+      final cleanup = LocalTranscriptStore.deleteForProfile('c', 'p');
+      final neighbor = LocalTranscriptStore.saveFromNewestFirst(
+        'neighbor',
         's',
         rows,
         profile: 'p',
-        lifecycle: life(),
-      ),
-    );
-    final cleanup = LocalTranscriptStore.deleteForProfile('c', 'p');
-    final neighbor = LocalTranscriptStore.saveFromNewestFirst(
-      'neighbor',
-      's',
-      rows,
-      profile: 'p',
-    );
-    release.complete();
-    await blocker;
-    expect(await stale, isA<LocalConversationWriteRejected>());
-    await cleanup;
-    await neighbor;
-    expect(await LocalTranscriptStore.load('c', 's', profile: 'p'), isEmpty);
-    expect(
-      await LocalTranscriptStore.load('neighbor', 's', profile: 'p'),
-      hasLength(1),
-    );
-  });
+      );
+      release.complete();
+      await blocker;
+      expect(await stale, isA<LocalConversationWriteRejected>());
+      await cleanup;
+      await neighbor;
+      expect(await LocalTranscriptStore.load('c', 's', profile: 'p'), isEmpty);
+      expect(
+        await LocalTranscriptStore.load('neighbor', 's', profile: 'p'),
+        hasLength(1),
+      );
+    },
+  );
 
   test(
     'B6 covered recursive cleanup and throwing child release global queue',

@@ -217,8 +217,9 @@ void main() {
         DesktopCompressionFenceLookupStatus.unavailable,
       );
       expect(
-        (await DesktopCompressionFenceStore(storage: oversized).lookup(scope))
-            .status,
+        (await DesktopCompressionFenceStore(
+          storage: oversized,
+        ).lookup(scope)).status,
         DesktopCompressionFenceLookupStatus.unavailable,
       );
     },
@@ -454,117 +455,129 @@ void main() {
     expect((await store.lookup(scopes[3])).isFenced, isTrue);
   });
 
-  test('REGRESSION_COMP_TYPED_SETTLEMENT_DUPLICATE identical aliases settle', () {
-    final record = DesktopCompressionFenceRecord(
-      scope: DesktopCompressionFenceScope(
-        connectionId: 'connection-a',
-        profile: 'default',
-        logicalSessionId: 'root-a',
-      ),
-      attemptId: 'attempt-a',
-      phase: DesktopCompressionFencePhase.transportUnknown,
-      tipAtStart: 'tip-before',
-      compressionsAtStart: 4,
-      createdAtMs: 100,
-      reconcileUntilMs: 200,
-    );
-    final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
-      'session': {
-        'id': 'tip-after',
-        'stored_session_id': 'tip-after',
-        '_lineage_root_id': 'root-a',
-        'lineage_root_id': 'root-a',
-        'usage': {'compressions': 5},
-        'info': {
+  test(
+    'REGRESSION_COMP_TYPED_SETTLEMENT_DUPLICATE identical aliases settle',
+    () {
+      final record = DesktopCompressionFenceRecord(
+        scope: DesktopCompressionFenceScope(
+          connectionId: 'connection-a',
+          profile: 'default',
+          logicalSessionId: 'root-a',
+        ),
+        attemptId: 'attempt-a',
+        phase: DesktopCompressionFencePhase.transportUnknown,
+        tipAtStart: 'tip-before',
+        compressionsAtStart: 4,
+        createdAtMs: 100,
+        reconcileUntilMs: 200,
+      );
+      final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
+        'session': {
+          'id': 'tip-after',
           'stored_session_id': 'tip-after',
-          'lineage_root': 'root-a',
-          'usage': {'compressions': 5},
-        },
-      },
-    });
-    expect(evidence.provesSettlement, isTrue);
-    expect(evidence.authoritativeTip, 'tip-after');
-  });
-
-  test('REGRESSION_COMP_TYPED_SETTLEMENT_CONTRADICTION invalidates changed tip', () {
-    final record = DesktopCompressionFenceRecord(
-      scope: DesktopCompressionFenceScope(
-        connectionId: 'connection-a',
-        profile: 'default',
-        logicalSessionId: 'root-a',
-      ),
-      attemptId: 'attempt-a',
-      phase: DesktopCompressionFencePhase.transportUnknown,
-      tipAtStart: 'tip-before',
-      compressionsAtStart: 4,
-      createdAtMs: 100,
-      reconcileUntilMs: 200,
-    );
-    final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
-      'session': {
-        'id': 'tip-after',
-        '_lineage_root_id': 'root-a',
-        'usage': {'compressions': 5},
-        'info': {
-          'stored_session_id': 'tip-after',
+          '_lineage_root_id': 'root-a',
           'lineage_root_id': 'root-a',
-          'usage': {'compressions': 6},
+          'usage': {'compressions': 5},
+          'info': {
+            'stored_session_id': 'tip-after',
+            'lineage_root': 'root-a',
+            'usage': {'compressions': 5},
+          },
         },
-      },
-    });
-    expect(evidence.provesSettlement, isFalse);
-    expect(evidence.authoritativeTip, isNull);
-  });
+      });
+      expect(evidence.provesSettlement, isTrue);
+      expect(evidence.authoritativeTip, 'tip-after');
+    },
+  );
 
-  test('REGRESSION_COMP_TYPED_SETTLEMENT_INFO_SHAPE invalidates changed tip', () {
-    final record = DesktopCompressionFenceRecord(
-      scope: DesktopCompressionFenceScope(
-        connectionId: 'connection-a',
-        profile: 'default',
-        logicalSessionId: 'root-a',
-      ),
-      attemptId: 'attempt-a',
-      phase: DesktopCompressionFencePhase.transportUnknown,
-      tipAtStart: 'tip-before',
-      compressionsAtStart: 4,
-      createdAtMs: 100,
-      reconcileUntilMs: 200,
-    );
-    final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
-      'session': {
-        'id': 'tip-after',
-        '_lineage_root_id': 'root-a',
-        'info': 'malformed',
-      },
-    });
-    expect(evidence.provesSettlement, isFalse);
-    expect(evidence.authoritativeTip, isNull);
-  });
+  test(
+    'REGRESSION_COMP_TYPED_SETTLEMENT_CONTRADICTION invalidates changed tip',
+    () {
+      final record = DesktopCompressionFenceRecord(
+        scope: DesktopCompressionFenceScope(
+          connectionId: 'connection-a',
+          profile: 'default',
+          logicalSessionId: 'root-a',
+        ),
+        attemptId: 'attempt-a',
+        phase: DesktopCompressionFencePhase.transportUnknown,
+        tipAtStart: 'tip-before',
+        compressionsAtStart: 4,
+        createdAtMs: 100,
+        reconcileUntilMs: 200,
+      );
+      final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
+        'session': {
+          'id': 'tip-after',
+          '_lineage_root_id': 'root-a',
+          'usage': {'compressions': 5},
+          'info': {
+            'stored_session_id': 'tip-after',
+            'lineage_root_id': 'root-a',
+            'usage': {'compressions': 6},
+          },
+        },
+      });
+      expect(evidence.provesSettlement, isFalse);
+      expect(evidence.authoritativeTip, isNull);
+    },
+  );
 
-  test('REGRESSION_COMP_TYPED_SETTLEMENT_USAGE_SHAPE invalidates changed tip', () {
-    final record = DesktopCompressionFenceRecord(
-      scope: DesktopCompressionFenceScope(
-        connectionId: 'connection-a',
-        profile: 'default',
-        logicalSessionId: 'root-a',
-      ),
-      attemptId: 'attempt-a',
-      phase: DesktopCompressionFencePhase.transportUnknown,
-      tipAtStart: 'tip-before',
-      compressionsAtStart: 4,
-      createdAtMs: 100,
-      reconcileUntilMs: 200,
-    );
-    final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
-      'session': {
-        'id': 'tip-after',
-        '_lineage_root_id': 'root-a',
-        'usage': 'malformed',
-      },
-    });
-    expect(evidence.provesSettlement, isFalse);
-    expect(evidence.authoritativeTip, isNull);
-  });
+  test(
+    'REGRESSION_COMP_TYPED_SETTLEMENT_INFO_SHAPE invalidates changed tip',
+    () {
+      final record = DesktopCompressionFenceRecord(
+        scope: DesktopCompressionFenceScope(
+          connectionId: 'connection-a',
+          profile: 'default',
+          logicalSessionId: 'root-a',
+        ),
+        attemptId: 'attempt-a',
+        phase: DesktopCompressionFencePhase.transportUnknown,
+        tipAtStart: 'tip-before',
+        compressionsAtStart: 4,
+        createdAtMs: 100,
+        reconcileUntilMs: 200,
+      );
+      final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
+        'session': {
+          'id': 'tip-after',
+          '_lineage_root_id': 'root-a',
+          'info': 'malformed',
+        },
+      });
+      expect(evidence.provesSettlement, isFalse);
+      expect(evidence.authoritativeTip, isNull);
+    },
+  );
+
+  test(
+    'REGRESSION_COMP_TYPED_SETTLEMENT_USAGE_SHAPE invalidates changed tip',
+    () {
+      final record = DesktopCompressionFenceRecord(
+        scope: DesktopCompressionFenceScope(
+          connectionId: 'connection-a',
+          profile: 'default',
+          logicalSessionId: 'root-a',
+        ),
+        attemptId: 'attempt-a',
+        phase: DesktopCompressionFencePhase.transportUnknown,
+        tipAtStart: 'tip-before',
+        compressionsAtStart: 4,
+        createdAtMs: 100,
+        reconcileUntilMs: 200,
+      );
+      final evidence = DesktopCompressionFenceEvidence.evaluate(record, {
+        'session': {
+          'id': 'tip-after',
+          '_lineage_root_id': 'root-a',
+          'usage': 'malformed',
+        },
+      });
+      expect(evidence.provesSettlement, isFalse);
+      expect(evidence.authoritativeTip, isNull);
+    },
+  );
 
   test('exact authoritative root plus changed tip proves settlement', () async {
     final storage = _MemoryFenceStorage();
@@ -633,8 +646,9 @@ void main() {
       logicalSessionId: 'root-a',
     );
     expect(
-      (await DesktopCompressionFenceStore(storage: readFailure).lookup(scope))
-          .status,
+      (await DesktopCompressionFenceStore(
+        storage: readFailure,
+      ).lookup(scope)).status,
       DesktopCompressionFenceLookupStatus.unavailable,
     );
 

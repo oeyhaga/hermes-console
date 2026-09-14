@@ -214,240 +214,243 @@ void main() {
     timeout: const Timeout(Duration(seconds: 3)),
   );
 
-  group('map-shaped structural violations retire transport and fail every pending RPC safely', () {
-    const privateMarker = 'PRIVATE_MALFORMED_MAP_MARKER_/srv/session.jsonl';
-    for (final mode in const [
-      'response',
-      'params',
-      'seq',
-      'type-absent',
-      'type-non-string',
-      'type-empty',
-      'payload-non-map',
-      'session-non-string',
-      'session-empty',
-    ]) {
-      test(mode, () async {
-        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-        final sockets = <WebSocket>[];
-        final resumeFrames = <Map<String, dynamic>>[];
-        server.listen((request) async {
-          final socket = await WebSocketTransformer.upgrade(request);
-          socket.add(
-            jsonEncode({
-              'jsonrpc': '2.0',
-              'method': 'event',
-              'params': {
-                'type': 'gateway.ready',
-                'payload': <String, dynamic>{},
-              },
-            }),
-          );
-          sockets.add(socket);
-          await for (final raw in socket) {
-            final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-            if (frame['method'] == 'gateway.capabilities') {
-              socket.add(
-                jsonEncode({
-                  'jsonrpc': '2.0',
-                  'id': frame['id'],
-                  'result': {'per_session_exclusive_submit': true},
-                }),
-              );
-            } else if (frame['method'] == 'session.resume') {
-              resumeFrames.add(frame);
-              if (resumeFrames.length == 1) {
+  group(
+    'map-shaped structural violations retire transport and fail every pending RPC safely',
+    () {
+      const privateMarker = 'PRIVATE_MALFORMED_MAP_MARKER_/srv/session.jsonl';
+      for (final mode in const [
+        'response',
+        'params',
+        'seq',
+        'type-absent',
+        'type-non-string',
+        'type-empty',
+        'payload-non-map',
+        'session-non-string',
+        'session-empty',
+      ]) {
+        test(mode, () async {
+          final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+          final sockets = <WebSocket>[];
+          final resumeFrames = <Map<String, dynamic>>[];
+          server.listen((request) async {
+            final socket = await WebSocketTransformer.upgrade(request);
+            socket.add(
+              jsonEncode({
+                'jsonrpc': '2.0',
+                'method': 'event',
+                'params': {
+                  'type': 'gateway.ready',
+                  'payload': <String, dynamic>{},
+                },
+              }),
+            );
+            sockets.add(socket);
+            await for (final raw in socket) {
+              final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+              if (frame['method'] == 'gateway.capabilities') {
                 socket.add(
                   jsonEncode({
                     'jsonrpc': '2.0',
                     'id': frame['id'],
-                    'result': {
-                      'session_id': 'runtime-anchor-$mode',
-                      'stored_session_id': 'stored-anchor-$mode',
-                      'created': false,
-                    },
+                    'result': {'per_session_exclusive_submit': true},
                   }),
                 );
-                continue;
-              }
-              if (resumeFrames.length != 3) continue;
-              final malformed = switch (mode) {
-                'response' => {
-                  'jsonrpc': '1.0',
-                  'id': resumeFrames[1]['id'],
-                  'result': {'marker': privateMarker},
-                  'error': {'code': -32600, 'message': privateMarker},
-                },
-                'params' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': [privateMarker],
-                },
-                'type-absent' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'session_id': 'runtime-anchor-$mode',
-                    'payload': {'marker': privateMarker},
+              } else if (frame['method'] == 'session.resume') {
+                resumeFrames.add(frame);
+                if (resumeFrames.length == 1) {
+                  socket.add(
+                    jsonEncode({
+                      'jsonrpc': '2.0',
+                      'id': frame['id'],
+                      'result': {
+                        'session_id': 'runtime-anchor-$mode',
+                        'stored_session_id': 'stored-anchor-$mode',
+                        'created': false,
+                      },
+                    }),
+                  );
+                  continue;
+                }
+                if (resumeFrames.length != 3) continue;
+                final malformed = switch (mode) {
+                  'response' => {
+                    'jsonrpc': '1.0',
+                    'id': resumeFrames[1]['id'],
+                    'result': {'marker': privateMarker},
+                    'error': {'code': -32600, 'message': privateMarker},
                   },
-                },
-                'type-non-string' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': ['message.complete', privateMarker],
-                    'session_id': 'runtime-anchor-$mode',
-                    'payload': {'marker': privateMarker},
+                  'params' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': [privateMarker],
                   },
-                },
-                'type-empty' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': '   ',
-                    'session_id': 'runtime-anchor-$mode',
-                    'payload': {'marker': privateMarker},
+                  'type-absent' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'session_id': 'runtime-anchor-$mode',
+                      'payload': {'marker': privateMarker},
+                    },
                   },
-                },
-                'payload-non-map' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': 'message.complete',
-                    'session_id': 'runtime-anchor-$mode',
-                    'payload': [privateMarker],
+                  'type-non-string' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': ['message.complete', privateMarker],
+                      'session_id': 'runtime-anchor-$mode',
+                      'payload': {'marker': privateMarker},
+                    },
                   },
-                },
-                'session-non-string' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': 'message.complete',
-                    'session_id': 7,
-                    'payload': {'marker': privateMarker},
+                  'type-empty' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': '   ',
+                      'session_id': 'runtime-anchor-$mode',
+                      'payload': {'marker': privateMarker},
+                    },
                   },
-                },
-                'session-empty' => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': 'message.complete',
-                    'session_id': '   ',
-                    'payload': {'marker': privateMarker},
+                  'payload-non-map' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': 'message.complete',
+                      'session_id': 'runtime-anchor-$mode',
+                      'payload': [privateMarker],
+                    },
                   },
-                },
-                _ => {
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': 'future.valid.event',
-                    'session_id': 'runtime-private',
-                    'seq': 0,
-                    'payload': {'marker': privateMarker},
+                  'session-non-string' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': 'message.complete',
+                      'session_id': 7,
+                      'payload': {'marker': privateMarker},
+                    },
                   },
-                },
-              };
-              socket.add(jsonEncode(malformed));
-              await Future<void>.delayed(const Duration(milliseconds: 20));
-              for (final pending in resumeFrames.skip(1)) {
+                  'session-empty' => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': 'message.complete',
+                      'session_id': '   ',
+                      'payload': {'marker': privateMarker},
+                    },
+                  },
+                  _ => {
+                    'jsonrpc': '2.0',
+                    'method': 'event',
+                    'params': {
+                      'type': 'future.valid.event',
+                      'session_id': 'runtime-private',
+                      'seq': 0,
+                      'payload': {'marker': privateMarker},
+                    },
+                  },
+                };
+                socket.add(jsonEncode(malformed));
+                await Future<void>.delayed(const Duration(milliseconds: 20));
+                for (final pending in resumeFrames.skip(1)) {
+                  socket.add(
+                    jsonEncode({
+                      'jsonrpc': '2.0',
+                      'id': pending['id'],
+                      'result': {
+                        'session_id': 'runtime-late-$mode',
+                        'stored_session_id':
+                            (pending['params'] as Map)['session_id'],
+                        'created': false,
+                      },
+                    }),
+                  );
+                }
                 socket.add(
                   jsonEncode({
                     'jsonrpc': '2.0',
-                    'id': pending['id'],
-                    'result': {
+                    'method': 'event',
+                    'params': {
+                      'type': 'future.valid.event',
                       'session_id': 'runtime-late-$mode',
-                      'stored_session_id':
-                          (pending['params'] as Map)['session_id'],
-                      'created': false,
+                      'seq': 1,
+                      'payload': {'trusted': false},
                     },
                   }),
                 );
               }
-              socket.add(
-                jsonEncode({
-                  'jsonrpc': '2.0',
-                  'method': 'event',
-                  'params': {
-                    'type': 'future.valid.event',
-                    'session_id': 'runtime-late-$mode',
-                    'seq': 1,
-                    'payload': {'trusted': false},
-                  },
-                }),
-              );
+            }
+          });
+          final client = TuiGatewayClient(
+            SavedConnection(
+              id: 'malformed-map-$mode',
+              label: 'Malformed map $mode',
+              host: '127.0.0.1',
+              port: 8642,
+              apiKey: String.fromCharCodes(const [113, 97]),
+              dashboardUrl: 'http://127.0.0.1:${server.port}',
+            ),
+            dashboard: _TicketDashboardClient(),
+          );
+          final streamErrors = <Object>[];
+          final events = <TuiGatewayEvent>[];
+          final subscription = client.events.listen(
+            events.add,
+            onError: (Object error, StackTrace _) => streamErrors.add(error),
+          );
+          final logs = <String>[];
+          final previousDebugPrint = debugPrint;
+          debugPrint = (message, {wrapWidth}) {
+            if (message != null) logs.add(message);
+          };
+
+          Future<Object> capture(Future<Object> operation) async {
+            try {
+              return await operation;
+            } catch (error) {
+              return error;
             }
           }
-        });
-        final client = TuiGatewayClient(
-          SavedConnection(
-            id: 'malformed-map-$mode',
-            label: 'Malformed map $mode',
-            host: '127.0.0.1',
-            port: 8642,
-            apiKey: String.fromCharCodes(const [113, 97]),
-            dashboardUrl: 'http://127.0.0.1:${server.port}',
-          ),
-          dashboard: _TicketDashboardClient(),
-        );
-        final streamErrors = <Object>[];
-        final events = <TuiGatewayEvent>[];
-        final subscription = client.events.listen(
-          events.add,
-          onError: (Object error, StackTrace _) => streamErrors.add(error),
-        );
-        final logs = <String>[];
-        final previousDebugPrint = debugPrint;
-        debugPrint = (message, {wrapWidth}) {
-          if (message != null) logs.add(message);
-        };
 
-        Future<Object> capture(Future<Object> operation) async {
-          try {
-            return await operation;
-          } catch (error) {
-            return error;
+          final anchor = await client.resumeExisting('stored-anchor-$mode');
+          expect(anchor.runtimeSessionId, 'runtime-anchor-$mode', reason: mode);
+          final first = capture(client.resumeExisting('stored-first-$mode'));
+          final second = capture(client.resumeExisting('stored-second-$mode'));
+          final outcomes = await Future.wait([first, second]);
+          await Future<void>.delayed(const Duration(milliseconds: 60));
+
+          expect(client.isConnected, isFalse, reason: mode);
+          expect(streamErrors, hasLength(1), reason: mode);
+          expect(events, isEmpty, reason: mode);
+          for (final outcome in [...outcomes, ...streamErrors]) {
+            expect(outcome, isA<TuiGatewayRpcError>(), reason: mode);
+            final error = outcome as TuiGatewayRpcError;
+            expect(
+              error.origin,
+              CompressionFailureOrigin.malformed,
+              reason: mode,
+            );
+            expect(error.message, 'Invalid JSON-RPC frame', reason: mode);
+            expect(error.code, isNull, reason: mode);
+            expect(error.data, isEmpty, reason: mode);
+            expect(
+              error.toString(),
+              isNot(contains(privateMarker)),
+              reason: mode,
+            );
           }
-        }
+          expect(logs.join('\n'), isNot(contains(privateMarker)), reason: mode);
 
-        final anchor = await client.resumeExisting('stored-anchor-$mode');
-        expect(anchor.runtimeSessionId, 'runtime-anchor-$mode', reason: mode);
-        final first = capture(client.resumeExisting('stored-first-$mode'));
-        final second = capture(client.resumeExisting('stored-second-$mode'));
-        final outcomes = await Future.wait([first, second]);
-        await Future<void>.delayed(const Duration(milliseconds: 60));
-
-        expect(client.isConnected, isFalse, reason: mode);
-        expect(streamErrors, hasLength(1), reason: mode);
-        expect(events, isEmpty, reason: mode);
-        for (final outcome in [...outcomes, ...streamErrors]) {
-          expect(outcome, isA<TuiGatewayRpcError>(), reason: mode);
-          final error = outcome as TuiGatewayRpcError;
-          expect(
-            error.origin,
-            CompressionFailureOrigin.malformed,
-            reason: mode,
-          );
-          expect(error.message, 'Invalid JSON-RPC frame', reason: mode);
-          expect(error.code, isNull, reason: mode);
-          expect(error.data, isEmpty, reason: mode);
-          expect(
-            error.toString(),
-            isNot(contains(privateMarker)),
-            reason: mode,
-          );
-        }
-        expect(logs.join('\n'), isNot(contains(privateMarker)), reason: mode);
-
-        debugPrint = previousDebugPrint;
-        await subscription.cancel();
-        await client.close();
-        for (final socket in sockets) {
-          await socket.close();
-        }
-        await server.close(force: true);
-      }, timeout: const Timeout(Duration(seconds: 10)));
-    }
-  });
+          debugPrint = previousDebugPrint;
+          await subscription.cancel();
+          await client.close();
+          for (final socket in sockets) {
+            await socket.close();
+          }
+          await server.close(force: true);
+        }, timeout: const Timeout(Duration(seconds: 10)));
+      }
+    },
+  );
 
   test(
     'valid unknown response id and valid unknown event preserve the transport',
@@ -1366,9 +1369,11 @@ void main() {
       // v0.19.0 (commit 3ef6bbd201263d354fd83ec55b3c306ded2eb72a).
       final fixture = Map<String, dynamic>.from(
         jsonDecode(
-          File('test/fixtures/hermes_agent_019_session_resume.json')
-              .readAsStringSync(),
-        ) as Map,
+              File(
+                'test/fixtures/hermes_agent_019_session_resume.json',
+              ).readAsStringSync(),
+            )
+            as Map,
       );
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(server.close);
@@ -2024,8 +2029,9 @@ void main() {
   test(
     'reintentos de loginRequired conservan el error sin reparación',
     () async {
-      final gatewaySource = File('lib/core/services/tui_gateway_client.dart')
-          .readAsStringSync();
+      final gatewaySource = File(
+        'lib/core/services/tui_gateway_client.dart',
+      ).readAsStringSync();
       expect(gatewaySource, isNot(contains('.setDashboardCredentials(')));
 
       final dashboard = DashboardClient(
@@ -2338,65 +2344,68 @@ void main() {
     },
   );
 
-  test('REGRESSION_COMP_UNCERTAIN malformed server ACK remains unclassified post-dispatch', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    addTearDown(server.close);
-    var compressCalls = 0;
-    server.listen((request) async {
-      final socket = await WebSocketTransformer.upgrade(request);
-      socket.add(
-        jsonEncode({
-          'jsonrpc': '2.0',
-          'method': 'event',
-          'params': {
-            'type': 'gateway.ready',
-            'payload': {'replay_epoch': 'epoch-a'},
-          },
-        }),
-      );
-      await for (final raw in socket) {
-        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-        final method = frame['method'];
-        if (method == 'session.compress') compressCalls++;
+  test(
+    'REGRESSION_COMP_UNCERTAIN malformed server ACK remains unclassified post-dispatch',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      var compressCalls = 0;
+      server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
         socket.add(
           jsonEncode({
             'jsonrpc': '2.0',
-            'id': frame['id'],
-            'result': method == 'gateway.capabilities'
-                ? {'per_session_exclusive_submit': true}
-                : {'status': 'compressed', 'removed': 'not-an-int'},
+            'method': 'event',
+            'params': {
+              'type': 'gateway.ready',
+              'payload': {'replay_epoch': 'epoch-a'},
+            },
           }),
         );
-      }
-    });
-    final client = TuiGatewayClient(
-      SavedConnection(
-        id: 'conn-malformed-compress',
-        label: 'Malformed compress',
-        host: '127.0.0.1',
-        port: 8642,
-        apiKey: 'unused',
-        dashboardUrl: 'http://127.0.0.1:${server.port}',
-      ),
-      dashboard: _TicketDashboardClient(),
-    );
-    addTearDown(client.close);
+        await for (final raw in socket) {
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          final method = frame['method'];
+          if (method == 'session.compress') compressCalls++;
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': frame['id'],
+              'result': method == 'gateway.capabilities'
+                  ? {'per_session_exclusive_submit': true}
+                  : {'status': 'compressed', 'removed': 'not-an-int'},
+            }),
+          );
+        }
+      });
+      final client = TuiGatewayClient(
+        SavedConnection(
+          id: 'conn-malformed-compress',
+          label: 'Malformed compress',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'unused',
+          dashboardUrl: 'http://127.0.0.1:${server.port}',
+        ),
+        dashboard: _TicketDashboardClient(),
+      );
+      addTearDown(client.close);
 
-    await expectLater(
-      client.compressSession('runtime-malformed'),
-      throwsA(
-        isA<TuiGatewayRpcError>()
-            .having((error) => error.method, 'method', 'session.compress')
-            .having(
-              (error) => error.origin,
-              'origin',
-              CompressionFailureOrigin.malformed,
-            )
-            .having((error) => error.code, 'code', isNull),
-      ),
-    );
-    expect(compressCalls, 1);
-  });
+      await expectLater(
+        client.compressSession('runtime-malformed'),
+        throwsA(
+          isA<TuiGatewayRpcError>()
+              .having((error) => error.method, 'method', 'session.compress')
+              .having(
+                (error) => error.origin,
+                'origin',
+                CompressionFailureOrigin.malformed,
+              )
+              .having((error) => error.code, 'code', isNull),
+        ),
+      );
+      expect(compressCalls, 1);
+    },
+  );
 
   test(
     'COMP_CONVERGENCE real RPC projected reply survives 42 seconds',
@@ -3486,122 +3495,125 @@ void main() {
     expect(texts, isEmpty);
   });
 
-  test('resource overflow remains fail-closed after legacy recovery hint', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    addTearDown(server.close);
-    var connections = 0;
-    final retainedBoundaryReceived = Completer<void>();
-    final disconnected = Completer<void>();
-    WebSocket? recoverySocket;
-    server.listen((request) async {
-      final socket = await WebSocketTransformer.upgrade(request);
-      socket.add(
+  test(
+    'resource overflow remains fail-closed after legacy recovery hint',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      var connections = 0;
+      final retainedBoundaryReceived = Completer<void>();
+      final disconnected = Completer<void>();
+      WebSocket? recoverySocket;
+      server.listen((request) async {
+        final socket = await WebSocketTransformer.upgrade(request);
+        socket.add(
+          jsonEncode({
+            'jsonrpc': '2.0',
+            'method': 'event',
+            'params': {
+              'type': 'gateway.ready',
+              'payload': {'replay_epoch': 'epoch-a'},
+            },
+          }),
+        );
+        connections++;
+        if (connections == 1) {
+          for (var index = 0; index < 100; index++) {
+            socket.add(
+              jsonEncode({
+                'jsonrpc': '2.0',
+                'method': 'event',
+                'params': {
+                  'type': 'message.delta',
+                  'session_id': 'runtime-quarantine-$index',
+                  'seq': 1,
+                  'payload': {'replay_epoch': 'epoch-quarantine-bound'},
+                },
+              }),
+            );
+          }
+          await retainedBoundaryReceived.future.timeout(
+            const Duration(seconds: 2),
+          );
+          await socket.close();
+          return;
+        }
+        recoverySocket = socket;
+        await for (final raw in socket) {
+          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (frame['method'] == 'session.events.since') {
+            fail('fail-closed quarantine must not replay uncertain runtimes');
+          }
+        }
+      });
+
+      final client = TuiGatewayClient(
+        SavedConnection(
+          id: 'conn-quarantine-bound',
+          label: 'Quarantine bound',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: String.fromCharCodes(const [113, 97]),
+          dashboardUrl: 'http://127.0.0.1:${server.port}',
+        ),
+        dashboard: _TicketDashboardClient(),
+      );
+      addTearDown(client.close);
+      final initialRuntimeIds = <String>[];
+      final texts = <String>[];
+      final subscription = client.events.listen(
+        (event) {
+          if (event.payload['replay_epoch'] == 'epoch-quarantine-bound') {
+            initialRuntimeIds.add(event.sessionId);
+            if (event.sessionId ==
+                    'runtime-quarantine-${ReplayCoordinator.maxTrackedRuntimes - 1}' &&
+                !retainedBoundaryReceived.isCompleted) {
+              retainedBoundaryReceived.complete();
+            }
+          }
+          if (event.payload['text'] case final String text) texts.add(text);
+        },
+        onError: (Object _, StackTrace _) {
+          if (!disconnected.isCompleted) disconnected.complete();
+        },
+      );
+      addTearDown(subscription.cancel);
+
+      await client.connect();
+      await disconnected.future.timeout(const Duration(seconds: 2));
+      await client.connect();
+      recoverySocket!.add(
         jsonEncode({
           'jsonrpc': '2.0',
           'method': 'event',
           'params': {
-            'type': 'gateway.ready',
-            'payload': {'replay_epoch': 'epoch-a'},
+            'type': 'message.delta',
+            'session_id': 'runtime-quarantine-0',
+            'seq': 2,
+            'payload': {'text': 'unsafe-before-recovery'},
           },
         }),
       );
-      connections++;
-      if (connections == 1) {
-        for (var index = 0; index < 100; index++) {
-          socket.add(
-            jsonEncode({
-              'jsonrpc': '2.0',
-              'method': 'event',
-              'params': {
-                'type': 'message.delta',
-                'session_id': 'runtime-quarantine-$index',
-                'seq': 1,
-                'payload': {'replay_epoch': 'epoch-quarantine-bound'},
-              },
-            }),
-          );
-        }
-        await retainedBoundaryReceived.future.timeout(
-          const Duration(seconds: 2),
-        );
-        await socket.close();
-        return;
-      }
-      recoverySocket = socket;
-      await for (final raw in socket) {
-        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-        if (frame['method'] == 'session.events.since') {
-          fail('fail-closed quarantine must not replay uncertain runtimes');
-        }
-      }
-    });
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      client.commitRecoveryRuntime('runtime-quarantine-0');
+      recoverySocket!.add(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'method': 'event',
+          'params': {
+            'type': 'message.delta',
+            'session_id': 'runtime-quarantine-0',
+            'seq': 3,
+            'payload': {'text': 'safe-after-recovery'},
+          },
+        }),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    final client = TuiGatewayClient(
-      SavedConnection(
-        id: 'conn-quarantine-bound',
-        label: 'Quarantine bound',
-        host: '127.0.0.1',
-        port: 8642,
-        apiKey: String.fromCharCodes(const [113, 97]),
-        dashboardUrl: 'http://127.0.0.1:${server.port}',
-      ),
-      dashboard: _TicketDashboardClient(),
-    );
-    addTearDown(client.close);
-    final initialRuntimeIds = <String>[];
-    final texts = <String>[];
-    final subscription = client.events.listen(
-      (event) {
-        if (event.payload['replay_epoch'] == 'epoch-quarantine-bound') {
-          initialRuntimeIds.add(event.sessionId);
-          if (event.sessionId ==
-                  'runtime-quarantine-${ReplayCoordinator.maxTrackedRuntimes - 1}' &&
-              !retainedBoundaryReceived.isCompleted) {
-            retainedBoundaryReceived.complete();
-          }
-        }
-        if (event.payload['text'] case final String text) texts.add(text);
-      },
-      onError: (Object _, StackTrace _) {
-        if (!disconnected.isCompleted) disconnected.complete();
-      },
-    );
-    addTearDown(subscription.cancel);
-
-    await client.connect();
-    await disconnected.future.timeout(const Duration(seconds: 2));
-    await client.connect();
-    recoverySocket!.add(
-      jsonEncode({
-        'jsonrpc': '2.0',
-        'method': 'event',
-        'params': {
-          'type': 'message.delta',
-          'session_id': 'runtime-quarantine-0',
-          'seq': 2,
-          'payload': {'text': 'unsafe-before-recovery'},
-        },
-      }),
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 20));
-    client.commitRecoveryRuntime('runtime-quarantine-0');
-    recoverySocket!.add(
-      jsonEncode({
-        'jsonrpc': '2.0',
-        'method': 'event',
-        'params': {
-          'type': 'message.delta',
-          'session_id': 'runtime-quarantine-0',
-          'seq': 3,
-          'payload': {'text': 'safe-after-recovery'},
-        },
-      }),
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 30));
-
-    expect(initialRuntimeIds.length, ReplayCoordinator.maxTrackedRuntimes);
-    expect(texts, isEmpty);
-  });
+      expect(initialRuntimeIds.length, ReplayCoordinator.maxTrackedRuntimes);
+      expect(texts, isEmpty);
+    },
+  );
 
   test(
     'a new replay epoch quarantines every prior runtime watermark',

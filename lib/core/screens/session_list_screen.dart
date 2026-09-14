@@ -344,8 +344,9 @@ class _SessionListScreenState extends State<SessionListScreen>
   Future<List<Session>> _draftSessions({String? profile}) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final entries = await ChatDraftStore(prefs)
-          .listForConnection(widget.connection.id);
+      final entries = await ChatDraftStore(
+        prefs,
+      ).listForConnection(widget.connection.id);
       if (!mounted) return const [];
       final fallback = Strings.of(context).drawerNewChat;
       final owner = Session.profileOwner(profile);
@@ -1038,8 +1039,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     await _archive!.setSessionTitle(session, trimmed);
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
   }
 
   Future<void> _toggleArchive(Session session) async {

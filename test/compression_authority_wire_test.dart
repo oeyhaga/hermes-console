@@ -191,28 +191,31 @@ void main() {
       expect(f.methods, isNot(contains('session.compress')));
     });
   }
-  test('REGRESSION_COMP2A testing-only receipt cannot arm or dispatch', () async {
-    final f = _Fixture();
-    await f.start(
-      'testing-only-receipt',
-      allowUnownedDesktopSnapshotForTesting: true,
-    );
-    addTearDown(f.close);
-    f.respond = (frame) async => frame['method'] == 'session.resume'
-        ? {
-            'session_id': 'runtime-A',
-            'session_key': 'stored-A',
-            'stored_session_id': 'stored-B',
-            'messages': <Object>[],
-          }
-        : f.defaultResult(frame);
+  test(
+    'REGRESSION_COMP2A testing-only receipt cannot arm or dispatch',
+    () async {
+      final f = _Fixture();
+      await f.start(
+        'testing-only-receipt',
+        allowUnownedDesktopSnapshotForTesting: true,
+      );
+      addTearDown(f.close);
+      f.respond = (frame) async => frame['method'] == 'session.resume'
+          ? {
+              'session_id': 'runtime-A',
+              'session_key': 'stored-A',
+              'stored_session_id': 'stored-B',
+              'messages': <Object>[],
+            }
+          : f.defaultResult(frame);
 
-    await f.chat.compressDesktopSessionForPresentation();
+      await f.chat.compressDesktopSessionForPresentation();
 
-    expect(f.methods, contains('session.resume'));
-    expect(f.methods, isNot(contains('session.compress')));
-    expect(f.storage.value, isNull, reason: 'testing receipt must not arm');
-  });
+      expect(f.methods, contains('session.resume'));
+      expect(f.methods, isNot(contains('session.compress')));
+      expect(f.storage.value, isNull, reason: 'testing receipt must not arm');
+    },
+  );
   test(
     'REGRESSION_COMP2A_FIX2 strict acquisition precedes testing fallback',
     () async {
@@ -232,39 +235,48 @@ void main() {
     },
   );
   for (final kind in ['foreign', 'aliases-exact', 'root-conflict']) {
-    test('REGRESSION_COMP2A_FIX2 testing taint survives adoption $kind', () async {
-      final f = _Fixture();
-      await f.start('taint-$kind', allowUnownedDesktopSnapshotForTesting: true);
-      addTearDown(f.close);
-      f.respond = (frame) async => frame['method'] == 'session.resume'
-          ? {
-              'session_id': 'runtime-UNOWNED',
-              'session_key': kind == 'foreign' ? 'stored-FOREIGN' : 'stored-A',
-              if (kind == 'aliases-exact') 'stored_session_id': 'stored-OTHER',
-              if (kind == 'root-conflict') 'lineage_root': 'stored-OTHER',
-              'messages': <Object>[],
-            }
-          : f.defaultResult(frame);
-      expect(
-        await f.chat.ensureDesktopRuntime(acquireForExplicitAction: true),
-        isFalse,
-      );
-      expect(f.chat.desktopRuntimeSessionId, isNull);
-      f.frames.clear();
-      await f.chat.compressDesktopSessionForPresentation();
-      await expectLater(
-        f.chat.compressDesktopSession(),
-        throwsA(isA<TuiGatewayRpcError>()),
-      );
-      expect(f.chat.bindSessionProfile('profile-B'), 'profile-B');
-      f.successfulReads = true;
-      // A subsequent testing hydration/adoption cannot clear the sticky taint.
-      await f.chat.loadMessages(profile: 'profile-B');
-      f.frames.clear();
-      await f.chat.compressDesktopSessionForPresentation();
-      expect(f.methods, isEmpty);
-      expect(f.storage.value, isNull, reason: 'tainted binding cannot arm');
-    });
+    test(
+      'REGRESSION_COMP2A_FIX2 testing taint survives adoption $kind',
+      () async {
+        final f = _Fixture();
+        await f.start(
+          'taint-$kind',
+          allowUnownedDesktopSnapshotForTesting: true,
+        );
+        addTearDown(f.close);
+        f.respond = (frame) async => frame['method'] == 'session.resume'
+            ? {
+                'session_id': 'runtime-UNOWNED',
+                'session_key': kind == 'foreign'
+                    ? 'stored-FOREIGN'
+                    : 'stored-A',
+                if (kind == 'aliases-exact')
+                  'stored_session_id': 'stored-OTHER',
+                if (kind == 'root-conflict') 'lineage_root': 'stored-OTHER',
+                'messages': <Object>[],
+              }
+            : f.defaultResult(frame);
+        expect(
+          await f.chat.ensureDesktopRuntime(acquireForExplicitAction: true),
+          isFalse,
+        );
+        expect(f.chat.desktopRuntimeSessionId, isNull);
+        f.frames.clear();
+        await f.chat.compressDesktopSessionForPresentation();
+        await expectLater(
+          f.chat.compressDesktopSession(),
+          throwsA(isA<TuiGatewayRpcError>()),
+        );
+        expect(f.chat.bindSessionProfile('profile-B'), 'profile-B');
+        f.successfulReads = true;
+        // A subsequent testing hydration/adoption cannot clear the sticky taint.
+        await f.chat.loadMessages(profile: 'profile-B');
+        f.frames.clear();
+        await f.chat.compressDesktopSessionForPresentation();
+        expect(f.methods, isEmpty);
+        expect(f.storage.value, isNull, reason: 'tainted binding cannot arm');
+      },
+    );
   }
   for (final entry in ['presentation', 'direct']) {
     test('REGRESSION_COMP2A_FIX2 external load revokes bound $entry', () async {

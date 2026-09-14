@@ -22,10 +22,8 @@ const Duration kVoiceTurnSilenceTimeout = Duration(milliseconds: 1250);
 const Duration kVoiceTurnIdleSilenceTimeout = Duration(seconds: 12);
 const Duration kVoiceTurnMaxDuration = Duration(seconds: 60);
 
-typedef VoiceTurnTimerFactory = Timer Function(
-  Duration duration,
-  void Function() callback,
-);
+typedef VoiceTurnTimerFactory =
+    Timer Function(Duration duration, void Function() callback);
 
 Timer _defaultVoiceTurnTimer(Duration duration, void Function() callback) =>
     Timer(duration, callback);

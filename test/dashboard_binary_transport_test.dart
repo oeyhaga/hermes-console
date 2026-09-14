@@ -217,10 +217,8 @@ void main() {
   });
 }
 
-typedef _SendHandler = Future<http.StreamedResponse> Function(
-  http.BaseRequest request,
-  int call,
-);
+typedef _SendHandler =
+    Future<http.StreamedResponse> Function(http.BaseRequest request, int call);
 
 class _StreamingClient extends http.BaseClient {
   final _SendHandler handler;

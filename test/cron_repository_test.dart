@@ -74,8 +74,11 @@ void main() {
 
     test('title follows name, prompt, script and id priority', () {
       expect(
-        CronJob.fromJson({'id': 'a', 'name': 'Named task', 'prompt': 'Prompt'})
-            .title,
+        CronJob.fromJson({
+          'id': 'a',
+          'name': 'Named task',
+          'prompt': 'Prompt',
+        }).title,
         'Named task',
       );
       expect(
@@ -83,8 +86,11 @@ void main() {
         'Prompt task',
       );
       expect(
-        CronJob.fromJson({'id': 'c', 'no_agent': true, 'script': 'backup.sh'})
-            .isScriptOnly,
+        CronJob.fromJson({
+          'id': 'c',
+          'no_agent': true,
+          'script': 'backup.sh',
+        }).isScriptOnly,
         isTrue,
       );
     });

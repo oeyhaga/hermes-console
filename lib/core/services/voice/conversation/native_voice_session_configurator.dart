@@ -8,9 +8,8 @@ import '../voice_service.dart';
 import '../voice_settings.dart';
 import 'native_voice.dart';
 
-typedef NativeVoiceDashboardFactory = DashboardClient Function(
-  SavedConnection connection,
-);
+typedef NativeVoiceDashboardFactory =
+    DashboardClient Function(SavedConnection connection);
 
 enum HermesServerDictationConfigurationResult {
   configured,

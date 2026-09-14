@@ -124,9 +124,9 @@ class _FenceGateway extends http.BaseClient {
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     final path = request.url.path;
     if (request.method == 'POST' && path == '/v1/runs') {
-      final body = jsonDecode(
-        await request.finalize().bytesToString(),
-      ) as Map<String, dynamic>;
+      final body =
+          jsonDecode(await request.finalize().bytesToString())
+              as Map<String, dynamic>;
       runBodies.add(body);
       return _json({'run_id': 'run_${runBodies.length}'});
     }
@@ -420,71 +420,77 @@ void main() {
     },
   );
 
-  test('herramienta y final autoritativo no cortan el lote que ya está sonando', () async {
-    final h = await _harness();
-    addTearDown(h.close);
-    h.voice.holdSpeech = true;
-    h.voice.captures.single.add(const SttResult('dame las noticias', true));
-    await _waitFor(() => h.gateway.runBodies.isNotEmpty);
+  test(
+    'herramienta y final autoritativo no cortan el lote que ya está sonando',
+    () async {
+      final h = await _harness();
+      addTearDown(h.close);
+      h.voice.holdSpeech = true;
+      h.voice.captures.single.add(const SttResult('dame las noticias', true));
+      await _waitFor(() => h.gateway.runBodies.isNotEmpty);
 
-    const preview = 'Voy a buscar las noticias de ayer antes de responder.';
-    h.gateway.token(1, '$preview ');
-    await _waitFor(() => h.voice.spoken.isNotEmpty);
-    expect(h.voice.spoken, [preview]);
-    final stopsWhilePlaying = h.voice.stopSpeakingCalls;
+      const preview = 'Voy a buscar las noticias de ayer antes de responder.';
+      h.gateway.token(1, '$preview ');
+      await _waitFor(() => h.voice.spoken.isNotEmpty);
+      expect(h.voice.spoken, [preview]);
+      final stopsWhilePlaying = h.voice.stopSpeakingCalls;
 
-    h.gateway.toolStarted(1, 'web_search', 'noticias de ayer');
-    await h.gateway.complete(
-      1,
-      'Estas son las noticias verificadas de ayer. Primera noticia. Segunda noticia.',
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 50));
+      h.gateway.toolStarted(1, 'web_search', 'noticias de ayer');
+      await h.gateway.complete(
+        1,
+        'Estas son las noticias verificadas de ayer. Primera noticia. Segunda noticia.',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-    expect(
-      h.voice.stopSpeakingCalls,
-      stopsWhilePlaying,
-      reason:
-          'el cambio de herramienta/estado no puede truncar audio ya aceptado; '
-          'eventos: $_events',
-    );
-    expect(h.voice.spoken, [preview]);
+      expect(
+        h.voice.stopSpeakingCalls,
+        stopsWhilePlaying,
+        reason:
+            'el cambio de herramienta/estado no puede truncar audio ya aceptado; '
+            'eventos: $_events',
+      );
+      expect(h.voice.spoken, [preview]);
 
-    h.voice.finishSpeech();
-    await _waitFor(
-      () => h.voice.spoken.join(' ').contains('Estas son las noticias'),
-      reason: 'después debe continuar con la respuesta autoritativa',
-    );
-    expect(h.voice.spoken.where((text) => text == preview), hasLength(1));
-  });
+      h.voice.finishSpeech();
+      await _waitFor(
+        () => h.voice.spoken.join(' ').contains('Estas son las noticias'),
+        reason: 'después debe continuar con la respuesta autoritativa',
+      );
+      expect(h.voice.spoken.where((text) => text == preview), hasLength(1));
+    },
+  );
 
-  test('el final autoritativo se precalienta mientras termina el lote provisional', () async {
-    final h = await _harness();
-    addTearDown(h.close);
-    h.voice.holdSpeech = true;
-    h.voice.captures.single.add(const SttResult('dame las noticias', true));
-    await _waitFor(() => h.gateway.runBodies.isNotEmpty);
+  test(
+    'el final autoritativo se precalienta mientras termina el lote provisional',
+    () async {
+      final h = await _harness();
+      addTearDown(h.close);
+      h.voice.holdSpeech = true;
+      h.voice.captures.single.add(const SttResult('dame las noticias', true));
+      await _waitFor(() => h.gateway.runBodies.isNotEmpty);
 
-    const preview = 'Voy a buscar las noticias antes de responder.';
-    const authoritative =
-        'Estas son las noticias verificadas. Primera noticia. Segunda noticia.';
-    h.gateway.token(1, '$preview ');
-    await _waitFor(() => h.voice.spoken.isNotEmpty);
-    expect(h.voice.spoken, [preview]);
+      const preview = 'Voy a buscar las noticias antes de responder.';
+      const authoritative =
+          'Estas son las noticias verificadas. Primera noticia. Segunda noticia.';
+      h.gateway.token(1, '$preview ');
+      await _waitFor(() => h.voice.spoken.isNotEmpty);
+      expect(h.voice.spoken, [preview]);
 
-    h.gateway.toolStarted(1, 'web_search', 'noticias');
-    await h.gateway.complete(1, authoritative);
-    await _waitFor(
-      () => h.voice.prewarmed.contains('Estas son las noticias verificadas.'),
-      reason:
-          'la primera oración autoritativa debe solaparse con la locución '
-          'provisional para no dejar 4–5 s de silencio al cambiar de revisión',
-    );
+      h.gateway.toolStarted(1, 'web_search', 'noticias');
+      await h.gateway.complete(1, authoritative);
+      await _waitFor(
+        () => h.voice.prewarmed.contains('Estas son las noticias verificadas.'),
+        reason:
+            'la primera oración autoritativa debe solaparse con la locución '
+            'provisional para no dejar 4–5 s de silencio al cambiar de revisión',
+      );
 
-    expect(h.voice.spoken, [preview]);
-    h.voice.finishSpeech();
-    await _waitFor(() => h.voice.spoken.join(' ').contains(authoritative));
-    expect(h.voice.spoken[1], 'Estas son las noticias verificadas.');
-  });
+      expect(h.voice.spoken, [preview]);
+      h.voice.finishSpeech();
+      await _waitFor(() => h.voice.spoken.join(' ').contains(authoritative));
+      expect(h.voice.spoken[1], 'Estas son las noticias verificadas.');
+    },
+  );
 
   test(
     'el final decorado continúa tras el cuerpo aceptado sin volver a narrarlo',

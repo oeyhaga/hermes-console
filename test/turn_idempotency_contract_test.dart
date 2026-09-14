@@ -823,157 +823,160 @@ void main() {
     },
   );
 
-  test('same service retains accepted owner for canonical reopen but fresh service cannot infer it', () async {
-    const idle = DesktopActiveSessionList(
-      sessions: [
-        DesktopActiveSession(
-          runtimeSessionId: 'runtime-owned',
-          storedSessionId: 'session-modern',
-          current: true,
-          status: 'idle',
-        ),
-      ],
-    );
-    final gateway = _RuntimeReleaseGateway(activeLists: const [idle]);
-    final service = ActiveChatService(
-      compressionFenceStore: testCompressionFenceStore(),
-    );
-    addTearDown(service.dispose);
-    final connection = SavedConnection(
-      id: 'conn-modern',
-      label: 'Modern',
-      host: 'example.invalid',
-      port: 443,
-      apiKey: 'test-key',
-      useHttps: true,
-    );
-    final api = ApiClient(
-      baseUrl: 'https://example.invalid',
-      apiKey: 'test-key',
-      httpClient: MockClient((_) async => http.Response('unused', 500)),
-    );
-    final chat = service.attach(
-      connection: connection,
-      sessionId: 'draft-route',
-      sessionTitle: 'Draft',
-      api: api,
-      desktopGateway: gateway,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'message_id': 'user-1',
-          'role': 'user',
-          'content': 'crear y conservar',
-        },
-        {
-          'message_id': 'assistant-1',
-          'role': 'assistant',
-          'content': 'terminal',
-        },
-      ],
-      turnIdempotencyCapability: () async => true,
-      disableForegroundKeepAlive: true,
-    );
-    chat.markStoredSessionMissing();
-    final screenSubscription = chat.changes.listen((_) {});
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final delivery = ActiveTurnDelivery(
-      prepared: PreparedTurn(
-        connectionId: connection.id,
-        sessionId: 'draft-route',
-        clientTurnId: 'same-process-turn',
-        createdAtMs: now,
-        updatedAtMs: now,
-        text: 'crear y conservar',
-        attachments: const [],
-        model: 'hermes-agent',
-        profile: '',
-      ),
-      store: _MemoryOutbox(),
-    );
-
-    expect(
-      await chat.send(
-        fullText: 'crear y conservar',
-        model: 'hermes-agent',
-        history: const [],
-        delivery: delivery,
-      ),
-      isTrue,
-    );
-    final done = chat.changes.firstWhere(
-      (event) => event == ActiveChatEvent.done,
-    );
-    gateway.emit(
-      'message.complete',
-      sessionId: 'runtime-owned',
-      payload: const {'text': 'terminal'},
-      sequence: 1,
-      transportGeneration: 1,
-      producerChannel: Object(),
-    );
-    await done;
-    await screenSubscription.cancel();
-    service.release(connection.id, 'draft-route', profile: 'default');
-    await Future<void>.delayed(Duration.zero);
-
-    final reopened = service.attach(
-      connection: connection,
-      sessionId: 'session-modern',
-      sessionTitle: 'Canonical',
-      initialStoredSessionId: 'session-modern',
-      authoritativeStoredSessionBinding: true,
-      desktopGateway: gateway,
-    );
-    expect(reopened, same(chat));
-    expect(reopened.showReleaseToDesktopControl, isTrue);
-    expect(gateway.activations, isEmpty);
-    expect(gateway.resumes, isEmpty);
-    expect(await reopened.releaseRuntimeForDesktop(), isTrue);
-    expect(gateway.activeListRequests, ['runtime-owned']);
-    expect(gateway.closeRequests, ['runtime-owned']);
-
-    final freshGateway = _RuntimeReleaseGateway(activeLists: const [idle]);
-    final freshService = ActiveChatService(
-      compressionFenceStore: testCompressionFenceStore(),
-    );
-    addTearDown(freshService.dispose);
-    freshGateway.activationSnapshotOverride = const DesktopSessionSnapshot(
-      runtimeSessionId: 'runtime-owned',
-      storedSessionId: 'session-modern',
-      created: false,
-      messagesProvided: true,
-    );
-    final fresh = freshService.attach(
-      connection: connection,
-      sessionId: 'session-modern',
-      sessionTitle: 'Canonical',
-      initialStoredSessionId: 'session-modern',
-      authoritativeStoredSessionBinding: true,
-      api: ApiClient(
+  test(
+    'same service retains accepted owner for canonical reopen but fresh service cannot infer it',
+    () async {
+      const idle = DesktopActiveSessionList(
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-owned',
+            storedSessionId: 'session-modern',
+            current: true,
+            status: 'idle',
+          ),
+        ],
+      );
+      final gateway = _RuntimeReleaseGateway(activeLists: const [idle]);
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(service.dispose);
+      final connection = SavedConnection(
+        id: 'conn-modern',
+        label: 'Modern',
+        host: 'example.invalid',
+        port: 443,
+        apiKey: 'test-key',
+        useHttps: true,
+      );
+      final api = ApiClient(
         baseUrl: 'https://example.invalid',
         apiKey: 'test-key',
         httpClient: MockClient((_) async => http.Response('unused', 500)),
-      ),
-      desktopGateway: freshGateway,
-      storedMessageLoader: (_, _) async => const [
-        {'message_id': 'user-1', 'role': 'user', 'content': 'historial'},
-        {
-          'message_id': 'assistant-1',
-          'role': 'assistant',
-          'content': 'terminal',
-        },
-      ],
-    );
-    await fresh.loadMessages();
+      );
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 'draft-route',
+        sessionTitle: 'Draft',
+        api: api,
+        desktopGateway: gateway,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'user-1',
+            'role': 'user',
+            'content': 'crear y conservar',
+          },
+          {
+            'message_id': 'assistant-1',
+            'role': 'assistant',
+            'content': 'terminal',
+          },
+        ],
+        turnIdempotencyCapability: () async => true,
+        disableForegroundKeepAlive: true,
+      );
+      chat.markStoredSessionMissing();
+      final screenSubscription = chat.changes.listen((_) {});
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final delivery = ActiveTurnDelivery(
+        prepared: PreparedTurn(
+          connectionId: connection.id,
+          sessionId: 'draft-route',
+          clientTurnId: 'same-process-turn',
+          createdAtMs: now,
+          updatedAtMs: now,
+          text: 'crear y conservar',
+          attachments: const [],
+          model: 'hermes-agent',
+          profile: '',
+        ),
+        store: _MemoryOutbox(),
+      );
 
-    expect(fresh.desktopRuntimeSessionId, 'runtime-owned');
-    expect(freshGateway.activeListRequests, isNotEmpty);
-    expect(freshGateway.activations, ['runtime-owned']);
-    expect(fresh.showReleaseToDesktopControl, isFalse);
-    expect(fresh.canReleaseToDesktop, isFalse);
-    expect(await fresh.releaseRuntimeForDesktop(), isFalse);
-    expect(freshGateway.closeRequests, isEmpty);
-  });
+      expect(
+        await chat.send(
+          fullText: 'crear y conservar',
+          model: 'hermes-agent',
+          history: const [],
+          delivery: delivery,
+        ),
+        isTrue,
+      );
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit(
+        'message.complete',
+        sessionId: 'runtime-owned',
+        payload: const {'text': 'terminal'},
+        sequence: 1,
+        transportGeneration: 1,
+        producerChannel: Object(),
+      );
+      await done;
+      await screenSubscription.cancel();
+      service.release(connection.id, 'draft-route', profile: 'default');
+      await Future<void>.delayed(Duration.zero);
+
+      final reopened = service.attach(
+        connection: connection,
+        sessionId: 'session-modern',
+        sessionTitle: 'Canonical',
+        initialStoredSessionId: 'session-modern',
+        authoritativeStoredSessionBinding: true,
+        desktopGateway: gateway,
+      );
+      expect(reopened, same(chat));
+      expect(reopened.showReleaseToDesktopControl, isTrue);
+      expect(gateway.activations, isEmpty);
+      expect(gateway.resumes, isEmpty);
+      expect(await reopened.releaseRuntimeForDesktop(), isTrue);
+      expect(gateway.activeListRequests, ['runtime-owned']);
+      expect(gateway.closeRequests, ['runtime-owned']);
+
+      final freshGateway = _RuntimeReleaseGateway(activeLists: const [idle]);
+      final freshService = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(freshService.dispose);
+      freshGateway.activationSnapshotOverride = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-owned',
+        storedSessionId: 'session-modern',
+        created: false,
+        messagesProvided: true,
+      );
+      final fresh = freshService.attach(
+        connection: connection,
+        sessionId: 'session-modern',
+        sessionTitle: 'Canonical',
+        initialStoredSessionId: 'session-modern',
+        authoritativeStoredSessionBinding: true,
+        api: ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-key',
+          httpClient: MockClient((_) async => http.Response('unused', 500)),
+        ),
+        desktopGateway: freshGateway,
+        storedMessageLoader: (_, _) async => const [
+          {'message_id': 'user-1', 'role': 'user', 'content': 'historial'},
+          {
+            'message_id': 'assistant-1',
+            'role': 'assistant',
+            'content': 'terminal',
+          },
+        ],
+      );
+      await fresh.loadMessages();
+
+      expect(fresh.desktopRuntimeSessionId, 'runtime-owned');
+      expect(freshGateway.activeListRequests, isNotEmpty);
+      expect(freshGateway.activations, ['runtime-owned']);
+      expect(fresh.showReleaseToDesktopControl, isFalse);
+      expect(fresh.canReleaseToDesktop, isFalse);
+      expect(await fresh.releaseRuntimeForDesktop(), isFalse);
+      expect(freshGateway.closeRequests, isEmpty);
+    },
+  );
 
   test('un Stop confirmado devuelve la liberación a Desktop', () async {
     const idle = DesktopActiveSessionList(

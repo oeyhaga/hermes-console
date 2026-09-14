@@ -9,9 +9,13 @@ import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-Map<String, dynamic> _fixture() => jsonDecode(
-  File('test/fixtures/spec047/compression_config.json').readAsStringSync(),
-) as Map<String, dynamic>;
+Map<String, dynamic> _fixture() =>
+    jsonDecode(
+          File(
+            'test/fixtures/spec047/compression_config.json',
+          ).readAsStringSync(),
+        )
+        as Map<String, dynamic>;
 
 Map<String, dynamic> _cloneMap(Object value) =>
     jsonDecode(jsonEncode(value)) as Map<String, dynamic>;

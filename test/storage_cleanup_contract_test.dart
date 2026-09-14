@@ -70,97 +70,103 @@ void main() {
         );
   });
 
-  test('B2 reattach preserves confirmed history but cleanup retires it', () async {
-    final requests = <String>[];
-    await http.runWithClient(
-      () async {
-        final service = ActiveChatService(
-          compressionFenceStore: testCompressionFenceStore(),
-        );
-        addTearDown(service.dispose);
-        final connection = SavedConnection(
-          id: 'c',
-          label: 'fixture',
-          host: '127.0.0.1',
-          port: 1,
-          apiKey: 'fixture',
-          kind: InstanceKind.localhost,
-          onDeviceLoopback: true,
-          localChatMode: LocalChatMode.agent,
-        );
-        LocalConversationLifecycle life() =>
-            LocalConversationCleanupFence.beginLifecycle(
-              connectionId: 'c',
-              profile: 'default',
-              sessionId: 's',
-            );
-        ActiveChat attach(LocalConversationLifecycle owner) => service.attach(
-          connection: connection,
-          sessionId: 's',
-          sessionTitle: 'fixture',
-          sessionProfile: 'default',
-          localConversationLifecycle: owner,
-          disableForegroundKeepAlive: true,
-        );
-        final firstOwner = life();
-        final chat = attach(firstOwner);
-        final listener = chat.changes.listen((_) {});
-        addTearDown(listener.cancel);
-        expect(
-          await chat.send(fullText: 'first', model: 'm', history: const []),
-          isTrue,
-          reason: 'requests=$requests messages=${chat.messages}',
-        );
-        LocalConversationCleanupFence.endLifecycle(firstOwner);
-        final secondOwner = life();
-        expect(identical(attach(secondOwner), chat), isTrue);
-        expect(
-          await chat.send(fullText: 'second', model: 'm', history: const []),
-          isTrue,
-        );
-        expect(
-          (await LocalTranscriptStore.load(
-            'c',
-            's',
-            profile: 'default',
-          )).map((row) => row['content']),
-          ['first', 'reply:first', 'second', 'reply:second'],
-        );
-        await LocalTranscriptStore.deleteForProfile('c', 'default');
-        LocalConversationCleanupFence.endLifecycle(secondOwner);
-        final thirdOwner = life();
-        expect(LocalConversationCleanupFence.rehydrate(thirdOwner), isTrue);
-        expect(identical(attach(thirdOwner), chat), isTrue);
-        expect(
-          await chat.send(fullText: 'third', model: 'm', history: const []),
-          isTrue,
-        );
-        expect(
-          (await LocalTranscriptStore.load(
-            'c',
-            's',
-            profile: 'default',
-          )).map((row) => row['content']),
-          ['third', 'reply:third'],
-        );
-      },
-      () => MockClient((request) async {
-        requests.add('${request.method} ${request.url.path}');
-        if (request.url.path == '/bridge/provision') {
-          return http.Response('{"token":"fixture"}', 200);
-        }
-        if (request.url.path == '/bridge/chat/stream') {
-          final prompt = (jsonDecode(request.body) as Map)['prompt'];
-          return http.Response(
-            'data: ${jsonEncode({'delta': 'reply:$prompt'})}\n\ndata: {"done":true}\n\n',
-            200,
+  test(
+    'B2 reattach preserves confirmed history but cleanup retires it',
+    () async {
+      final requests = <String>[];
+      await http.runWithClient(
+        () async {
+          final service = ActiveChatService(
+            compressionFenceStore: testCompressionFenceStore(),
           );
-        }
-        return http.Response('{}', 404);
-      }),
-    );
-    expect(requests.where((request) => request.startsWith('DELETE ')), isEmpty);
-  });
+          addTearDown(service.dispose);
+          final connection = SavedConnection(
+            id: 'c',
+            label: 'fixture',
+            host: '127.0.0.1',
+            port: 1,
+            apiKey: 'fixture',
+            kind: InstanceKind.localhost,
+            onDeviceLoopback: true,
+            localChatMode: LocalChatMode.agent,
+          );
+          LocalConversationLifecycle life() =>
+              LocalConversationCleanupFence.beginLifecycle(
+                connectionId: 'c',
+                profile: 'default',
+                sessionId: 's',
+              );
+          ActiveChat attach(LocalConversationLifecycle owner) => service.attach(
+            connection: connection,
+            sessionId: 's',
+            sessionTitle: 'fixture',
+            sessionProfile: 'default',
+            localConversationLifecycle: owner,
+            disableForegroundKeepAlive: true,
+          );
+          final firstOwner = life();
+          final chat = attach(firstOwner);
+          final listener = chat.changes.listen((_) {});
+          addTearDown(listener.cancel);
+          expect(
+            await chat.send(fullText: 'first', model: 'm', history: const []),
+            isTrue,
+            reason: 'requests=$requests messages=${chat.messages}',
+          );
+          LocalConversationCleanupFence.endLifecycle(firstOwner);
+          final secondOwner = life();
+          expect(identical(attach(secondOwner), chat), isTrue);
+          expect(
+            await chat.send(fullText: 'second', model: 'm', history: const []),
+            isTrue,
+          );
+          expect(
+            (await LocalTranscriptStore.load(
+              'c',
+              's',
+              profile: 'default',
+            )).map((row) => row['content']),
+            ['first', 'reply:first', 'second', 'reply:second'],
+          );
+          await LocalTranscriptStore.deleteForProfile('c', 'default');
+          LocalConversationCleanupFence.endLifecycle(secondOwner);
+          final thirdOwner = life();
+          expect(LocalConversationCleanupFence.rehydrate(thirdOwner), isTrue);
+          expect(identical(attach(thirdOwner), chat), isTrue);
+          expect(
+            await chat.send(fullText: 'third', model: 'm', history: const []),
+            isTrue,
+          );
+          expect(
+            (await LocalTranscriptStore.load(
+              'c',
+              's',
+              profile: 'default',
+            )).map((row) => row['content']),
+            ['third', 'reply:third'],
+          );
+        },
+        () => MockClient((request) async {
+          requests.add('${request.method} ${request.url.path}');
+          if (request.url.path == '/bridge/provision') {
+            return http.Response('{"token":"fixture"}', 200);
+          }
+          if (request.url.path == '/bridge/chat/stream') {
+            final prompt = (jsonDecode(request.body) as Map)['prompt'];
+            return http.Response(
+              'data: ${jsonEncode({'delta': 'reply:$prompt'})}\n\ndata: {"done":true}\n\n',
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        }),
+      );
+      expect(
+        requests.where((request) => request.startsWith('DELETE ')),
+        isEmpty,
+      );
+    },
+  );
 
   test('B1 rejected empty save cannot supersede a second producer', () async {
     final drafts = ChatDraftStore(await SharedPreferences.getInstance());

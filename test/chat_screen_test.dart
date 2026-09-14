@@ -2421,8 +2421,9 @@ void main() {
       expect(chat.showReleaseToDesktopControl, isTrue);
 
       final app = tester.state<HermesAppState>(find.byType(HermesApp));
-      Navigator.of(tester.element(find.byType(ChatScreen)))
-          .removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
+      Navigator.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
       await tester.pump();
       await tester.pump();
 
@@ -2887,8 +2888,9 @@ void main() {
       final childBeforeTeardown = chat.subagentActivities.single;
       final app = tester.state<HermesAppState>(find.byType(HermesApp));
 
-      Navigator.of(tester.element(find.byType(ChatScreen)))
-          .removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
+      Navigator.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
       await tester.pump();
       await tester.pump();
 
@@ -2982,8 +2984,9 @@ void main() {
       );
       expect(chat.isStreaming, isTrue);
       final app = tester.state<HermesAppState>(find.byType(HermesApp));
-      Navigator.of(tester.element(find.byType(ChatScreen)))
-          .removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
+      Navigator.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
       await tester.pump();
       await tester.pump();
       expect(app.activeChats.of(connection.id, 'sess-test'), same(chat));
@@ -6346,7 +6349,8 @@ void main() {
       expect(
         (await store.load(connection.id, 'stored-submission-test')).text,
         'after reattach',
-        reason: 'Same live chat and proven create identity must permit replacement screen to persist',
+        reason:
+            'Same live chat and proven create identity must permit replacement screen to persist',
       );
       expect(tester.takeException(), isNull);
     },
@@ -6496,8 +6500,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       await tester.enterText(field, 'last keystroke before back');
       // Immediate route removal (e.g. section replacement / reduced motion).
-      Navigator.of(tester.element(find.byType(ChatScreen)))
-          .removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
+      Navigator.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       final store = ChatDraftStore(
@@ -6660,8 +6665,9 @@ void main() {
       )!;
       blockRead = true;
       await tester.enterText(field, 'unconfirmed final flush');
-      Navigator.of(tester.element(find.byType(ChatScreen)))
-          .removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
+      Navigator.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeRoute(ModalRoute.of(tester.element(find.byType(ChatScreen)))!);
       await tester.pump();
       await tester.pump();
       expect(entered.isCompleted, isTrue);
@@ -8880,8 +8886,9 @@ void main() {
       find.textContaining('transcript vigente del refresh'),
       findsOneWidget,
     );
-    ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-        .showSnackBar(const SnackBar(content: Text('aviso vigente B')));
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ChatScreen)),
+    ).showSnackBar(const SnackBar(content: Text('aviso vigente B')));
     await tester.pump();
     final hapticsBeforeAck = hapticCalls;
 
@@ -8900,8 +8907,9 @@ void main() {
     );
     expect(find.text('La compresión de contexto terminó.'), findsNothing);
     expect(find.text('aviso vigente B'), findsOneWidget);
-    ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-        .removeCurrentSnackBar();
+    ScaffoldMessenger.of(
+      tester.element(find.byType(ChatScreen)),
+    ).removeCurrentSnackBar();
     await tester.pump();
     expect(find.text('La compresión de contexto terminó.'), findsNothing);
     expect(
@@ -9261,28 +9269,29 @@ void main() {
     (DesktopCompressionStatus.aborted, 'La compresión se canceló.'),
     (DesktopCompressionStatus.lockHeld, 'Ya hay otra compresión en curso'),
   ]) {
-    testWidgets('REGRESSION_COMP_FIX1_UI_CURRENT_${variant.$1.name.toUpperCase()}', (
-      tester,
-    ) async {
-      final gateway = _UiNativeCompressionGateway(
-        _uiNativeCompressionResult(variant.$1),
-      );
-      await pumpChat(
-        tester,
-        desktopGateway: gateway,
-        connection: _remoteConn('conn-fix1-current-${variant.$1.name}'),
-        messagesLoaded: true,
-        acquireDesktopRuntimeBeforeMount: true,
-      );
-      await tester.enterText(find.byType(TextField), '/compress current');
-      await submitComposerFromKeyboard(tester);
-      await gateway.compressionEntered.future;
-      await pumpUntilVisible(tester, find.textContaining(variant.$2));
+    testWidgets(
+      'REGRESSION_COMP_FIX1_UI_CURRENT_${variant.$1.name.toUpperCase()}',
+      (tester) async {
+        final gateway = _UiNativeCompressionGateway(
+          _uiNativeCompressionResult(variant.$1),
+        );
+        await pumpChat(
+          tester,
+          desktopGateway: gateway,
+          connection: _remoteConn('conn-fix1-current-${variant.$1.name}'),
+          messagesLoaded: true,
+          acquireDesktopRuntimeBeforeMount: true,
+        );
+        await tester.enterText(find.byType(TextField), '/compress current');
+        await submitComposerFromKeyboard(tester);
+        await gateway.compressionEntered.future;
+        await pumpUntilVisible(tester, find.textContaining(variant.$2));
 
-      expect(find.textContaining(variant.$2), findsOneWidget);
-      expect(gateway.nativeCompressionCalls, 1);
-      expect(tester.takeException(), isNull);
-    });
+        expect(find.textContaining(variant.$2), findsOneWidget);
+        expect(gateway.nativeCompressionCalls, 1);
+        expect(tester.takeException(), isNull);
+      },
+    );
   }
 
   testWidgets('REGRESSION_COMP_FIX1_UI_CURRENT_ERROR', (tester) async {
@@ -10217,9 +10226,9 @@ void main() {
         chat.messages.where((message) => message['role'] == 'user'),
         hasLength(1),
       );
-      var stored = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      var stored =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       expect(
         (stored.values.single as Map<String, dynamic>)['state'],
         PreparedTurnState.failedBeforeAcceptance.name,
@@ -10252,9 +10261,9 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('TuiGatewayRpcError'), findsNothing);
-      stored = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      stored =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       expect(
         (stored.values.single as Map<String, dynamic>)['state'],
         PreparedTurnState.failedBeforeAcceptance.name,
@@ -10311,9 +10320,9 @@ void main() {
       }
       await tester.pump(const Duration(milliseconds: 400));
 
-      final outboxBeforeDelete = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      final outboxBeforeDelete =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       final rejectedId =
           (outboxBeforeDelete.values.single
                   as Map<String, dynamic>)['client_turn_id']
@@ -10349,9 +10358,9 @@ void main() {
         const [],
         profile: 'default',
       );
-      final outboxWithNeighbor = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      final outboxWithNeighbor =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       final neighborOutboxBytes = jsonEncode(
         outboxWithNeighbor[outboxNeighbor.storageId],
       );
@@ -10376,9 +10385,9 @@ void main() {
       // Readback del backend justo en el corte entre stores: el draft antiguo
       // aún existe, pero el turno ya fue reemplazado por autoridad durable.
       expect(secureStore.containsKey(draftKey), isTrue);
-      final cutOutbox = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      final cutOutbox =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       expect(cutOutbox.containsKey(outboxNeighbor.storageId), isTrue);
       expect(cutOutbox.containsKey(rejectedStorageId), isFalse);
       expect(
@@ -10432,9 +10441,9 @@ void main() {
         isTrue,
       );
       expect(secureStore.containsKey(draftKey), isFalse);
-      final afterRestart = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      final afterRestart =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       expect(
         jsonEncode(afterRestart[outboxNeighbor.storageId]),
         neighborOutboxBytes,
@@ -10559,9 +10568,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
 
-      final stored = jsonDecode(
-        secureStore['chat_turn_outbox_v1']!,
-      ) as Map<String, dynamic>;
+      final stored =
+          jsonDecode(secureStore['chat_turn_outbox_v1']!)
+              as Map<String, dynamic>;
       expect(
         (stored.values.single as Map<String, dynamic>)['state'],
         PreparedTurnState.submitting.name,
@@ -10974,8 +10983,9 @@ void main() {
 
         // The initial recovery notice may expire, but a blocked worker action
         // must expose the same explicit discard again instead of deadlocking.
-        ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-            .clearSnackBars();
+        ScaffoldMessenger.of(
+          tester.element(find.byType(ChatScreen)),
+        ).clearSnackBars();
         await tester.pump(const Duration(milliseconds: 500));
         await tester.tap(find.byKey(const ValueKey('send')));
         await tester.pump();
@@ -10986,8 +10996,9 @@ void main() {
             .widget<SnackBarAction>(find.byType(SnackBarAction).last)
             .onPressed();
         await tester.pump(const Duration(milliseconds: 300));
-        ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-            .clearSnackBars();
+        ScaffoldMessenger.of(
+          tester.element(find.byType(ChatScreen)),
+        ).clearSnackBars();
         await tester.pump(const Duration(milliseconds: 500));
 
         expect(secureStore.containsKey('chat_turn_outbox_v1'), isFalse);
@@ -11582,9 +11593,9 @@ void main() {
       style: TextStyle(color: colors.textPrimary),
       withComposing: true,
     );
-    final leaves = _flattenTextSpans(span)
-        .where((leaf) => leaf.text?.isNotEmpty ?? false)
-        .toList();
+    final leaves = _flattenTextSpans(
+      span,
+    ).where((leaf) => leaf.text?.isNotEmpty ?? false).toList();
 
     final slashLeaf = leaves.firstWhere((leaf) => leaf.text == '/help');
     expect(slashLeaf.style?.color, colors.accent);
@@ -13113,7 +13124,8 @@ void main() {
       // gateway; unlike manual session.compress there is no RPC/result list.
       gateway.emit('status.update', const {
         'kind': 'compacting',
-        'text': '🗜️ Compacting context — summarizing earlier conversation so I can continue...',
+        'text':
+            '🗜️ Compacting context — summarizing earlier conversation so I can continue...',
       });
       await tester.pump();
       expect(chat.desktopAutoCompacting, isTrue);
@@ -13125,7 +13137,8 @@ void main() {
       });
       gateway.emit('status.update', const {
         'kind': 'compacting',
-        'text': '🗜️ Compacting context — still summarizing earlier conversation so I can continue...',
+        'text':
+            '🗜️ Compacting context — still summarizing earlier conversation so I can continue...',
       });
       await tester.pump();
       expect(chat.storedSessionId, 'auto-stored-tip');
@@ -15043,56 +15056,55 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'fallback sin gateway deja el texto en cola sin cortar el turno',
-    (tester) async {
-      final chat = await pumpChat(
-        tester,
-        chatState: ChatPipelineState.executing,
-        messages: const [
-          {
-            'role': 'assistant',
-            'content': 'Respuesta todavía creciendo',
-            '_pipeline': true,
-          },
-          {'role': 'user', 'content': 'Primera petición'},
-        ],
-      );
+  testWidgets('fallback sin gateway deja el texto en cola sin cortar el turno', (
+    tester,
+  ) async {
+    final chat = await pumpChat(
+      tester,
+      chatState: ChatPipelineState.executing,
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': 'Respuesta todavía creciendo',
+          '_pipeline': true,
+        },
+        {'role': 'user', 'content': 'Primera petición'},
+      ],
+    );
 
-      await tester.enterText(find.byType(TextField), 'Siguiente pregunta');
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byKey(const ValueKey('send')));
-      await tester.pump();
+    await tester.enterText(find.byType(TextField), 'Siguiente pregunta');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump();
 
-      expect(chat.state, ChatPipelineState.executing);
-      expect(chat.queuedMessages, ['Siguiente pregunta']);
-      expect(
-        tester.widget<TextField>(find.byType(TextField)).controller?.text,
-        isEmpty,
-      );
-      expect(
-        find.text(
-          'Mensaje en cola: se enviará como siguiente turno cuando Hermes termine.',
-        ),
-        findsOneWidget,
-      );
-      final queueToggle = find.byKey(const ValueKey('chat-queue-toggle'));
-      expect(queueToggle, findsOneWidget);
-      expect(tester.getSize(queueToggle).height, greaterThanOrEqualTo(48));
-      expect(find.text('Siguiente pregunta'), findsNothing);
-      expect(find.byTooltip('Borrar'), findsNothing);
+    expect(chat.state, ChatPipelineState.executing);
+    expect(chat.queuedMessages, ['Siguiente pregunta']);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller?.text,
+      isEmpty,
+    );
+    expect(
+      find.text(
+        'Mensaje en cola: se enviará como siguiente turno cuando Hermes termine.',
+      ),
+      findsOneWidget,
+    );
+    final queueToggle = find.byKey(const ValueKey('chat-queue-toggle'));
+    expect(queueToggle, findsOneWidget);
+    expect(tester.getSize(queueToggle).height, greaterThanOrEqualTo(48));
+    expect(find.text('Siguiente pregunta'), findsNothing);
+    expect(find.byTooltip('Borrar'), findsNothing);
 
-      await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
-      await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+    await tester.pump();
 
-      expect(find.text('Siguiente pregunta'), findsOneWidget);
-      final removeQueued = find.byTooltip('Borrar');
-      expect(removeQueued, findsOneWidget);
-      expect(tester.getSize(removeQueued), const Size(48, 48));
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(find.text('Siguiente pregunta'), findsOneWidget);
+    final removeQueued = find.byTooltip('Borrar');
+    expect(removeQueued, findsOneWidget);
+    expect(tester.getSize(removeQueued), const Size(48, 48));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('turno activo encola texto FIFO sin alcanzar steering', (
     tester,
@@ -16502,8 +16514,9 @@ void main() {
 
       final otherConnection = _remoteConn('conn-voice-other');
       final prefs = await SharedPreferences.getInstance();
-      await NativeVoiceModeStore(prefs)
-          .write(otherConnection.dashboardUrl!, NativeVoiceMode.server);
+      await NativeVoiceModeStore(
+        prefs,
+      ).write(otherConnection.dashboardUrl!, NativeVoiceMode.server);
       final otherSession = Session(
         id: 'sess-voice-other',
         title: 'Otro chat',
@@ -16592,8 +16605,9 @@ void main() {
       dashboardUrl: 'http://127.0.0.1:9120',
     );
     final prefs = await SharedPreferences.getInstance();
-    await NativeVoiceModeStore(prefs)
-        .write(otherConnection.dashboardUrl!, NativeVoiceMode.server);
+    await NativeVoiceModeStore(
+      prefs,
+    ).write(otherConnection.dashboardUrl!, NativeVoiceMode.server);
     final otherSession = Session(
       id: 'sess-voice-race-other',
       title: 'Segundo preflight',
@@ -17534,9 +17548,9 @@ void main() {
       style: TextStyle(color: colors.textPrimary),
       withComposing: true,
     );
-    final leaves = _flattenTextSpans(span)
-        .where((leaf) => leaf.text?.isNotEmpty ?? false)
-        .toList();
+    final leaves = _flattenTextSpans(
+      span,
+    ).where((leaf) => leaf.text?.isNotEmpty ?? false).toList();
     expect(
       leaves.where(
         (leaf) => leaf.text == '/help' && leaf.style?.color == colors.accent,
@@ -17675,8 +17689,9 @@ void main() {
             style: const TextStyle(),
             withComposing: true,
           );
-      final mentionSpan = _flattenTextSpans(selectedSpan)
-          .singleWhere((span) => span.text == '@infra');
+      final mentionSpan = _flattenTextSpans(
+        selectedSpan,
+      ).singleWhere((span) => span.text == '@infra');
       expect(mentionSpan.style?.fontWeight, FontWeight.w800);
       expect(mentionSpan.style?.color, isNotNull);
       expect(
@@ -18083,11 +18098,13 @@ void main() {
       expect(afterEdit['text'], originalText);
       expect(afterEdit['missionRoomIntentId'], originalIntentId);
 
-      ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-          .clearSnackBars();
+      ScaffoldMessenger.of(
+        tester.element(find.byType(ChatScreen)),
+      ).clearSnackBars();
       await tester.pump(const Duration(milliseconds: 500));
-      ScaffoldMessenger.of(tester.element(find.byType(ChatScreen)))
-          .removeCurrentSnackBar();
+      ScaffoldMessenger.of(
+        tester.element(find.byType(ChatScreen)),
+      ).removeCurrentSnackBar();
       await tester.pump();
       expect(find.byType(SnackBar), findsNothing);
       await tester.tap(find.byKey(const ValueKey('send')));

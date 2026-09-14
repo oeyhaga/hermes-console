@@ -29,8 +29,9 @@ void main() {
   test(
     'Home recent previews never reconstruct missing text from transcripts',
     () {
-      final source = File('lib/core/screens/home_dashboard_screen.dart')
-          .readAsStringSync();
+      final source = File(
+        'lib/core/screens/home_dashboard_screen.dart',
+      ).readAsStringSync();
       final hydration = _between(
         source,
         'Future<void> _hydrateTurnPreviews(',
@@ -44,8 +45,9 @@ void main() {
   );
 
   test('secondary SessionDetail has no transcript reconstruction surface', () {
-    final source = File('lib/core/screens/session_detail_screen.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/screens/session_detail_screen.dart',
+    ).readAsStringSync();
 
     expect(source, isNot(contains('.getMessages(')));
     expect(source, isNot(contains('_messages')));
@@ -70,8 +72,9 @@ void main() {
   });
 
   test('subagent rows render generic identity and status only', () {
-    final source = File('lib/core/widgets/subagent_activity_card.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/widgets/subagent_activity_card.dart',
+    ).readAsStringSync();
     final row = _classBody(source, 'class _SubagentRow');
 
     expect(row, isNot(contains('activity.goalPreview')));

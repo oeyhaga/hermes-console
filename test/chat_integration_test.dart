@@ -1160,62 +1160,66 @@ void main() {
 
   // ── Escenario 2 ─────────────────────────────────────────────────────────
   group('E2E 2 — persistencia y carga (instancia local / bridge)', () {
-    test('respuesta del bridge → persistida → reconstruida al reabrir el chat', () async {
-      final conn = _localConn();
-      expect(conn.kind, InstanceKind.localhost);
+    test(
+      'respuesta del bridge → persistida → reconstruida al reabrir el chat',
+      () async {
+        final conn = _localConn();
+        expect(conn.kind, InstanceKind.localhost);
 
-      // (1-2) El turno se ejecuta vía el Mobile Bridge. Ejercitamos el contrato
-      // real de /bridge/chat con un MockClient: devuelve {ok, response}.
-      final bridge = BridgeClient(
-        baseUrl: conn.derivedBridgeUrl,
-        token: 'bridge-token',
-        httpClient: MockClient((request) async {
-          if (request.method == 'POST' && request.url.path == '/bridge/chat') {
-            return http.Response(
-              jsonEncode({'ok': true, 'response': 'Bien'}),
-              200,
-            );
-          }
-          return http.Response('not found', 404);
-        }),
-      );
-      final response = await bridge.chat('¿qué tal?', history: const []);
-      expect(response, 'Bien');
-      bridge.close();
+        // (1-2) El turno se ejecuta vía el Mobile Bridge. Ejercitamos el contrato
+        // real de /bridge/chat con un MockClient: devuelve {ok, response}.
+        final bridge = BridgeClient(
+          baseUrl: conn.derivedBridgeUrl,
+          token: 'bridge-token',
+          httpClient: MockClient((request) async {
+            if (request.method == 'POST' &&
+                request.url.path == '/bridge/chat') {
+              return http.Response(
+                jsonEncode({'ok': true, 'response': 'Bien'}),
+                200,
+              );
+            }
+            return http.Response('not found', 404);
+          }),
+        );
+        final response = await bridge.chat('¿qué tal?', history: const []);
+        expect(response, 'Bien');
+        bridge.close();
 
-      // Como hace _sendViaBridge tras recibir la respuesta: persiste el turno
-      // (lista viva del chat, index 0 = más nuevo = el asistente).
-      await LocalTranscriptStore.saveFromNewestFirst(conn.id, 'sess-local', [
-        {'role': 'assistant', 'content': 'Bien'},
-        {'role': 'user', 'content': '¿qué tal?'},
-      ]);
+        // Como hace _sendViaBridge tras recibir la respuesta: persiste el turno
+        // (lista viva del chat, index 0 = más nuevo = el asistente).
+        await LocalTranscriptStore.saveFromNewestFirst(conn.id, 'sess-local', [
+          {'role': 'assistant', 'content': 'Bien'},
+          {'role': 'user', 'content': '¿qué tal?'},
+        ]);
 
-      // (3) El transcript guardado está en orden cronológico (más antiguo 1º).
-      final saved = await LocalTranscriptStore.load(conn.id, 'sess-local');
-      expect(saved, [
-        {'role': 'user', 'content': '¿qué tal?'},
-        {'role': 'assistant', 'content': 'Bien'},
-      ]);
+        // (3) El transcript guardado está en orden cronológico (más antiguo 1º).
+        final saved = await LocalTranscriptStore.load(conn.id, 'sess-local');
+        expect(saved, [
+          {'role': 'user', 'content': '¿qué tal?'},
+          {'role': 'assistant', 'content': 'Bien'},
+        ]);
 
-      // (4-5) Un ActiveChat NUEVO para la misma conexión+sesión reconstruye el
-      // chat desde el almacén local (el bridge no expone /api/sessions/.../messages).
-      final reopened = ActiveChat(
-        connection: conn,
-        sessionId: 'sess-local',
-        sessionTitle: 'Chat local',
-        notifications: null,
-        onTerminal: () {},
-      );
-      await reopened.loadMessages();
+        // (4-5) Un ActiveChat NUEVO para la misma conexión+sesión reconstruye el
+        // chat desde el almacén local (el bridge no expone /api/sessions/.../messages).
+        final reopened = ActiveChat(
+          connection: conn,
+          sessionId: 'sess-local',
+          sessionTitle: 'Chat local',
+          notifications: null,
+          onTerminal: () {},
+        );
+        await reopened.loadMessages();
 
-      expect(reopened.messagesLoaded, isTrue);
-      // index 0 = más nuevo en la lista viva (el asistente).
-      expect(reopened.messages.first['role'], 'assistant');
-      expect(reopened.messages.first['content'], 'Bien');
-      expect(reopened.messages.last['role'], 'user');
-      expect(reopened.messages.last['content'], '¿qué tal?');
-      reopened.dispose();
-    });
+        expect(reopened.messagesLoaded, isTrue);
+        // index 0 = más nuevo en la lista viva (el asistente).
+        expect(reopened.messages.first['role'], 'assistant');
+        expect(reopened.messages.first['content'], 'Bien');
+        expect(reopened.messages.last['role'], 'user');
+        expect(reopened.messages.last['content'], '¿qué tal?');
+        reopened.dispose();
+      },
+    );
     test(
       'ActiveChat conserva la señal de historial local incompleto al reabrir',
       () async {
@@ -1286,8 +1290,9 @@ void main() {
     );
 
     test('ActiveChat persiste y refresca transcript con el perfil sellado', () {
-      final source = File('lib/core/services/active_chat_service.dart')
-          .readAsStringSync();
+      final source = File(
+        'lib/core/services/active_chat_service.dart',
+      ).readAsStringSync();
       final persistence = source.substring(
         source.indexOf('Future<void> _persistLocalTranscript('),
         source.indexOf('bool get _hasUnanchoredCancelledUser'),
@@ -1756,317 +1761,330 @@ void main() {
       },
     );
 
-    test('session.redirect queued conserva child vivo controles y terminal única', () async {
-      final desktop = _GatedRedirectDesktopGateway(
-        disposition: DesktopRedirectDisposition.queued,
-      );
-      final service = ActiveChatService();
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: 'sess-redirect-queued',
-        sessionTitle: 'Redirect queued',
-        api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
-        desktopGateway: desktop,
-      );
-      chat.acquireSubagentForegroundPresentation();
+    test(
+      'session.redirect queued conserva child vivo controles y terminal única',
+      () async {
+        final desktop = _GatedRedirectDesktopGateway(
+          disposition: DesktopRedirectDisposition.queued,
+        );
+        final service = ActiveChatService();
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: 'sess-redirect-queued',
+          sessionTitle: 'Redirect queued',
+          api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
+          desktopGateway: desktop,
+        );
+        chat.acquireSubagentForegroundPresentation();
 
-      unawaited(
-        chat.send(
-          fullText: 'prepara el informe',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      desktop.emit('subagent.start', const {
-        'subagent_id': 'child-queued-turn',
-        'delegation_id': 'deleg_queued_turn',
-        'status': 'running',
-        'accepting_steer': true,
-        'output_tail': 'queued successor live tail',
-        'event_id': 'queued-child-start',
-        'event_revision': 1,
-      });
-      await _waitUntil(() => chat.subagentActivities.isNotEmpty);
-      final originalActivityKey = chat.subagentActivities.single.key;
-
-      final steering = chat.steer('añade una tabla');
-      await _waitUntil(() => desktop.redirects.isNotEmpty);
-      final optimistic = chat.internalMessagesForTesting.singleWhere(
-        (message) =>
-            message['content'] == 'añade una tabla' &&
-            message['_steer'] == true,
-      );
-      expect(chat.internalMessagesForTesting.indexOf(optimistic), 1);
-
-      desktop.redirectGate.complete();
-      await steering;
-
-      // La fuente oficial conserva la misma fila aceptada. Android mantiene
-      // el assistant vivo en la cabeza hasta su terminal; entonces materializa
-      // el tail newest-first sin reconstruir la optimista.
-      expect(
-        chat.internalMessagesForTesting
-            .where((message) => message['content'] == 'añade una tabla')
-            .single,
-        same(optimistic),
-      );
-      expect(optimistic['_steer'], isNot(true));
-      expect(chat.queuedMessages, ['añade una tabla']);
-      expect(chat.subagentActivities, hasLength(1));
-      final live = chat.subagentActivities.single;
-      expect(live.key, originalActivityKey);
-      expect(live.isTerminal, isFalse);
-      expect(chat.canSteerSubagent(live), isTrue);
-      expect(chat.canInterruptSubagent(live), isTrue);
-      expect(
-        (await chat.tailSubagent(live)).content,
-        'queued successor live tail',
-      );
-      expect((await chat.steerSubagent(live, 'sigue vivo')).queued, isTrue);
-      expect(await chat.interruptSubagent(live), isTrue);
-
-      desktop.emit('message.delta', {'text': 'respuesta base'});
-      await _waitUntil(() => chat.assistantContent == 'respuesta base');
-      desktop.emit('message.complete', {'text': 'respuesta base completa'});
-      await _waitUntil(
-        () =>
-            chat.state == ChatPipelineState.waiting &&
-            chat.messages.first['_pipeline'] == true,
-      );
-
-      expect(chat.internalMessagesForTesting[1], same(optimistic));
-      expect(
-        chat.messages.where(
-          (message) => message['content'] == 'añade una tabla',
-        ),
-        hasLength(1),
-      );
-      expect(
-        chat.messages.any(
-          (message) => message['content'] == 'respuesta base completa',
-        ),
-        isTrue,
-      );
-      expect(chat.queuedMessages, isEmpty);
-      expect(chat.subagentActivities, hasLength(1));
-      expect(chat.subagentActivities.single.key, originalActivityKey);
-      expect(chat.subagentActivities.single.isTerminal, isFalse);
-      desktop.emit('subagent.complete', const {
-        'subagent_id': 'child-queued-turn',
-        'delegation_id': 'deleg_queued_turn',
-        'status': 'completed',
-        'event_id': 'queued-child-complete',
-        'event_revision': 2,
-      });
-      await _waitUntil(() => chat.subagentActivities.single.isTerminal);
-      expect(chat.subagentActivities, hasLength(1));
-      expect(chat.subagentActivities.single.key, originalActivityKey);
-      expect(desktop.subagentTailCalls, hasLength(1));
-      expect(desktop.subagentSteerCalls, hasLength(1));
-      expect(desktop.subagentInterruptCalls, hasLength(1));
-
-      desktop.emit('message.delta', {'text': 'tabla lista'});
-      desktop.emit('message.complete', {'text': 'tabla lista'});
-      await _waitUntil(() => chat.state == ChatPipelineState.idle);
-      expect(
-        chat.messages.where(
-          (message) => message['content'] == 'añade una tabla',
-        ),
-        hasLength(1),
-      );
-      service.dispose();
-    });
-
-    test('session.redirect 4001 reanuda el stored id con su perfil y reintenta una vez', () async {
-      final desktop = _RecoveringRedirectDesktopGateway();
-      final service = ActiveChatService();
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: 'sess-redirect-recovery',
-        sessionTitle: 'Redirect recovery',
-        sessionProfile: 'profile-a',
-        api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
-        desktopGateway: desktop,
-      );
-
-      unawaited(
-        chat.send(
-          fullText: 'prepara el informe',
-          model: 'hermes-agent',
-          history: const [],
-          profile: 'profile-a',
-        ),
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      final resumesBeforeRedirect = desktop.resumeExistingCalls;
-      expect(resumesBeforeRedirect, 1);
-      expect(chat.desktopRuntimeSessionId, 'runtime-1');
-
-      await chat.steer('corrige la fecha');
-
-      expect(desktop.redirects, [
-        (sessionId: 'runtime-1', text: 'corrige la fecha'),
-        (sessionId: 'runtime-2', text: 'corrige la fecha'),
-      ]);
-      expect(desktop.resumeExistingCalls, resumesBeforeRedirect + 1);
-      expect(desktop.resumeStoredIds, [
-        'sess-redirect-recovery',
-        'sess-redirect-recovery',
-      ]);
-      expect(desktop.resumeProfiles, ['profile-a', 'profile-a']);
-      expect(desktop.createForFirstSubmitCalls, 0);
-      expect(
-        chat.messages.where(
-          (message) => message['content'] == 'corrige la fecha',
-        ),
-        hasLength(1),
-      );
-      service.dispose();
-    });
-
-    test('session.redirect no reintenta un timeout ambiguo y revierte la fila optimista', () async {
-      final desktop = _RecoveringRedirectDesktopGateway(
-        firstRedirectErrorCode: -32000,
-      );
-      final service = ActiveChatService();
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: 'sess-redirect-timeout',
-        sessionTitle: 'Redirect timeout',
-        api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
-        desktopGateway: desktop,
-      );
-
-      unawaited(
-        chat.send(
-          fullText: 'prepara el informe',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      final resumesBeforeRedirect = desktop.resumeExistingCalls;
-      expect(resumesBeforeRedirect, 1);
-      expect(chat.desktopRuntimeSessionId, 'runtime-1');
-
-      await expectLater(
-        chat.steer('corrige la fecha'),
-        throwsA(
-          isA<TuiGatewayRpcError>().having(
-            (error) => error.code,
-            'code',
-            -32000,
+        unawaited(
+          chat.send(
+            fullText: 'prepara el informe',
+            model: 'hermes-agent',
+            history: const [],
           ),
-        ),
-      );
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        desktop.emit('subagent.start', const {
+          'subagent_id': 'child-queued-turn',
+          'delegation_id': 'deleg_queued_turn',
+          'status': 'running',
+          'accepting_steer': true,
+          'output_tail': 'queued successor live tail',
+          'event_id': 'queued-child-start',
+          'event_revision': 1,
+        });
+        await _waitUntil(() => chat.subagentActivities.isNotEmpty);
+        final originalActivityKey = chat.subagentActivities.single.key;
 
-      expect(desktop.redirects, [
-        (sessionId: 'runtime-1', text: 'corrige la fecha'),
-      ]);
-      expect(desktop.resumeExistingCalls, resumesBeforeRedirect);
-      expect(
-        chat.messages.any(
-          (message) => message['content'] == 'corrige la fecha',
-        ),
-        isFalse,
-      );
-      service.dispose();
-    });
+        final steering = chat.steer('añade una tabla');
+        await _waitUntil(() => desktop.redirects.isNotEmpty);
+        final optimistic = chat.internalMessagesForTesting.singleWhere(
+          (message) =>
+              message['content'] == 'añade una tabla' &&
+              message['_steer'] == true,
+        );
+        expect(chat.internalMessagesForTesting.indexOf(optimistic), 1);
 
-    test('conserva el complemento al salir, terminar el run y volver al chat', () async {
-      const mobileSessionId = 'sess-steer-navigation-mobile';
-      const storedSessionId = 'sess-steer-navigation-server';
-      ApiClient api() => ApiClient(
-        baseUrl: _remoteConn().baseUrl,
-        apiKey: 'test-key',
-        httpClient: MockClient((request) async {
-          if (request.method == 'GET' &&
-              request.url.path == '/api/sessions/$storedSessionId/messages') {
-            return http.Response(
-              jsonEncode({
-                'data': [
-                  {'role': 'user', 'content': 'dame noticias'},
-                  {'role': 'assistant', 'content': 'aquí están las noticias'},
-                ],
-              }),
-              200,
-            );
-          }
-          return http.Response('not found', 404);
-        }),
-      );
+        desktop.redirectGate.complete();
+        await steering;
 
-      final service = ActiveChatService();
-      final desktop = _FakeDesktopGateway()..returnedStoredId = storedSessionId;
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: mobileSessionId,
-        sessionTitle: 'Navegación',
-        api: api(),
-        desktopGateway: desktop,
-      );
-      final screenSubscription = chat.changes.listen((_) {});
+        // La fuente oficial conserva la misma fila aceptada. Android mantiene
+        // el assistant vivo en la cabeza hasta su terminal; entonces materializa
+        // el tail newest-first sin reconstruir la optimista.
+        expect(
+          chat.internalMessagesForTesting
+              .where((message) => message['content'] == 'añade una tabla')
+              .single,
+          same(optimistic),
+        );
+        expect(optimistic['_steer'], isNot(true));
+        expect(chat.queuedMessages, ['añade una tabla']);
+        expect(chat.subagentActivities, hasLength(1));
+        final live = chat.subagentActivities.single;
+        expect(live.key, originalActivityKey);
+        expect(live.isTerminal, isFalse);
+        expect(chat.canSteerSubagent(live), isTrue);
+        expect(chat.canInterruptSubagent(live), isTrue);
+        expect(
+          (await chat.tailSubagent(live)).content,
+          'queued successor live tail',
+        );
+        expect((await chat.steerSubagent(live, 'sigue vivo')).queued, isTrue);
+        expect(await chat.interruptSubagent(live), isTrue);
 
-      chat.send(
-        fullText: 'dame noticias',
-        model: 'hermes-agent',
-        history: const [],
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      await chat.steer('¿y me das las de hoy?');
+        desktop.emit('message.delta', {'text': 'respuesta base'});
+        await _waitUntil(() => chat.assistantContent == 'respuesta base');
+        desktop.emit('message.complete', {'text': 'respuesta base completa'});
+        await _waitUntil(
+          () =>
+              chat.state == ChatPipelineState.waiting &&
+              chat.messages.first['_pipeline'] == true,
+        );
 
-      // Equivale a salir de ChatScreen mientras el turno sigue activo.
-      await screenSubscription.cancel();
-      service.release(_remoteConn().id, mobileSessionId);
-      expect(service.of(_remoteConn().id, mobileSessionId), same(chat));
+        expect(chat.internalMessagesForTesting[1], same(optimistic));
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'añade una tabla',
+          ),
+          hasLength(1),
+        );
+        expect(
+          chat.messages.any(
+            (message) => message['content'] == 'respuesta base completa',
+          ),
+          isTrue,
+        );
+        expect(chat.queuedMessages, isEmpty);
+        expect(chat.subagentActivities, hasLength(1));
+        expect(chat.subagentActivities.single.key, originalActivityKey);
+        expect(chat.subagentActivities.single.isTerminal, isFalse);
+        desktop.emit('subagent.complete', const {
+          'subagent_id': 'child-queued-turn',
+          'delegation_id': 'deleg_queued_turn',
+          'status': 'completed',
+          'event_id': 'queued-child-complete',
+          'event_revision': 2,
+        });
+        await _waitUntil(() => chat.subagentActivities.single.isTerminal);
+        expect(chat.subagentActivities, hasLength(1));
+        expect(chat.subagentActivities.single.key, originalActivityKey);
+        expect(desktop.subagentTailCalls, hasLength(1));
+        expect(desktop.subagentSteerCalls, hasLength(1));
+        expect(desktop.subagentInterruptCalls, hasLength(1));
 
-      // La lista ya conoce el ID persistido devuelto por Hermes. Si el usuario
-      // vuelve antes de terminar, ambos IDs deben resolver el mismo chat vivo.
-      final reopenedWhileActive = service.attach(
-        connection: _remoteConn(),
-        sessionId: storedSessionId,
-        sessionTitle: 'Navegación',
-        api: api(),
-        desktopGateway: _FakeDesktopGateway(),
-      );
-      expect(reopenedWhileActive, same(chat));
-      service.release(_remoteConn().id, storedSessionId);
+        desktop.emit('message.delta', {'text': 'tabla lista'});
+        desktop.emit('message.complete', {'text': 'tabla lista'});
+        await _waitUntil(() => chat.state == ChatPipelineState.idle);
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'añade una tabla',
+          ),
+          hasLength(1),
+        );
+        service.dispose();
+      },
+    );
 
-      desktop.emit('message.complete', {'text': 'aquí están las noticias'});
-      await _waitUntil(
-        () => service.of(_remoteConn().id, storedSessionId) == null,
-      );
+    test(
+      'session.redirect 4001 reanuda el stored id con su perfil y reintenta una vez',
+      () async {
+        final desktop = _RecoveringRedirectDesktopGateway();
+        final service = ActiveChatService();
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: 'sess-redirect-recovery',
+          sessionTitle: 'Redirect recovery',
+          sessionProfile: 'profile-a',
+          api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
+          desktopGateway: desktop,
+        );
 
-      // Al volver se crea otro transporte y se recarga el transcript remoto,
-      // que no contiene session.redirect como mensaje independiente.
-      final reopened = service.attach(
-        connection: _remoteConn(),
-        sessionId: storedSessionId,
-        sessionTitle: 'Navegación',
-        api: api(),
-        desktopGateway: _FakeDesktopGateway(),
-      );
-      await reopened.loadMessages();
+        unawaited(
+          chat.send(
+            fullText: 'prepara el informe',
+            model: 'hermes-agent',
+            history: const [],
+            profile: 'profile-a',
+          ),
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        final resumesBeforeRedirect = desktop.resumeExistingCalls;
+        expect(resumesBeforeRedirect, 1);
+        expect(chat.desktopRuntimeSessionId, 'runtime-1');
 
-      expect(
-        reopened.messages.reversed
-            .map((message) => message['content'])
-            .toList(),
-        ['dame noticias', '¿y me das las de hoy?', 'aquí están las noticias'],
-      );
-      expect(
-        reopened.messages.singleWhere(
-          (message) => message['content'] == '¿y me das las de hoy?',
-        )['_steer'],
-        isTrue,
-      );
-      service.dispose();
-    });
+        await chat.steer('corrige la fecha');
+
+        expect(desktop.redirects, [
+          (sessionId: 'runtime-1', text: 'corrige la fecha'),
+          (sessionId: 'runtime-2', text: 'corrige la fecha'),
+        ]);
+        expect(desktop.resumeExistingCalls, resumesBeforeRedirect + 1);
+        expect(desktop.resumeStoredIds, [
+          'sess-redirect-recovery',
+          'sess-redirect-recovery',
+        ]);
+        expect(desktop.resumeProfiles, ['profile-a', 'profile-a']);
+        expect(desktop.createForFirstSubmitCalls, 0);
+        expect(
+          chat.messages.where(
+            (message) => message['content'] == 'corrige la fecha',
+          ),
+          hasLength(1),
+        );
+        service.dispose();
+      },
+    );
+
+    test(
+      'session.redirect no reintenta un timeout ambiguo y revierte la fila optimista',
+      () async {
+        final desktop = _RecoveringRedirectDesktopGateway(
+          firstRedirectErrorCode: -32000,
+        );
+        final service = ActiveChatService();
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: 'sess-redirect-timeout',
+          sessionTitle: 'Redirect timeout',
+          api: ApiClient(baseUrl: _remoteConn().baseUrl, apiKey: 'test-key'),
+          desktopGateway: desktop,
+        );
+
+        unawaited(
+          chat.send(
+            fullText: 'prepara el informe',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        final resumesBeforeRedirect = desktop.resumeExistingCalls;
+        expect(resumesBeforeRedirect, 1);
+        expect(chat.desktopRuntimeSessionId, 'runtime-1');
+
+        await expectLater(
+          chat.steer('corrige la fecha'),
+          throwsA(
+            isA<TuiGatewayRpcError>().having(
+              (error) => error.code,
+              'code',
+              -32000,
+            ),
+          ),
+        );
+
+        expect(desktop.redirects, [
+          (sessionId: 'runtime-1', text: 'corrige la fecha'),
+        ]);
+        expect(desktop.resumeExistingCalls, resumesBeforeRedirect);
+        expect(
+          chat.messages.any(
+            (message) => message['content'] == 'corrige la fecha',
+          ),
+          isFalse,
+        );
+        service.dispose();
+      },
+    );
+
+    test(
+      'conserva el complemento al salir, terminar el run y volver al chat',
+      () async {
+        const mobileSessionId = 'sess-steer-navigation-mobile';
+        const storedSessionId = 'sess-steer-navigation-server';
+        ApiClient api() => ApiClient(
+          baseUrl: _remoteConn().baseUrl,
+          apiKey: 'test-key',
+          httpClient: MockClient((request) async {
+            if (request.method == 'GET' &&
+                request.url.path == '/api/sessions/$storedSessionId/messages') {
+              return http.Response(
+                jsonEncode({
+                  'data': [
+                    {'role': 'user', 'content': 'dame noticias'},
+                    {'role': 'assistant', 'content': 'aquí están las noticias'},
+                  ],
+                }),
+                200,
+              );
+            }
+            return http.Response('not found', 404);
+          }),
+        );
+
+        final service = ActiveChatService();
+        final desktop = _FakeDesktopGateway()
+          ..returnedStoredId = storedSessionId;
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: mobileSessionId,
+          sessionTitle: 'Navegación',
+          api: api(),
+          desktopGateway: desktop,
+        );
+        final screenSubscription = chat.changes.listen((_) {});
+
+        chat.send(
+          fullText: 'dame noticias',
+          model: 'hermes-agent',
+          history: const [],
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        await chat.steer('¿y me das las de hoy?');
+
+        // Equivale a salir de ChatScreen mientras el turno sigue activo.
+        await screenSubscription.cancel();
+        service.release(_remoteConn().id, mobileSessionId);
+        expect(service.of(_remoteConn().id, mobileSessionId), same(chat));
+
+        // La lista ya conoce el ID persistido devuelto por Hermes. Si el usuario
+        // vuelve antes de terminar, ambos IDs deben resolver el mismo chat vivo.
+        final reopenedWhileActive = service.attach(
+          connection: _remoteConn(),
+          sessionId: storedSessionId,
+          sessionTitle: 'Navegación',
+          api: api(),
+          desktopGateway: _FakeDesktopGateway(),
+        );
+        expect(reopenedWhileActive, same(chat));
+        service.release(_remoteConn().id, storedSessionId);
+
+        desktop.emit('message.complete', {'text': 'aquí están las noticias'});
+        await _waitUntil(
+          () => service.of(_remoteConn().id, storedSessionId) == null,
+        );
+
+        // Al volver se crea otro transporte y se recarga el transcript remoto,
+        // que no contiene session.redirect como mensaje independiente.
+        final reopened = service.attach(
+          connection: _remoteConn(),
+          sessionId: storedSessionId,
+          sessionTitle: 'Navegación',
+          api: api(),
+          desktopGateway: _FakeDesktopGateway(),
+        );
+        await reopened.loadMessages();
+
+        expect(
+          reopened.messages.reversed
+              .map((message) => message['content'])
+              .toList(),
+          ['dame noticias', '¿y me das las de hoy?', 'aquí están las noticias'],
+        );
+        expect(
+          reopened.messages.singleWhere(
+            (message) => message['content'] == '¿y me das las de hoy?',
+          )['_steer'],
+          isTrue,
+        );
+        service.dispose();
+      },
+    );
 
     test('release conserva un chat idle mientras Voz sigue suscrita', () async {
       const sessionId = 'sess-voice-navigation-retention';
@@ -2179,122 +2197,131 @@ void main() {
   });
 
   group('E2E media estructurada — image_generate', () {
-    test('tool.complete sin ruta en la prosa conserva una sola referencia por call id', () async {
-      final desktop = _FakeDesktopGateway();
-      final service = ActiveChatService();
-      addTearDown(service.dispose);
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: 'sess-1',
-        sessionTitle: 'Imagen estructurada',
-        api: ApiClient(
-          baseUrl: _remoteConn().baseUrl,
-          apiKey: 'test-key',
-          httpClient: _gateway(events: '', finalMessages: const []),
-        ),
-        desktopGateway: desktop,
-      );
+    test(
+      'tool.complete sin ruta en la prosa conserva una sola referencia por call id',
+      () async {
+        final desktop = _FakeDesktopGateway();
+        final service = ActiveChatService();
+        addTearDown(service.dispose);
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: 'sess-1',
+          sessionTitle: 'Imagen estructurada',
+          api: ApiClient(
+            baseUrl: _remoteConn().baseUrl,
+            apiKey: 'test-key',
+            httpClient: _gateway(events: '', finalMessages: const []),
+          ),
+          desktopGateway: desktop,
+        );
 
-      unawaited(
-        chat.send(
-          fullText: 'Genera una imagen',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      const payload = {
-        'name': 'image_generate',
-        'tool_id': 'call-image-1',
-        'result': {
-          'success': true,
-          'host_image': '/home/hermes/.hermes/cache/images/peacock.png',
-          'image': '/home/hermes/.hermes/cache/images/peacock.png',
-          'agent_visible_image': '/sandbox/cache/peacock.png',
-        },
-      };
+        unawaited(
+          chat.send(
+            fullText: 'Genera una imagen',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        const payload = {
+          'name': 'image_generate',
+          'tool_id': 'call-image-1',
+          'result': {
+            'success': true,
+            'host_image': '/home/hermes/.hermes/cache/images/peacock.png',
+            'image': '/home/hermes/.hermes/cache/images/peacock.png',
+            'agent_visible_image': '/sandbox/cache/peacock.png',
+          },
+        };
 
-      desktop.emit('tool.complete', payload);
-      desktop.emit('tool.complete', payload);
-      desktop.emit('message.complete', {'text': 'Aquí tienes la imagen.'});
-      await _waitUntil(() => chat.state == ChatPipelineState.idle);
+        desktop.emit('tool.complete', payload);
+        desktop.emit('tool.complete', payload);
+        desktop.emit('message.complete', {'text': 'Aquí tienes la imagen.'});
+        await _waitUntil(() => chat.state == ChatPipelineState.idle);
 
-      final assistant = chat.messages.firstWhere(
-        (message) => message['role'] == 'assistant',
-      );
-      final refs = _generatedImageRefs(assistant);
-      expect(refs, hasLength(1));
-      expect(refs.single['kind'], 'serverCache');
-      expect(refs.single['source'], 'peacock.png');
-      expect(refs.single['basename'], 'peacock.png');
-      expect(refs.single['tool_call_id'], 'call-image-1');
-      expect(assistant.toString(), isNot(contains('/home/hermes')));
-      expect(assistant.toString(), isNot(contains('/sandbox/cache')));
-      expect(assistant['content'], 'Aquí tienes la imagen.');
-      expect(
-        (assistant['content'] as String?)?.contains('peacock.png') ?? false,
-        isFalse,
-      );
-    });
+        final assistant = chat.messages.firstWhere(
+          (message) => message['role'] == 'assistant',
+        );
+        final refs = _generatedImageRefs(assistant);
+        expect(refs, hasLength(1));
+        expect(refs.single['kind'], 'serverCache');
+        expect(refs.single['source'], 'peacock.png');
+        expect(refs.single['basename'], 'peacock.png');
+        expect(refs.single['tool_call_id'], 'call-image-1');
+        expect(assistant.toString(), isNot(contains('/home/hermes')));
+        expect(assistant.toString(), isNot(contains('/sandbox/cache')));
+        expect(assistant['content'], 'Aquí tienes la imagen.');
+        expect(
+          (assistant['content'] as String?)?.contains('peacock.png') ?? false,
+          isFalse,
+        );
+      },
+    );
 
-    test('video_generate live conserva referencia aunque la respuesta no repita MEDIA', () async {
-      final desktop = _FakeDesktopGateway();
-      final service = ActiveChatService();
-      addTearDown(service.dispose);
-      final chat = service.attach(
-        connection: _remoteConn(),
-        sessionId: 'sess-video-live',
-        sessionTitle: 'Vídeo estructurado',
-        api: ApiClient(
-          baseUrl: _remoteConn().baseUrl,
-          apiKey: 'test-key',
-          httpClient: _gateway(events: '', finalMessages: const []),
-        ),
-        desktopGateway: desktop,
-      );
+    test(
+      'video_generate live conserva referencia aunque la respuesta no repita MEDIA',
+      () async {
+        final desktop = _FakeDesktopGateway();
+        final service = ActiveChatService();
+        addTearDown(service.dispose);
+        final chat = service.attach(
+          connection: _remoteConn(),
+          sessionId: 'sess-video-live',
+          sessionTitle: 'Vídeo estructurado',
+          api: ApiClient(
+            baseUrl: _remoteConn().baseUrl,
+            apiKey: 'test-key',
+            httpClient: _gateway(events: '', finalMessages: const []),
+          ),
+          desktopGateway: desktop,
+        );
 
-      unawaited(
-        chat.send(
-          fullText: 'Genera un vídeo',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-      );
-      await _waitUntil(() => desktop.prompts.isNotEmpty);
-      desktop.emit('message.start');
-      desktop.emit('message.interim', const {
-        'text': 'Preparando el medio generado.',
-      });
-      const payload = {
-        'name': 'video_generate',
-        'tool_id': 'call-video-live',
-        'result': {
-          'success': true,
-          'video': '/home/hermes/.hermes/cache/videos/result.mp4',
-        },
-      };
-      desktop.emit('tool.complete', payload);
-      desktop.emit('tool.complete', payload);
-      desktop.emit('message.complete', {
-        'text': 'Preparando el medio generado. Terminado.',
-      });
-      await _waitUntil(() => chat.state == ChatPipelineState.idle);
+        unawaited(
+          chat.send(
+            fullText: 'Genera un vídeo',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+        );
+        await _waitUntil(() => desktop.prompts.isNotEmpty);
+        desktop.emit('message.start');
+        desktop.emit('message.interim', const {
+          'text': 'Preparando el medio generado.',
+        });
+        const payload = {
+          'name': 'video_generate',
+          'tool_id': 'call-video-live',
+          'result': {
+            'success': true,
+            'video': '/home/hermes/.hermes/cache/videos/result.mp4',
+          },
+        };
+        desktop.emit('tool.complete', payload);
+        desktop.emit('tool.complete', payload);
+        desktop.emit('message.complete', {
+          'text': 'Preparando el medio generado. Terminado.',
+        });
+        await _waitUntil(() => chat.state == ChatPipelineState.idle);
 
-      final assistant = chat.messages.firstWhere(
-        (message) => message['role'] == 'assistant',
-      );
-      final refs = _generatedImageRefs(assistant);
-      expect(refs, hasLength(1));
-      expect(refs.single['media_kind'], 'video');
-      expect(refs.single['kind'], 'serverPath');
-      expect(
-        refs.single['source'],
-        '/home/hermes/.hermes/cache/videos/result.mp4',
-      );
-      expect(refs.single['tool_call_id'], 'call-video-live');
-      expect(assistant['content'], 'Preparando el medio generado. Terminado.');
-    });
+        final assistant = chat.messages.firstWhere(
+          (message) => message['role'] == 'assistant',
+        );
+        final refs = _generatedImageRefs(assistant);
+        expect(refs, hasLength(1));
+        expect(refs.single['media_kind'], 'video');
+        expect(refs.single['kind'], 'serverPath');
+        expect(
+          refs.single['source'],
+          '/home/hermes/.hermes/cache/videos/result.mp4',
+        );
+        expect(refs.single['tool_call_id'], 'call-video-live');
+        expect(
+          assistant['content'],
+          'Preparando el medio generado. Terminado.',
+        );
+      },
+    );
 
     test(
       'tool.complete HTTPS duplicado conserva una referencia segura',

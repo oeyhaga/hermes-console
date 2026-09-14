@@ -129,71 +129,74 @@ void main() {
     }
   });
 
-  test('terminal fallback publishes only the public answer while REST is 404', () async {
-    const private = 'PRIVATE_TERMINAL_REASONING_/home/owner/session.jsonl';
-    const public = 'PUBLIC_FINAL';
-    final client = MockClient((request) async {
-      if (request.method == 'POST' && request.url.path == '/v1/runs') {
-        return http.Response(jsonEncode({'run_id': 'run-private'}), 200);
-      }
-      if (request.method == 'GET' &&
-          request.url.path == '/v1/runs/run-private/events') {
-        return http.Response(
-          'data: ${jsonEncode({'event': 'run.completed', 'output': '<think>$private</think>$public'})}\n\n',
-          200,
-          headers: {'content-type': 'text/event-stream'},
-        );
-      }
-      if (request.method == 'GET' &&
-          request.url.path == '/api/sessions/sess-private/messages') {
-        return http.Response('not ready', 404);
-      }
-      return http.Response('not found', 404);
-    });
+  test(
+    'terminal fallback publishes only the public answer while REST is 404',
+    () async {
+      const private = 'PRIVATE_TERMINAL_REASONING_/home/owner/session.jsonl';
+      const public = 'PUBLIC_FINAL';
+      final client = MockClient((request) async {
+        if (request.method == 'POST' && request.url.path == '/v1/runs') {
+          return http.Response(jsonEncode({'run_id': 'run-private'}), 200);
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/v1/runs/run-private/events') {
+          return http.Response(
+            'data: ${jsonEncode({'event': 'run.completed', 'output': '<think>$private</think>$public'})}\n\n',
+            200,
+            headers: {'content-type': 'text/event-stream'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/api/sessions/sess-private/messages') {
+          return http.Response('not ready', 404);
+        }
+        return http.Response('not found', 404);
+      });
 
-    final service = ActiveChatService(
-      compressionFenceStore: DesktopCompressionFenceStore(
-        storage: _MemoryCompressionFenceStorage(),
-      ),
-    );
-    addTearDown(service.dispose);
-    final chat = service.attach(
-      connection: SavedConnection(
-        id: 'privacy-probe',
-        label: 'Privacy probe',
-        host: 'hermes.local',
-        port: 8642,
-        apiKey: 'probe-key',
-      ),
-      sessionId: 'sess-private',
-      sessionTitle: 'Privacy probe',
-      api: ApiClient(
-        baseUrl: 'http://hermes.local:8642',
-        apiKey: 'probe-key',
-        httpClient: client,
-      ),
-    );
-    chat.smoothStreaming = false;
+      final service = ActiveChatService(
+        compressionFenceStore: DesktopCompressionFenceStore(
+          storage: _MemoryCompressionFenceStorage(),
+        ),
+      );
+      addTearDown(service.dispose);
+      final chat = service.attach(
+        connection: SavedConnection(
+          id: 'privacy-probe',
+          label: 'Privacy probe',
+          host: 'hermes.local',
+          port: 8642,
+          apiKey: 'probe-key',
+        ),
+        sessionId: 'sess-private',
+        sessionTitle: 'Privacy probe',
+        api: ApiClient(
+          baseUrl: 'http://hermes.local:8642',
+          apiKey: 'probe-key',
+          httpClient: client,
+        ),
+      );
+      chat.smoothStreaming = false;
 
-    final done = chat.changes.firstWhere(
-      (event) => event == ActiveChatEvent.done,
-    );
-    expect(
-      await chat.send(
-        fullText: 'PUBLIC_PROMPT',
-        model: 'probe',
-        history: const [],
-      ),
-      isTrue,
-    );
-    await done.timeout(const Duration(seconds: 5));
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_PROMPT',
+          model: 'probe',
+          history: const [],
+        ),
+        isTrue,
+      );
+      await done.timeout(const Duration(seconds: 5));
 
-    final publicSurfaces = {
-      'messages': jsonEncode(chat.messages),
-      'narration': chat.assistantNarrationContent,
-      'assistantContent': chat.assistantContent,
-    };
-    expect(publicSurfaces.toString(), isNot(contains(private)));
-    expect(chat.assistantContent, public);
-  });
+      final publicSurfaces = {
+        'messages': jsonEncode(chat.messages),
+        'narration': chat.assistantNarrationContent,
+        'assistantContent': chat.assistantContent,
+      };
+      expect(publicSurfaces.toString(), isNot(contains(private)));
+      expect(chat.assistantContent, public);
+    },
+  );
 }

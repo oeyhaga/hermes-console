@@ -5131,14 +5131,12 @@ class TuiGatewayClient
     required String filename,
     required String contentBase64,
   }) async {
-    final result = await _requestExclusiveSessionMutation(
-      'image.attach_bytes',
-      {
-        'session_id': runtimeSessionId,
-        'filename': filename,
-        'content_base64': contentBase64,
-      },
-    );
+    final result =
+        await _requestExclusiveSessionMutation('image.attach_bytes', {
+          'session_id': runtimeSessionId,
+          'filename': filename,
+          'content_base64': contentBase64,
+        });
     if (result['attached'] != true) {
       throw const TuiGatewayRpcError(
         'image.attach_bytes',

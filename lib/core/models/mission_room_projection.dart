@@ -133,8 +133,9 @@ abstract final class MissionRoomWorkProjector {
               )
               .toList(growable: true)
             ..sort((left, right) {
-              final byState = _taskPriority(left.task!.status)
-                  .compareTo(_taskPriority(right.task!.status));
+              final byState = _taskPriority(
+                left.task!.status,
+              ).compareTo(_taskPriority(right.task!.status));
               if (byState != 0) return byState;
               return originalOrder[left.link]!.compareTo(
                 originalOrder[right.link]!,

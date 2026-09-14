@@ -100,7 +100,8 @@ void main() {
       expect(
         p.seen,
         [true, true],
-        reason: 'prefetch and playback share one synthesis but both must retain the file',
+        reason:
+            'prefetch and playback share one synthesis but both must retain the file',
       );
       expect(error, isNull);
     },

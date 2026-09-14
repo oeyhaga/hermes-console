@@ -151,9 +151,9 @@ void main() {
     });
 
     final legacy =
-        project('{"task_count":2,"failed_count":0,"unknown":"drop"}')
-                .messagesNewestFirst
-                .single['display_metadata']
+        project(
+              '{"task_count":2,"failed_count":0,"unknown":"drop"}',
+            ).messagesNewestFirst.single['display_metadata']
             as Map<String, dynamic>;
     expect(legacy, {'task_count': 2, 'failed_count': 0});
   });

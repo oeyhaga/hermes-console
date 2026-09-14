@@ -138,9 +138,8 @@ abstract interface class SherpaSttWorker {
   Future<void> dispose();
 }
 
-typedef SherpaSttWorkerFactory = Future<SherpaSttWorker> Function(
-  SherpaSttWorkerConfig config,
-);
+typedef SherpaSttWorkerFactory =
+    Future<SherpaSttWorker> Function(SherpaSttWorkerConfig config);
 
 class SherpaSttWorkerException implements Exception {
   final String message;

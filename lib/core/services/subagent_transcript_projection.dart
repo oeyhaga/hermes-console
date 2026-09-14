@@ -203,11 +203,9 @@ SubagentTranscriptProjection projectSubagentsFromTranscript({
       // The durable `delegate_task` result is the only recovery source that
       // carries every child identity. A single aggregate legacy event loses
       // N-1 rows after Console reopens, so replay one event per opaque id.
-      final dispatchedIds = _list(result?['subagent_ids'])
-          .map(_opaque)
-          .whereType<String>()
-          .toSet()
-          .toList(growable: false);
+      final dispatchedIds = _list(
+        result?['subagent_ids'],
+      ).map(_opaque).whereType<String>().toSet().toList(growable: false);
       final perChildResults = dispatchedIds.isEmpty
           ? <Map<String, dynamic>?>[result]
           : dispatchedIds

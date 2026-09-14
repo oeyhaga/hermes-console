@@ -231,8 +231,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         // una desinstalación posterior) y dejar un «Retomar» fantasma para siempre.
         // Sólo es real si el wrapper de instalación sigue vivo (sirve :8643). Si no,
         // limpiamos el flag para que el banner desaparezca.
-        final live = await LocalTermuxAgentProvider(apps: const AndroidApps())
-            .isInstallRunning();
+        final live = await LocalTermuxAgentProvider(
+          apps: const AndroidApps(),
+        ).isInstallRunning();
         if (!live) {
           await widget.connManager.prefs.remove('local_install_in_progress');
           installInProgress = false;
@@ -389,8 +390,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (!mounted) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await ChatDraftStore(prefs)
-          .clear(conn.id, session.id, profile: ownerProfile);
+      await ChatDraftStore(
+        prefs,
+      ).clear(conn.id, session.id, profile: ownerProfile);
       await TurnOutboxStore().deleteForChat(
         conn.id,
         session.id,
@@ -438,8 +440,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     await archive.setSessionTitle(session, trimmed);
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
   }
 
   Future<void> _showRecentActions(Session session) async {
@@ -614,8 +617,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     // Los borradores viven en el Keystore. Un fallo puntual al desbloquearlo no
     // debe convertir un servidor sano en «offline»: son dos fuentes separadas.
     try {
-      drafts = await ChatDraftStore(widget.connManager.prefs)
-          .listForConnection(conn.id);
+      drafts = await ChatDraftStore(
+        widget.connManager.prefs,
+      ).listForConnection(conn.id);
     } catch (e) {
       debugPrint('[home-dashboard] no se pudieron listar borradores: $e');
     }
@@ -632,8 +636,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         // no /health (gateway :8642, que en local no existe). healthCheck()
         // daría 404 → falso «offline» aunque el agente esté vivo. Usamos el
         // mismo sondeo que la pantalla de setup para que ambas coincidan.
-        ok = await LocalTermuxAgentProvider(apps: const AndroidApps())
-            .isAgentRunning();
+        ok = await LocalTermuxAgentProvider(
+          apps: const AndroidApps(),
+        ).isAgentRunning();
         if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
         if (ok) {
           // Tras actualizar el APK, el bridge desplegado en el dispositivo puede
@@ -1237,12 +1242,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                                     Strings.of(context).homeStatusAgentConsole,
                               )
                             : _healthOk
-                            ? Strings.of(context)
-                                  .homeStatusOnline(_active?.label ?? '')
+                            ? Strings.of(
+                                context,
+                              ).homeStatusOnline(_active?.label ?? '')
                             : _active == null
                             ? Strings.of(context).homeStatusAgentConsole
-                            : Strings.of(context)
-                                  .homeStatusOffline(_active!.label),
+                            : Strings.of(
+                                context,
+                              ).homeStatusOffline(_active!.label),
                         style: TextStyle(
                           // ≥11px: a 9.5px el estado era casi ilegible (A-110).
                           fontSize: 11,
@@ -1789,8 +1796,9 @@ class _RemoteInstanceOfflineCardState
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            Strings.of(context)
-                                .homeInstanceDownBody(widget.label),
+                            Strings.of(
+                              context,
+                            ).homeInstanceDownBody(widget.label),
                             style: TextStyle(
                               fontSize: 12.5,
                               height: 1.4,

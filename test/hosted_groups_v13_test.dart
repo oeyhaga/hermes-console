@@ -87,83 +87,81 @@ void main() {
     }
   });
 
-  test(
-    'strict official room, member and log DTOs reject partial authority',
-    () {
-      final room = HostedGroupRoom.fromJson({
-        'room_id': 'room-1',
-        'name': 'Core',
-        'members': [
-          {
-            'member_id': 'm1',
+  test('strict official room, member and log DTOs reject partial authority', () {
+    final room = HostedGroupRoom.fromJson({
+      'room_id': 'room-1',
+      'name': 'Core',
+      'members': [
+        {
+          'member_id': 'm1',
+          'profile': 'research',
+          'handle': 'research-home',
+          'target': {'kind': 'local', 'profile': 'research'},
+        },
+        {
+          'member_id': 'm2',
+          'profile': 'research',
+          'handle': 'research-lab',
+          'target': {
+            'kind': 'peer',
+            'peer_id': 'peer-lab',
+            'installation_id': 'install-lab',
             'profile': 'research',
-            'handle': 'research-home',
-            'target': {'kind': 'local', 'profile': 'research'},
+            'capability_digest':
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           },
+        },
+      ],
+      'authority_gateway_id': 'gateway-private',
+      'authority_epoch': 2,
+      'revision': 3,
+      'created_at': 1.0,
+      'updated_at': 2.0,
+      'latest_seq': 4,
+      'idempotent': false,
+    });
+    expect(room.members.map((m) => m.owner.connectionId), [
+      'gateway-private',
+      'peer-lab',
+    ]);
+    expect(room.members.map((m) => m.handle), [
+      'research-home',
+      'research-lab',
+    ]);
+    expect(
+      () => HostedGroupRoom.fromJson({
+        ...room.toJsonForTest(),
+        'members': [{}],
+      }),
+      throwsFormatException,
+    );
+
+    final page = HostedGroupLogPage.fromJson(
+      {
+        'events': [
           {
-            'member_id': 'm2',
-            'profile': 'research',
-            'handle': 'research-lab',
-            'target': {
-              'kind': 'peer',
-              'peer_id': 'peer-lab',
-              'installation_id': 'install-lab',
-              'profile': 'research',
-              'capability_digest': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            },
+            'room_id': 'room-1',
+            'seq': 4,
+            'event_id': 'event-private',
+            'kind': 'message.user',
+            'actor': {'kind': 'user', 'id': 'private-user'},
+            'authority_epoch': 2,
+            'payload': {'text': 'hello', 'thread_id': 'thread-1'},
+            'created_at': 2.0,
+            'idempotent': false,
           },
         ],
-        'authority_gateway_id': 'gateway-private',
-        'authority_epoch': 2,
-        'revision': 3,
-        'created_at': 1.0,
-        'updated_at': 2.0,
+        'cursor': 4,
         'latest_seq': 4,
-        'idempotent': false,
-      });
-      expect(room.members.map((m) => m.owner.connectionId), [
-        'gateway-private',
-        'peer-lab',
-      ]);
-      expect(room.members.map((m) => m.handle), [
-        'research-home',
-        'research-lab',
-      ]);
-      expect(
-        () => HostedGroupRoom.fromJson({
-          ...room.toJsonForTest(),
-          'members': [{}],
-        }),
-        throwsFormatException,
-      );
-
-      final page = HostedGroupLogPage.fromJson(
-        {
-          'events': [
-            {
-              'room_id': 'room-1',
-              'seq': 4,
-              'event_id': 'event-private',
-              'kind': 'message.user',
-              'actor': {'kind': 'user', 'id': 'private-user'},
-              'authority_epoch': 2,
-              'payload': {'text': 'hello', 'thread_id': 'thread-1'},
-              'created_at': 2.0,
-              'idempotent': false,
-            },
-          ],
-          'cursor': 4,
-          'latest_seq': 4,
-          'has_more': false,
-          'authority': {'gateway_id': 'gateway-private', 'epoch': 2},
-        },
-        expectedRoomId: 'room-1',
-        sinceSeq: 3,
-      );
-      expect(page.events.single.publicText, 'hello');
-      expect(page.cursor, 4);
-    },
-  );
+        'has_more': false,
+        'authority': {'gateway_id': 'gateway-private', 'epoch': 2},
+      },
+      expectedRoomId: 'room-1',
+      sinceSeq: 3,
+    );
+    expect(page.events.single.publicText, 'hello');
+    expect(page.cursor, 4);
+  });
 
   test('hosted member source authority transition matrix', () {
     const base = <String, dynamic>{
@@ -199,7 +197,8 @@ void main() {
                 'peer_id': 'peer',
                 'installation_id': 'install',
                 'profile': 'research',
-                'capability_digest': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'capability_digest':
+                    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
               },
             },
             accepted: true,
@@ -505,10 +504,8 @@ void main() {
   });
 }
 
-typedef _HostedResult = Object Function(
-  String method,
-  Map<String, dynamic> params,
-);
+typedef _HostedResult =
+    Object Function(String method, Map<String, dynamic> params);
 
 final class _HostedRpcHarness {
   final HttpServer server;

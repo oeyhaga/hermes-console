@@ -188,10 +188,8 @@ abstract interface class VoiceIdleTimer {
   void cancel();
 }
 
-typedef VoiceIdleTimerFactory = VoiceIdleTimer Function(
-  Duration delay,
-  void Function() callback,
-);
+typedef VoiceIdleTimerFactory =
+    VoiceIdleTimer Function(Duration delay, void Function() callback);
 
 class _DartVoiceIdleTimer implements VoiceIdleTimer {
   final Timer _timer;
@@ -2002,12 +2000,9 @@ class VoiceService {
     await _enqueue(text, local: true);
   }
 
-  String _responseSpeechText(String text) =>
-      SpeechRenderer(language: voiceLang)
-          .render(text)
-          .map((segment) => segment.text)
-          .join(' ')
-          .trim();
+  String _responseSpeechText(String text) => SpeechRenderer(
+    language: voiceLang,
+  ).render(text).map((segment) => segment.text).join(' ').trim();
 
   Future<bool> _enqueue(
     String text, {
@@ -2194,7 +2189,8 @@ class VoiceService {
           debugPrint(
             '[hermes-voice] motor principal falló → fallback a ONNX/sistema',
           );
-          final sys = await _buildOnnxEngine(); // ONNX si hay modelo instalado, sistema si no
+          final sys =
+              await _buildOnnxEngine(); // ONNX si hay modelo instalado, sistema si no
           if (!_speechItemIsCurrent(item)) {
             await sys.dispose();
             return;
@@ -2850,8 +2846,11 @@ class VoiceService {
 
     final pending = _ttsDisposalTail;
     if (response == null && local == null) {
-      return Future.wait<void>([stopStream, ?pending, ?buildCleanup])
-          .then<void>((_) {});
+      return Future.wait<void>([
+        stopStream,
+        ?pending,
+        ?buildCleanup,
+      ]).then<void>((_) {});
     }
     final completion = Completer<void>();
     final tail = completion.future;

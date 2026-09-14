@@ -488,7 +488,8 @@ void main() {
     expect(
       tester.getSize(find.byType(ChatScrollInteractionGuard)).height,
       viewportHeightBeforeButton,
-      reason: 'el botón para bajar debe flotar sobre el chat, no encoger el viewport',
+      reason:
+          'el botón para bajar debe flotar sobre el chat, no encoger el viewport',
     );
     expect(
       positionBeforeFreeze.pixels,

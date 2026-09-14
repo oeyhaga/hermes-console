@@ -263,7 +263,8 @@ void main() {
   const parserCases = {
     'classic mismatched closure':
         '<think>PRIVATE_HEAD</thinking>PRIVATE_FRESH_REVIEW',
-    'nested harmony think': '<|think|>PRIVATE_HEAD<|think|>INNER<|/think|>PRIVATE_FRESH_REVIEW<|/think|>PUBLIC',
+    'nested harmony think':
+        '<|think|>PRIVATE_HEAD<|think|>INNER<|/think|>PRIVATE_FRESH_REVIEW<|/think|>PUBLIC',
   };
   for (final entry in parserCases.entries) {
     test('FRESH B2 ${entry.key} cannot release private tail', () {
@@ -288,46 +289,52 @@ void main() {
     });
   }
 
-  test('FRESH B1 independent delimiter styles preserve public UTF16 and exclude private every prefix', () {
-    const styles = ['<|NAME|>', '<|NAME｜>', '<｜NAME|>', '<｜NAME｜>'];
-    for (final a in styles) {
-      for (final b in styles) {
-        for (final c in styles) {
-          final raw =
-              '${a.replaceAll('NAME', 'channel')}analysis${b.replaceAll('NAME', 'message')}$secret${c.replaceAll('NAME', 'end')}<|channel|>final<|message|>PUBLIC ｜ 😀<|end|>';
-          for (var i = 0; i <= raw.length; i++) {
-            expect(
-              streamingPublicAssistantText(raw.substring(0, i)),
-              isNot(contains(secret)),
-              reason: '$a $b $c offset=$i',
-            );
+  test(
+    'FRESH B1 independent delimiter styles preserve public UTF16 and exclude private every prefix',
+    () {
+      const styles = ['<|NAME|>', '<|NAME｜>', '<｜NAME|>', '<｜NAME｜>'];
+      for (final a in styles) {
+        for (final b in styles) {
+          for (final c in styles) {
+            final raw =
+                '${a.replaceAll('NAME', 'channel')}analysis${b.replaceAll('NAME', 'message')}$secret${c.replaceAll('NAME', 'end')}<|channel|>final<|message|>PUBLIC ｜ 😀<|end|>';
+            for (var i = 0; i <= raw.length; i++) {
+              expect(
+                streamingPublicAssistantText(raw.substring(0, i)),
+                isNot(contains(secret)),
+                reason: '$a $b $c offset=$i',
+              );
+            }
+            expect(finalizedPublicAssistantText(raw), 'PUBLIC ｜ 😀');
           }
-          expect(finalizedPublicAssistantText(raw), 'PUBLIC ｜ 😀');
         }
       }
-    }
-  });
+    },
+  );
 
-  test('FRESH O1 exact raw offset map and correction sides preserve code units', () {
-    const prefix =
-        '<|channel｜>analysis<｜message|>PRIVATE<|end｜><｜channel|>final<|message｜>';
-    const body = 'A \t😀 B｜\nC';
-    const suffix = '<｜end|>';
-    const raw = '$prefix$body$suffix';
-    final projection = projectPublicAssistantText(raw, streaming: true);
-    for (var i = 0; i <= raw.length; i++) {
-      final expected = (i - prefix.length).clamp(0, body.length);
-      expect(
-        projection.publicOffsetAtRawOffset(i),
-        expected,
-        reason: 'raw offset=$i',
-      );
-      expect(
-        projection.text.substring(0, expected).codeUnits,
-        body.substring(0, expected).codeUnits,
-      );
-    }
-  });
+  test(
+    'FRESH O1 exact raw offset map and correction sides preserve code units',
+    () {
+      const prefix =
+          '<|channel｜>analysis<｜message|>PRIVATE<|end｜><｜channel|>final<|message｜>';
+      const body = 'A \t😀 B｜\nC';
+      const suffix = '<｜end|>';
+      const raw = '$prefix$body$suffix';
+      final projection = projectPublicAssistantText(raw, streaming: true);
+      for (var i = 0; i <= raw.length; i++) {
+        final expected = (i - prefix.length).clamp(0, body.length);
+        expect(
+          projection.publicOffsetAtRawOffset(i),
+          expected,
+          reason: 'raw offset=$i',
+        );
+        expect(
+          projection.text.substring(0, expected).codeUnits,
+          body.substring(0, expected).codeUnits,
+        );
+      }
+    },
+  );
 
   for (final withFinalText in [false, true]) {
     test(

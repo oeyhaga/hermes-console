@@ -589,8 +589,9 @@ abstract final class MissionProjector {
       );
     }
     agents.sort((left, right) {
-      final priority = _statusPriority(left.status)
-          .compareTo(_statusPriority(right.status));
+      final priority = _statusPriority(
+        left.status,
+      ).compareTo(_statusPriority(right.status));
       return priority != 0
           ? priority
           : left.profile.name.compareTo(right.profile.name);
@@ -663,8 +664,9 @@ abstract final class MissionProjector {
     if (tasks.isEmpty) return null;
     final copy = [...tasks]
       ..sort((left, right) {
-        final priority = _taskPriority(left.status)
-            .compareTo(_taskPriority(right.status));
+        final priority = _taskPriority(
+          left.status,
+        ).compareTo(_taskPriority(right.status));
         if (priority != 0) return priority;
         return (right.startedAt ?? right.createdAt ?? 0).compareTo(
           left.startedAt ?? left.createdAt ?? 0,
@@ -844,9 +846,9 @@ String? _firstNonEmpty(Iterable<String?> values) {
 
 String? _safeText(Object? value, int maxRunes) {
   if (value is! String) return null;
-  final safe = String.fromCharCodes(value.runes.take(maxRunes))
-      .replaceAll(RegExp(r'[\u0000-\u001f\u007f]+'), ' ')
-      .trim();
+  final safe = String.fromCharCodes(
+    value.runes.take(maxRunes),
+  ).replaceAll(RegExp(r'[\u0000-\u001f\u007f]+'), ' ').trim();
   return safe.isEmpty ? null : safe;
 }
 

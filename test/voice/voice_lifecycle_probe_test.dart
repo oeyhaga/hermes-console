@@ -300,7 +300,9 @@ void main() {
     'mode',
     'none',
   ]) {
-    testWidgets('adversarial late server setup after $invalidation', (tester) async {
+    testWidgets('adversarial late server setup after $invalidation', (
+      tester,
+    ) async {
       final permission = Completer<bool>();
       await pumpChat(tester, _BlockedSttEngine(permission));
       final app = tester.state<HermesAppState>(find.byType(HermesApp));
@@ -310,10 +312,12 @@ void main() {
         _connection().effectiveDashboardUrl,
         profile: '',
       );
-      await NativeVoiceModeStore(preferences)
-          .write(identity, NativeVoiceMode.server);
-      await NativeVoiceConsentStore(preferences)
-          .write(identity, NativeVoiceConsent.accepted);
+      await NativeVoiceModeStore(
+        preferences,
+      ).write(identity, NativeVoiceMode.server);
+      await NativeVoiceConsentStore(
+        preferences,
+      ).write(identity, NativeVoiceConsent.accepted);
       await NativeVoiceCapabilityStore(preferences).write(
         identity,
         NativeVoiceCapability(
@@ -385,11 +389,13 @@ void main() {
           } else if (invalidation == 'dispose') {
             Navigator.of(tester.element(find.byType(ChatScreen))).pop();
           } else if (invalidation == 'consent') {
-            await NativeVoiceConsentStore(preferences)
-                .write(identity, NativeVoiceConsent.rejected);
+            await NativeVoiceConsentStore(
+              preferences,
+            ).write(identity, NativeVoiceConsent.rejected);
           } else if (invalidation == 'mode') {
-            await NativeVoiceModeStore(preferences)
-                .write(identity, NativeVoiceMode.phone);
+            await NativeVoiceModeStore(
+              preferences,
+            ).write(identity, NativeVoiceMode.phone);
           }
           await tester.pump();
           await tester.pump(const Duration(milliseconds: 400));

@@ -162,9 +162,8 @@ class NotificationOpen {
 
 /// Confirma el resultado real de la navegación. Un destino diferido permanece
 /// pendiente hasta que una ruta llegue a comprometerse.
-typedef NotificationOpenHandler = FutureOr<NavigationDeliveryOutcome> Function(
-  NotificationOpen open,
-);
+typedef NotificationOpenHandler =
+    FutureOr<NavigationDeliveryOutcome> Function(NotificationOpen open);
 
 /// Aviso discreto para mostrar DENTRO de la app (una tarjeta flotante con acción
 /// "Ir"), no como notificación del sistema. Se emite cuando un evento (respuesta
@@ -1434,9 +1433,9 @@ class NotificationService
     final source = (raw ?? '')
         .replaceAll(RegExp(r'[\u0000-\u001F\u007F-\u009F]'), ' ')
         .replaceAll(RegExp(r'[\u202A-\u202E\u2066-\u2069]'), ' ');
-    final compact = markdownToCompactText(source)
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
+    final compact = markdownToCompactText(
+      source,
+    ).replaceAll(RegExp(r'\s+'), ' ').trim();
     const maxRunes = 56;
     final runes = compact.runes.toList(growable: false);
     if (runes.length <= maxRunes) return compact;

@@ -562,8 +562,9 @@ class DesktopSessionReconciler {
     }
 
     if (inflightFailed) {
-      final partial = streamingPublicAssistantText(inflightAssistant ?? '')
-          .trim();
+      final partial = streamingPublicAssistantText(
+        inflightAssistant ?? '',
+      ).trim();
       if (partial.isNotEmpty) {
         chronological.add(
           Map<String, dynamic>.unmodifiable({

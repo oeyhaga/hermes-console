@@ -1073,8 +1073,9 @@ class _CronJobDetailState extends State<_CronJobDetail> {
           const SizedBox(height: 18),
           Text(
             s.crnPromptLabel,
-            style: Theme.of(context).textTheme.labelLarge
-                ?.copyWith(color: colors.textSecondary),
+            style: Theme.of(
+              context,
+            ).textTheme.labelLarge?.copyWith(color: colors.textSecondary),
           ),
           const SizedBox(height: 7),
           Container(
@@ -1123,8 +1124,9 @@ class _CronJobDetailState extends State<_CronJobDetail> {
         const SizedBox(height: 12),
         Text(
           '${s.crnRunHistory}${(_runs?.sessions.isNotEmpty ?? false) ? ' · ${_runs!.sessions.length}' : ''}',
-          style: Theme.of(context).textTheme.labelLarge
-              ?.copyWith(color: colors.textSecondary),
+          style: Theme.of(
+            context,
+          ).textTheme.labelLarge?.copyWith(color: colors.textSecondary),
         ),
         const SizedBox(height: 8),
         if (_loading)
@@ -1494,8 +1496,9 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
                   IconButton(
                     onPressed: () => Navigator.pop(context),
                     icon: const Icon(Icons.close),
-                    tooltip: MaterialLocalizations.of(context)
-                        .closeButtonTooltip,
+                    tooltip: MaterialLocalizations.of(
+                      context,
+                    ).closeButtonTooltip,
                   ),
                 ],
               ),

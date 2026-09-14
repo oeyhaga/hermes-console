@@ -932,61 +932,64 @@ void main() {
     },
   );
 
-  test('cold load revoked while history hydration waits never fetches or publishes', () async {
-    var reads = 0;
-    var visible = true;
-    var storedReads = 0;
-    final hydrationEntered = Completer<void>();
-    final hydrationGate = Completer<bool>();
-    final events = <ActiveChatEvent>[];
-    final gateway = _ViewerGateway(
-      DesktopSessionSnapshot.fromJson(
-        const {
-          'session_id': 'runtime-hydration-race',
-          'session_key': 'stored-live',
-          'message_count': 1,
-          'messages': <Object>[],
-          'hydrating': true,
-          'running': false,
+  test(
+    'cold load revoked while history hydration waits never fetches or publishes',
+    () async {
+      var reads = 0;
+      var visible = true;
+      var storedReads = 0;
+      final hydrationEntered = Completer<void>();
+      final hydrationGate = Completer<bool>();
+      final events = <ActiveChatEvent>[];
+      final gateway = _ViewerGateway(
+        DesktopSessionSnapshot.fromJson(
+          const {
+            'session_id': 'runtime-hydration-race',
+            'session_key': 'stored-live',
+            'message_count': 1,
+            'messages': <Object>[],
+            'hydrating': true,
+            'running': false,
+          },
+          requestedStoredSessionId: 'stored-live',
+          created: false,
+          method: 'session.resume',
+        ),
+      );
+      final chat = _chat(
+        gateway,
+        restCalls: () => reads++,
+        storedMessageLoader: (_, _) async {
+          storedReads += 1;
+          return const <Map<String, dynamic>>[];
         },
-        requestedStoredSessionId: 'stored-live',
-        created: false,
-        method: 'session.resume',
-      ),
-    );
-    final chat = _chat(
-      gateway,
-      restCalls: () => reads++,
-      storedMessageLoader: (_, _) async {
-        storedReads += 1;
-        return const <Map<String, dynamic>>[];
-      },
-      historyHydrationAwaiter: () {
-        if (!hydrationEntered.isCompleted) hydrationEntered.complete();
-        return hydrationGate.future;
-      },
-    );
-    final subscription = chat.changes.listen(events.add);
-    addTearDown(() async {
-      await subscription.cancel();
-      chat.dispose();
-      await gateway.close();
-    });
+        historyHydrationAwaiter: () {
+          if (!hydrationEntered.isCompleted) hydrationEntered.complete();
+          return hydrationGate.future;
+        },
+      );
+      final subscription = chat.changes.listen(events.add);
+      addTearDown(() async {
+        await subscription.cancel();
+        chat.dispose();
+        await gateway.close();
+      });
 
-    final loading = chat.loadMessages(
-      expectedMessageCount: 1,
-      stillOwningVisible: () => visible,
-    );
-    await hydrationEntered.future;
-    events.clear();
-    visible = false;
-    hydrationGate.complete(true);
-    await loading;
+      final loading = chat.loadMessages(
+        expectedMessageCount: 1,
+        stillOwningVisible: () => visible,
+      );
+      await hydrationEntered.future;
+      events.clear();
+      visible = false;
+      hydrationGate.complete(true);
+      await loading;
 
-    expect(storedReads, 1);
-    expect(chat.messages, isEmpty);
-    expect(events, isNot(contains(ActiveChatEvent.messagesHydrated)));
-  });
+      expect(storedReads, 1);
+      expect(chat.messages, isEmpty);
+      expect(events, isNot(contains(ActiveChatEvent.messagesHydrated)));
+    },
+  );
 
   test(
     'cold load revoked during deferred REST never publishes hydrated rows',

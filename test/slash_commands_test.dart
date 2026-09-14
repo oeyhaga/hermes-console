@@ -1176,8 +1176,9 @@ void main() {
       expect(find.byKey(const ValueKey('recording')), findsOneWidget);
       expect(stt.stopCalls, 0);
       expect(field.controller?.text, 'directed turn');
-      ScaffoldMessenger.of(tester.element(find.byType(ChatScreen).last))
-          .clearSnackBars();
+      ScaffoldMessenger.of(
+        tester.element(find.byType(ChatScreen).last),
+      ).clearSnackBars();
       await _pumpSlashChat(tester, gateway, stt: stt);
       final restored = tester.widget<TextField>(find.byType(TextField).last);
       expect(restored.controller?.text, 'directed turn');

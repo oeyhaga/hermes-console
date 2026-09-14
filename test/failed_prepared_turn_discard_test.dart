@@ -151,9 +151,9 @@ void main() {
       ]) {
         await store.save(neighbor);
       }
-      final before = jsonDecode(
-        secure.values[TurnOutboxStore.storageKeyForTesting]!,
-      ) as Map<String, dynamic>;
+      final before =
+          jsonDecode(secure.values[TurnOutboxStore.storageKeyForTesting]!)
+              as Map<String, dynamic>;
       final neighborBytes = <String, String>{
         for (final neighbor in <PreparedTurn>[
           sameChatNeighbor,
@@ -186,9 +186,9 @@ void main() {
       );
       await store.save(successor);
 
-      final after = jsonDecode(
-        secure.values[TurnOutboxStore.storageKeyForTesting]!,
-      ) as Map<String, dynamic>;
+      final after =
+          jsonDecode(secure.values[TurnOutboxStore.storageKeyForTesting]!)
+              as Map<String, dynamic>;
       for (final entry in neighborBytes.entries) {
         expect(jsonEncode(after[entry.key]), entry.value);
       }

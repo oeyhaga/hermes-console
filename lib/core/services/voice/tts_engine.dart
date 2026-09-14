@@ -532,14 +532,10 @@ class NeuralTtsAudio {
        audible = audible ?? OnDeviceNeuralTtsEngine._hasAudibleSignal(samples);
 }
 
-typedef NeuralTtsSynthesizer = Future<NeuralTtsAudio> Function(
-  String text,
-  double speed,
-);
-typedef NeuralTtsWaveWriter = Future<String?> Function(
-  NeuralTtsAudio audio,
-  int sequence,
-);
+typedef NeuralTtsSynthesizer =
+    Future<NeuralTtsAudio> Function(String text, double speed);
+typedef NeuralTtsWaveWriter =
+    Future<String?> Function(NeuralTtsAudio audio, int sequence);
 
 /// Voz neuronal **on-device** (sherpa-onnx + modelo Piper/VITS). Privada: la
 /// síntesis ocurre 100% en el móvil, sin nube ni clave. Requiere un modelo ya

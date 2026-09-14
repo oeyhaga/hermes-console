@@ -1482,141 +1482,150 @@ void main() {
     expect(gateway.resumeCalls, 0);
   });
 
-  test('authoritative stored-session replacement rejects old held reattach response', () async {
-    final recoveryGate = Completer<DesktopSessionSnapshot>();
-    final oldGateway = _ActivityLifecycleRecoverableGateway()
-      ..initialAdvertisedStoredSessionId = 'session-retarget-old'
-      ..initialAdvertisedRuntimeSessionId = 'runtime-retarget-old-1'
-      ..recoveryAdvertisedStoredSessionId = 'session-retarget-old'
-      ..recoveryAdvertisedRuntimeSessionId = 'runtime-retarget-old-1'
-      ..initialSnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-retarget-old-1',
-        storedSessionId: 'session-retarget-old',
-        created: false,
-        messagesProvided: true,
-        running: false,
-      )
-      ..recoveryExistingGate = recoveryGate;
-    final service = ActiveChatService(
-      compressionFenceStore: testCompressionFenceStore(),
-    );
-    addTearDown(service.dispose);
-    final oldChat = service.attach(
-      connection: _connection('retarget-fence'),
-      sessionId: 'mobile-retarget-route',
-      sessionTitle: 'old durable binding',
-      sessionProfile: 'owner-profile',
-      initialStoredSessionId: 'session-retarget-old',
-      authoritativeStoredSessionBinding: true,
-      api: ApiClient(
-        baseUrl: 'http://127.0.0.1:1',
-        apiKey: '',
-        httpClient: MockClient((_) async => http.Response('not found', 404)),
-      ),
-      desktopGateway: oldGateway,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'message_id': 'retarget-old-answer',
-          'role': 'assistant',
-          'content': 'old durable transcript',
-        },
-      ],
-      attachDesktopRuntimeOnLoad: true,
-      disableForegroundKeepAlive: true,
-    );
-
-    await oldChat.loadMessages(profile: 'owner-profile');
-    oldGateway.drop();
-    await _waitUntil(() => oldGateway.resumeExistingCalls == 1);
-
-    final replacementGateway = _ActivityLifecycleRecoverableGateway();
-    final replacement = service.attach(
-      connection: _connection('retarget-fence'),
-      sessionId: 'mobile-retarget-route',
-      sessionTitle: 'new durable binding',
-      sessionProfile: 'owner-profile',
-      initialStoredSessionId: 'session-retarget-new',
-      authoritativeStoredSessionBinding: true,
-      api: ApiClient(
-        baseUrl: 'http://127.0.0.1:1',
-        apiKey: '',
-        httpClient: MockClient((_) async => http.Response('not found', 404)),
-      ),
-      desktopGateway: replacementGateway,
-      storedMessageLoader: (_, _) async => const [],
-      attachDesktopRuntimeOnLoad: true,
-      disableForegroundKeepAlive: true,
-    );
-    expect(replacement, isNot(same(oldChat)));
-    expect(replacement.storedSessionId, 'session-retarget-new');
-
-    recoveryGate.complete(
-      const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-retarget-old-must-not-bind',
-        storedSessionId: 'session-retarget-old',
-        created: false,
-        messagesProvided: true,
-        running: false,
-      ),
-    );
-    await Future<void>.delayed(const Duration(milliseconds: 40));
-
-    expect(oldChat.desktopRuntimeSessionId, isNull);
-    expect(oldGateway.committedRecoveryRuntimeIds, isEmpty);
-    expect(oldGateway.submitCalls, 0);
-    expect(oldGateway.createForFirstSubmitCalls, 0);
-    expect(oldGateway.activateCalls, 1);
-    expect(oldGateway.interruptCalls, 0);
-    expect(oldGateway.resumeCalls, 0);
-    expect(replacementGateway.submitCalls, 0);
-    expect(replacementGateway.createForFirstSubmitCalls, 0);
-    expect(replacementGateway.activateCalls, 0);
-    expect(replacementGateway.interruptCalls, 0);
-    expect(replacementGateway.resumeCalls, 0);
-  });
-
-  test('transient cold-open resume failure automatically reattaches after REST success', () async {
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const DashboardHttpException(503)
-      ..resumeExistingFailuresRemaining = 1
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-cold-recovered',
-        storedSessionId: 'session-cold-retry',
-        created: false,
-        messagesProvided: true,
-        running: false,
-        status: 'completed',
+  test(
+    'authoritative stored-session replacement rejects old held reattach response',
+    () async {
+      final recoveryGate = Completer<DesktopSessionSnapshot>();
+      final oldGateway = _ActivityLifecycleRecoverableGateway()
+        ..initialAdvertisedStoredSessionId = 'session-retarget-old'
+        ..initialAdvertisedRuntimeSessionId = 'runtime-retarget-old-1'
+        ..recoveryAdvertisedStoredSessionId = 'session-retarget-old'
+        ..recoveryAdvertisedRuntimeSessionId = 'runtime-retarget-old-1'
+        ..initialSnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-retarget-old-1',
+          storedSessionId: 'session-retarget-old',
+          created: false,
+          messagesProvided: true,
+          running: false,
+        )
+        ..recoveryExistingGate = recoveryGate;
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
       );
-    final chat = _productionAttachChat(
-      'cold-retry',
-      gateway,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'message_id': 'cold-answer',
-          'role': 'assistant',
-          'content': 'REST loaded while gateway warmed',
-        },
-      ],
-    );
-    addTearDown(chat.dispose);
+      addTearDown(service.dispose);
+      final oldChat = service.attach(
+        connection: _connection('retarget-fence'),
+        sessionId: 'mobile-retarget-route',
+        sessionTitle: 'old durable binding',
+        sessionProfile: 'owner-profile',
+        initialStoredSessionId: 'session-retarget-old',
+        authoritativeStoredSessionBinding: true,
+        api: ApiClient(
+          baseUrl: 'http://127.0.0.1:1',
+          apiKey: '',
+          httpClient: MockClient((_) async => http.Response('not found', 404)),
+        ),
+        desktopGateway: oldGateway,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'retarget-old-answer',
+            'role': 'assistant',
+            'content': 'old durable transcript',
+          },
+        ],
+        attachDesktopRuntimeOnLoad: true,
+        disableForegroundKeepAlive: true,
+      );
 
-    await chat.loadMessages(profile: 'owner-profile');
-    expect(chat.messages.single['content'], 'REST loaded while gateway warmed');
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-cold-recovered',
-    );
+      await oldChat.loadMessages(profile: 'owner-profile');
+      oldGateway.drop();
+      await _waitUntil(() => oldGateway.resumeExistingCalls == 1);
 
-    expect(gateway.resumeExistingStoredIds, [
-      'session-cold-retry',
-      'session-cold-retry',
-    ]);
-    expect(gateway.committedRecoveryRuntimeIds, ['runtime-cold-recovered']);
-    expect(gateway.submitCalls, 0);
-    expect(gateway.createForFirstSubmitCalls, 0);
-    expect(gateway.activateCalls, 0);
-    expect(gateway.interruptCalls, 0);
-    expect(gateway.resumeCalls, 0);
-  });
+      final replacementGateway = _ActivityLifecycleRecoverableGateway();
+      final replacement = service.attach(
+        connection: _connection('retarget-fence'),
+        sessionId: 'mobile-retarget-route',
+        sessionTitle: 'new durable binding',
+        sessionProfile: 'owner-profile',
+        initialStoredSessionId: 'session-retarget-new',
+        authoritativeStoredSessionBinding: true,
+        api: ApiClient(
+          baseUrl: 'http://127.0.0.1:1',
+          apiKey: '',
+          httpClient: MockClient((_) async => http.Response('not found', 404)),
+        ),
+        desktopGateway: replacementGateway,
+        storedMessageLoader: (_, _) async => const [],
+        attachDesktopRuntimeOnLoad: true,
+        disableForegroundKeepAlive: true,
+      );
+      expect(replacement, isNot(same(oldChat)));
+      expect(replacement.storedSessionId, 'session-retarget-new');
+
+      recoveryGate.complete(
+        const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-retarget-old-must-not-bind',
+          storedSessionId: 'session-retarget-old',
+          created: false,
+          messagesProvided: true,
+          running: false,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      expect(oldChat.desktopRuntimeSessionId, isNull);
+      expect(oldGateway.committedRecoveryRuntimeIds, isEmpty);
+      expect(oldGateway.submitCalls, 0);
+      expect(oldGateway.createForFirstSubmitCalls, 0);
+      expect(oldGateway.activateCalls, 1);
+      expect(oldGateway.interruptCalls, 0);
+      expect(oldGateway.resumeCalls, 0);
+      expect(replacementGateway.submitCalls, 0);
+      expect(replacementGateway.createForFirstSubmitCalls, 0);
+      expect(replacementGateway.activateCalls, 0);
+      expect(replacementGateway.interruptCalls, 0);
+      expect(replacementGateway.resumeCalls, 0);
+    },
+  );
+
+  test(
+    'transient cold-open resume failure automatically reattaches after REST success',
+    () async {
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const DashboardHttpException(503)
+        ..resumeExistingFailuresRemaining = 1
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-cold-recovered',
+          storedSessionId: 'session-cold-retry',
+          created: false,
+          messagesProvided: true,
+          running: false,
+          status: 'completed',
+        );
+      final chat = _productionAttachChat(
+        'cold-retry',
+        gateway,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'cold-answer',
+            'role': 'assistant',
+            'content': 'REST loaded while gateway warmed',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(profile: 'owner-profile');
+      expect(
+        chat.messages.single['content'],
+        'REST loaded while gateway warmed',
+      );
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-cold-recovered',
+      );
+
+      expect(gateway.resumeExistingStoredIds, [
+        'session-cold-retry',
+        'session-cold-retry',
+      ]);
+      expect(gateway.committedRecoveryRuntimeIds, ['runtime-cold-recovered']);
+      expect(gateway.submitCalls, 0);
+      expect(gateway.createForFirstSubmitCalls, 0);
+      expect(gateway.activateCalls, 0);
+      expect(gateway.interruptCalls, 0);
+      expect(gateway.resumeCalls, 0);
+    },
+  );
 
   test(
     'transient automatic reattach rejects a runtime absent from fresh active '
@@ -1703,101 +1712,109 @@ void main() {
     },
   );
 
-  test('real failed upgrades classify viewer-only retries without mutations', () async {
-    for (final status in const [401, 403, 404, 429, 500, 503]) {
-      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      var upgradeRequests = 0;
-      server.listen((request) async {
-        upgradeRequests += 1;
-        if (upgradeRequests == 1) {
-          request.response.statusCode = status;
-          request.response.write('PRIVATE_UPGRADE_BODY_$status');
-          await request.response.close();
-          return;
-        }
-        final socket = await WebSocketTransformer.upgrade(request);
-        socket.add(
-          jsonEncode({
-            'jsonrpc': '2.0',
-            'method': 'event',
-            'params': {
-              'type': 'gateway.ready',
-              'payload': {'replay_epoch': 'epoch-a'},
-            },
-          }),
-        );
-        await for (final raw in socket) {
-          final frame = jsonDecode(raw as String) as Map<String, dynamic>;
-          final method = frame['method'];
-
-          final result = method == 'gateway.capabilities'
-              ? <String, dynamic>{'per_session_exclusive_submit': true}
-              : <String, dynamic>{
-                  'session_id': 'runtime-real-upgrade-$status',
-                  'stored_session_id': 'session-real-upgrade-$status',
-                  'created': false,
-                };
+  test(
+    'real failed upgrades classify viewer-only retries without mutations',
+    () async {
+      for (final status in const [401, 403, 404, 429, 500, 503]) {
+        final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        var upgradeRequests = 0;
+        server.listen((request) async {
+          upgradeRequests += 1;
+          if (upgradeRequests == 1) {
+            request.response.statusCode = status;
+            request.response.write('PRIVATE_UPGRADE_BODY_$status');
+            await request.response.close();
+            return;
+          }
+          final socket = await WebSocketTransformer.upgrade(request);
           socket.add(
-            jsonEncode({'jsonrpc': '2.0', 'id': frame['id'], 'result': result}),
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'method': 'event',
+              'params': {
+                'type': 'gateway.ready',
+                'payload': {'replay_epoch': 'epoch-a'},
+              },
+            }),
           );
+          await for (final raw in socket) {
+            final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+            final method = frame['method'];
+
+            final result = method == 'gateway.capabilities'
+                ? <String, dynamic>{'per_session_exclusive_submit': true}
+                : <String, dynamic>{
+                    'session_id': 'runtime-real-upgrade-$status',
+                    'stored_session_id': 'session-real-upgrade-$status',
+                    'created': false,
+                  };
+            socket.add(
+              jsonEncode({
+                'jsonrpc': '2.0',
+                'id': frame['id'],
+                'result': result,
+              }),
+            );
+          }
+        });
+        final delegate = TuiGatewayClient(
+          SavedConnection(
+            id: 'real-upgrade-$status',
+            label: 'Real upgrade $status',
+            host: '127.0.0.1',
+            port: 8642,
+            apiKey: String.fromCharCodes(const [113, 97]),
+            dashboardUrl: 'http://127.0.0.1:${server.port}',
+          ),
+          dashboard: _StaticTicketDashboardClient(),
+        );
+        final gateway = _CountingRealLifecycleGateway(delegate);
+        final chat = _productionAttachChat(
+          'real-upgrade-$status',
+          gateway,
+          storedMessageLoader: (_, _) async => [
+            {
+              'message_id': 'real-upgrade-history-$status',
+              'role': 'assistant',
+              'content': 'durable history',
+            },
+          ],
+          desktopRecoveryBackoff: const [Duration.zero],
+        );
+
+        await chat.loadMessages(profile: 'owner-profile');
+        final transient = status == 429 || status >= 500;
+        if (transient) {
+          await _waitUntil(() => upgradeRequests == 2);
+          expect(gateway.connectCalls, 2, reason: 'HTTP $status');
+          expect(upgradeRequests, 2, reason: 'HTTP $status');
+          expect(gateway.resumeExistingCalls, 1, reason: 'HTTP $status');
+          // The retry reaches current upstream, but no coverage/cut authority is
+          // available, so the live overlay remains quarantined.
+          expect(gateway.committedRuntimeIds, isEmpty, reason: 'HTTP $status');
+          expect(chat.desktopRuntimeSessionId, isNull, reason: 'HTTP $status');
+        } else {
+          await Future<void>.delayed(const Duration(milliseconds: 60));
+          expect(gateway.connectCalls, 1, reason: 'HTTP $status');
+          expect(upgradeRequests, 1, reason: 'HTTP $status');
+          expect(gateway.resumeExistingCalls, 0, reason: 'HTTP $status');
+          expect(gateway.committedRuntimeIds, isEmpty, reason: 'HTTP $status');
+          expect(chat.desktopRuntimeSessionId, isNull, reason: 'HTTP $status');
         }
-      });
-      final delegate = TuiGatewayClient(
-        SavedConnection(
-          id: 'real-upgrade-$status',
-          label: 'Real upgrade $status',
-          host: '127.0.0.1',
-          port: 8642,
-          apiKey: String.fromCharCodes(const [113, 97]),
-          dashboardUrl: 'http://127.0.0.1:${server.port}',
-        ),
-        dashboard: _StaticTicketDashboardClient(),
-      );
-      final gateway = _CountingRealLifecycleGateway(delegate);
-      final chat = _productionAttachChat(
-        'real-upgrade-$status',
-        gateway,
-        storedMessageLoader: (_, _) async => [
-          {
-            'message_id': 'real-upgrade-history-$status',
-            'role': 'assistant',
-            'content': 'durable history',
-          },
-        ],
-        desktopRecoveryBackoff: const [Duration.zero],
-      );
+        expect(gateway.createCalls, 0, reason: 'HTTP $status');
+        expect(gateway.legacyResumeCalls, 0, reason: 'HTTP $status');
+        expect(gateway.submitCalls, 0, reason: 'HTTP $status');
+        expect(gateway.interruptCalls, 0, reason: 'HTTP $status');
+        expect(gateway.steerCalls, 0, reason: 'HTTP $status');
+        expect(gateway.approvalCalls, 0, reason: 'HTTP $status');
 
-      await chat.loadMessages(profile: 'owner-profile');
-      final transient = status == 429 || status >= 500;
-      if (transient) {
-        await _waitUntil(() => upgradeRequests == 2);
-        expect(gateway.connectCalls, 2, reason: 'HTTP $status');
-        expect(upgradeRequests, 2, reason: 'HTTP $status');
-        expect(gateway.resumeExistingCalls, 1, reason: 'HTTP $status');
-        // The retry reaches current upstream, but no coverage/cut authority is
-        // available, so the live overlay remains quarantined.
-        expect(gateway.committedRuntimeIds, isEmpty, reason: 'HTTP $status');
-        expect(chat.desktopRuntimeSessionId, isNull, reason: 'HTTP $status');
-      } else {
-        await Future<void>.delayed(const Duration(milliseconds: 60));
-        expect(gateway.connectCalls, 1, reason: 'HTTP $status');
-        expect(upgradeRequests, 1, reason: 'HTTP $status');
-        expect(gateway.resumeExistingCalls, 0, reason: 'HTTP $status');
-        expect(gateway.committedRuntimeIds, isEmpty, reason: 'HTTP $status');
-        expect(chat.desktopRuntimeSessionId, isNull, reason: 'HTTP $status');
+        chat.dispose();
+        await gateway.close();
+        await server.close(force: true);
       }
-      expect(gateway.createCalls, 0, reason: 'HTTP $status');
-      expect(gateway.legacyResumeCalls, 0, reason: 'HTTP $status');
-      expect(gateway.submitCalls, 0, reason: 'HTTP $status');
-      expect(gateway.interruptCalls, 0, reason: 'HTTP $status');
-      expect(gateway.steerCalls, 0, reason: 'HTTP $status');
-      expect(gateway.approvalCalls, 0, reason: 'HTTP $status');
-
-      chat.dispose();
-      await gateway.close();
-      await server.close(force: true);
-    }
-  }, timeout: const Timeout(Duration(seconds: 15)));
+    },
+    timeout: const Timeout(Duration(seconds: 15)),
+  );
 
   test('real socket-refused upgrade retries viewer only', () async {
     final reservation = await ServerSocket.bind(
@@ -1932,156 +1949,173 @@ void main() {
     },
   );
 
-  test('transient cold-open failure with valid empty REST retries exact durable id', () async {
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const DashboardHttpException(503)
-      ..resumeExistingFailuresRemaining = 1
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-empty-recovered',
-        storedSessionId: 'session-empty-retry',
-        created: false,
-        messagesProvided: true,
-        messageCount: 0,
+  test(
+    'transient cold-open failure with valid empty REST retries exact durable id',
+    () async {
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const DashboardHttpException(503)
+        ..resumeExistingFailuresRemaining = 1
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-empty-recovered',
+          storedSessionId: 'session-empty-retry',
+          created: false,
+          messagesProvided: true,
+          messageCount: 0,
+        );
+      final chat = _productionAttachChat(
+        'empty-retry',
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) async => const [],
+        desktopRecoveryBackoff: const [Duration.zero],
       );
-    final chat = _productionAttachChat(
-      'empty-retry',
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) async => const [],
-      desktopRecoveryBackoff: const [Duration.zero],
-    );
-    addTearDown(chat.dispose);
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(profile: 'owner-profile', expectedMessageCount: 0);
-    _expectNoViewerAttachmentMutations(gateway, api);
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-empty-recovered',
-    );
-
-    expect(gateway.resumeExistingStoredIds, [
-      'session-empty-retry',
-      'session-empty-retry',
-    ]);
-    expect(gateway.committedRecoveryRuntimeIds, ['runtime-empty-recovered']);
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
-
-  test('transient resume with expected-count violation still schedules attachment recovery', () async {
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const DashboardHttpException(503)
-      ..resumeExistingFailuresRemaining = 1
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-count-recovered',
-        storedSessionId: 'session-count-retry',
-        created: false,
+      await chat.loadMessages(
+        profile: 'owner-profile',
+        expectedMessageCount: 0,
       );
-    final chat = _productionAttachChat(
-      'count-retry',
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) async => const [],
-      desktopRecoveryBackoff: const [Duration.zero],
-    );
-    addTearDown(chat.dispose);
-
-    await expectLater(
-      chat.loadMessages(profile: 'owner-profile', expectedMessageCount: 2),
-      throwsStateError,
-    );
-    _expectNoViewerAttachmentMutations(gateway, api);
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-count-recovered',
-    );
-
-    expect(gateway.resumeExistingCalls, 2);
-    expect(
-      gateway.resumeExistingStoredIds,
-      everyElement('session-count-retry'),
-    );
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
-
-  test('transient resume with REST transport failure still schedules attachment recovery', () async {
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const DashboardHttpException(503)
-      ..resumeExistingFailuresRemaining = 1
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-rest-error-recovered',
-        storedSessionId: 'session-rest-error-retry',
-        created: false,
+      _expectNoViewerAttachmentMutations(gateway, api);
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-empty-recovered',
       );
-    final chat = _productionAttachChat(
-      'rest-error-retry',
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) =>
-          Future.error(http.ClientException('typed REST transport failure')),
-      desktopRecoveryBackoff: const [Duration.zero],
-    );
-    addTearDown(chat.dispose);
 
-    await expectLater(
-      chat.loadMessages(profile: 'owner-profile'),
-      throwsA(anything),
-    );
-    _expectNoViewerAttachmentMutations(gateway, api);
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-rest-error-recovered',
-    );
+      expect(gateway.resumeExistingStoredIds, [
+        'session-empty-retry',
+        'session-empty-retry',
+      ]);
+      expect(gateway.committedRecoveryRuntimeIds, ['runtime-empty-recovered']);
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
 
-    expect(gateway.resumeExistingCalls, 2);
-    expect(
-      gateway.resumeExistingStoredIds,
-      everyElement('session-rest-error-retry'),
-    );
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
-
-  test('legacy code-null JSON-RPC timeout retries viewer attachment and exact resume succeeds', () async {
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const TuiGatewayRpcError(
-        'session.resume',
-        'Timeout waiting for JSON-RPC response',
-      )
-      ..resumeExistingFailuresRemaining = 2
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-timeout-recovered',
-        storedSessionId: 'session-timeout-retry',
-        created: false,
+  test(
+    'transient resume with expected-count violation still schedules attachment recovery',
+    () async {
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const DashboardHttpException(503)
+        ..resumeExistingFailuresRemaining = 1
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-count-recovered',
+          storedSessionId: 'session-count-retry',
+          created: false,
+        );
+      final chat = _productionAttachChat(
+        'count-retry',
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) async => const [],
+        desktopRecoveryBackoff: const [Duration.zero],
       );
-    final chat = _productionAttachChat(
-      'timeout-retry',
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'message_id': 'timeout-history',
-          'role': 'assistant',
-          'content': 'history remains readable during timeout recovery',
-        },
-      ],
-      desktopRecoveryBackoff: const [Duration.zero, Duration.zero],
-    );
-    addTearDown(chat.dispose);
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(profile: 'owner-profile');
-    _expectNoViewerAttachmentMutations(gateway, api);
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-timeout-recovered',
-    );
+      await expectLater(
+        chat.loadMessages(profile: 'owner-profile', expectedMessageCount: 2),
+        throwsStateError,
+      );
+      _expectNoViewerAttachmentMutations(gateway, api);
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-count-recovered',
+      );
 
-    expect(gateway.resumeExistingCalls, 3);
-    expect(
-      gateway.resumeExistingStoredIds,
-      everyElement('session-timeout-retry'),
-    );
-    expect(gateway.committedRecoveryRuntimeIds, ['runtime-timeout-recovered']);
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
+      expect(gateway.resumeExistingCalls, 2);
+      expect(
+        gateway.resumeExistingStoredIds,
+        everyElement('session-count-retry'),
+      );
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
+
+  test(
+    'transient resume with REST transport failure still schedules attachment recovery',
+    () async {
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const DashboardHttpException(503)
+        ..resumeExistingFailuresRemaining = 1
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-rest-error-recovered',
+          storedSessionId: 'session-rest-error-retry',
+          created: false,
+        );
+      final chat = _productionAttachChat(
+        'rest-error-retry',
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) =>
+            Future.error(http.ClientException('typed REST transport failure')),
+        desktopRecoveryBackoff: const [Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      await expectLater(
+        chat.loadMessages(profile: 'owner-profile'),
+        throwsA(anything),
+      );
+      _expectNoViewerAttachmentMutations(gateway, api);
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-rest-error-recovered',
+      );
+
+      expect(gateway.resumeExistingCalls, 2);
+      expect(
+        gateway.resumeExistingStoredIds,
+        everyElement('session-rest-error-retry'),
+      );
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
+
+  test(
+    'legacy code-null JSON-RPC timeout retries viewer attachment and exact resume succeeds',
+    () async {
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const TuiGatewayRpcError(
+          'session.resume',
+          'Timeout waiting for JSON-RPC response',
+        )
+        ..resumeExistingFailuresRemaining = 2
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-timeout-recovered',
+          storedSessionId: 'session-timeout-retry',
+          created: false,
+        );
+      final chat = _productionAttachChat(
+        'timeout-retry',
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'timeout-history',
+            'role': 'assistant',
+            'content': 'history remains readable during timeout recovery',
+          },
+        ],
+        desktopRecoveryBackoff: const [Duration.zero, Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(profile: 'owner-profile');
+      _expectNoViewerAttachmentMutations(gateway, api);
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-timeout-recovered',
+      );
+
+      expect(gateway.resumeExistingCalls, 3);
+      expect(
+        gateway.resumeExistingStoredIds,
+        everyElement('session-timeout-retry'),
+      );
+      expect(gateway.committedRecoveryRuntimeIds, [
+        'runtime-timeout-recovered',
+      ]);
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
 
   test(
     'malformed code-null RPC stops viewer attachment without retry',
@@ -2702,64 +2736,67 @@ void main() {
     },
   );
 
-  test('compression-fenced visible load preserves terminal viewer recovery closure', () async {
-    const id = 'fenced-terminal-reassessment';
-    final storage = InMemoryDesktopCompressionFenceStorage();
-    final fenceStore = DesktopCompressionFenceStore(
-      storage: storage,
-      mutationNamespaceForTesting: id,
-      attemptId: () => 'fenced-terminal-attempt',
-    );
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..resumeExistingError = const TuiGatewayRpcError(
-        'session.resume',
-        'not found',
-        code: 4007,
-        origin: CompressionFailureOrigin.remoteRpc,
+  test(
+    'compression-fenced visible load preserves terminal viewer recovery closure',
+    () async {
+      const id = 'fenced-terminal-reassessment';
+      final storage = InMemoryDesktopCompressionFenceStorage();
+      final fenceStore = DesktopCompressionFenceStore(
+        storage: storage,
+        mutationNamespaceForTesting: id,
+        attemptId: () => 'fenced-terminal-attempt',
       );
-    final chat = _productionAttachChat(
-      id,
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'message_id': 'fenced-terminal-history',
-          'role': 'assistant',
-          'content': 'durable history',
-        },
-      ],
-      desktopRecoveryBackoff: const [Duration.zero],
-      compressionFenceStore: fenceStore,
-    );
-    addTearDown(chat.dispose);
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..resumeExistingError = const TuiGatewayRpcError(
+          'session.resume',
+          'not found',
+          code: 4007,
+          origin: CompressionFailureOrigin.remoteRpc,
+        );
+      final chat = _productionAttachChat(
+        id,
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'fenced-terminal-history',
+            'role': 'assistant',
+            'content': 'durable history',
+          },
+        ],
+        desktopRecoveryBackoff: const [Duration.zero],
+        compressionFenceStore: fenceStore,
+      );
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages(profile: 'owner-profile');
-    expect(chat.storedSessionKnownMissing, isTrue);
-    final armed = await fenceStore.arm(
-      DesktopCompressionFenceScope(
-        connectionId: id,
-        profile: 'owner-profile',
-        logicalSessionId: 'session-$id',
-      ),
-      tipAtStart: 'session-$id',
-      compressionsAtStart: 0,
-      createdAtMs: 1,
-      reconcileUntilMs: 4102444800000,
-    );
-    expect(armed.claimed, isTrue);
-    gateway.resumeExistingError = null;
+      await chat.loadMessages(profile: 'owner-profile');
+      expect(chat.storedSessionKnownMissing, isTrue);
+      final armed = await fenceStore.arm(
+        DesktopCompressionFenceScope(
+          connectionId: id,
+          profile: 'owner-profile',
+          logicalSessionId: 'session-$id',
+        ),
+        tipAtStart: 'session-$id',
+        compressionsAtStart: 0,
+        createdAtMs: 1,
+        reconcileUntilMs: 4102444800000,
+      );
+      expect(armed.claimed, isTrue);
+      gateway.resumeExistingError = null;
 
-    await chat.loadMessages(profile: 'owner-profile');
-    gateway.drop();
-    await Future<void>.delayed(const Duration(milliseconds: 40));
+      await chat.loadMessages(profile: 'owner-profile');
+      gateway.drop();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
 
-    expect(chat.storedSessionKnownMissing, isTrue);
-    expect(gateway.resumeExistingCalls, 1);
-    expect(gateway.committedRecoveryRuntimeIds, isEmpty);
-    expect(chat.desktopRuntimeSessionId, isNull);
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
+      expect(chat.storedSessionKnownMissing, isTrue);
+      expect(gateway.resumeExistingCalls, 1);
+      expect(gateway.committedRecoveryRuntimeIds, isEmpty);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
 
   test('snapshot fallback copy preserves identity evidence', () async {
     final api = _RestFallbackApiClient();
@@ -2901,135 +2938,146 @@ void main() {
     _expectNoViewerAttachmentMutations(gateway, api);
   });
 
-  test('older transient empty load cannot schedule after newer trusted successful load', () async {
-    final oldResume = Completer<DesktopSessionSnapshot>();
-    final oldRest = Completer<List<Map<String, dynamic>>>();
-    var restCalls = 0;
-    final api = _RestFallbackApiClient();
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..scriptedResumeExisting.addAll([
-        oldResume.future,
-        Future.value(
-          const DesktopSessionSnapshot(
-            runtimeSessionId: 'runtime-newer-trusted',
-            storedSessionId: 'session-load-generation',
-            created: false,
-            messagesProvided: true,
-            messageCount: 0,
+  test(
+    'older transient empty load cannot schedule after newer trusted successful load',
+    () async {
+      final oldResume = Completer<DesktopSessionSnapshot>();
+      final oldRest = Completer<List<Map<String, dynamic>>>();
+      var restCalls = 0;
+      final api = _RestFallbackApiClient();
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..scriptedResumeExisting.addAll([
+          oldResume.future,
+          Future.value(
+            const DesktopSessionSnapshot(
+              runtimeSessionId: 'runtime-newer-trusted',
+              storedSessionId: 'session-load-generation',
+              created: false,
+              messagesProvided: true,
+              messageCount: 0,
+            ),
           ),
-        ),
+        ]);
+      final chat = _productionAttachChat(
+        'load-generation',
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) {
+          restCalls += 1;
+          return restCalls == 1 ? oldRest.future : Future.value(const []);
+        },
+        desktopRecoveryBackoff: const [Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      final older = chat.loadMessages(profile: 'owner-profile');
+      await _waitUntil(
+        () => gateway.resumeExistingCalls == 1 && restCalls == 1,
+      );
+      await chat.loadMessages(profile: 'owner-profile');
+      expect(chat.desktopRuntimeSessionId, 'runtime-newer-trusted');
+
+      oldRest.complete(const []);
+      oldResume.completeError(const DashboardHttpException(503));
+      await older;
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+
+      expect(gateway.resumeExistingCalls, 2);
+      expect(gateway.resumeExistingStoredIds, [
+        'session-load-generation',
+        'session-load-generation',
       ]);
-    final chat = _productionAttachChat(
-      'load-generation',
-      gateway,
-      api: api,
-      storedMessageLoader: (_, _) {
-        restCalls += 1;
-        return restCalls == 1 ? oldRest.future : Future.value(const []);
-      },
-      desktopRecoveryBackoff: const [Duration.zero],
-    );
-    addTearDown(chat.dispose);
+      expect(chat.desktopRuntimeSessionId, 'runtime-newer-trusted');
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
 
-    final older = chat.loadMessages(profile: 'owner-profile');
-    await _waitUntil(() => gateway.resumeExistingCalls == 1 && restCalls == 1);
-    await chat.loadMessages(profile: 'owner-profile');
-    expect(chat.desktopRuntimeSessionId, 'runtime-newer-trusted');
+  test(
+    'invalidatePassiveRead cancels stale REST but does not cancel exact-durable reattach',
+    () async {
+      final recoveryGate = Completer<DesktopSessionSnapshot>();
+      final staleReadGate = Completer<List<Map<String, dynamic>>>();
+      var transcriptCalls = 0;
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..initialSnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-passive-invalidate-1',
+          storedSessionId: 'session-passive-invalidate',
+          created: false,
+          messagesProvided: true,
+          running: false,
+        )
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-passive-invalidate-2',
+          storedSessionId: 'session-passive-invalidate',
+          created: false,
+          messagesProvided: true,
+          running: false,
+        )
+        ..recoveryExistingGate = recoveryGate;
+      final chat = _productionAttachChat(
+        'passive-invalidate',
+        gateway,
+        storedMessageLoader: (_, _) {
+          transcriptCalls += 1;
+          if (transcriptCalls == 1) {
+            return Future.value(const [
+              {
+                'message_id': 'durable-answer',
+                'role': 'assistant',
+                'content': 'authoritative durable transcript',
+              },
+            ]);
+          }
+          return staleReadGate.future;
+        },
+      );
+      addTearDown(chat.dispose);
 
-    oldRest.complete(const []);
-    oldResume.completeError(const DashboardHttpException(503));
-    await older;
-    await Future<void>.delayed(const Duration(milliseconds: 40));
+      await chat.loadMessages(profile: 'owner-profile');
+      gateway.drop();
+      await _waitUntil(() => gateway.resumeExistingCalls == 1);
 
-    expect(gateway.resumeExistingCalls, 2);
-    expect(gateway.resumeExistingStoredIds, [
-      'session-load-generation',
-      'session-load-generation',
-    ]);
-    expect(chat.desktopRuntimeSessionId, 'runtime-newer-trusted');
-    _expectNoViewerAttachmentMutations(gateway, api);
-  });
+      final staleRead = chat.loadMessages(
+        profile: 'owner-profile',
+        passiveOnly: true,
+      );
+      await _waitUntil(() => transcriptCalls == 2);
+      chat.invalidatePassiveRead();
+      staleReadGate.complete(const [
+        {
+          'message_id': 'stale-rest-answer',
+          'role': 'assistant',
+          'content': 'must not replace the durable transcript',
+        },
+      ]);
+      await staleRead;
+      recoveryGate.complete(
+        const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-passive-invalidate-2',
+          storedSessionId: 'session-passive-invalidate',
+          created: false,
+          messagesProvided: true,
+          running: false,
+        ),
+      );
 
-  test('invalidatePassiveRead cancels stale REST but does not cancel exact-durable reattach', () async {
-    final recoveryGate = Completer<DesktopSessionSnapshot>();
-    final staleReadGate = Completer<List<Map<String, dynamic>>>();
-    var transcriptCalls = 0;
-    final gateway = _ActivityLifecycleRecoverableGateway()
-      ..initialSnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-passive-invalidate-1',
-        storedSessionId: 'session-passive-invalidate',
-        created: false,
-        messagesProvided: true,
-        running: false,
-      )
-      ..recoverySnapshot = const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-passive-invalidate-2',
-        storedSessionId: 'session-passive-invalidate',
-        created: false,
-        messagesProvided: true,
-        running: false,
-      )
-      ..recoveryExistingGate = recoveryGate;
-    final chat = _productionAttachChat(
-      'passive-invalidate',
-      gateway,
-      storedMessageLoader: (_, _) {
-        transcriptCalls += 1;
-        if (transcriptCalls == 1) {
-          return Future.value(const [
-            {
-              'message_id': 'durable-answer',
-              'role': 'assistant',
-              'content': 'authoritative durable transcript',
-            },
-          ]);
-        }
-        return staleReadGate.future;
-      },
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages(profile: 'owner-profile');
-    gateway.drop();
-    await _waitUntil(() => gateway.resumeExistingCalls == 1);
-
-    final staleRead = chat.loadMessages(
-      profile: 'owner-profile',
-      passiveOnly: true,
-    );
-    await _waitUntil(() => transcriptCalls == 2);
-    chat.invalidatePassiveRead();
-    staleReadGate.complete(const [
-      {
-        'message_id': 'stale-rest-answer',
-        'role': 'assistant',
-        'content': 'must not replace the durable transcript',
-      },
-    ]);
-    await staleRead;
-    recoveryGate.complete(
-      const DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-passive-invalidate-2',
-        storedSessionId: 'session-passive-invalidate',
-        created: false,
-        messagesProvided: true,
-        running: false,
-      ),
-    );
-
-    await _waitUntil(
-      () => chat.desktopRuntimeSessionId == 'runtime-passive-invalidate-2',
-    );
-    expect(chat.messages.single['content'], 'authoritative durable transcript');
-    expect(gateway.committedRecoveryRuntimeIds, [
-      'runtime-passive-invalidate-2',
-    ]);
-    expect(gateway.submitCalls, 0);
-    expect(gateway.createForFirstSubmitCalls, 0);
-    expect(gateway.activateCalls, 1);
-    expect(gateway.interruptCalls, 0);
-    expect(gateway.resumeCalls, 0);
-  });
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-passive-invalidate-2',
+      );
+      expect(
+        chat.messages.single['content'],
+        'authoritative durable transcript',
+      );
+      expect(gateway.committedRecoveryRuntimeIds, [
+        'runtime-passive-invalidate-2',
+      ]);
+      expect(gateway.submitCalls, 0);
+      expect(gateway.createForFirstSubmitCalls, 0);
+      expect(gateway.activateCalls, 1);
+      expect(gateway.interruptCalls, 0);
+      expect(gateway.resumeCalls, 0);
+    },
+  );
 
   test('turno reanudado sin outbox reconecta tras socket drop', () async {
     final recoveryGate = Completer<DesktopSessionSnapshot>();
@@ -3659,166 +3707,175 @@ void main() {
     },
   );
 
-  test('snapshot con fila descartada no aplica firstUser al prompt repetido visible', () async {
-    final snapshot = DesktopSessionSnapshot.fromJson(
-      const {
-        'session_id': 'runtime-malformed-transcript',
-        'session_key': 'session-malformed-transcript',
-        'messages': [
-          {
-            'message_id': 'cancelled-user-malformed',
-            'content': 'prompt repetido',
-          },
-          {
-            'message_id': 'old-answer',
-            'role': 'assistant',
-            'content': 'respuesta del turno anterior',
-          },
-          {
-            'message_id': 'legitimate-user',
-            'role': 'user',
-            'content': 'prompt repetido',
-          },
-          {
-            'message_id': 'legitimate-answer',
-            'role': 'assistant',
-            'content': 'respuesta legítima que debe seguir visible',
-          },
-        ],
-      },
-      requestedStoredSessionId: 'session-malformed-transcript',
-      created: false,
-      method: 'session.resume',
-    );
-    final gateway = _LifecycleRecoverableGateway()..initialSnapshot = snapshot;
-    final chat = _recoverableChat(
-      'malformed-transcript',
-      gateway,
-      initialCancelledTurnTombstones: const [
-        CancelledTurnTombstone(content: 'prompt repetido', firstUser: true),
-      ],
-    );
-    addTearDown(chat.dispose);
-
-    await chat.loadMessages();
-
-    expect(
-      chat.internalMessagesForTesting.any(
-        (message) =>
-            message['_desktopMessageId'] == 'legitimate-answer' &&
-            message['content'] == 'respuesta legítima que debe seguir visible',
-      ),
-      isTrue,
-    );
-    final repeatedUser = chat.internalMessagesForTesting.singleWhere(
-      (message) => message['_desktopMessageId'] == 'legitimate-user',
-    );
-    expect(repeatedUser.containsKey('_cancelledUser'), isFalse);
-  });
-
-  test('recovery hydrating conserva la cola parcial hasta tener historial completo', () async {
-    final partialTail = <Map<String, dynamic>>[
-      const {
-        'id': 'hydrating-oldest-user',
-        'role': 'user',
-        'content': 'prompt visible durante hydration',
-      },
-      const {
-        'id': 'hydrating-legitimate-answer',
-        'role': 'assistant',
-        'content': 'respuesta legítima durante hydration',
-      },
-      for (var index = 0; index < 118; index++)
-        {
-          'id': 'hydrating-system-$index',
-          'role': 'system',
-          'content': 'contexto hydrating $index',
+  test(
+    'snapshot con fila descartada no aplica firstUser al prompt repetido visible',
+    () async {
+      final snapshot = DesktopSessionSnapshot.fromJson(
+        const {
+          'session_id': 'runtime-malformed-transcript',
+          'session_key': 'session-malformed-transcript',
+          'messages': [
+            {
+              'message_id': 'cancelled-user-malformed',
+              'content': 'prompt repetido',
+            },
+            {
+              'message_id': 'old-answer',
+              'role': 'assistant',
+              'content': 'respuesta del turno anterior',
+            },
+            {
+              'message_id': 'legitimate-user',
+              'role': 'user',
+              'content': 'prompt repetido',
+            },
+            {
+              'message_id': 'legitimate-answer',
+              'role': 'assistant',
+              'content': 'respuesta legítima que debe seguir visible',
+            },
+          ],
         },
-    ];
-    final gateway = _LifecycleRecoverableGateway()
-      ..initialSnapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-hydrating-1',
-        storedSessionId: 'session-recovery-hydrating',
+        requestedStoredSessionId: 'session-malformed-transcript',
         created: false,
-        messagesProvided: false,
-        messageCount: 300,
-        inflight: DesktopInflightTurn(
-          user: 'turno activo durante hydration',
-          streaming: true,
-        ),
-        running: true,
-      )
-      ..recoverySnapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-hydrating-2',
-        storedSessionId: 'session-recovery-hydrating',
-        created: false,
-        messagesProvided: true,
-        messageCount: 300,
-        hydrating: true,
-        inflight: DesktopInflightTurn(
-          user: 'turno activo durante hydration',
-          streaming: true,
-        ),
-        running: true,
+        method: 'session.resume',
       );
-    final chat = _recoverableChat(
-      'recovery-hydrating',
-      gateway,
-      api: _PartialTailApi(partialTail),
-      initialCancelledTurnTombstones: const [
-        CancelledTurnTombstone(
-          content: 'prompt visible durante hydration',
-          firstUser: true,
+      final gateway = _LifecycleRecoverableGateway()
+        ..initialSnapshot = snapshot;
+      final chat = _recoverableChat(
+        'malformed-transcript',
+        gateway,
+        initialCancelledTurnTombstones: const [
+          CancelledTurnTombstone(content: 'prompt repetido', firstUser: true),
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      expect(
+        chat.internalMessagesForTesting.any(
+          (message) =>
+              message['_desktopMessageId'] == 'legitimate-answer' &&
+              message['content'] ==
+                  'respuesta legítima que debe seguir visible',
         ),
-      ],
-    );
-    addTearDown(chat.dispose);
+        isTrue,
+      );
+      final repeatedUser = chat.internalMessagesForTesting.singleWhere(
+        (message) => message['_desktopMessageId'] == 'legitimate-user',
+      );
+      expect(repeatedUser.containsKey('_cancelledUser'), isFalse);
+    },
+  );
 
-    await chat.loadMessages(expectedMessageCount: 300);
-    gateway.drop();
-    await _waitUntil(
-      () => gateway.committedRecoveryRuntimeIds.contains('runtime-hydrating-2'),
-    );
+  test(
+    'recovery hydrating conserva la cola parcial hasta tener historial completo',
+    () async {
+      final partialTail = <Map<String, dynamic>>[
+        const {
+          'id': 'hydrating-oldest-user',
+          'role': 'user',
+          'content': 'prompt visible durante hydration',
+        },
+        const {
+          'id': 'hydrating-legitimate-answer',
+          'role': 'assistant',
+          'content': 'respuesta legítima durante hydration',
+        },
+        for (var index = 0; index < 118; index++)
+          {
+            'id': 'hydrating-system-$index',
+            'role': 'system',
+            'content': 'contexto hydrating $index',
+          },
+      ];
+      final gateway = _LifecycleRecoverableGateway()
+        ..initialSnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-hydrating-1',
+          storedSessionId: 'session-recovery-hydrating',
+          created: false,
+          messagesProvided: false,
+          messageCount: 300,
+          inflight: DesktopInflightTurn(
+            user: 'turno activo durante hydration',
+            streaming: true,
+          ),
+          running: true,
+        )
+        ..recoverySnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-hydrating-2',
+          storedSessionId: 'session-recovery-hydrating',
+          created: false,
+          messagesProvided: true,
+          messageCount: 300,
+          hydrating: true,
+          inflight: DesktopInflightTurn(
+            user: 'turno activo durante hydration',
+            streaming: true,
+          ),
+          running: true,
+        );
+      final chat = _recoverableChat(
+        'recovery-hydrating',
+        gateway,
+        api: _PartialTailApi(partialTail),
+        initialCancelledTurnTombstones: const [
+          CancelledTurnTombstone(
+            content: 'prompt visible durante hydration',
+            firstUser: true,
+          ),
+        ],
+      );
+      addTearDown(chat.dispose);
 
-    expect(chat.isHydratingDesktopHistory, isTrue);
-    expect(chat.hasEarlierMessages, isTrue);
-    expect(
-      chat.messages.any(
-        (message) => message['id'] == 'hydrating-legitimate-answer',
-      ),
-      isTrue,
-    );
-    expect(
-      chat.messages
-          .singleWhere((message) => message['id'] == 'hydrating-oldest-user')
-          .containsKey('_cancelledUser'),
-      isFalse,
-    );
+      await chat.loadMessages(expectedMessageCount: 300);
+      gateway.drop();
+      await _waitUntil(
+        () =>
+            gateway.committedRecoveryRuntimeIds.contains('runtime-hydrating-2'),
+      );
 
-    partialTail.add(const {
-      'id': 'hydrated-final-tail-answer',
-      'role': 'assistant',
-      'content': 'cola final adoptada tras recovery',
-    });
-    gateway.emit(
-      'session.resume_progress',
-      sessionId: 'runtime-hydrating-2',
-      payload: const {'status': 'complete', 'message_count': 301},
-    );
-    await _waitUntil(
-      () => chat.messages.any(
-        (message) => message['id'] == 'hydrated-final-tail-answer',
-      ),
-    );
+      expect(chat.isHydratingDesktopHistory, isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(
+        chat.messages.any(
+          (message) => message['id'] == 'hydrating-legitimate-answer',
+        ),
+        isTrue,
+      );
+      expect(
+        chat.messages
+            .singleWhere((message) => message['id'] == 'hydrating-oldest-user')
+            .containsKey('_cancelledUser'),
+        isFalse,
+      );
 
-    expect(chat.isHydratingDesktopHistory, isFalse);
-    expect(
-      chat.messages.firstWhere(
-        (message) => message['id'] == 'hydrated-final-tail-answer',
-      )['content'],
-      'cola final adoptada tras recovery',
-    );
-  });
+      partialTail.add(const {
+        'id': 'hydrated-final-tail-answer',
+        'role': 'assistant',
+        'content': 'cola final adoptada tras recovery',
+      });
+      gateway.emit(
+        'session.resume_progress',
+        sessionId: 'runtime-hydrating-2',
+        payload: const {'status': 'complete', 'message_count': 301},
+      );
+      await _waitUntil(
+        () => chat.messages.any(
+          (message) => message['id'] == 'hydrated-final-tail-answer',
+        ),
+      );
+
+      expect(chat.isHydratingDesktopHistory, isFalse);
+      expect(
+        chat.messages.firstWhere(
+          (message) => message['id'] == 'hydrated-final-tail-answer',
+        )['content'],
+        'cola final adoptada tras recovery',
+      );
+    },
+  );
 
   test(
     'recovery hydrating degrada un fallback antes completo sin borrarlo',
@@ -4807,69 +4864,73 @@ void main() {
     },
   );
 
-  test('Stop liga el user actual por sus aliases aunque haya un user id-less anterior', () async {
-    for (final alias in const ['_desktopMessageId', 'message_id', 'id']) {
-      final recorded = <CancelledTurnTombstone>[];
-      final gateway = _LifecycleRecoverableGateway()
-        ..initialSnapshot = DesktopSessionSnapshot(
-          runtimeSessionId: 'runtime-target-id-$alias',
-          storedSessionId: 'session-target-id-$alias',
-          created: false,
-          messagesProvided: true,
-          messages: [
-            DesktopSessionMessage.tryParse(const {
-              'role': 'user',
-              'content': 'turno histórico sin identidad',
-            })!,
-            DesktopSessionMessage.tryParse({
-              'message_id': 'source-current-$alias',
-              'role': 'user',
-              'content': 'turno actual identificado por $alias',
-            })!,
-          ],
-          messageCount: 300,
-          inflight: DesktopInflightTurn(
-            user: 'turno actual identificado por $alias',
-            assistant: 'respuesta parcial $alias',
-            streaming: true,
-          ),
-          running: true,
+  test(
+    'Stop liga el user actual por sus aliases aunque haya un user id-less anterior',
+    () async {
+      for (final alias in const ['_desktopMessageId', 'message_id', 'id']) {
+        final recorded = <CancelledTurnTombstone>[];
+        final gateway = _LifecycleRecoverableGateway()
+          ..initialSnapshot = DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-target-id-$alias',
+            storedSessionId: 'session-target-id-$alias',
+            created: false,
+            messagesProvided: true,
+            messages: [
+              DesktopSessionMessage.tryParse(const {
+                'role': 'user',
+                'content': 'turno histórico sin identidad',
+              })!,
+              DesktopSessionMessage.tryParse({
+                'message_id': 'source-current-$alias',
+                'role': 'user',
+                'content': 'turno actual identificado por $alias',
+              })!,
+            ],
+            messageCount: 300,
+            inflight: DesktopInflightTurn(
+              user: 'turno actual identificado por $alias',
+              assistant: 'respuesta parcial $alias',
+              streaming: true,
+            ),
+            running: true,
+          );
+        final chat = _recoverableChat(
+          'target-id-$alias',
+          gateway,
+          onCancelledTurn: (tombstone) async => recorded.add(tombstone),
         );
-      final chat = _recoverableChat(
-        'target-id-$alias',
-        gateway,
-        onCancelledTurn: (tombstone) async => recorded.add(tombstone),
-      );
-      addTearDown(chat.dispose);
+        addTearDown(chat.dispose);
 
-      await chat.loadMessages(expectedMessageCount: 300);
-      final userIndex = chat.messages.indexWhere(
-        (message) =>
-            message['content'] == 'turno actual identificado por $alias',
-      );
-      expect(userIndex, greaterThanOrEqualTo(0), reason: alias);
-      final exactId = '  current-target-$alias  ';
-      chat.internalMessagesForTesting[userIndex] =
-          Map<String, dynamic>.of(chat.messages[userIndex])
-            ..remove('_desktopMessageId')
-            ..remove('message_id')
-            ..remove('id')
-            ..[alias] = exactId;
+        await chat.loadMessages(expectedMessageCount: 300);
+        final userIndex = chat.messages.indexWhere(
+          (message) =>
+              message['content'] == 'turno actual identificado por $alias',
+        );
+        expect(userIndex, greaterThanOrEqualTo(0), reason: alias);
+        final exactId = '  current-target-$alias  ';
+        chat.internalMessagesForTesting[userIndex] =
+            Map<String, dynamic>.of(chat.messages[userIndex])
+              ..remove('_desktopMessageId')
+              ..remove('message_id')
+              ..remove('id')
+              ..[alias] = exactId;
 
-      await chat.cancel();
+        await chat.cancel();
 
-      expect(recorded, hasLength(1), reason: alias);
-      expect(recorded.single.cancelledMessageId, exactId, reason: alias);
-      expect(recorded.single.anchorMessageId, isNull, reason: alias);
-      expect(recorded.single.firstUser, isFalse, reason: alias);
-      expect(
-        CancelledTurnTombstone.fromJson(recorded.single.stamped(123).toJson())
-            ?.cancelledMessageId,
-        exactId,
-        reason: alias,
-      );
-    }
-  });
+        expect(recorded, hasLength(1), reason: alias);
+        expect(recorded.single.cancelledMessageId, exactId, reason: alias);
+        expect(recorded.single.anchorMessageId, isNull, reason: alias);
+        expect(recorded.single.firstUser, isFalse, reason: alias);
+        expect(
+          CancelledTurnTombstone.fromJson(
+            recorded.single.stamped(123).toJson(),
+          )?.cancelledMessageId,
+          exactId,
+          reason: alias,
+        );
+      }
+    },
+  );
 
   test('reconciliar transcript oculta la respuesta del turno detenido', () {
     final projected = projectCancelledTurnTombstones(
@@ -5648,8 +5709,9 @@ void main() {
     expect(recorded.single.cancelledMessageId, isNull);
     expect(recorded.single.cancelledRowId, isNull);
     expect(
-      CancelledTurnTombstone.fromJson(recorded.single.stamped(123).toJson())
-          ?.anchorRowId,
+      CancelledTurnTombstone.fromJson(
+        recorded.single.stamped(123).toJson(),
+      )?.anchorRowId,
       73,
     );
     expect(chat.isStreaming, isFalse);
@@ -6987,34 +7049,37 @@ void main() {
     },
   );
 
-  test('first reconnect is immediate and cancellation fences its stale jitter timer', () async {
-    final gateway = _RecoverableDesktopGateway()
-      ..recoveryConnectFailuresRemaining = 100;
-    final chat = _recoverableChat(
-      'coverage-cancel',
-      gateway,
-      desktopRecoveryBackoff: const [Duration(milliseconds: 50)],
-      desktopRecoveryRandom: () => 1,
-    );
-    addTearDown(chat.dispose);
+  test(
+    'first reconnect is immediate and cancellation fences its stale jitter timer',
+    () async {
+      final gateway = _RecoverableDesktopGateway()
+        ..recoveryConnectFailuresRemaining = 100;
+      final chat = _recoverableChat(
+        'coverage-cancel',
+        gateway,
+        desktopRecoveryBackoff: const [Duration(milliseconds: 50)],
+        desktopRecoveryRandom: () => 1,
+      );
+      addTearDown(chat.dispose);
 
-    await chat.send(
-      fullText: 'cancelar mientras no hay cobertura',
-      model: 'hermes-agent',
-      history: const [],
-      delivery: _delivery('coverage-cancel', _NoopOutbox()),
-    );
-    gateway.drop();
-    await _waitUntil(() => chat.state == ChatPipelineState.connecting);
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    expect(gateway.connectCalls, 2);
+      await chat.send(
+        fullText: 'cancelar mientras no hay cobertura',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('coverage-cancel', _NoopOutbox()),
+      );
+      gateway.drop();
+      await _waitUntil(() => chat.state == ChatPipelineState.connecting);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(gateway.connectCalls, 2);
 
-    await chat.cancel();
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+      await chat.cancel();
+      await Future<void>.delayed(const Duration(milliseconds: 80));
 
-    expect(chat.state, ChatPipelineState.cancelled);
-    expect(gateway.connectCalls, 2);
-  });
+      expect(chat.state, ChatPipelineState.cancelled);
+      expect(gateway.connectCalls, 2);
+    },
+  );
 
   test('reconnect full jitter is injectable and capped at thirty seconds', () {
     final samples = <double>[0.5, 1.0].iterator;

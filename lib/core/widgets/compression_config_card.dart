@@ -10,10 +10,11 @@ import '../theme/app_theme.dart';
 import 'hermes_ui.dart';
 
 typedef CompressionConfigLoader = Future<CompressionConfigSnapshot> Function();
-typedef CompressionConfigSaver = Future<CompressionConfigSnapshot> Function(
-  CompressionConfigSnapshot base,
-  CompressionConfig configuration,
-);
+typedef CompressionConfigSaver =
+    Future<CompressionConfigSnapshot> Function(
+      CompressionConfigSnapshot base,
+      CompressionConfig configuration,
+    );
 
 final class CompressionConfigCardController {
   _CompressionConfigCardState? _state;

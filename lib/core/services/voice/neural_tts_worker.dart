@@ -49,9 +49,8 @@ abstract interface class NeuralTtsWorker {
   Future<void> dispose();
 }
 
-typedef NeuralTtsWorkerFactory = Future<NeuralTtsWorker> Function(
-  NeuralTtsWorkerConfig config,
-);
+typedef NeuralTtsWorkerFactory =
+    Future<NeuralTtsWorker> Function(NeuralTtsWorkerConfig config);
 
 class NeuralTtsWorkerException implements Exception {
   final String message;

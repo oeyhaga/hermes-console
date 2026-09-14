@@ -243,64 +243,67 @@ void main() {
     );
   });
 
-  test('held frames from an older socket generation cannot be released by a newer proof', () {
-    final coordinator = ReplayCoordinator();
-    coordinator.quarantine('runtime-a');
-    expect(
-      coordinator.acceptLive(
-        const SessionGatewayEvent('message.delta', 'runtime-a', 13, {
-          'text': 'old-generation',
-        }),
-      ),
-      ReplayLiveDisposition.held,
-    );
-    coordinator.mintRecoveryProof(
-      connectionId: 'conn-a',
-      durableSessionId: 'stored-a',
-      runtimeSessionId: 'runtime-a',
-      profile: 'profile-a',
-      socketGeneration: 7,
-      channel: _recoveryChannel,
-      bindGeneration: 8,
-      sessionGeneration: 9,
-      turnGeneration: 10,
-      replayEpoch: 'epoch-a',
-      created: false,
-      durableIdentityExplicit: true,
-      identityAliasesConsistent: true,
-      coverage: RecoveryDomain.values.toSet(),
-      postSnapshotSequence: 12,
-    );
-    final newer = coordinator.mintRecoveryProof(
-      connectionId: 'conn-a',
-      durableSessionId: 'stored-a',
-      runtimeSessionId: 'runtime-a',
-      profile: 'profile-a',
-      socketGeneration: 8,
-      channel: _recoveryChannel,
-      bindGeneration: 8,
-      sessionGeneration: 9,
-      turnGeneration: 10,
-      replayEpoch: 'epoch-a',
-      created: false,
-      durableIdentityExplicit: true,
-      identityAliasesConsistent: true,
-      coverage: RecoveryDomain.values.toSet(),
-      postSnapshotSequence: 12,
-    );
-
-    expect(
-      coordinator.commitRecovery(
-        newer,
+  test(
+    'held frames from an older socket generation cannot be released by a newer proof',
+    () {
+      final coordinator = ReplayCoordinator();
+      coordinator.quarantine('runtime-a');
+      expect(
+        coordinator.acceptLive(
+          const SessionGatewayEvent('message.delta', 'runtime-a', 13, {
+            'text': 'old-generation',
+          }),
+        ),
+        ReplayLiveDisposition.held,
+      );
+      coordinator.mintRecoveryProof(
+        connectionId: 'conn-a',
+        durableSessionId: 'stored-a',
+        runtimeSessionId: 'runtime-a',
+        profile: 'profile-a',
+        socketGeneration: 7,
+        channel: _recoveryChannel,
+        bindGeneration: 8,
+        sessionGeneration: 9,
+        turnGeneration: 10,
+        replayEpoch: 'epoch-a',
+        created: false,
+        durableIdentityExplicit: true,
+        identityAliasesConsistent: true,
+        coverage: RecoveryDomain.values.toSet(),
+        postSnapshotSequence: 12,
+      );
+      final newer = coordinator.mintRecoveryProof(
+        connectionId: 'conn-a',
+        durableSessionId: 'stored-a',
+        runtimeSessionId: 'runtime-a',
+        profile: 'profile-a',
         socketGeneration: 8,
         channel: _recoveryChannel,
+        bindGeneration: 8,
+        sessionGeneration: 9,
+        turnGeneration: 10,
         replayEpoch: 'epoch-a',
-      ),
-      isFalse,
-    );
-    expect(coordinator.takeCommittedRecoveryEvents('runtime-a'), isEmpty);
-    expect(coordinator.isQuarantined('runtime-a'), isTrue);
-  });
+        created: false,
+        durableIdentityExplicit: true,
+        identityAliasesConsistent: true,
+        coverage: RecoveryDomain.values.toSet(),
+        postSnapshotSequence: 12,
+      );
+
+      expect(
+        coordinator.commitRecovery(
+          newer,
+          socketGeneration: 8,
+          channel: _recoveryChannel,
+          replayEpoch: 'epoch-a',
+        ),
+        isFalse,
+      );
+      expect(coordinator.takeCommittedRecoveryEvents('runtime-a'), isEmpty);
+      expect(coordinator.isQuarantined('runtime-a'), isTrue);
+    },
+  );
 
   test('held overflow poisons the exact attempt and blocks later commit', () {
     final coordinator = ReplayCoordinator();

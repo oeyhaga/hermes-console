@@ -7,9 +7,8 @@ import '../models/agent_profile.dart';
 import '../theme/app_theme.dart';
 import 'hermes_bot_face.dart';
 
-typedef MissionAvatarLoader = Future<AgentProfileAvatar?> Function(
-  String profileName,
-);
+typedef MissionAvatarLoader =
+    Future<AgentProfileAvatar?> Function(String profileName);
 
 /// Caché de avatares por conexión/pantalla con concurrencia acotada.
 ///

@@ -161,10 +161,12 @@ Future<void> _grantNativeVoice(
   SharedPreferences preferences,
   String identity,
 ) async {
-  await NativeVoiceConsentStore(preferences)
-      .write(identity, NativeVoiceConsent.accepted);
-  await NativeVoiceModeStore(preferences)
-      .write(identity, NativeVoiceMode.server);
+  await NativeVoiceConsentStore(
+    preferences,
+  ).write(identity, NativeVoiceConsent.accepted);
+  await NativeVoiceModeStore(
+    preferences,
+  ).write(identity, NativeVoiceMode.server);
   await NativeVoiceCapabilityStore(preferences).write(
     identity,
     NativeVoiceCapability(
@@ -236,40 +238,43 @@ void main() {
       expect(offline.conclusive, isFalse);
     });
 
-    test('el caché ignora resultados no concluyentes y entradas antiguas', () async {
-      final prefs = await SharedPreferences.getInstance();
-      final store = NativeVoiceCapabilityStore(prefs);
-      const identity = 'http://hermes-demo.local:9119';
+    test(
+      'el caché ignora resultados no concluyentes y entradas antiguas',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        final store = NativeVoiceCapabilityStore(prefs);
+        const identity = 'http://hermes-demo.local:9119';
 
-      final inconclusive = await probeNativeVoiceCapability(
-        statusOf: (endpoint) async => 401,
-      );
-      await store.write(identity, inconclusive);
-      expect(store.isFresh(store.read(identity)!), isFalse);
+        final inconclusive = await probeNativeVoiceCapability(
+          statusOf: (endpoint) async => 401,
+        );
+        await store.write(identity, inconclusive);
+        expect(store.isFresh(store.read(identity)!), isFalse);
 
-      // Entrada antigua sin el campo `conclusive` (formato previo) → re-sondeo.
-      final legacy = NativeVoiceCapability.fromJson({
-        'transcribe': false,
-        'speak': false,
-        'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
-      });
-      expect(store.isFresh(legacy!), isFalse);
+        // Entrada antigua sin el campo `conclusive` (formato previo) → re-sondeo.
+        final legacy = NativeVoiceCapability.fromJson({
+          'transcribe': false,
+          'speak': false,
+          'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
+        });
+        expect(store.isFresh(legacy!), isFalse);
 
-      // Entrada de la sonda v1 (GET, falsos 404 por el catch-all) → re-sondeo.
-      final v1 = NativeVoiceCapability.fromJson({
-        'transcribe': false,
-        'speak': false,
-        'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
-        'conclusive': true,
-      });
-      expect(store.isFresh(v1!), isFalse);
+        // Entrada de la sonda v1 (GET, falsos 404 por el catch-all) → re-sondeo.
+        final v1 = NativeVoiceCapability.fromJson({
+          'transcribe': false,
+          'speak': false,
+          'checked_at_ms': DateTime.now().millisecondsSinceEpoch,
+          'conclusive': true,
+        });
+        expect(store.isFresh(v1!), isFalse);
 
-      final conclusive = await probeNativeVoiceCapability(
-        statusOf: (endpoint) async => 422,
-      );
-      await store.write(identity, conclusive);
-      expect(store.isFresh(store.read(identity)!), isTrue);
-    });
+        final conclusive = await probeNativeVoiceCapability(
+          statusOf: (endpoint) async => 422,
+        );
+        await store.write(identity, conclusive);
+        expect(store.isFresh(store.read(identity)!), isTrue);
+      },
+    );
   });
 
   group('consentimiento por identidad', () {
@@ -292,10 +297,12 @@ void main() {
       expect(workScope, '$dashboard::profile=trabajo%20principal');
       expect(qaScope, '$dashboard::profile=qa');
 
-      await NativeVoiceConsentStore(prefs)
-          .write(workScope, NativeVoiceConsent.accepted);
-      await NativeVoiceModeStore(prefs)
-          .write(workScope, NativeVoiceMode.server);
+      await NativeVoiceConsentStore(
+        prefs,
+      ).write(workScope, NativeVoiceConsent.accepted);
+      await NativeVoiceModeStore(
+        prefs,
+      ).write(workScope, NativeVoiceMode.server);
 
       expect(
         NativeVoiceConsentStore(prefs).read(workScope),
@@ -328,25 +335,29 @@ void main() {
       expect(store.read(a), NativeVoiceConsent.rejected);
     });
 
-    test('un consentimiento legacy no selecciona servidor y el modo es por identidad', () async {
-      final prefs = await SharedPreferences.getInstance();
-      const a = 'http://hermes-demo.local:9119';
-      const b = 'http://otro:9119';
-      await NativeVoiceConsentStore(prefs)
-          .write(a, NativeVoiceConsent.accepted);
+    test(
+      'un consentimiento legacy no selecciona servidor y el modo es por identidad',
+      () async {
+        final prefs = await SharedPreferences.getInstance();
+        const a = 'http://hermes-demo.local:9119';
+        const b = 'http://otro:9119';
+        await NativeVoiceConsentStore(
+          prefs,
+        ).write(a, NativeVoiceConsent.accepted);
 
-      final modes = NativeVoiceModeStore(prefs);
-      expect(modes.read(a), NativeVoiceMode.phone);
-      expect(modes.read(b), NativeVoiceMode.phone);
+        final modes = NativeVoiceModeStore(prefs);
+        expect(modes.read(a), NativeVoiceMode.phone);
+        expect(modes.read(b), NativeVoiceMode.phone);
 
-      await modes.write(a, NativeVoiceMode.server);
-      expect(modes.read(a), NativeVoiceMode.server);
-      expect(modes.read(b), NativeVoiceMode.phone);
-      expect(
-        NativeVoiceConsentStore(prefs).read(a),
-        NativeVoiceConsent.accepted,
-      );
-    });
+        await modes.write(a, NativeVoiceMode.server);
+        expect(modes.read(a), NativeVoiceMode.server);
+        expect(modes.read(b), NativeVoiceMode.phone);
+        expect(
+          NativeVoiceConsentStore(prefs).read(a),
+          NativeVoiceConsent.accepted,
+        );
+      },
+    );
   });
 
   group('configuración background consentida', () {
@@ -392,10 +403,12 @@ void main() {
       () async {
         final prefs = await SharedPreferences.getInstance();
         const identity = 'http://hermes.test:9119';
-        await NativeVoiceConsentStore(prefs)
-            .write(identity, NativeVoiceConsent.accepted);
-        await NativeVoiceModeStore(prefs)
-            .write(identity, NativeVoiceMode.server);
+        await NativeVoiceConsentStore(
+          prefs,
+        ).write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceModeStore(
+          prefs,
+        ).write(identity, NativeVoiceMode.server);
         await NativeVoiceCapabilityStore(prefs).write(
           identity,
           NativeVoiceCapability(
@@ -449,8 +462,9 @@ void main() {
           ),
         );
         await schemaRequested.future;
-        await NativeVoiceConsentStore(prefs)
-            .write(identity, NativeVoiceConsent.rejected);
+        await NativeVoiceConsentStore(
+          prefs,
+        ).write(identity, NativeVoiceConsent.rejected);
         releaseSchema.complete();
 
         expect(await configuring, isFalse);
@@ -464,10 +478,12 @@ void main() {
       const identityA = 'http://voice-a.test:9119';
       const identityB = 'http://voice-b.test:9119';
       for (final identity in <String>[identityA, identityB]) {
-        await NativeVoiceConsentStore(prefs)
-            .write(identity, NativeVoiceConsent.accepted);
-        await NativeVoiceModeStore(prefs)
-            .write(identity, NativeVoiceMode.server);
+        await NativeVoiceConsentStore(
+          prefs,
+        ).write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceModeStore(
+          prefs,
+        ).write(identity, NativeVoiceMode.server);
         await NativeVoiceCapabilityStore(prefs).write(
           identity,
           NativeVoiceCapability(
@@ -651,8 +667,9 @@ void main() {
     test('una sesión reutiliza su DashboardClient y evita relogins', () async {
       final prefs = await SharedPreferences.getInstance();
       const identity = 'http://hermes.test:9119';
-      await NativeVoiceConsentStore(prefs)
-          .write(identity, NativeVoiceConsent.accepted);
+      await NativeVoiceConsentStore(
+        prefs,
+      ).write(identity, NativeVoiceConsent.accepted);
       await NativeVoiceModeStore(prefs).write(identity, NativeVoiceMode.server);
       await NativeVoiceCapabilityStore(prefs).write(
         identity,
@@ -1230,8 +1247,9 @@ void main() {
       'dictado Hermes sondea solo transcribe y no cambia Modo Voz',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-            .save(prefs);
+        await const VoiceSettings(
+          sttEngine: SttEngineKind.hermesServer,
+        ).save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final paths = <String>[];
@@ -1248,8 +1266,9 @@ void main() {
           dashboard.baseUrl,
           profile: 'perfil-es',
         );
-        await NativeVoiceConsentStore(prefs)
-            .write(identity, NativeVoiceConsent.accepted);
+        await NativeVoiceConsentStore(
+          prefs,
+        ).write(identity, NativeVoiceConsent.accepted);
         final connection = SavedConnection(
           id: 'dictation-hermes',
           label: 'Hermes',
@@ -1293,8 +1312,9 @@ void main() {
       'dictado Hermes sin consentimiento falla cerrado y no sondea',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-            .save(prefs);
+        await const VoiceSettings(
+          sttEngine: SttEngineKind.hermesServer,
+        ).save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         var requests = 0;
@@ -1338,8 +1358,9 @@ void main() {
 
     test('un probe tardío no sustituye el binding vigente', () async {
       final prefs = await SharedPreferences.getInstance();
-      await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-          .save(prefs);
+      await const VoiceSettings(
+        sttEngine: SttEngineKind.hermesServer,
+      ).save(prefs);
       final voice = VoiceService(prefs, SecureStorage());
       addTearDown(voice.dispose);
       final slowProbe = Completer<http.Response>();
@@ -1434,8 +1455,9 @@ void main() {
       'dos probes del mismo owner silencian el resultado obsoleto',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-            .save(prefs);
+        await const VoiceSettings(
+          sttEngine: SttEngineKind.hermesServer,
+        ).save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final probeA = Completer<http.Response>();
@@ -1540,8 +1562,9 @@ void main() {
       'una reconfiguración fallida no conserva el perfil anterior',
       () async {
         final prefs = await SharedPreferences.getInstance();
-        await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-            .save(prefs);
+        await const VoiceSettings(
+          sttEngine: SttEngineKind.hermesServer,
+        ).save(prefs);
         final voice = VoiceService(prefs, SecureStorage());
         addTearDown(voice.dispose);
         final oldClient = _TrackingMockClient(
@@ -1628,8 +1651,9 @@ void main() {
 
     test('liberar owner durante el probe impide instalarlo', () async {
       final prefs = await SharedPreferences.getInstance();
-      await const VoiceSettings(sttEngine: SttEngineKind.hermesServer)
-          .save(prefs);
+      await const VoiceSettings(
+        sttEngine: SttEngineKind.hermesServer,
+      ).save(prefs);
       final voice = VoiceService(prefs, SecureStorage());
       addTearDown(voice.dispose);
       final probe = Completer<http.Response>();
@@ -1644,8 +1668,9 @@ void main() {
         manualToken: 'test-token',
         httpClientOverride: client,
       );
-      await NativeVoiceConsentStore(prefs)
-          .write(dashboard.baseUrl, NativeVoiceConsent.accepted);
+      await NativeVoiceConsentStore(
+        prefs,
+      ).write(dashboard.baseUrl, NativeVoiceConsent.accepted);
       final owner = Object();
       final preparation = voice.beginHermesServerDictationPreparation(
         owner: owner,

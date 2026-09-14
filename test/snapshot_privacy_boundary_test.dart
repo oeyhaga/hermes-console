@@ -226,51 +226,54 @@ void main() {
     expect(streamingPublicAssistantText('PUBLIC_USER'), 'PUBLIC_USER');
   });
 
-  test('DesktopSessionReconciler fails closed for fragmented private channels', () {
-    for (final channel in const [
-      'reasoning',
-      'analysis',
-      'think',
-      'unknown',
-      'future',
-      'future-channel',
-      'future.channel',
-      '123',
-    ]) {
-      final raw =
-          '<｜channel｜>$channel<｜message｜>PRIVATE_${channel.toUpperCase()}<｜end｜>'
-          '<｜channel｜>final<｜message｜>PUBLIC_FINAL<｜end｜>';
-      for (var boundary = 1; boundary <= raw.length; boundary++) {
-        final projection = reconciler.project(
-          _snapshot({
-            'session_id': 'runtime-harmony-$channel-$boundary',
-            'session_key': 'stored-privacy',
-            'running': true,
-            'inflight': {
-              'streaming': true,
-              'assistant': raw.substring(0, boundary),
-            },
-          }),
+  test(
+    'DesktopSessionReconciler fails closed for fragmented private channels',
+    () {
+      for (final channel in const [
+        'reasoning',
+        'analysis',
+        'think',
+        'unknown',
+        'future',
+        'future-channel',
+        'future.channel',
+        '123',
+      ]) {
+        final raw =
+            '<｜channel｜>$channel<｜message｜>PRIVATE_${channel.toUpperCase()}<｜end｜>'
+            '<｜channel｜>final<｜message｜>PUBLIC_FINAL<｜end｜>';
+        for (var boundary = 1; boundary <= raw.length; boundary++) {
+          final projection = reconciler.project(
+            _snapshot({
+              'session_id': 'runtime-harmony-$channel-$boundary',
+              'session_key': 'stored-privacy',
+              'running': true,
+              'inflight': {
+                'streaming': true,
+                'assistant': raw.substring(0, boundary),
+              },
+            }),
+          );
+          final encoded = jsonEncode(projection.messagesNewestFirst);
+          expect(encoded, isNot(contains('PRIVATE_')));
+        }
+        expect(
+          reconciler
+              .project(
+                _snapshot({
+                  'session_id': 'runtime-harmony-$channel-final',
+                  'session_key': 'stored-privacy',
+                  'running': true,
+                  'inflight': {'streaming': true, 'assistant': raw},
+                }),
+              )
+              .messagesNewestFirst
+              .first['content'],
+          'PUBLIC_FINAL',
         );
-        final encoded = jsonEncode(projection.messagesNewestFirst);
-        expect(encoded, isNot(contains('PRIVATE_')));
       }
-      expect(
-        reconciler
-            .project(
-              _snapshot({
-                'session_id': 'runtime-harmony-$channel-final',
-                'session_key': 'stored-privacy',
-                'running': true,
-                'inflight': {'streaming': true, 'assistant': raw},
-              }),
-            )
-            .messagesNewestFirst
-            .first['content'],
-        'PUBLIC_FINAL',
-      );
-    }
-  });
+    },
+  );
 
   test('Harmony preserves public body code units at every boundary', () {
     const body = 'PUBLIC ｜ prose | exact';

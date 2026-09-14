@@ -404,9 +404,9 @@ class _FakeGateway extends http.BaseClient {
     final path = request.url.path;
     hits.add('${request.method} $path');
     if (request.method == 'POST' && path == '/v1/runs') {
-      final body = jsonDecode(
-        await request.finalize().bytesToString(),
-      ) as Map<String, dynamic>;
+      final body =
+          jsonDecode(await request.finalize().bytesToString())
+              as Map<String, dynamic>;
       runBodies.add(body);
       if (rejectRuns) {
         return http.StreamedResponse(
@@ -726,79 +726,82 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({'app_locale': 'es'}));
 
-  test('Voice encola FIFO sin redirect ni steer y conserva submit idle', () async {
-    final prefs = await SharedPreferences.getInstance();
-    final voice = _FakeVoice(prefs);
-    final rest = _FakeGateway();
-    final desktop = _NoLiveMutationVoiceGateway();
-    final service = ActiveChatService(
-      compressionFenceStore: testCompressionFenceStore(),
-    );
-    final chat = service.attach(
-      connection: _connection(),
-      sessionId: 'remote-voice-no-live-mutation',
-      sessionTitle: 'Remote voice queue',
-      api: ApiClient(
-        baseUrl: 'http://hermes.test:8642',
-        apiKey: String.fromCharCodes(const [107]),
-        httpClient: rest,
-      ),
-      desktopGateway: desktop,
-      allowUnownedDesktopSnapshotForTesting: true,
-      disableForegroundKeepAlive: true,
-    );
-    final controller = LocalVoiceConversationController(
-      voice,
-      playbackTailDelay: (_) async {},
-    );
-    await controller.enter(chat: chat, model: 'hermes-agent');
+  test(
+    'Voice encola FIFO sin redirect ni steer y conserva submit idle',
+    () async {
+      final prefs = await SharedPreferences.getInstance();
+      final voice = _FakeVoice(prefs);
+      final rest = _FakeGateway();
+      final desktop = _NoLiveMutationVoiceGateway();
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      final chat = service.attach(
+        connection: _connection(),
+        sessionId: 'remote-voice-no-live-mutation',
+        sessionTitle: 'Remote voice queue',
+        api: ApiClient(
+          baseUrl: 'http://hermes.test:8642',
+          apiKey: String.fromCharCodes(const [107]),
+          httpClient: rest,
+        ),
+        desktopGateway: desktop,
+        allowUnownedDesktopSnapshotForTesting: true,
+        disableForegroundKeepAlive: true,
+      );
+      final controller = LocalVoiceConversationController(
+        voice,
+        playbackTailDelay: (_) async {},
+      );
+      await controller.enter(chat: chat, model: 'hermes-agent');
 
-    voice.captures.single.add(const SttResult('Primer turno de voz', true));
-    await _waitFor(
-      () => desktop.submissions.length == 1,
-      diagnostics: () =>
-          'idle submissions=${desktop.submissions} phase=${controller.phase}',
-    );
+      voice.captures.single.add(const SttResult('Primer turno de voz', true));
+      await _waitFor(
+        () => desktop.submissions.length == 1,
+        diagnostics: () =>
+            'idle submissions=${desktop.submissions} phase=${controller.phase}',
+      );
 
-    controller.stopAndTalk();
-    await _waitFor(
-      () => voice.captures.length == 2,
-      diagnostics: () =>
-          'captures=${voice.captures.length} phase=${controller.phase}',
-    );
-    voice.captures.last.add(const SttResult('Segundo turno de voz', true));
-    await _waitFor(
-      () => desktop.redirectCalls > 0 || chat.queuedMessages.isNotEmpty,
-      diagnostics: () =>
-          'redirect=${desktop.redirectCalls} queue=${chat.queuedMessages} '
-          'phase=${controller.phase}',
-    );
+      controller.stopAndTalk();
+      await _waitFor(
+        () => voice.captures.length == 2,
+        diagnostics: () =>
+            'captures=${voice.captures.length} phase=${controller.phase}',
+      );
+      voice.captures.last.add(const SttResult('Segundo turno de voz', true));
+      await _waitFor(
+        () => desktop.redirectCalls > 0 || chat.queuedMessages.isNotEmpty,
+        diagnostics: () =>
+            'redirect=${desktop.redirectCalls} queue=${chat.queuedMessages} '
+            'phase=${controller.phase}',
+      );
 
-    expect(desktop.redirectCalls, 0);
-    expect(desktop.steerCalls, 0);
-    expect(chat.queuedMessages, ['Segundo turno de voz']);
-    expect(rest.runBodies, isEmpty);
+      expect(desktop.redirectCalls, 0);
+      expect(desktop.steerCalls, 0);
+      expect(chat.queuedMessages, ['Segundo turno de voz']);
+      expect(rest.runBodies, isEmpty);
 
-    desktop.complete('primero hecho');
-    await _waitFor(
-      () => desktop.submissions.length == 2,
-      diagnostics: () =>
-          'drained submissions=${desktop.submissions} queue=${chat.queuedMessages}',
-    );
-    expect(desktop.submissions, [
-      'Primer turno de voz',
-      'Segundo turno de voz',
-    ]);
-    expect(desktop.redirectCalls, 0);
-    expect(desktop.steerCalls, 0);
-    expect(rest.runBodies, isEmpty);
+      desktop.complete('primero hecho');
+      await _waitFor(
+        () => desktop.submissions.length == 2,
+        diagnostics: () =>
+            'drained submissions=${desktop.submissions} queue=${chat.queuedMessages}',
+      );
+      expect(desktop.submissions, [
+        'Primer turno de voz',
+        'Segundo turno de voz',
+      ]);
+      expect(desktop.redirectCalls, 0);
+      expect(desktop.steerCalls, 0);
+      expect(rest.runBodies, isEmpty);
 
-    desktop.complete('segundo hecho');
-    await controller.exit();
-    controller.dispose();
-    service.dispose();
-    await desktop.close();
-  });
+      desktop.complete('segundo hecho');
+      await controller.exit();
+      controller.dispose();
+      service.dispose();
+      await desktop.close();
+    },
+  );
 
   test(
     'remote voice never falls back to REST when desktop admission fails',
@@ -1565,55 +1568,58 @@ void main() {
     await h.close();
   });
 
-  test('una aprobación avisa una vez, silencia el micro y solo se resuelve por UI', () async {
-    final h = await _harness();
-    h.voice.captures.single.add(
-      const SttResult('haz una acción sensible', true),
-    );
-    await _waitFor(() => h.gateway.runBodies.length == 1);
+  test(
+    'una aprobación avisa una vez, silencia el micro y solo se resuelve por UI',
+    () async {
+      final h = await _harness();
+      h.voice.captures.single.add(
+        const SttResult('haz una acción sensible', true),
+      );
+      await _waitFor(() => h.gateway.runBodies.length == 1);
 
-    h.gateway.toolStarted(1, 'web_search', 'noticias de hoy');
-    await _waitFor(() => h.controller.phase == VoicePhase.toolCall);
-    await Future<void>.delayed(const Duration(milliseconds: 30));
-    expect(
-      h.voice.localSpoken,
-      isEmpty,
-      reason:
-          'el progreso de herramientas debe ser visual, como en Desktop y Play',
-    );
+      h.gateway.toolStarted(1, 'web_search', 'noticias de hoy');
+      await _waitFor(() => h.controller.phase == VoicePhase.toolCall);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(
+        h.voice.localSpoken,
+        isEmpty,
+        reason:
+            'el progreso de herramientas debe ser visual, como en Desktop y Play',
+      );
 
-    h.gateway.approval(1);
-    await _waitFor(() => h.controller.phase == VoicePhase.waitingPermission);
-    await _waitFor(() => h.voice.localSpoken.length == 1);
-    expect(
-      h.voice.localSpoken.single,
-      'Hermes necesita tu aprobación. Abre la aplicación para revisarla.',
-    );
-    expect(h.voice.cancelDictationCalls, greaterThanOrEqualTo(1));
-    expect(h.voice.captures, hasLength(1));
+      h.gateway.approval(1);
+      await _waitFor(() => h.controller.phase == VoicePhase.waitingPermission);
+      await _waitFor(() => h.voice.localSpoken.length == 1);
+      expect(
+        h.voice.localSpoken.single,
+        'Hermes necesita tu aprobación. Abre la aplicación para revisarla.',
+      );
+      expect(h.voice.cancelDictationCalls, greaterThanOrEqualTo(1));
+      expect(h.voice.captures, hasLength(1));
 
-    // Un reenvío idéntico del gateway no duplica el aviso ni reabre STT.
-    h.gateway.approval(1);
-    await Future<void>.delayed(const Duration(milliseconds: 30));
-    expect(h.voice.localSpoken, hasLength(1));
-    expect(h.voice.captures, hasLength(1));
+      // Un reenvío idéntico del gateway no duplica el aviso ni reabre STT.
+      h.gateway.approval(1);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(h.voice.localSpoken, hasLength(1));
+      expect(h.voice.captures, hasLength(1));
 
-    // Un progreso tardío tampoco oculta la aprobación ni vuelve a hablar.
-    h.gateway.toolStarted(1, 'execute_code', '');
-    await Future<void>.delayed(const Duration(milliseconds: 30));
-    expect(h.controller.phase, VoicePhase.waitingPermission);
-    expect(h.voice.localSpoken, hasLength(1));
+      // Un progreso tardío tampoco oculta la aprobación ni vuelve a hablar.
+      h.gateway.toolStarted(1, 'execute_code', '');
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(h.controller.phase, VoicePhase.waitingPermission);
+      expect(h.voice.localSpoken, hasLength(1));
 
-    // La decisión sigue siendo explícita/táctil: la resuelve ActiveChat, no
-    // una transcripción que contenga "sí" o "aprobar".
-    await h.chat.resolveApproval('once');
-    await _waitFor(() => h.chat.pendingApproval == null);
-    expect(h.controller.phase, isNot(VoicePhase.waitingPermission));
+      // La decisión sigue siendo explícita/táctil: la resuelve ActiveChat, no
+      // una transcripción que contenga "sí" o "aprobar".
+      await h.chat.resolveApproval('once');
+      await _waitFor(() => h.chat.pendingApproval == null);
+      expect(h.controller.phase, isNot(VoicePhase.waitingPermission));
 
-    await h.gateway.complete(1, 'Acción completada.');
-    await _waitFor(() => h.voice.captures.length == 2);
-    await h.close();
-  });
+      await h.gateway.complete(1, 'Acción completada.');
+      await _waitFor(() => h.voice.captures.length == 2);
+      await h.close();
+    },
+  );
 
   test(
     'Stop-and-talk conserva el run y encola en el mismo ActiveChat',

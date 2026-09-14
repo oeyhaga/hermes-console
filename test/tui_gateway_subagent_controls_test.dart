@@ -62,10 +62,13 @@ void main() {
   test(
     'fixture del handler real conserva las formas exactas del productor',
     () {
-      final fixture = jsonDecode(
-        File('test/fixtures/subagent_real_handler_contract.json')
-            .readAsStringSync(),
-      ) as Map<String, dynamic>;
+      final fixture =
+          jsonDecode(
+                File(
+                  'test/fixtures/subagent_real_handler_contract.json',
+                ).readAsStringSync(),
+              )
+              as Map<String, dynamic>;
       final list = fixture['list'] as Map<String, dynamic>;
       expect(list.keys.toList(), ['subagents', 'delegations']);
       final row = DesktopSubagentSnapshot.tryParse(

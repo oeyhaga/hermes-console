@@ -91,9 +91,12 @@ void main() {
   const cases = <String, String>{
     'mixed-bars': '<|channel｜>analysis<|message｜>PRIVATE_MIXED<|end｜>',
     'mixed-message': '<｜channel｜>analysis<|message｜>PRIVATE_MIXED<｜end｜>',
-    'public-to-private-start': '<｜start｜>assistant<｜channel｜>final<｜message｜>PUBLIC<｜start｜>assistant<｜channel｜>analysis<｜message｜>PRIVATE_NESTED<｜end｜>',
-    'nested-channel': '<｜channel｜>final<｜message｜>PUBLIC<｜channel｜>analysis<｜message｜>PRIVATE_NESTED<｜end｜>',
-    'future-with-less-than': '<｜channel｜>future<x<｜message｜>PRIVATE_UNKNOWN<｜end｜><｜channel｜>final<｜message｜>PUBLIC<｜end｜>',
+    'public-to-private-start':
+        '<｜start｜>assistant<｜channel｜>final<｜message｜>PUBLIC<｜start｜>assistant<｜channel｜>analysis<｜message｜>PRIVATE_NESTED<｜end｜>',
+    'nested-channel':
+        '<｜channel｜>final<｜message｜>PUBLIC<｜channel｜>analysis<｜message｜>PRIVATE_NESTED<｜end｜>',
+    'future-with-less-than':
+        '<｜channel｜>future<x<｜message｜>PRIVATE_UNKNOWN<｜end｜><｜channel｜>final<｜message｜>PUBLIC<｜end｜>',
   };
   for (final entry in cases.entries) {
     test(
@@ -126,14 +129,17 @@ void main() {
         '<｜start｜>assistant<｜channel｜>analysis<｜message｜>PRIVATE<｜start｜>assistant<｜channel｜>final<｜message｜>PUBLIC<｜end｜>';
     expect(streamingPublicAssistantText(raw), 'PUBLIC');
   });
-  test('adversarial persisted ordinary text with no valid envelope preserved', () {
-    const raw = 'PUBLIC <｜start｜>not an envelope';
-    final display = normalizeTranscriptMessageForDisplay({
-      'role': 'assistant',
-      'content': raw,
-    });
-    expect(display?['content'], raw);
-  });
+  test(
+    'adversarial persisted ordinary text with no valid envelope preserved',
+    () {
+      const raw = 'PUBLIC <｜start｜>not an envelope';
+      final display = normalizeTranscriptMessageForDisplay({
+        'role': 'assistant',
+        'content': raw,
+      });
+      expect(display?['content'], raw);
+    },
+  );
   test('adversarial correction preserves public whitespace ownership', () {
     const raw = '<｜channel｜>final<｜message｜>A B<｜end｜>';
     final projection = reconciler.project(
@@ -153,70 +159,73 @@ void main() {
       ['A ', 'CORRECT', 'B'],
     );
   });
-  test('adversarial classified snapshot vetoes same-id unclassified REST', () async {
-    final snap = _snapshot({
-      'session_id': 'runtime-rest-privacy',
-      'session_key': 'stored-privacy',
-      'message_count': 2,
-      'messages': [
-        {'role': 'user', 'content': 'PUBLIC_USER', 'row_id': 1},
-        {
-          'role': 'assistant',
-          'content': 'PRIVATE_REST',
-          'row_id': 2,
-          'hidden': true,
-        },
-      ],
-    });
-    final requests = <String>[];
-    final chat = ActiveChat(
-      connection: SavedConnection(
-        id: 'peer-rest',
-        label: 'Peer',
-        host: 'example.invalid',
-        port: 443,
-        apiKey: 'test',
-        useHttps: true,
-      ),
-      sessionId: 'stored-privacy',
-      sessionTitle: 'Privacy',
-      notifications: null,
-      onTerminal: () {},
-      api: ApiClient(
-        baseUrl: 'https://example.invalid',
-        apiKey: 'test',
-        httpClient: MockClient((request) async {
-          requests.add(request.url.path);
-          return http.Response(
-            jsonEncode({
-              'messages': [
-                {'role': 'user', 'content': 'PUBLIC_USER', 'id': 1},
-                {'role': 'assistant', 'content': 'PRIVATE_REST', 'id': 2},
-              ],
-              'total': 2,
-              'has_more': false,
-            }),
-            200,
-            headers: {'content-type': 'application/json'},
-          );
-        }),
-      ),
-      desktopGateway: _PrivacySnapshotGateway(snap),
-      compressionFenceStore: DesktopCompressionFenceStore(
-        storage: _EmptyFenceStorage(),
-      ),
-      allowUnownedDesktopSnapshotForTesting: true,
-    );
-    addTearDown(chat.dispose);
-    await chat.loadMessages();
-    expect(requests, isNotEmpty);
-    expect(
-      jsonEncode(chat.messages),
-      isNot(contains('PRIVATE_REST')),
-      reason: requests.toString(),
-    );
-    expect(jsonEncode(chat.messages), contains('PUBLIC_USER'));
-  });
+  test(
+    'adversarial classified snapshot vetoes same-id unclassified REST',
+    () async {
+      final snap = _snapshot({
+        'session_id': 'runtime-rest-privacy',
+        'session_key': 'stored-privacy',
+        'message_count': 2,
+        'messages': [
+          {'role': 'user', 'content': 'PUBLIC_USER', 'row_id': 1},
+          {
+            'role': 'assistant',
+            'content': 'PRIVATE_REST',
+            'row_id': 2,
+            'hidden': true,
+          },
+        ],
+      });
+      final requests = <String>[];
+      final chat = ActiveChat(
+        connection: SavedConnection(
+          id: 'peer-rest',
+          label: 'Peer',
+          host: 'example.invalid',
+          port: 443,
+          apiKey: 'test',
+          useHttps: true,
+        ),
+        sessionId: 'stored-privacy',
+        sessionTitle: 'Privacy',
+        notifications: null,
+        onTerminal: () {},
+        api: ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test',
+          httpClient: MockClient((request) async {
+            requests.add(request.url.path);
+            return http.Response(
+              jsonEncode({
+                'messages': [
+                  {'role': 'user', 'content': 'PUBLIC_USER', 'id': 1},
+                  {'role': 'assistant', 'content': 'PRIVATE_REST', 'id': 2},
+                ],
+                'total': 2,
+                'has_more': false,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }),
+        ),
+        desktopGateway: _PrivacySnapshotGateway(snap),
+        compressionFenceStore: DesktopCompressionFenceStore(
+          storage: _EmptyFenceStorage(),
+        ),
+        allowUnownedDesktopSnapshotForTesting: true,
+      );
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+      expect(requests, isNotEmpty);
+      expect(
+        jsonEncode(chat.messages),
+        isNot(contains('PRIVATE_REST')),
+        reason: requests.toString(),
+      );
+      expect(jsonEncode(chat.messages), contains('PUBLIC_USER'));
+    },
+  );
   for (final classifier in <Map<String, dynamic>>[
     {'hidden': true},
     {'channel': 'analysis'},
@@ -272,75 +281,84 @@ void main() {
       expect(jsonEncode(chat.messages), isNot(contains('PRIVATE_REVOKED')));
     });
   }
-  test('adversarial matrix case whitespace future and fullwidth every offset', () {
-    for (final bars in const ['|', '｜']) {
-      String token(String name) => '<$bars$name$bars>';
-      for (final channel in const [
-        '',
-        ' ',
-        ' AnAlYsIs\n',
-        'reasoning',
-        'think',
-        'tool',
-        'unknown',
-        'future-channel',
-        'finаl',
-        'final\u200b',
-      ]) {
-        final raw =
-            '${token('start')}assistant${token('channel')}$channel${token('message')}PRIVATE${token('end')}${token('channel')}final${token('message')}PUBLIC ｜ prose${token('end')}';
+  test(
+    'adversarial matrix case whitespace future and fullwidth every offset',
+    () {
+      for (final bars in const ['|', '｜']) {
+        String token(String name) => '<$bars$name$bars>';
+        for (final channel in const [
+          '',
+          ' ',
+          ' AnAlYsIs\n',
+          'reasoning',
+          'think',
+          'tool',
+          'unknown',
+          'future-channel',
+          'finаl',
+          'final\u200b',
+        ]) {
+          final raw =
+              '${token('start')}assistant${token('channel')}$channel${token('message')}PRIVATE${token('end')}${token('channel')}final${token('message')}PUBLIC ｜ prose${token('end')}';
+          for (var boundary = 0; boundary <= raw.length; boundary++) {
+            expect(
+              streamingPublicAssistantText(raw.substring(0, boundary)),
+              isNot(contains('PRIVATE')),
+              reason: '$channel $boundary',
+            );
+          }
+          expect(streamingPublicAssistantText(raw), 'PUBLIC ｜ prose');
+        }
+      }
+    },
+  );
+  test(
+    'adversarial corrections every offset preserve fullstream public content',
+    () {
+      const raw =
+          '<｜channel｜>analysis<｜message｜>PRIVATE<｜end｜><｜channel｜>final<｜message｜>PUBLIC ｜ 😀<｜end｜>';
+      for (var boundary = 0; boundary <= raw.length; boundary++) {
+        final rows = reconciler
+            .project(
+              _snapshot({
+                'session_id': 'runtime-all-offsets',
+                'running': true,
+                'inflight': {
+                  'assistant': raw,
+                  'streaming': true,
+                  'corrections': ['CORRECT'],
+                  'correction_offsets': [boundary],
+                },
+              }),
+            )
+            .messagesNewestFirst;
+        final text = rows.reversed
+            .where((m) => m['role'] == 'assistant')
+            .map((m) => m['content'])
+            .join();
+        expect(text, 'PUBLIC ｜ 😀', reason: 'offset=$boundary');
+        expect(rows.where((m) => m['_steer'] == true).length, 1);
+      }
+    },
+  );
+  test(
+    'adversarial public channels case whitespace and Unicode every offset',
+    () {
+      for (final channel in const [' FINAL \n', ' CoMmEnTaRy ']) {
+        final opener = '<｜channel｜>$channel<｜message｜>';
+        const body = 'PUBLIC ｜ 😀';
+        final raw = '$opener$body<｜end｜>';
         for (var boundary = 0; boundary <= raw.length; boundary++) {
           expect(
             streamingPublicAssistantText(raw.substring(0, boundary)),
-            isNot(contains('PRIVATE')),
-            reason: '$channel $boundary',
+            body
+                .substring(0, (boundary - opener.length).clamp(0, body.length))
+                .trim(),
           );
         }
-        expect(streamingPublicAssistantText(raw), 'PUBLIC ｜ prose');
       }
-    }
-  });
-  test('adversarial corrections every offset preserve fullstream public content', () {
-    const raw =
-        '<｜channel｜>analysis<｜message｜>PRIVATE<｜end｜><｜channel｜>final<｜message｜>PUBLIC ｜ 😀<｜end｜>';
-    for (var boundary = 0; boundary <= raw.length; boundary++) {
-      final rows = reconciler
-          .project(
-            _snapshot({
-              'session_id': 'runtime-all-offsets',
-              'running': true,
-              'inflight': {
-                'assistant': raw,
-                'streaming': true,
-                'corrections': ['CORRECT'],
-                'correction_offsets': [boundary],
-              },
-            }),
-          )
-          .messagesNewestFirst;
-      final text = rows.reversed
-          .where((m) => m['role'] == 'assistant')
-          .map((m) => m['content'])
-          .join();
-      expect(text, 'PUBLIC ｜ 😀', reason: 'offset=$boundary');
-      expect(rows.where((m) => m['_steer'] == true).length, 1);
-    }
-  });
-  test('adversarial public channels case whitespace and Unicode every offset', () {
-    for (final channel in const [' FINAL \n', ' CoMmEnTaRy ']) {
-      final opener = '<｜channel｜>$channel<｜message｜>';
-      const body = 'PUBLIC ｜ 😀';
-      final raw = '$opener$body<｜end｜>';
-      for (var boundary = 0; boundary <= raw.length; boundary++) {
-        expect(
-          streamingPublicAssistantText(raw.substring(0, boundary)),
-          body
-              .substring(0, (boundary - opener.length).clamp(0, body.length))
-              .trim(),
-        );
-      }
-    }
-  });
+    },
+  );
   test('adversarial contradictory row metadata fails closed', () {
     for (final fields in <Map<String, dynamic>>[
       {'hidden': false, 'channel': 'final', 'reasoning': true},

@@ -44,8 +44,9 @@ class BridgeUpdateBanner extends StatelessWidget {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                Strings.of(context)
-                    .bridgeOutdated(running ?? '?', BridgeVersion.expected),
+                Strings.of(
+                  context,
+                ).bridgeOutdated(running ?? '?', BridgeVersion.expected),
                 style: TextStyle(
                   fontSize: 12.5,
                   color: scheme.onTertiaryContainer,

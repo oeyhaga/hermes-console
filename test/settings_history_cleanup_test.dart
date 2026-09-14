@@ -528,8 +528,9 @@ void main() {
   });
 
   test('la limpieza local conserva App Lock sin callback remoto Cron', () {
-    final source = File('lib/core/screens/settings_screen.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/screens/settings_screen.dart',
+    ).readAsStringSync();
 
     expect(source, contains('authorizeHistoryCleanup('));
     expect(source, contains('scope: HistoryCleanupScope.normalConversations'));
@@ -539,8 +540,9 @@ void main() {
   });
 
   test('vaciar conversaciones es local-only y enlaza el perfil activo', () {
-    final source = File('lib/core/screens/settings_screen.dart')
-        .readAsStringSync();
+    final source = File(
+      'lib/core/screens/settings_screen.dart',
+    ).readAsStringSync();
     final normalStart = source.indexOf('Future<void> _clearNormal()');
     final normalCleanup = source.substring(
       normalStart,

@@ -5,11 +5,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/voice/stt_remote.dart';
 
-typedef _SocketHandler = void Function(
-  int connection,
-  Uri requestUri,
-  WebSocket socket,
-);
+typedef _SocketHandler =
+    void Function(int connection, Uri requestUri, WebSocket socket);
 
 class _WsTestServer {
   _WsTestServer._(this._server, this._handler) {

@@ -47,7 +47,8 @@ void main() {
           '{"jsonrpc":"2.0","id":1,"error":{"code":1,"code":2,"message":"x"}}',
       'params':
           '{"jsonrpc":"2.0","method":"event","params":{"type":"x","type":"y"}}',
-      'payload': '{"jsonrpc":"2.0","method":"event","params":{"type":"x","payload":{"a":1,"a":2}}}',
+      'payload':
+          '{"jsonrpc":"2.0","method":"event","params":{"type":"x","payload":{"a":1,"a":2}}}',
       'replay row':
           '{"jsonrpc":"2.0","id":1,"result":{"events":[{"seq":1,"seq":2}]}}',
       'escaped-equivalent envelope key':

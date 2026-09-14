@@ -4826,8 +4826,9 @@ class ActiveChat {
         (index) => identical(previousSources[index], displaySources[index]),
       );
       if (sameSources &&
-          Iterable<int>.generate(projected.length)
-              .every((index) => mapEquals(previous[index], projected[index]))) {
+          Iterable<int>.generate(
+            projected.length,
+          ).every((index) => mapEquals(previous[index], projected[index]))) {
         return previous;
       }
     }
@@ -8646,12 +8647,13 @@ class ActiveChat {
     }
 
     final canPartitionPrevious =
-        <int>[for (var index = 0; index < previous.length; index++) index]
-            .every(
-              (index) =>
-                  _hasDurableTranscriptIdentity(previous[index]) ||
-                  _isKnownLocalTranscriptProjection(previous, index),
-            );
+        <int>[
+          for (var index = 0; index < previous.length; index++) index,
+        ].every(
+          (index) =>
+              _hasDurableTranscriptIdentity(previous[index]) ||
+              _isKnownLocalTranscriptProjection(previous, index),
+        );
     final durablePrevious = canPartitionPrevious
         ? previous.where(_hasDurableTranscriptIdentity).toList(growable: false)
         : previous;
@@ -9217,9 +9219,9 @@ class ActiveChat {
       if (!loaded) return loadedAnyPage;
       loadedAnyPage = true;
       remainingPages -= 1;
-      final nextVisibleUnitCount = ChatRenderProjection.build(_messages)
-          .units
-          .length;
+      final nextVisibleUnitCount = ChatRenderProjection.build(
+        _messages,
+      ).units.length;
       if (nextVisibleUnitCount > visibleUnitCount) return true;
       visibleUnitCount = nextVisibleUnitCount;
     }
@@ -15882,8 +15884,9 @@ class ActiveChat {
       );
     } else {
       incoming.addAll(
-        GeneratedImageService.imageReferencesFromResult(rawResult)
-            .map((reference) => _generatedImageMetadata(reference, callId)),
+        GeneratedImageService.imageReferencesFromResult(
+          rawResult,
+        ).map((reference) => _generatedImageMetadata(reference, callId)),
       );
     }
     if (incoming.isEmpty) return;
@@ -16773,8 +16776,9 @@ class ActiveChat {
       state = ChatPipelineState.completed;
       traceActive = false;
       if (text.isNotEmpty && _shouldNotifyReplies && _notifications != null) {
-        final notificationText = GeneratedMediaService.stripDirectives(text)
-            .trim();
+        final notificationText = GeneratedMediaService.stripDirectives(
+          text,
+        ).trim();
         await _deliverTerminalNotification(
           () => _notifications.replyReady(
             preview: notificationText.length > 140
@@ -18903,8 +18907,9 @@ class ActiveChat {
 
     final content = assistantContent.trim();
     if (content.isNotEmpty && _shouldNotifyReplies && _notifications != null) {
-      final notificationText = GeneratedMediaService.stripDirectives(content)
-          .trim();
+      final notificationText = GeneratedMediaService.stripDirectives(
+        content,
+      ).trim();
       await _deliverTerminalNotification(
         () => _notifications.replyReady(
           preview: notificationText.length > 140

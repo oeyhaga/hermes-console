@@ -13,49 +13,47 @@ typedef MissionProfilesLoader = Future<List<AgentProfile>> Function();
 typedef MissionSessionsLoader = Future<List<Session>> Function();
 typedef MissionBoardLoader = Future<KanbanBoard> Function();
 typedef MissionKanbanEventsLoader = Stream<KanbanEvent> Function(int since);
-typedef MissionDashboardGet = Future<Map<String, dynamic>> Function(
-  String endpoint,
-);
-typedef MissionProfileAvatarLoader = Future<AgentProfileAvatar?> Function(
-  String profileName,
-);
+typedef MissionDashboardGet =
+    Future<Map<String, dynamic>> Function(String endpoint);
+typedef MissionProfileAvatarLoader =
+    Future<AgentProfileAvatar?> Function(String profileName);
 
-typedef MissionGroupsList = Future<List<HostedGroupRoom>> Function({
-  required int generation,
-});
-typedef MissionGroupsState = Future<HostedGroupRoom> Function(
-  String roomId, {
-  required int generation,
-});
-typedef MissionGroupsLog = Future<HostedGroupLogPage> Function(
-  String roomId, {
-  required int generation,
-});
-typedef MissionGroupsCreate = Future<HostedGroupRoom> Function({
-  required String name,
-  required List<HostedGroupCreateMember> members,
-  required int generation,
-});
-typedef MissionGroupsSend = Future<HostedGroupLogPage> Function(
-  String roomId, {
-  required String text,
-  required HostedGroupSendAttempt attempt,
-  required int generation,
-});
-typedef MissionGroupsRename = Future<HostedGroupRoom> Function(
-  String roomId, {
-  required String name,
-  required int generation,
-});
-typedef MissionGroupsRoomMutation = Future<HostedGroupRoom> Function(
-  String roomId, {
-  required int generation,
-});
-typedef MissionGroupsRetry = Future<HostedGroupRoom> Function(
-  String roomId, {
-  required String taskId,
-  required int generation,
-});
+typedef MissionGroupsList =
+    Future<List<HostedGroupRoom>> Function({required int generation});
+typedef MissionGroupsState =
+    Future<HostedGroupRoom> Function(String roomId, {required int generation});
+typedef MissionGroupsLog =
+    Future<HostedGroupLogPage> Function(
+      String roomId, {
+      required int generation,
+    });
+typedef MissionGroupsCreate =
+    Future<HostedGroupRoom> Function({
+      required String name,
+      required List<HostedGroupCreateMember> members,
+      required int generation,
+    });
+typedef MissionGroupsSend =
+    Future<HostedGroupLogPage> Function(
+      String roomId, {
+      required String text,
+      required HostedGroupSendAttempt attempt,
+      required int generation,
+    });
+typedef MissionGroupsRename =
+    Future<HostedGroupRoom> Function(
+      String roomId, {
+      required String name,
+      required int generation,
+    });
+typedef MissionGroupsRoomMutation =
+    Future<HostedGroupRoom> Function(String roomId, {required int generation});
+typedef MissionGroupsRetry =
+    Future<HostedGroupRoom> Function(
+      String roomId, {
+      required String taskId,
+      required int generation,
+    });
 
 abstract interface class MissionHostedGroupsGateway {
   factory MissionHostedGroupsGateway.callbacks({

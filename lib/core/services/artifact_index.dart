@@ -690,11 +690,12 @@ List<_ArtifactSeed> _extractMessage(
   return List.unmodifiable(seeds);
 }
 
-typedef _ContainerCollector = void Function(
-  Object? raw,
-  SessionArtifactKind defaultKind, {
-  bool requireExplicitType,
-});
+typedef _ContainerCollector =
+    void Function(
+      Object? raw,
+      SessionArtifactKind defaultKind, {
+      bool requireExplicitType,
+    });
 
 void _collectKnownContainers(
   Map<String, dynamic> map, {
@@ -868,8 +869,9 @@ String? _mimeType(Object? raw) {
   if (raw is! String) return null;
   final value = raw.trim().toLowerCase();
   if (value.length > 127 ||
-      !RegExp(r"^[a-z0-9!#$&^_.+-]{1,64}/[a-z0-9!#$&^_.+-]{1,64}$")
-          .hasMatch(value)) {
+      !RegExp(
+        r"^[a-z0-9!#$&^_.+-]{1,64}/[a-z0-9!#$&^_.+-]{1,64}$",
+      ).hasMatch(value)) {
     return null;
   }
   return value;
