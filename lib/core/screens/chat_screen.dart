@@ -9342,6 +9342,80 @@ class _ChatScreenState extends State<ChatScreen>
                                   },
                                 ),
                               ),
+                              // Floating subagent-activity pill: anchored to
+                              // the bottom of this transcript Stack (i.e.
+                              // always just above whatever sits below it in
+                              // the outer Column — the status strips and the
+                              // composer), so it never overlaps the input
+                              // bar and never resizes the transcript itself.
+                              // Sits above the scroll-to-bottom button (which
+                              // occupies bottom: 8..56).
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 64,
+                                child: Center(
+                                  child: KeyedSubtree(
+                                    key: const ValueKey(
+                                      'chat-session-activity',
+                                    ),
+                                    child: SubagentActivityCard(
+                                      key: const ValueKey(
+                                        'chat-subagent-status',
+                                      ),
+                                      activities: _chat.subagentActivities,
+                                      safeChildCount:
+                                          _chat.safeActiveSubagentCount >
+                                              (_chat.hasRecentPassiveRemoteActivity
+                                                  ? _chat
+                                                        .passiveActivityAggregate
+                                                        .total
+                                                  : 0)
+                                          ? _chat.safeActiveSubagentCount
+                                          : (_chat.hasRecentPassiveRemoteActivity
+                                                ? _chat
+                                                      .passiveActivityAggregate
+                                                      .total
+                                                : 0),
+                                      background:
+                                          _chat
+                                              .hasRecentPassiveRemoteActivity ||
+                                          _chat.safeActiveSubagentCount > 0,
+                                      canInterrupt: _chat.canInterruptSubagent,
+                                      canSteer: _chat.canSteerSubagent,
+                                      isInterruptPending:
+                                          _chat.isSubagentInterruptPending,
+                                      appForeground:
+                                          _appInForeground && _chatRouteVisible,
+                                      onTail: (activity) async {
+                                        final result = await _chat.tailSubagent(
+                                          activity,
+                                        );
+                                        return SubagentTailView(
+                                          available: result.available,
+                                          content: result.content,
+                                          truncated: result.truncated,
+                                        );
+                                      },
+                                      onSteer: (activity, text) async {
+                                        final result = await _chat
+                                            .steerSubagent(activity, text);
+                                        return SubagentSteerView(
+                                          status: result.status,
+                                        );
+                                      },
+                                      isOpenPending: _isSubagentOpenPending,
+                                      onOpenConversation: (activity) {
+                                        unawaited(
+                                          _openSubagentConversation(activity),
+                                        );
+                                      },
+                                      onStopRequested:
+                                          _confirmInterruptSubagent,
+                                    ),
+                                  ),
+                                ),
+                              ),
                               if (_chat.pendingInteractivePrompt != null)
                                 Positioned.fill(
                                   child: Stack(
@@ -9431,51 +9505,11 @@ class _ChatScreenState extends State<ChatScreen>
                               ),
                             ),
                           ),
-                        KeyedSubtree(
-                          key: const ValueKey('chat-session-activity'),
-                          child: SubagentActivityCard(
-                            key: const ValueKey('chat-subagent-status'),
-                            activities: _chat.subagentActivities,
-                            safeChildCount:
-                                _chat.safeActiveSubagentCount >
-                                    (_chat.hasRecentPassiveRemoteActivity
-                                        ? _chat.passiveActivityAggregate.total
-                                        : 0)
-                                ? _chat.safeActiveSubagentCount
-                                : (_chat.hasRecentPassiveRemoteActivity
-                                      ? _chat.passiveActivityAggregate.total
-                                      : 0),
-                            background:
-                                _chat.hasRecentPassiveRemoteActivity ||
-                                _chat.safeActiveSubagentCount > 0,
-                            canInterrupt: _chat.canInterruptSubagent,
-                            canSteer: _chat.canSteerSubagent,
-                            isInterruptPending:
-                                _chat.isSubagentInterruptPending,
-                            appForeground:
-                                _appInForeground && _chatRouteVisible,
-                            onTail: (activity) async {
-                              final result = await _chat.tailSubagent(activity);
-                              return SubagentTailView(
-                                available: result.available,
-                                content: result.content,
-                                truncated: result.truncated,
-                              );
-                            },
-                            onSteer: (activity, text) async {
-                              final result = await _chat.steerSubagent(
-                                activity,
-                                text,
-                              );
-                              return SubagentSteerView(status: result.status);
-                            },
-                            isOpenPending: _isSubagentOpenPending,
-                            onOpenConversation: (activity) {
-                              unawaited(_openSubagentConversation(activity));
-                            },
-                            onStopRequested: _confirmInterruptSubagent,
-                          ),
-                        ),
+                        // The subagent activity indicator now floats as an
+                        // overlay anchored above the transcript (see the
+                        // inner Stack below) instead of living here, so its
+                        // live/completed count changes never resize this
+                        // Column or shift the composer.
                         _buildStopStatusStrip(colors),
                         _buildQueueStrip(colors),
                         if ((_vc?.active ?? false) && !showVoiceSurface)
