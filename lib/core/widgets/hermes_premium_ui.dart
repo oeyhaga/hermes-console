@@ -1097,6 +1097,97 @@ class HermesInlineActivity extends StatelessWidget {
   }
 }
 
+/// Cross-fades the header title/summary for the `floating` pill variant of
+/// [HermesInlineActivity] (e.g. the rotating "tip" text shown while a
+/// subagent works).
+///
+/// The naive approach — keying the switched child by `'$title|$summary'`
+/// alone — breaks when the rotation cycles back to a value that's still
+/// fading out from an earlier step: `AnimatedSwitcher`'s custom
+/// `layoutBuilder` here stacks `[...previousChildren, ?currentChild]`, and
+/// two entries sharing the same `ValueKey` crash with "Duplicate keys
+/// found" (surfaced in tests as an uncaught `FlutterError` that aborts the
+/// test mid-animation, leaking its `Ticker`/`AnimationController` into
+/// later tests in the same run). Tracking a monotonic `_revision` bumped
+/// only when the content actually changes keeps every switch's key unique
+/// regardless of repeats.
+class _HermesRotatingHeaderText extends StatefulWidget {
+  const _HermesRotatingHeaderText({
+    required this.title,
+    required this.summary,
+    required this.titleMaxLines,
+    required this.summaryMaxLines,
+    required this.titleStyle,
+    required this.summaryStyle,
+    required this.isDecision,
+    required this.reduceMotion,
+  });
+
+  final String title;
+  final String? summary;
+  final int? titleMaxLines;
+  final int? summaryMaxLines;
+  final TextStyle? titleStyle;
+  final TextStyle? summaryStyle;
+  final bool isDecision;
+  final bool reduceMotion;
+
+  @override
+  State<_HermesRotatingHeaderText> createState() =>
+      _HermesRotatingHeaderTextState();
+}
+
+/// One value the rotating header has shown, tracked so a repeat can be
+/// told apart from a genuinely new one — see [_HermesRotatingHeaderTextState].
+class _HermesRotatingHeaderTextState
+    extends State<_HermesRotatingHeaderText> {
+  int _revision = 0;
+
+  @override
+  void didUpdateWidget(covariant _HermesRotatingHeaderText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.title != widget.title ||
+        oldWidget.summary != widget.summary) {
+      _revision++;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: widget.reduceMotion
+          ? Duration.zero
+          : const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (currentChild, previousChildren) => Stack(
+        alignment: AlignmentDirectional.centerStart,
+        children: [...previousChildren, ?currentChild],
+      ),
+      child: _HermesEditorialHeaderText(
+        // Keyed by a monotonic revision (bumped only when content actually
+        // changes from the immediately preceding build) rather than by
+        // content alone: a rotating tip can legitimately repeat a value
+        // while an earlier occurrence of that same text is still fading
+        // out, and two Stack children can never share a key. This can
+        // still show the same text twice for a brief moment when a value
+        // reverts within a couple of rapid, same-frame rebuilds (see the
+        // "actividad nativa..." test in chat_screen_test.dart), which is
+        // an acceptable, narrow cosmetic tradeoff against ever crashing
+        // the tree.
+        key: ValueKey('$_revision:${widget.title}|${widget.summary}'),
+        title: widget.title,
+        summary: widget.summary,
+        titleMaxLines: widget.titleMaxLines,
+        summaryMaxLines: widget.summaryMaxLines,
+        titleStyle: widget.titleStyle,
+        summaryStyle: widget.summaryStyle,
+        isDecision: widget.isDecision,
+      ),
+    );
+  }
+}
+
 enum _HermesEditorialDensity { decision, activity }
 
 class _HermesEditorialBlock extends StatelessWidget {
@@ -1198,26 +1289,15 @@ class _HermesEditorialBlock extends StatelessWidget {
                   summaryStyle: summaryStyle,
                   isDecision: isDecision,
                 )
-              : AnimatedSwitcher(
-                  duration: reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 220),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  layoutBuilder: (currentChild, previousChildren) => Stack(
-                    alignment: AlignmentDirectional.centerStart,
-                    children: [...previousChildren, ?currentChild],
-                  ),
-                  child: _HermesEditorialHeaderText(
-                    key: ValueKey('$title|$summary'),
-                    title: title,
-                    summary: summary,
-                    titleMaxLines: titleMaxLines,
-                    summaryMaxLines: summaryMaxLines,
-                    titleStyle: titleStyle,
-                    summaryStyle: summaryStyle,
-                    isDecision: isDecision,
-                  ),
+              : _HermesRotatingHeaderText(
+                  title: title,
+                  summary: summary,
+                  titleMaxLines: titleMaxLines,
+                  summaryMaxLines: summaryMaxLines,
+                  titleStyle: titleStyle,
+                  summaryStyle: summaryStyle,
+                  isDecision: isDecision,
+                  reduceMotion: reduceMotion,
                 ),
         ),
         if (status != null && !stackStatus && !overlayStatus) ...[

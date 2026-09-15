@@ -9343,17 +9343,19 @@ class _ChatScreenState extends State<ChatScreen>
                                 ),
                               ),
                               // Floating subagent-activity pill: anchored to
-                              // the bottom of this transcript Stack (i.e.
-                              // always just above whatever sits below it in
-                              // the outer Column — the status strips and the
-                              // composer), so it never overlaps the input
-                              // bar and never resizes the transcript itself.
-                              // Sits above the scroll-to-bottom button (which
-                              // occupies bottom: 8..56).
+                              // the TOP of this transcript Stack, just under
+                              // the app bar (same `top: 8` idiom already used
+                              // above for the "load earlier messages" button
+                              // — Scaffold already reserves the app bar/safe
+                              // area, so no extra offset math is needed
+                              // here). It never overlaps the transcript
+                              // content or the composer below: it's a fixed
+                              // overlay pinned above everything, not
+                              // stacked over the messages.
                               Positioned(
+                                top: 8,
                                 left: 0,
                                 right: 0,
-                                bottom: 64,
                                 child: Center(
                                   child: KeyedSubtree(
                                     key: const ValueKey(
@@ -11990,6 +11992,22 @@ class _ChatScreenState extends State<ChatScreen>
     child: _buildBodyContent(),
   );
 
+  /// Vertical space reserved at the TOP of the transcript so the floating
+  /// subagent-activity pill (`chat-session-activity`, pinned via
+  /// `Positioned(top: 8, ...)` in the same Stack) never paints over a real
+  /// message. Zero when there's nothing to show. Scales a little with the
+  /// text-scale factor since the pill's own content grows with it too —
+  /// this is a fixed estimate, not a measured value, so at very large
+  /// accessibility scales the reservation may run slightly short.
+  double get _subagentActivityPillReservedSpace {
+    final hasActivity =
+        _chat.hasRecentPassiveRemoteActivity ||
+        _chat.safeActiveSubagentCount > 0;
+    if (!hasActivity) return 0;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    return 56 * textScale.clamp(1.0, 2.0);
+  }
+
   Widget _buildBodyContent() {
     final colors = Theme.of(context).hermes;
     if (_messages.isEmpty &&
@@ -12137,7 +12155,15 @@ class _ChatScreenState extends State<ChatScreen>
         physics: _ChatStreamingViewportPhysics(lock: _streamingViewportLock),
         // Deja aire real bajo la última respuesta. Con solo 4 dp el cierre del
         // texto quedaba pegado al compositor y parecía visualmente recortado.
-        padding: const EdgeInsets.only(bottom: 12),
+        // `top` reserva sitio para el pill flotante de actividad de subagentes
+        // (fijo justo bajo la app bar, ver Positioned('chat-session-activity')
+        // más abajo): así el pill nunca tapa mensajes reales, sin necesidad de
+        // redimensionar el Stack — solo empuja el contenido scrolleable, que
+        // sigue ocupando la misma caja.
+        padding: EdgeInsets.only(
+          top: _subagentActivityPillReservedSpace,
+          bottom: 12,
+        ),
         reverse: true,
         // Precarga ~1 pantalla extra fuera del viewport: al seguir el stream no
         // se materializan entradas frías en medio de un frame de scroll.
