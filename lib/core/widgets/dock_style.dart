@@ -93,11 +93,30 @@ class DockVisual {
 
 DockVisual resolveDockVisual(HermesThemeColors colors, DockStyle style) {
   final transparency = style.transparency.clamp(0.0, 1.0);
-  final bgAlpha = (1 - transparency).clamp(0.0, 1.0);
-  final borderAlpha = (1 - transparency / 3).clamp(0.0, 1.0);
 
-  var background = colors.surface;
-  var border = colors.divider;
+  // `colors.surface` (#141414) y el fondo real detrás del dock
+  // (`colors.background`, #0B0B0B) son dos negros casi idénticos: bajar solo
+  // el alfa de un color ya casi negro sobre un fondo ya casi negro es
+  // imperceptible (confirmado leyendo los tokens de `app_theme.dart`, no
+  // solo esta fórmula) — el dock se "funde" con el fondo en vez de dejar
+  // ver a través. Para que el ajuste se note en toda pantalla real (que
+  // rara vez tiene un área clara justo detrás del dock), el efecto de
+  // "cristal esmerilado" se construye con tres señales a la vez, todas
+  // proporcionales a `transparency` en vez de un salto fijo:
+  //  1. el color base se aclara hacia blanco (un velo de cristal, no una
+  //     ventana perfecta), en vez de solo perder opacidad;
+  //  2. nunca cae por debajo de un suelo de opacidad, así el dock conserva
+  //     silueta propia incluso al máximo;
+  //  3. el desenfoque de fondo escala con el valor en vez de un sigma fijo
+  //     de 14, y se añade un resplandor de borde blanco muy sutil que crece
+  //     con la transparencia, que es lo que de verdad se lee como "borde de
+  //     cristal" contra un fondo oscuro sin contraste detrás.
+  final bgAlpha = lerpDouble(1.0, 0.32, transparency)!;
+  final borderAlpha = lerpDouble(0.62, 0.95, transparency)!;
+  final blurSigma = transparency > 0 ? lerpDouble(6, 26, transparency)! : 0.0;
+
+  var background = Color.lerp(colors.surface, Colors.white, transparency * 0.22)!;
+  var border = Color.lerp(colors.divider, Colors.white, transparency * 0.4)!;
   List<BoxShadow> shadows;
   var lift = 0.0;
 
@@ -113,11 +132,12 @@ DockVisual resolveDockVisual(HermesThemeColors colors, DockStyle style) {
         ),
       ];
     case DockDepth.floating:
-      // Superficie/borde ligeramente más claros: en tema oscuro la sombra
-      // por sí sola apenas se distingue, así que la profundidad "Flotante"
-      // también se lee por contraste de superficie, no solo por sombra.
-      background = Color.lerp(colors.surface, Colors.white, 0.03)!;
-      border = Color.lerp(colors.divider, Colors.white, 0.06)!;
+      // Superficie/borde ligeramente más claros por encima de lo que ya
+      // aporta la transparencia: en tema oscuro la sombra por sí sola apenas
+      // se distingue, así que la profundidad "Flotante" también se lee por
+      // contraste de superficie, no solo por sombra.
+      background = Color.lerp(background, Colors.white, 0.03)!;
+      border = Color.lerp(border, Colors.white, 0.06)!;
       lift = 6;
       shadows = [
         BoxShadow(
@@ -133,13 +153,29 @@ DockVisual resolveDockVisual(HermesThemeColors colors, DockStyle style) {
       ];
   }
 
+  if (transparency > 0) {
+    // Resplandor de borde muy sutil, independiente de la profundidad: es la
+    // señal que de verdad vende "cristal esmerilado" cuando lo que hay
+    // detrás del dock es oscuro y sin contraste (el caso típico en esta
+    // app), donde el relleno aclarado y el blur por sí solos siguen siendo
+    // discretos.
+    shadows = [
+      ...shadows,
+      BoxShadow(
+        color: Colors.white.withValues(alpha: 0.05 + transparency * 0.09),
+        blurRadius: 18 + transparency * 14,
+        spreadRadius: -2,
+      ),
+    ];
+  }
+
   return DockVisual(
     background: background.withValues(alpha: background.a * bgAlpha),
     border: border.withValues(alpha: border.a * borderAlpha),
     outerRadius: style.borderShape.outerRadius,
     innerRadius: style.borderShape.innerRadius,
     shadows: shadows,
-    blurSigma: transparency > 0 ? 14 : 0,
+    blurSigma: blurSigma,
     lift: lift,
   );
 }
