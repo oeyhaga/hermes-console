@@ -25,6 +25,7 @@ import '../utils/home_recent_sessions.dart';
 import '../utils/assistant_operational_artifacts.dart';
 import '../utils/relative_time.dart';
 import '../widgets/attachment_source_sheet.dart';
+import '../widgets/general_mode_dock.dart';
 import '../widgets/hermes_drawer.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/home_prompt_composer.dart';
@@ -42,10 +43,12 @@ import '../widgets/session_title_editor_route.dart';
 import 'chat_screen.dart';
 import 'gateway_manager_screen.dart';
 import 'local_instance_control_screen.dart';
+import 'mission_control_screen.dart';
 import 'onboarding/local_install_screen.dart';
 import 'onboarding/local_uninstall_screen.dart';
 import 'onboarding/welcome_mode_screen.dart';
 import 'session_list_screen.dart';
+import 'settings_screen.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/instance_status_panel.dart';
 import '../../l10n/app_localizations.dart';
@@ -102,6 +105,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   Timer? _localStartPoll;
   int _localStartTicks = 0;
 
+  // Dock flotante (perfil "General"): true cuando hay una subpantalla
+  // abierta encima de Home, para mostrar su "Atrás" contextual.
+  bool _hasSubscreenAbove = false;
+
   @override
   void dispose() {
     hermesRouteObserver.unsubscribe(this);
@@ -133,10 +140,16 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   void didPush() => unawaited(DrawerGestureExclusion.setEnabled(true));
 
   @override
-  void didPopNext() => unawaited(DrawerGestureExclusion.setEnabled(true));
+  void didPopNext() {
+    unawaited(DrawerGestureExclusion.setEnabled(true));
+    if (mounted) setState(() => _hasSubscreenAbove = false);
+  }
 
   @override
-  void didPushNext() => unawaited(DrawerGestureExclusion.setEnabled(false));
+  void didPushNext() {
+    unawaited(DrawerGestureExclusion.setEnabled(false));
+    if (mounted) setState(() => _hasSubscreenAbove = true);
+  }
 
   @override
   void didPop() => unawaited(DrawerGestureExclusion.setEnabled(false));
@@ -1283,142 +1296,184 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         checking: _checking,
         onSectionReturn: _reload,
       ),
-      body: () {
-        final active = _active;
-        if (_connections.isEmpty || active == null) {
-          return _EmptyHomeState(onAdd: _showAddDialog);
-        }
-        // Instancia local sin gateway en marcha: el chat no es usable, así que
-        // se oculta y solo se muestra el card de estado/arranque del agente.
-        final isLocalAndOffline =
-            active.kind == InstanceKind.localhost && !_healthOk && !_checking;
-        // Instancia remota caída: la única señal era el punto del appbar; el
-        // cuerpo necesita un estado visible con reintento, equivalente a la
-        // tarjeta de la instancia local apagada (spec 028 A-025).
-        final isRemoteAndOffline =
-            active.kind != InstanceKind.localhost && !_healthOk && !_checking;
-        final content = RefreshIndicator(
-          color: colors.accent,
-          onRefresh: _refreshStatus,
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
-            children: [
-              // U-13 (spec 028): la instancia local está retirada de la UI
-              // para el lanzamiento (kLocalAgentEnabled, default false).
-              if (kLocalAgentEnabled &&
-                  (_installInProgress || _uninstallInProgress))
-                _LocalOpBanner(
-                  colors: colors,
-                  isInstall: _installInProgress,
-                  connManager: widget.connManager,
-                  onDismiss: () => setState(() {
-                    _installInProgress = false;
-                    _uninstallInProgress = false;
-                  }),
-                  onResume: () async {
-                    if (_installInProgress) {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => LocalInstallScreen(
-                            connManager: widget.connManager,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Positioned.fill(
+            child: () {
+              final active = _active;
+              if (_connections.isEmpty || active == null) {
+                return _EmptyHomeState(onAdd: _showAddDialog);
+              }
+              // Instancia local sin gateway en marcha: el chat no es usable, así que
+              // se oculta y solo se muestra el card de estado/arranque del agente.
+              final isLocalAndOffline =
+                  active.kind == InstanceKind.localhost &&
+                  !_healthOk &&
+                  !_checking;
+              // Instancia remota caída: la única señal era el punto del appbar; el
+              // cuerpo necesita un estado visible con reintento, equivalente a la
+              // tarjeta de la instancia local apagada (spec 028 A-025).
+              final isRemoteAndOffline =
+                  active.kind != InstanceKind.localhost &&
+                  !_healthOk &&
+                  !_checking;
+              final content = RefreshIndicator(
+                color: colors.accent,
+                onRefresh: _refreshStatus,
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                  children: [
+                    // U-13 (spec 028): la instancia local está retirada de la UI
+                    // para el lanzamiento (kLocalAgentEnabled, default false).
+                    if (kLocalAgentEnabled &&
+                        (_installInProgress || _uninstallInProgress))
+                      _LocalOpBanner(
+                        colors: colors,
+                        isInstall: _installInProgress,
+                        connManager: widget.connManager,
+                        onDismiss: () => setState(() {
+                          _installInProgress = false;
+                          _uninstallInProgress = false;
+                        }),
+                        onResume: () async {
+                          if (_installInProgress) {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => LocalInstallScreen(
+                                  connManager: widget.connManager,
+                                ),
+                              ),
+                            );
+                          } else {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => LocalUninstallScreen(
+                                  connManager: widget.connManager,
+                                ),
+                              ),
+                            );
+                          }
+                          _reload();
+                        },
+                      ),
+                    if (kLocalAgentEnabled && isLocalAndOffline)
+                      _LocalAgentOfflineCard(
+                        colors: colors,
+                        starting: _localStarting,
+                        onStart: _startLocalAgent,
+                        onManage: _openLocalControl,
+                      ),
+                    if (isRemoteAndOffline)
+                      _RemoteInstanceOfflineCard(
+                        colors: colors,
+                        label: active.label,
+                        onRetry: _refreshStatus,
+                        onEditInstance: _openInstances,
+                      ),
+                    // El chat solo tiene sentido si hay un gateway que responde. Con
+                    // la instancia local apagada se oculta por completo y solo queda
+                    // el card de arranque de arriba.
+                    if (!kLocalAgentEnabled || !isLocalAndOffline) ...[
+                      const SizedBox(height: 8),
+                      // La mascota vive únicamente sobre la pista del compositor.
+                      // Sin Companion o con teclado, el input recupera ese espacio.
+                      FadeSlideIn(
+                        delayMs: reduceMotion ? 0 : 30,
+                        duration: reduceMotion
+                            ? Duration.zero
+                            : const Duration(milliseconds: 220),
+                        child: _buildPromptStage(
+                          enabled: !isRemoteAndOffline,
+                          dimmed: isRemoteAndOffline,
+                        ),
+                      ),
+                      if (_recentSessions.isNotEmpty) ...[
+                        const SizedBox(height: 14),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4, bottom: 2),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  Strings.of(context).homeChatsSection,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: colors.textSecondary,
+                                  ),
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: _openSessions,
+                                style: TextButton.styleFrom(
+                                  minimumSize: const Size(48, 44),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                  foregroundColor: colors.accentHover,
+                                ),
+                                child: Text(
+                                  Strings.of(context).homeSearch,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: colors.accentHover,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      );
-                    } else {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => LocalUninstallScreen(
-                            connManager: widget.connManager,
-                          ),
-                        ),
-                      );
-                    }
-                    _reload();
-                  },
-                ),
-              if (kLocalAgentEnabled && isLocalAndOffline)
-                _LocalAgentOfflineCard(
-                  colors: colors,
-                  starting: _localStarting,
-                  onStart: _startLocalAgent,
-                  onManage: _openLocalControl,
-                ),
-              if (isRemoteAndOffline)
-                _RemoteInstanceOfflineCard(
-                  colors: colors,
-                  label: active.label,
-                  onRetry: _refreshStatus,
-                  onEditInstance: _openInstances,
-                ),
-              // El chat solo tiene sentido si hay un gateway que responde. Con
-              // la instancia local apagada se oculta por completo y solo queda
-              // el card de arranque de arriba.
-              if (!kLocalAgentEnabled || !isLocalAndOffline) ...[
-                const SizedBox(height: 8),
-                // La mascota vive únicamente sobre la pista del compositor.
-                // Sin Companion o con teclado, el input recupera ese espacio.
-                FadeSlideIn(
-                  delayMs: reduceMotion ? 0 : 30,
-                  duration: reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 220),
-                  child: _buildPromptStage(
-                    enabled: !isRemoteAndOffline,
-                    dimmed: isRemoteAndOffline,
-                  ),
-                ),
-                if (_recentSessions.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4, bottom: 2),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            Strings.of(context).homeChatsSection,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: colors.textSecondary,
-                            ),
-                          ),
-                        ),
-                        TextButton(
-                          onPressed: _openSessions,
-                          style: TextButton.styleFrom(
-                            minimumSize: const Size(48, 44),
-                            padding: const EdgeInsets.symmetric(horizontal: 8),
-                            foregroundColor: colors.accentHover,
-                          ),
-                          child: Text(
-                            Strings.of(context).homeSearch,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: colors.accentHover,
-                            ),
-                          ),
+                        ..._buildRecentRows(active, recentLimit),
+                      ] else if (!isRemoteAndOffline) ...[
+                        const SizedBox(height: 10),
+                        HermesEmptyState(
+                          key: const ValueKey('home-empty-conversations'),
+                          compact: true,
+                          title: Strings.of(
+                            context,
+                          ).homeEmptyConversationsTitle,
+                          body: Strings.of(context).homeEmptyConversationsBody,
+                          padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
                         ),
                       ],
-                    ),
-                  ),
-                  ..._buildRecentRows(active, recentLimit),
-                ] else if (!isRemoteAndOffline) ...[
-                  const SizedBox(height: 10),
-                  HermesEmptyState(
-                    key: const ValueKey('home-empty-conversations'),
-                    compact: true,
-                    title: Strings.of(context).homeEmptyConversationsTitle,
-                    body: Strings.of(context).homeEmptyConversationsBody,
-                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
-                  ),
-                ],
-              ],
-            ],
+                    ],
+                  ],
+                ),
+              );
+              return content;
+            }(),
           ),
-        );
-        return content;
-      }(),
+          GeneralModeDock(
+            onCreate: _active == null ? null : _newChat,
+            onOpenBots: _active == null
+                ? null
+                : () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => MissionControlScreen(
+                        connection: _active!,
+                        connManager: widget.connManager,
+                      ),
+                    ),
+                  ).then((_) => _refreshStatus()),
+            onOpenSettings: _active == null
+                ? null
+                : () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => SettingsScreen(
+                        connection: _active!,
+                        connManager: widget.connManager,
+                      ),
+                    ),
+                  ).then((_) => _reload()),
+            showBackContext: _hasSubscreenAbove,
+            onBack: () => Navigator.of(context).maybePop(),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -143,7 +143,7 @@ class MissionControlScreen extends StatefulWidget {
 enum _MissionDestination { bots, work }
 
 class _MissionControlScreenState extends State<MissionControlScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, RouteAware {
   late final MissionControlDataSource _dataSource;
   late final MissionProfileAvatarCache? _profileAvatarCache;
   late final MissionOrganizationStoreContract _organizationStore;
@@ -176,6 +176,12 @@ class _MissionControlScreenState extends State<MissionControlScreen>
   bool _initialOpenDispatched = false;
   _MissionDestination _destination = _MissionDestination.bots;
   late final ChatSurfaceCoordinator _surfaceCoordinator;
+  // Observador de rutas (least-invasive: no toca el sistema de navegación,
+  // solo se suscribe a él) para saber si hay una subpantalla abierta encima
+  // de Mission Control y mostrar el "Atrás" contextual del dock (perfil
+  // Bots).
+  PageRoute<dynamic>? _dockRoute;
+  bool _hasSubscreenAbove = false;
   final Map<WorkItem, int> _workItemGenerations = Map.identity();
   final Map<String, WorkDestination> _validatedWorkDestinations = {};
 
@@ -243,11 +249,28 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     _activeChats = service;
     _activeChats?.activeIds.addListener(_onActiveIdsChanged);
     _syncLiveSubscriptions();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute<dynamic> && !identical(route, _dockRoute)) {
+      hermesRouteObserver.unsubscribe(this);
+      _dockRoute = route;
+      hermesRouteObserver.subscribe(this, route);
+    }
+  }
+
+  @override
+  void didPushNext() {
+    if (mounted) setState(() => _hasSubscreenAbove = true);
+  }
+
+  @override
+  void didPopNext() {
+    if (mounted) setState(() => _hasSubscreenAbove = false);
   }
 
   @override
   void dispose() {
     _disposed = true;
+    hermesRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _activeChats?.activeIds.removeListener(_onActiveIdsChanged);
     _cancelLiveSubscriptions();
@@ -1958,6 +1981,8 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                         createRoomLabel: _canCreateHostedRoom
                             ? null
                             : copy.createLocalRoom,
+                        showBackContext: _hasSubscreenAbove,
+                        onBack: () => Navigator.of(context).maybePop(),
                       )
                     : const SizedBox.shrink(),
               ),

@@ -34,6 +34,7 @@ import 'models_screen.dart';
 import 'permissions_screen.dart';
 import 'security_info_screen.dart';
 import 'themes_screen.dart';
+import 'dock_settings_screen.dart';
 import 'notification_settings_screen.dart';
 import 'voice_settings_screen.dart';
 
@@ -165,6 +166,7 @@ class SettingsScreen extends StatelessWidget {
               _FontStyleEntry(),
               _LanguageEntry(),
               _HeaderTitleField(),
+              _DockTile(),
             ],
           ),
           _SectionHeader(Strings.of(context).setSecChat),
@@ -747,6 +749,21 @@ class _VoiceTile extends StatelessWidget {
         MaterialPageRoute(
           builder: (_) => VoiceSettingsScreen(connection: connection),
         ),
+      ),
+    );
+  }
+}
+
+class _DockTile extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return HermesNavRow(
+      icon: Icons.dashboard_customize_outlined,
+      title: Strings.of(context).dockSettingsTitle,
+      subtitle: Strings.of(context).dockSettingsSubtitle,
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const DockSettingsScreen()),
       ),
     );
   }

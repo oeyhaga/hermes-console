@@ -3,10 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../models/dock_config.dart';
+import '../services/dock_preferences_store.dart';
 import '../theme/app_theme.dart';
 import 'chat_surface_coordinator.dart';
+import 'dock_style.dart';
 
-/// Detached Bot Mode dock with two keyed create orbs on one shared axis.
+/// Dock flotante del perfil "Bots": Bots/Trabajo + Crear (con las dos
+/// órbitas de creación), personalizable desde Ajustes › Dock (orden,
+/// visibilidad, destacado, estilo) y con un elemento "Atrás" contextual que
+/// aparece al entrar en una subpantalla (ver [showBackContext]).
 class BotModeDock extends StatefulWidget {
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
@@ -15,6 +21,12 @@ class BotModeDock extends StatefulWidget {
   final String? createRoomLabel;
   final ChatSurfaceCoordinator? coordinator;
 
+  /// True cuando hay una subpantalla abierta encima de este dock. Junto con
+  /// el ajuste "Mostrar Atrás en subpantallas" del perfil, decide si se
+  /// inserta el elemento contextual "Atrás".
+  final bool showBackContext;
+  final VoidCallback? onBack;
+
   const BotModeDock({
     required this.selectedIndex,
     required this.onDestinationSelected,
@@ -22,6 +34,8 @@ class BotModeDock extends StatefulWidget {
     this.onCreateRoom,
     this.createRoomLabel,
     this.coordinator,
+    this.showBackContext = false,
+    this.onBack,
     super.key,
   });
 
@@ -39,6 +53,12 @@ class _BotModeDockState extends State<BotModeDock>
   bool _expanded = false;
   bool _actionsMounted = false;
   int _motionGeneration = 0;
+  // Ancla real del "+": se mide el tile ya pintado (no una fórmula de
+  // layout aproximada) para que las órbitas de creación arranquen siempre
+  // exactamente del "+" tal como quedó dispuesto, sea cual sea su posición
+  // en la fila (personalizable por el usuario) o el ancho del dock.
+  final GlobalKey _createTileKey = GlobalKey();
+  final GlobalKey _stackKey = GlobalKey();
 
   Duration _duration(BuildContext context) =>
       MediaQuery.disableAnimationsOf(context)
@@ -55,6 +75,7 @@ class _BotModeDockState extends State<BotModeDock>
         ChatSurfaceCoordinator(routeOwner: identityHashCode(this));
     _coordinator.addListener(_onCoordinatorChanged);
     _controller = AnimationController(vsync: this, duration: Duration.zero);
+    unawaited(DockPreferencesController.instance.ensureLoaded());
   }
 
   @override
@@ -102,8 +123,8 @@ class _BotModeDockState extends State<BotModeDock>
     _actionsMounted = true;
     _coordinator.openCreate();
     if (_controller.value == 0 && _duration(context) != Duration.zero) {
-      // The first painted frame must already communicate departure from the
-      // plus origin; subsequent ticks continue from this exact painted value.
+      // El primer frame pintado ya debe comunicar la salida desde el origen
+      // del "+"; los siguientes ticks continúan desde este valor pintado.
       _controller.value = 0.001;
     }
     if (mounted) setState(() {});
@@ -167,10 +188,30 @@ class _BotModeDockState extends State<BotModeDock>
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: DockPreferencesController.instance.listenable,
+    builder: (context, _) => _buildWithProfile(
+      context,
+      DockPreferencesController.instance.value.bots,
+    ),
+  );
+
+  Widget _buildWithProfile(BuildContext context, DockProfileConfig profile) {
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
     final compact = MediaQuery.textScalerOf(context).scale(14) > 17;
+    final visual = resolveDockVisual(colors, profile.style);
+    final showBack =
+        widget.showBackContext &&
+        profile.showBackOnSubscreens &&
+        widget.onBack != null;
+    final slots = resolveDockSlots(
+      visibleItems: profile.visibleItemIds,
+      pinnedItemId: profile.pinnedItemId,
+      showBack: showBack,
+    );
+    final createIndex = slots.indexOf(DockItemId.create);
+
     return PopScope(
       canPop: !_expanded,
       onPopInvokedWithResult: (didPop, _) {
@@ -178,12 +219,21 @@ class _BotModeDockState extends State<BotModeDock>
       },
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final dockBottom = _coordinator.bottomInset;
-          final plusCenter = Offset(
-            constraints.maxWidth / 2,
+          final dockBottom = _coordinator.bottomInset + visual.lift;
+          final barWidth = (constraints.maxWidth - 32).clamp(
+            0.0,
+            constraints.maxWidth,
+          );
+          final itemWidth = slots.isEmpty ? 0.0 : barWidth / slots.length;
+          final fallbackPlusCenter = Offset(
+            createIndex == -1
+                ? constraints.maxWidth / 2
+                : 16 + itemWidth * (createIndex + 0.5),
             constraints.maxHeight - dockBottom - 24,
           );
+          final plusCenter = _resolvePlusCenter(fallbackPlusCenter);
           return Stack(
+            key: _stackKey,
             fit: StackFit.expand,
             children: [
               if (_actionsMounted)
@@ -249,57 +299,18 @@ class _BotModeDockState extends State<BotModeDock>
                 left: 16,
                 right: 16,
                 bottom: dockBottom,
-                child: Center(
-                  child: Material(
-                    key: const ValueKey('bot-mode-floating-dock'),
-                    color: colors.surface.withValues(alpha: 0.98),
-                    elevation: 8,
-                    shadowColor: Colors.black.withValues(alpha: 0.28),
-                    shape: StadiumBorder(
-                      side: BorderSide(
-                        color: colors.divider.withValues(alpha: 0.72),
+                child: DockBar(
+                  key: const ValueKey('bot-mode-floating-dock'),
+                  style: profile.style,
+                  children: [
+                    for (final slot in slots)
+                      _tileForSlot(
+                        slot,
+                        innerRadius: visual.innerRadius,
+                        compact: compact,
+                        strings: strings,
                       ),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: SizedBox(
-                      height: 48,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _DockDestination(
-                            controlKey: const ValueKey('bot-mode-dock-bots'),
-                            semanticsKey: const ValueKey(
-                              'mission-destination-bots',
-                            ),
-                            label: strings.missionBotsLabel,
-                            icon: Icons.smart_toy_outlined,
-                            selectedIcon: Icons.smart_toy_rounded,
-                            selected: widget.selectedIndex == 0,
-                            compact: compact,
-                            onTap: () => _select(0),
-                          ),
-                          _CreateDockButton(
-                            expanded: _expanded,
-                            label: strings.missionCreateLabel,
-                            focusNode: _createFocus,
-                            onTap: _toggleCreate,
-                          ),
-                          _DockDestination(
-                            controlKey: const ValueKey('bot-mode-dock-work'),
-                            semanticsKey: const ValueKey(
-                              'mission-destination-work',
-                            ),
-                            label: strings.missionWorkLabel,
-                            icon: Icons.work_outline_rounded,
-                            selectedIcon: Icons.work_rounded,
-                            selected: widget.selectedIndex == 1,
-                            compact: compact,
-                            onTap: () => _select(1),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
+                  ],
                 ),
               ),
             ],
@@ -307,6 +318,90 @@ class _BotModeDockState extends State<BotModeDock>
         },
       ),
     );
+  }
+
+  Widget _tileForSlot(
+    DockItemId? slot, {
+    required double innerRadius,
+    required bool compact,
+    required Strings strings,
+  }) {
+    if (slot == null) {
+      return DockItemTile(
+        controlKey: const ValueKey('bot-mode-dock-back'),
+        icon: dockBackIcon,
+        label: strings.dockBackLabel,
+        innerRadius: innerRadius,
+        compact: compact,
+        onTap: widget.onBack,
+      );
+    }
+    switch (slot) {
+      case DockItemId.bots:
+        final visualMeta = dockItemVisual(DockItemId.bots);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-bots'),
+          semanticsKey: const ValueKey('mission-destination-bots'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.bots),
+          selected: widget.selectedIndex == 0,
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: () => _select(0),
+        );
+      case DockItemId.work:
+        final visualMeta = dockItemVisual(DockItemId.work);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-work'),
+          semanticsKey: const ValueKey('mission-destination-work'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.work),
+          selected: widget.selectedIndex == 1,
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: () => _select(1),
+        );
+      case DockItemId.create:
+        return DockItemTile(
+          key: _createTileKey,
+          controlKey: const ValueKey('bot-mode-dock-create'),
+          icon: Icons.add_rounded,
+          label: dockItemLabel(strings, DockItemId.create),
+          accent: true,
+          toggled: _expanded,
+          innerRadius: innerRadius,
+          compact: compact,
+          focusNode: _createFocus,
+          onTap: _toggleCreate,
+        );
+      case DockItemId.home:
+      case DockItemId.settings:
+        // No forman parte del catálogo del perfil "bots"; si llegaran a
+        // aparecer (config corrupta o migración futura) se ignoran en vez
+        // de reventar el layout.
+        return const SizedBox.shrink();
+    }
+  }
+
+  /// Centro real del tile "Crear" ya pintado, en las coordenadas del propio
+  /// `Stack` del dock. Cae a [fallback] (una estimación por fórmula) solo
+  /// mientras el tile todavía no se ha pintado ninguna vez, lo que en la
+  /// práctica nunca ocurre cuando esto se usa: las órbitas solo aparecen
+  /// tras un toque, y para tocar el "+" ya tuvo que pintarse antes.
+  Offset _resolvePlusCenter(Offset fallback) {
+    final tileBox =
+        _createTileKey.currentContext?.findRenderObject() as RenderBox?;
+    final stackBox = _stackKey.currentContext?.findRenderObject() as RenderBox?;
+    if (tileBox == null ||
+        stackBox == null ||
+        !tileBox.attached ||
+        !stackBox.attached) {
+      return fallback;
+    }
+    final topLeft = tileBox.localToGlobal(Offset.zero, ancestor: stackBox);
+    return Offset(topLeft.dx + tileBox.size.width / 2, fallback.dy);
   }
 
   Widget _positionedOrb({
@@ -323,118 +418,6 @@ class _BotModeDockState extends State<BotModeDock>
   double _staggered(double value, double delay) {
     if (_duration(context) == Duration.zero) return value == 0 ? 0 : 1;
     return ((value - delay) / (1 - delay)).clamp(0, 1);
-  }
-}
-
-class _CreateDockButton extends StatelessWidget {
-  final bool expanded;
-  final String label;
-  final FocusNode focusNode;
-  final VoidCallback onTap;
-
-  const _CreateDockButton({
-    required this.expanded,
-    required this.label,
-    required this.focusNode,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    toggled: expanded,
-    label: label,
-    child: Tooltip(
-      message: label,
-      child: InkWell(
-        key: const ValueKey('bot-mode-dock-create'),
-        focusNode: focusNode,
-        customBorder: const CircleBorder(),
-        onTap: onTap,
-        child: SizedBox.square(
-          dimension: 48,
-          child: AnimatedRotation(
-            turns: expanded ? 0.125 : 0,
-            duration: MediaQuery.disableAnimationsOf(context)
-                ? Duration.zero
-                : const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            child: const Icon(Icons.add_rounded),
-          ),
-        ),
-      ),
-    ),
-  );
-}
-
-class _DockDestination extends StatelessWidget {
-  final Key controlKey;
-  final Key semanticsKey;
-  final String label;
-  final IconData icon;
-  final IconData selectedIcon;
-  final bool selected;
-  final bool compact;
-  final VoidCallback onTap;
-
-  const _DockDestination({
-    required this.controlKey,
-    required this.semanticsKey,
-    required this.label,
-    required this.icon,
-    required this.selectedIcon,
-    required this.selected,
-    required this.compact,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    return Semantics(
-      key: semanticsKey,
-      button: true,
-      selected: selected,
-      label: label,
-      onTap: onTap,
-      excludeSemantics: true,
-      child: Tooltip(
-        message: label,
-        child: InkWell(
-          key: controlKey,
-          onTap: onTap,
-          child: SizedBox(
-            width: compact ? 64 : 136,
-            height: 48,
-            child: Padding(
-              padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 6),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    selected ? selectedIcon : icon,
-                    size: 21,
-                    color: selected ? colors.accentText : colors.textSecondary,
-                  ),
-                  if (!compact) ...[
-                    const SizedBox(width: 7),
-                    Text(
-                      label,
-                      style: TextStyle(
-                        color: colors.textPrimary,
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
