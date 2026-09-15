@@ -23,12 +23,30 @@ class GeneralModeDock extends StatelessWidget {
   final bool showBackContext;
   final VoidCallback? onBack;
 
+  /// Navega al dashboard de Inicio. Null cuando este dock YA vive en Inicio
+  /// (caso histórico/por defecto): entonces "Inicio" se muestra como sección
+  /// activa sin acción propia. Al integrar este dock en otras pantallas
+  /// (Ajustes, lista de sesiones, ...) se pasa una acción real de vuelta.
+  final VoidCallback? onOpenHome;
+
+  // Accesos directos opcionales del catálogo (ocultos por defecto): solo se
+  // pintan con una acción real si el perfil los tiene visibles.
+  final VoidCallback? onOpenCron;
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenSessions;
+  final VoidCallback? onOpenTools;
+
   const GeneralModeDock({
     this.onCreate,
     this.onOpenBots,
     this.onOpenSettings,
     this.showBackContext = false,
     this.onBack,
+    this.onOpenHome,
+    this.onOpenCron,
+    this.onOpenTasks,
+    this.onOpenSessions,
+    this.onOpenTools,
     super.key,
   });
 
@@ -99,11 +117,14 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.home),
-          // Este dock solo vive hoy en la pantalla de Inicio: mientras se
-          // ve, "Inicio" es siempre la sección activa.
-          selected: true,
+          // Sin `onOpenHome` este dock vive en la propia pantalla de Inicio
+          // (caso histórico): "Inicio" se pinta como sección activa sin
+          // acción propia. Con `onOpenHome` (dock integrado en otra
+          // pantalla) deja de estar "seleccionado" y navega de vuelta.
+          selected: onOpenHome == null,
           innerRadius: innerRadius,
           compact: compact,
+          onTap: onOpenHome,
         );
       case DockItemId.create:
         return DockItemTile(
@@ -142,6 +163,50 @@ class GeneralModeDock extends StatelessWidget {
         // si el usuario lo hace visible sin tener una acción que ofrecerle
         // en este perfil todavía, se omite en vez de romper el layout.
         return const SizedBox.shrink();
+      case DockItemId.cron:
+        final meta = dockItemVisual(DockItemId.cron);
+        return DockItemTile(
+          controlKey: const ValueKey('general-mode-dock-cron'),
+          icon: meta.icon,
+          selectedIcon: meta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.cron),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: onOpenCron,
+        );
+      case DockItemId.tasks:
+        final meta = dockItemVisual(DockItemId.tasks);
+        return DockItemTile(
+          controlKey: const ValueKey('general-mode-dock-tasks'),
+          icon: meta.icon,
+          selectedIcon: meta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.tasks),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: onOpenTasks,
+        );
+      case DockItemId.sessions:
+        final meta = dockItemVisual(DockItemId.sessions);
+        return DockItemTile(
+          controlKey: const ValueKey('general-mode-dock-sessions'),
+          icon: meta.icon,
+          selectedIcon: meta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.sessions),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: onOpenSessions,
+        );
+      case DockItemId.tools:
+        final meta = dockItemVisual(DockItemId.tools);
+        return DockItemTile(
+          controlKey: const ValueKey('general-mode-dock-tools'),
+          icon: meta.icon,
+          selectedIcon: meta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.tools),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: onOpenTools,
+        );
     }
   }
 }

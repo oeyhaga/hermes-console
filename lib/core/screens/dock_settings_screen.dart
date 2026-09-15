@@ -172,13 +172,31 @@ class _DockPreview extends StatelessWidget {
                 selectedIcon: dockItemVisual(slot).selectedIcon,
                 label: dockItemLabel(strings, slot),
                 selected: slot == profile.items.first.id,
-                accent: slot == profile.pinnedItemId,
+                // El acento es SIEMPRE el "+" (igual que en el dock real,
+                // `general_mode_dock.dart`/`bot_mode_dock.dart`): no está
+                // ligado a `pinnedItemId`, que ahora es un detalle interno
+                // (el primer item visible) sin control manual en esta UI.
+                accent: slot == DockItemId.create,
                 innerRadius: visual.innerRadius,
               ),
         ],
       ),
     );
   }
+}
+
+/// El item "nunca se retira" al insertar "Atrás" (ver `resolveDockSlots`)
+/// ahora es puramente automático: el primer item visible en el orden
+/// actual. Sin esto habría que pedirle al usuario que declarara un
+/// "destacado" a mano, justo el paso que pidió eliminar.
+DockItemId _firstVisibleId(
+  List<DockItemConfig> items, {
+  required DockItemId fallback,
+}) {
+  for (final item in items) {
+    if (item.visible) return item.id;
+  }
+  return fallback;
 }
 
 class _DockItemList extends StatelessWidget {
@@ -217,12 +235,21 @@ class _DockItemList extends StatelessWidget {
               final next = List<DockItemConfig>.from(items);
               final moved = next.removeAt(oldIndex);
               next.insert(newIndex, moved);
-              unawaited(onUpdate((p) => p.copyWith(items: next)));
+              unawaited(
+                onUpdate(
+                  (p) => p.copyWith(
+                    items: next,
+                    pinnedItemId: _firstVisibleId(
+                      next,
+                      fallback: p.pinnedItemId,
+                    ),
+                  ),
+                ),
+              );
             },
             itemBuilder: (context, index) {
               final item = items[index];
               final visual = dockItemVisual(item.id);
-              final pinned = item.id == profile.pinnedItemId;
               return Container(
                 key: ValueKey('dock-item-${item.id.name}'),
                 height: 54,
@@ -285,68 +312,34 @@ class _DockItemList extends StatelessWidget {
                         ],
                       ),
                     ),
-                    Tooltip(
-                      message: strings.dockItemPinnedLabel,
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: () => unawaited(
-                          onUpdate(
-                            (p) => p.copyWith(
-                              pinnedItemId: item.id,
-                              items: [
-                                for (final it in p.items)
-                                  it.id == item.id
-                                      ? it.copyWith(visible: true)
-                                      : it,
-                              ],
-                            ),
-                          ),
-                        ),
-                        child: Container(
-                          width: 18,
-                          height: 18,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: pinned
-                                  ? colors.accentText
-                                  : colors.textDisabled,
-                              width: 1.5,
-                            ),
-                          ),
-                          child: pinned
-                              ? Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: colors.accentText,
-                                  ),
-                                )
-                              : null,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
+                    // Sin control manual de "destacado": el usuario pidió
+                    // explícitamente poder mostrar/ocultar/mover cualquier
+                    // item sin un paso previo que "se lo robe" a otro
+                    // ("no entiendo para qué quiero seleccionarlos, si
+                    // simplemente se debería quitar o poner o moverlos").
+                    // El switch de visibilidad funciona SIEMPRE, para todos
+                    // los items; `pinnedItemId` (qué item nunca se retira al
+                    // insertar "Atrás") se recalcula solo, como el primer
+                    // item que quede visible tras el cambio.
                     Switch(
                       value: item.visible,
-                      // El destacado nunca se retira: no se puede ocultar
-                      // desde aquí (hay que quitarle antes el destacado).
-                      onChanged: pinned
-                          ? null
-                          : (value) => unawaited(
-                              onUpdate(
-                                (p) => p.copyWith(
-                                  items: [
-                                    for (final it in p.items)
-                                      it.id == item.id
-                                          ? it.copyWith(visible: value)
-                                          : it,
-                                  ],
-                                ),
-                              ),
+                      onChanged: (value) => unawaited(
+                        onUpdate((p) {
+                          final next = [
+                            for (final it in p.items)
+                              it.id == item.id
+                                  ? it.copyWith(visible: value)
+                                  : it,
+                          ];
+                          return p.copyWith(
+                            items: next,
+                            pinnedItemId: _firstVisibleId(
+                              next,
+                              fallback: p.pinnedItemId,
                             ),
+                          );
+                        }),
+                      ),
                     ),
                   ],
                 ),

@@ -72,6 +72,10 @@ void main() {
           'bots',
           'settings',
           'work',
+          'cron',
+          'tasks',
+          'sessions',
+          'tools',
         ]);
         expect(value.items.last.visible, isFalse);
         expect(value.visibleItemIds.map((i) => i.name), ['home', 'create']);

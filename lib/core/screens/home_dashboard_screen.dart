@@ -25,6 +25,7 @@ import '../utils/home_recent_sessions.dart';
 import '../utils/assistant_operational_artifacts.dart';
 import '../utils/relative_time.dart';
 import '../widgets/attachment_source_sheet.dart';
+import '../widgets/dock_shortcuts.dart';
 import '../widgets/general_mode_dock.dart';
 import '../widgets/hermes_drawer.dart';
 import '../widgets/hermes_premium_ui.dart';
@@ -1318,12 +1319,22 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                   active.kind != InstanceKind.localhost &&
                   !_healthOk &&
                   !_checking;
+              // El dock flotante (`GeneralModeDock`) se pinta como overlay
+              // (Positioned) ENCIMA de esta lista, no reserva espacio por sí
+              // mismo. Sin este margen extra, el último item de recientes
+              // quedaba tapado/cortado por el dock (confirmado por captura
+              // real del dispositivo). Reserva: alto del dock (48) + su
+              // separación del borde (12) + el lift máximo de la profundidad
+              // "Flotante" (6) + el inset seguro inferior del sistema +
+              // un margen de aire adicional para que no quede pegado.
+              final dockBottomClearance =
+                  48 + 12 + 6 + MediaQuery.paddingOf(context).bottom + 16;
               final content = RefreshIndicator(
                 color: colors.accent,
                 onRefresh: _refreshStatus,
                 child: ListView(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                  padding: EdgeInsets.fromLTRB(20, 20, 20, dockBottomClearance),
                   children: [
                     // U-13 (spec 028): la instancia local está retirada de la UI
                     // para el lanzamiento (kLocalAgentEnabled, default false).
@@ -1471,6 +1482,19 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                   ).then((_) => _reload()),
             showBackContext: _hasSubscreenAbove,
             onBack: () => Navigator.of(context).maybePop(),
+            // Accesos directos opcionales (ocultos de fábrica en el
+            // catálogo); mismas pantallas/criterios que ya usa HermesDrawer.
+            onOpenCron: _active == null
+                ? null
+                : () => openDockCron(context, _active!),
+            onOpenTasks: _active == null
+                ? null
+                : () => openDockTasks(context, _active!),
+            onOpenSessions: _active == null
+                ? null
+                : () => openDockSessions(context, _active!, widget.connManager),
+            onOpenTools: () =>
+                openDockTools(context, _active, widget.connManager),
           ),
         ],
       ),

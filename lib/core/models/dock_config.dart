@@ -50,7 +50,15 @@ enum DockItemId {
   work,
   create,
   home,
-  settings;
+  settings,
+  // Accesos directos opcionales: existen en el catálogo de AMBOS perfiles
+  // pero ocultos por defecto (ver [defaultBots]/[defaultGeneral]); el
+  // usuario los activa a mano desde Ajustes › Dock si los quiere en la
+  // barra.
+  cron,
+  tasks,
+  sessions,
+  tools;
 
   static DockItemId? parse(Object? value) => values
       .cast<DockItemId?>()
@@ -218,9 +226,17 @@ class DockProfileConfig {
 
   static DockProfileConfig defaultBots() => const DockProfileConfig(
     items: [
+      // "Inicio" va primero: sin él, el perfil Bots no tenía forma de volver
+      // al dashboard general desde el dock (confirmado en dispositivo real).
+      DockItemConfig(id: DockItemId.home),
       DockItemConfig(id: DockItemId.bots),
       DockItemConfig(id: DockItemId.create),
       DockItemConfig(id: DockItemId.work),
+      // Accesos directos opcionales: en el catálogo, ocultos de fábrica.
+      DockItemConfig(id: DockItemId.cron, visible: false),
+      DockItemConfig(id: DockItemId.tasks, visible: false),
+      DockItemConfig(id: DockItemId.sessions, visible: false),
+      DockItemConfig(id: DockItemId.tools, visible: false),
     ],
     pinnedItemId: DockItemId.create,
   );
@@ -232,6 +248,11 @@ class DockProfileConfig {
       DockItemConfig(id: DockItemId.bots),
       DockItemConfig(id: DockItemId.settings),
       DockItemConfig(id: DockItemId.work, visible: false),
+      // Accesos directos opcionales: en el catálogo, ocultos de fábrica.
+      DockItemConfig(id: DockItemId.cron, visible: false),
+      DockItemConfig(id: DockItemId.tasks, visible: false),
+      DockItemConfig(id: DockItemId.sessions, visible: false),
+      DockItemConfig(id: DockItemId.tools, visible: false),
     ],
     pinnedItemId: DockItemId.create,
   );

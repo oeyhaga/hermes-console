@@ -34,6 +34,12 @@ const Map<DockItemId, DockItemVisual> _dockItemVisuals = {
     icon: Icons.settings_outlined,
     selectedIcon: Icons.settings_rounded,
   ),
+  // Accesos directos opcionales (ocultos por defecto en ambos perfiles):
+  // mismo icono que ya usa HermesDrawer para las mismas pantallas.
+  DockItemId.cron: DockItemVisual(icon: Icons.schedule_outlined),
+  DockItemId.tasks: DockItemVisual(icon: Icons.view_kanban_outlined),
+  DockItemId.sessions: DockItemVisual(icon: Icons.forum_outlined),
+  DockItemId.tools: DockItemVisual(icon: Icons.widgets_outlined),
 };
 
 DockItemVisual dockItemVisual(DockItemId id) =>
@@ -49,6 +55,13 @@ String dockItemLabel(Strings strings, DockItemId id) => switch (id) {
   DockItemId.create => strings.missionCreateLabel,
   DockItemId.home => strings.dockHomeLabel,
   DockItemId.settings => strings.dockSettingsLabel,
+  // Reutilizan las etiquetas ya localizadas (ES/EN) del drawer para las
+  // mismas pantallas, en vez de duplicar strings nuevas para el mismo
+  // destino.
+  DockItemId.cron => strings.drawerCron,
+  DockItemId.tasks => strings.drawerKanban,
+  DockItemId.sessions => strings.drawerSessions,
+  DockItemId.tools => strings.drawerTools,
 };
 
 /// Valores resueltos de un [DockStyle] listos para pintar: colores,
@@ -241,32 +254,48 @@ class DockItemTile extends StatelessWidget {
             focusNode: focusNode,
             onTap: onTap,
             borderRadius: BorderRadius.circular(innerRadius),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: selected && !accent ? colors.surfaceVariant : null,
-                borderRadius: BorderRadius.circular(innerRadius),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(displayIcon, size: 21, color: color),
-                  if (!compact) ...[
-                    const SizedBox(width: 7),
-                    Flexible(
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: color,
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
+            // El fondo del item seleccionado es una píldora AJUSTADA al
+            // contenido (Center le da al DecoratedBox constraints sueltas en
+            // vez de las tight que fuerza el `Expanded` padre), con un
+            // margen interno consistente vía Padding. Antes el DecoratedBox
+            // heredaba el ancho/alto completo del segmento del Row (48dp de
+            // alto, ancho = lo que le tocara de `Expanded`), pintando un
+            // bloque desproporcionado en vez de una píldora flotante
+            // (confirmado por captura real del dispositivo).
+            child: Center(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: selected && !accent ? colors.surfaceVariant : null,
+                  borderRadius: BorderRadius.circular(innerRadius),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(displayIcon, size: 21, color: color),
+                      if (!compact) ...[
+                        const SizedBox(width: 7),
+                        Flexible(
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: color,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
-                ],
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),

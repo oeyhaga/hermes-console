@@ -31,6 +31,7 @@ import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_ui.dart';
 import '../widgets/bot_mode_dock.dart';
 import '../widgets/chat_surface_coordinator.dart';
+import '../widgets/dock_shortcuts.dart';
 import '../widgets/mission_profile_avatar.dart';
 import '../widgets/room_avatar_stack.dart';
 import 'bot_create_screen.dart';
@@ -1983,6 +1984,28 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                             : copy.createLocalRoom,
                         showBackContext: _hasSubscreenAbove,
                         onBack: () => Navigator.of(context).maybePop(),
+                        // "Inicio" saca de Bots al dashboard general: el
+                        // catálogo de Bots lo incluye por defecto (antes no
+                        // había forma de volver a Inicio desde aquí, bug
+                        // confirmado en dispositivo real).
+                        onOpenHome: () =>
+                            Navigator.of(context).popUntil((r) => r.isFirst),
+                        // Accesos directos opcionales (ocultos de fábrica);
+                        // mismas pantallas/criterios que ya usa HermesDrawer.
+                        onOpenCron: () =>
+                            openDockCron(context, widget.connection),
+                        onOpenTasks: () =>
+                            openDockTasks(context, widget.connection),
+                        onOpenSessions: () => openDockSessions(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
+                        onOpenTools: () => openDockTools(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
                       )
                     : const SizedBox.shrink(),
               ),

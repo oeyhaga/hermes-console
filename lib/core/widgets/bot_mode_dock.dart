@@ -27,6 +27,18 @@ class BotModeDock extends StatefulWidget {
   final bool showBackContext;
   final VoidCallback? onBack;
 
+  /// Vuelve al dashboard general ("Inicio"). El perfil Bots incluye "Inicio"
+  /// en su catálogo por defecto: sin esta acción, el elemento no tendría
+  /// forma de sacar al usuario de Bots (bug confirmado en dispositivo real).
+  final VoidCallback? onOpenHome;
+
+  // Accesos directos opcionales del catálogo (ocultos por defecto): solo se
+  // pintan con una acción real si el perfil los tiene visibles.
+  final VoidCallback? onOpenCron;
+  final VoidCallback? onOpenTasks;
+  final VoidCallback? onOpenSessions;
+  final VoidCallback? onOpenTools;
+
   const BotModeDock({
     required this.selectedIndex,
     required this.onDestinationSelected,
@@ -36,6 +48,11 @@ class BotModeDock extends StatefulWidget {
     this.coordinator,
     this.showBackContext = false,
     this.onBack,
+    this.onOpenHome,
+    this.onOpenCron,
+    this.onOpenTasks,
+    this.onOpenSessions,
+    this.onOpenTools,
     super.key,
   });
 
@@ -377,10 +394,64 @@ class _BotModeDockState extends State<BotModeDock>
           onTap: _toggleCreate,
         );
       case DockItemId.home:
+        final visualMeta = dockItemVisual(DockItemId.home);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-home'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.home),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: widget.onOpenHome,
+        );
+      case DockItemId.cron:
+        final visualMeta = dockItemVisual(DockItemId.cron);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-cron'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.cron),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: widget.onOpenCron,
+        );
+      case DockItemId.tasks:
+        final visualMeta = dockItemVisual(DockItemId.tasks);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-tasks'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.tasks),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: widget.onOpenTasks,
+        );
+      case DockItemId.sessions:
+        final visualMeta = dockItemVisual(DockItemId.sessions);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-sessions'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.sessions),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: widget.onOpenSessions,
+        );
+      case DockItemId.tools:
+        final visualMeta = dockItemVisual(DockItemId.tools);
+        return DockItemTile(
+          controlKey: const ValueKey('bot-mode-dock-tools'),
+          icon: visualMeta.icon,
+          selectedIcon: visualMeta.selectedIcon,
+          label: dockItemLabel(strings, DockItemId.tools),
+          innerRadius: innerRadius,
+          compact: compact,
+          onTap: widget.onOpenTools,
+        );
       case DockItemId.settings:
-        // No forman parte del catálogo del perfil "bots"; si llegaran a
-        // aparecer (config corrupta o migración futura) se ignoran en vez
-        // de reventar el layout.
+        // No forma parte del catálogo del perfil "bots"; si llegara a
+        // aparecer (config corrupta o migración futura) se ignora en vez de
+        // reventar el layout.
         return const SizedBox.shrink();
     }
   }
