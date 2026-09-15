@@ -18,6 +18,12 @@ are not releases.
   there is no background poll for a fully closed app, since
   `session.control.read` is a control-channel RPC, not a REST endpoint the
   background service can poll the way it does Cron/Kanban.
+- Notified when a session being driven from another surface (Desktop, another
+  Console, TUI) reaches a proven terminal state (completed, failed or
+  interrupted) while this device is connected, reusing the existing
+  cross-surface activity projection and the Runs notification channel. The
+  notification never names the originating surface or session content — the
+  projection is deliberately blind to that identity.
 
 ## 1.2.10 (9008) — 2026-09-14
 
