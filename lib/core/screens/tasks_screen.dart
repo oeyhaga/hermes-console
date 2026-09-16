@@ -17,11 +17,16 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
 import '../models/connection.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../models/kanban.dart';
 import '../services/kanban_client.dart';
-import '../services/connection_manager.dart' show DashboardHttpException;
+import '../services/connection_manager.dart'
+    show ConnectionManager, DashboardHttpException;
+import '../services/dock_preferences_store.dart';
 import '../theme/app_theme.dart';
 import '../utils/relative_time.dart';
+import '../widgets/dock_anchored_popover.dart';
+import '../widgets/general_dock_shell.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/kanban_task_detail_surface.dart';
@@ -42,8 +47,16 @@ class TasksScreen extends StatefulWidget {
   final String? initialTaskId;
   final String? initialAssignee;
 
+  /// Cuando no es null, envuelve esta pantalla con [GeneralDockShell] (mismo
+  /// dock flotante de Ajustes/Sesiones), con el "+" contextual abriendo una
+  /// creación rápida anclada al propio botón. Null en call sites sin un
+  /// `ConnectionManager` a mano (p.ej. dentro de una conversación abierta):
+  /// la pantalla funciona igual, solo sin el dock.
+  final ConnectionManager? connManager;
+
   const TasksScreen({
     required this.connection,
+    this.connManager,
     this.clientOverride,
     this.eventStreamOverride,
     this.initialBoard,
@@ -625,20 +638,52 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       ),
       // FAB circular simple: el botón extendido se recortaba contra el borde.
       // Sólo cuando hay tareas (con el board vacío ya está el CTA grande).
-      floatingActionButton:
-          (_board != null &&
+      // Con el dock activo Y presente, su "+" contextual (creación rápida
+      // anclada) reemplaza a este FAB para no duplicar la acción ni
+      // competir visualmente con la barra flotante del dock. "Dock activo"
+      // (interruptor global "Usar dock flotante" en Ajustes) es una
+      // condición aparte de "pantalla compatible con dock"
+      // (`widget.connManager != null`): con el interruptor apagado el FAB
+      // debe reaparecer, o crear una tarea dejaría de ser posible desde
+      // aquí. Reactivo vía `ListenableBuilder` para no requerir reabrir la
+      // pantalla tras cambiar el interruptor.
+      floatingActionButton: ListenableBuilder(
+        listenable: DockPreferencesController.instance.listenable,
+        builder: (context, _) {
+          final dockActive =
+              widget.connManager != null &&
+              DockPreferencesController.instance.value.useDock;
+          final showFab =
+              !dockActive &&
+              _board != null &&
               _error == null &&
               _board!.taskCount > 0 &&
               !widget.connection.readOnly &&
-              _taskFilter != KanbanMobileGroup.archived)
-          ? FloatingActionButton(
-              backgroundColor: colors.accent,
-              tooltip: s.kanbanNewTask,
-              onPressed: () => _openTaskForm(),
-              child: Icon(Icons.add, color: colors.onAccent),
-            )
-          : null,
-      body: _buildBody(colors),
+              _taskFilter != KanbanMobileGroup.archived;
+          if (!showFab) return const SizedBox.shrink();
+          return FloatingActionButton(
+            backgroundColor: colors.accent,
+            tooltip: s.kanbanNewTask,
+            onPressed: () => _openTaskForm(),
+            child: Icon(Icons.add, color: colors.onAccent),
+          );
+        },
+      ),
+      body: _wrapWithDock(_buildBody(colors)),
+    );
+  }
+
+  Widget _wrapWithDock(Widget body) {
+    final connManager = widget.connManager;
+    if (connManager == null) return body;
+    return GeneralDockShell(
+      connection: widget.connection,
+      connManager: connManager,
+      onCreateAnchored: widget.connection.readOnly
+          ? null
+          : _showAnchoredQuickCreate,
+      currentDestination: DockItemId.tasks,
+      body: body,
     );
   }
 
@@ -673,8 +718,10 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       context: context,
       surfaceKey: const ValueKey('kanban-filter-surface'),
       maxWidth: 560,
-      builder: (sheetCtx) => StatefulBuilder(
-        builder: (sheetCtx, setSheet) => SingleChildScrollView(
+      builder: (sheetCtx) => DisposeControllersOnUnmount(
+        controllers: [queryCtrl],
+        child: StatefulBuilder(
+          builder: (sheetCtx, setSheet) => SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -736,9 +783,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+        ),
       ),
     );
-    Future.delayed(const Duration(milliseconds: 400), queryCtrl.dispose);
     if (selected == null || !mounted) return;
     await _applyTaskFilter(selected);
   }
@@ -1226,6 +1273,112 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
   /// Formulario de tarea: crea ([existing]==null) o edita una tarjeta. Al crear
   /// ofrece plantillas rápidas (bug/feature/investigar) que rellenan título y
   /// descripción.
+  /// Creación rápida anclada al "+" del dock: formulario mínimo (título +
+  /// prioridad) en vez del sheet completo de `_openTaskForm` (con
+  /// plantillas y selector de asignado) — el usuario que quiera esas
+  /// opciones sigue teniendo el FAB/CTA de la pantalla cuando no hay dock,
+  /// o puede abrir la tarea recién creada para completarla. Reutiliza
+  /// `_create` (misma llamada a `_client.createTask`) que ya usa el sheet
+  /// completo.
+  Future<void> _showAnchoredQuickCreate(GlobalKey anchorKey) async {
+    await _ensureProfiles();
+    if (!mounted) return;
+    final titleCtrl = TextEditingController();
+    var priority = 'normal';
+    await showDockAnchoredPopover<void>(
+      context: context,
+      anchorKey: anchorKey,
+      maxWidth: 320,
+      builder: (popoverContext) => DisposeControllersOnUnmount(
+        controllers: [titleCtrl],
+        child: StatefulBuilder(
+        builder: (popoverContext, setPopover) {
+          final colors = Theme.of(popoverContext).hermes;
+          final s = Strings.of(popoverContext);
+          void submit() {
+            final title = titleCtrl.text.trim();
+            if (title.isEmpty) return;
+            Navigator.of(popoverContext).pop();
+            _create(title, null, priority, _defaultAssignee());
+          }
+
+          return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    s.kanbanNewTask,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: titleCtrl,
+                    autofocus: true,
+                    decoration: InputDecoration(labelText: s.kanbanFieldTitle),
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => submit(),
+                  ),
+                  const SizedBox(height: 12),
+                  SegmentedButton<String>(
+                    segments: [
+                      ButtonSegment(
+                        value: 'low',
+                        label: Text(s.kanbanPriorityLow),
+                      ),
+                      ButtonSegment(
+                        value: 'normal',
+                        label: Text(s.kanbanPriorityNormal),
+                      ),
+                      ButtonSegment(
+                        value: 'high',
+                        label: Text(s.kanbanPriorityHigh),
+                      ),
+                    ],
+                    selected: {priority},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (selection) =>
+                        setPopover(() => priority = selection.first),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(popoverContext).pop(),
+                        child: Text(
+                          MaterialLocalizations.of(
+                            popoverContext,
+                          ).cancelButtonLabel,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: colors.accent,
+                        ),
+                        onPressed: submit,
+                        child: Text(
+                          s.kanbanCreate,
+                          style: TextStyle(color: colors.onAccent),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+          );
+        },
+      ),
+      ),
+    );
+  }
+
   Future<void> _openTaskForm({KanbanTask? existing}) async {
     // Red de seguridad: asegura los perfiles antes de calcular el sugerido.
     await _ensureProfiles();
@@ -1251,7 +1404,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       surfaceKey: const ValueKey('kanban-task-form-surface'),
       maxWidth: 620,
       maxHeightFactor: 0.9,
-      builder: (sheetCtx) => Padding(
+      builder: (sheetCtx) => DisposeControllersOnUnmount(
+        controllers: [titleCtrl, bodyCtrl],
+        child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
         child: StatefulBuilder(
           builder: (sheetCtx, setSheet) => SingleChildScrollView(
@@ -1386,16 +1541,8 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
           ),
         ),
       ),
+      ),
     );
-    // Libera los controllers DESPUÉS de la animación de cierre del sheet.
-    // Liberarlos de inmediato (con la hoja aún cerrándose) hacía que el TextField
-    // re-escuchara un TextEditingController ya destruido en el siguiente frame
-    // → crash en cascada `_dependents.isEmpty`. Son variables locales: la closure
-    // sigue siendo válida aunque la pantalla se cierre antes.
-    Future.delayed(const Duration(milliseconds: 400), () {
-      titleCtrl.dispose();
-      bodyCtrl.dispose();
-    });
   }
 
   String _priorityLabel(Strings s, String value) {

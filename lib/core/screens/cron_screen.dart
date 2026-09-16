@@ -16,15 +16,19 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/cron_job.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../navigation/chat_route.dart';
 import '../services/connection_manager.dart';
 import '../services/cron_repository.dart';
+import '../services/dock_preferences_store.dart';
 import '../services/notifications/notification_service.dart';
 
 import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/api_error.dart';
+import '../widgets/dock_anchored_popover.dart';
 import '../widgets/feature_dependency_notice.dart';
+import '../widgets/general_dock_shell.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_pill.dart';
 import '../widgets/hermes_premium_ui.dart';
@@ -48,8 +52,17 @@ class CronScreen extends StatefulWidget {
   final String? initialJobId;
   final String? profileOverride;
 
+  /// Cuando no es null, esta pantalla se envuelve con [GeneralDockShell]
+  /// (mismo dock flotante que ya usan Ajustes y la lista de sesiones), con
+  /// el "+" contextual abriendo un popover anclado en vez de navegar. Null
+  /// en los call sites que todavía no tienen un `ConnectionManager` a mano
+  /// (p.ej. dentro de una conversación abierta): la pantalla sigue
+  /// funcionando igual, simplemente sin el dock.
+  final ConnectionManager? connManager;
+
   const CronScreen({
     required this.connection,
+    this.connManager,
     @visibleForTesting this.clientOverride,
     @visibleForTesting this.eventStreamOverride,
     this.initialJobId,
@@ -412,6 +425,32 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       barrierDismissible: false,
       builder: (_) => _CronEditorDialog(repository: _repository, job: job),
     );
+    await _applyEditorResult(result, job);
+  }
+
+  /// Variante del "+" contextual del dock: en vez de un diálogo centrado,
+  /// abre el mismo formulario (`_CronEditorDialog`) anclado a la posición
+  /// del propio botón "+" (ver `dock_anchored_popover.dart`), para que se
+  /// sienta como que "sale" de ahí en vez de navegar aparte. Solo cubre
+  /// creación (siempre `job: null`); editar un job existente sigue usando
+  /// el diálogo centrado desde su fila en la lista.
+  Future<void> _showAnchoredEditor(GlobalKey anchorKey) async {
+    // `showDockAnchoredPopover` decora por defecto (mismo Material que
+    // `showHermesFloatingSurface`) — `_CronEditorDialog` no necesita pintar
+    // el suyo propio.
+    final result = await showDockAnchoredPopover<_CronEditorResult>(
+      context: context,
+      anchorKey: anchorKey,
+      maxWidth: 420,
+      builder: (_) => _CronEditorDialog(repository: _repository),
+    );
+    await _applyEditorResult(result, null);
+  }
+
+  Future<void> _applyEditorResult(
+    _CronEditorResult? result,
+    CronJob? job,
+  ) async {
     if (result == null || !mounted) return;
     try {
       final CronJob updated;
@@ -590,74 +629,104 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: SegmentedButton<CronProfileScope>(
-                    key: const ValueKey('cron-profile-scope'),
-                    segments: [
-                      ButtonSegment(
-                        value: CronProfileScope.active,
-                        icon: const Icon(Icons.person_outline, size: 18),
-                        label: Text(s.crnProfile(s.crnStatusActive)),
-                      ),
-                      ButtonSegment(
-                        value: CronProfileScope.all,
-                        icon: const Icon(Icons.groups_outlined, size: 18),
-                        label: Text(s.commonAll),
-                      ),
-                    ],
-                    selected: {_profileScope},
-                    onSelectionChanged: _selectProfileScope,
-                    showSelectedIcon: false,
-                  ),
-                ),
-                if (_profileScope == CronProfileScope.all) ...[
-                  const SizedBox(width: 8),
-                  HermesPill(label: s.statusReadOnly, color: colors.warning),
-                ],
-              ],
-            ),
-          ),
-          if (_legacyAllProfilesFallback)
+      body: _wrapWithDock(
+        Column(
+          children: [
             Padding(
-              key: const ValueKey('cron-profile-all-legacy'),
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
               child: Row(
                 children: [
-                  Icon(
-                    Icons.info_outline,
-                    size: 16,
-                    color: colors.textSecondary,
-                  ),
-                  const SizedBox(width: 7),
-                  Text(
-                    '${s.commonNotAvailable} · ${s.crnProfile(_profile.isEmpty ? 'default' : _profile)}',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: colors.textSecondary,
+                  Expanded(
+                    child: SegmentedButton<CronProfileScope>(
+                      key: const ValueKey('cron-profile-scope'),
+                      segments: [
+                        ButtonSegment(
+                          value: CronProfileScope.active,
+                          icon: const Icon(Icons.person_outline, size: 18),
+                          label: Text(s.crnProfile(s.crnStatusActive)),
+                        ),
+                        ButtonSegment(
+                          value: CronProfileScope.all,
+                          icon: const Icon(Icons.groups_outlined, size: 18),
+                          label: Text(s.commonAll),
+                        ),
+                      ],
+                      selected: {_profileScope},
+                      onSelectionChanged: _selectProfileScope,
+                      showSelectedIcon: false,
                     ),
                   ),
+                  if (_profileScope == CronProfileScope.all) ...[
+                    const SizedBox(width: 8),
+                    HermesPill(label: s.statusReadOnly, color: colors.warning),
+                  ],
                 ],
               ),
             ),
-          Expanded(child: _buildBody()),
-        ],
+            if (_legacyAllProfilesFallback)
+              Padding(
+                key: const ValueKey('cron-profile-all-legacy'),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      size: 16,
+                      color: colors.textSecondary,
+                    ),
+                    const SizedBox(width: 7),
+                    Text(
+                      '${s.commonNotAvailable} · ${s.crnProfile(_profile.isEmpty ? 'default' : _profile)}',
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Expanded(child: _buildBody()),
+          ],
+        ),
       ),
-      // Se mantiene: el mockup "Superficies" (CronList) muestra el FAB
-      // circular como punto de creación de esta pantalla; no se depende de
-      // feat/dock-v2 (rama en curso, no mergeada) para decidir su retiro.
-      floatingActionButton: _mutationsDisabled
-          ? null
-          : FloatingActionButton(
-              tooltip: s.crnAddNew,
-              onPressed: _loading ? null : () => _showEditor(),
-              child: const Icon(Icons.add),
-            ),
+      // Con el dock activo y presente, su "+" contextual
+      // (`_showAnchoredEditor`) reemplaza a este FAB — mantenerlos ambos
+      // duplicaría la acción de crear y competiría visualmente con la barra
+      // flotante del dock. Pero "dock presente" no es lo mismo que
+      // "pantalla compatible con dock" (`widget.connManager != null`): con
+      // el interruptor global "Usar dock flotante" apagado, esta pantalla
+      // sigue teniendo `connManager`, pero NINGÚN dock se pinta encima, así
+      // que el FAB debe reaparecer o la única forma de crear un cron job
+      // desaparecería con él (bug confirmado, pedido explícito del
+      // usuario). Reactivo vía `ListenableBuilder`: si el interruptor
+      // cambia mientras esta pantalla está viva, el FAB aparece/desaparece
+      // sin necesidad de reabrir la pantalla.
+      floatingActionButton: ListenableBuilder(
+        listenable: DockPreferencesController.instance.listenable,
+        builder: (context, _) {
+          final dockActive =
+              widget.connManager != null &&
+              DockPreferencesController.instance.value.useDock;
+          if (dockActive || _mutationsDisabled) return const SizedBox.shrink();
+          return FloatingActionButton(
+            tooltip: s.crnAddNew,
+            onPressed: _loading ? null : () => _showEditor(),
+            child: const Icon(Icons.add),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _wrapWithDock(Widget body) {
+    final connManager = widget.connManager;
+    if (connManager == null) return body;
+    return GeneralDockShell(
+      connection: widget.connection,
+      connManager: connManager,
+      onCreateAnchored: _showAnchoredEditor,
+      currentDestination: DockItemId.cron,
+      body: body,
     );
   }
 

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/dock_config.dart';
 import 'package:hermes_android/core/services/dock_preferences_store.dart';
@@ -17,7 +19,7 @@ void main() {
       expect(DockStyle.fromJson(style.toJson()).toJson(), style.toJson());
     });
 
-    test('unknown schema fails closed to defaults', () {
+    test('a FUTURE schema version fails closed to defaults', () {
       final style = DockStyle.fromJson({
         'schema_version': 99,
         'border_shape': 'rounded',
@@ -27,6 +29,27 @@ void main() {
 
       expect(style.toJson(), const DockStyle().toJson());
     });
+
+    test(
+      'a lower-than-current schema version is not rejected outright (C3)',
+      () {
+        // Regression for C3: any bump of `schemaVersion` used to wipe the
+        // whole payload for a version mismatch in either direction. A
+        // version <= the current one should still go through field-by-field
+        // parsing (the "upgrade path") instead of failing closed; only a
+        // genuinely FUTURE version (a real downgrade of the app) does.
+        final style = DockStyle.fromJson({
+          'schema_version': 0,
+          'border_shape': 'rounded',
+          'transparency': 0.5,
+          'depth': 'flat',
+        });
+
+        expect(style.borderShape, DockBorderShape.rounded);
+        expect(style.transparency, 0.5);
+        expect(style.depth, DockDepth.flat);
+      },
+    );
 
     test('out-of-range transparency clamps to [0, 1]', () {
       final style = DockStyle.fromJson({
@@ -82,6 +105,56 @@ void main() {
       },
     );
 
+    test(
+      'a non-boolean "visible" field does not silently count as visible (C5)',
+      () {
+        final fallback = DockProfileConfig.defaultGeneral();
+        final persisted = {
+          'schema_version': DockProfileConfig.schemaVersion,
+          'items': [
+            {'id': 'home', 'visible': 'yes'},
+            {'id': 'create', 'visible': true},
+          ],
+          'show_back_on_subscreens': true,
+          'style': const DockStyle().toJson(),
+        };
+
+        final value = DockProfileConfig.fromJson(persisted, fallback);
+
+        // Before the fix, `json['visible'] != false` let ANY non-`false`
+        // value (a string, a number, `null`) through as visible; a
+        // non-boolean now falls back to the type's default (`true`) via an
+        // explicit type check, but the important part is that this no
+        // longer depends on the field's literal (accidental) value.
+        expect(value.items.first.id, DockItemId.home);
+        expect(value.items.first.visible, isTrue);
+      },
+    );
+
+    test('duplicate item ids in persisted data are deduplicated (C5)', () {
+      final fallback = DockProfileConfig.defaultGeneral();
+      final persisted = {
+        'schema_version': DockProfileConfig.schemaVersion,
+        'items': [
+          {'id': 'home', 'visible': true},
+          {'id': 'home', 'visible': false},
+          {'id': 'create', 'visible': true},
+        ],
+        'show_back_on_subscreens': true,
+        'style': const DockStyle().toJson(),
+      };
+
+      final value = DockProfileConfig.fromJson(persisted, fallback);
+
+      expect(value.items.where((i) => i.id == DockItemId.home).length, 1);
+      // The FIRST occurrence wins, matching how `resolveDockSlots` and the
+      // reorder/visibility UI already treat "first" as authoritative.
+      expect(
+        value.items.firstWhere((i) => i.id == DockItemId.home).visible,
+        isTrue,
+      );
+    });
+
     test('style is not shared between profiles', () {
       final bots = DockProfileConfig.defaultBots().copyWith(
         style: const DockStyle(borderShape: DockBorderShape.square),
@@ -97,50 +170,73 @@ void main() {
     const items = [DockItemId.bots, DockItemId.create, DockItemId.work];
 
     test('returns visible items unchanged when Back is not shown', () {
-      final slots = resolveDockSlots(
-        visibleItems: items,
-        pinnedItemId: DockItemId.create,
-        showBack: false,
-      );
+      final slots = resolveDockSlots(visibleItems: items, showBack: false);
 
       expect(slots, items);
     });
 
     test(
-      'inserts Back and drops the last non-pinned item to keep dock size stable',
+      'inserts Back and drops the last item that is not the first (pinned) one',
       () {
-        final slots = resolveDockSlots(
-          visibleItems: items,
-          pinnedItemId: DockItemId.create,
-          showBack: true,
-        );
+        final slots = resolveDockSlots(visibleItems: items, showBack: true);
 
+        // "work" is neither the first item nor the pinned one; it is the
+        // one dropped. "bots" (first/pinned) and "create" survive.
         expect(slots, [null, DockItemId.bots, DockItemId.create]);
       },
     );
 
     test(
-      'never removes the pinned item even when it is the only alternative',
+      'never removes the first (pinned) item even when it is the only alternative',
       () {
+        // "create" is first here, so it is the one protected from removal —
+        // there is no separate "pinned" field to set anymore (ver C6): the
+        // first visible item in the profile's own order IS the pinned slot.
         final slots = resolveDockSlots(
-          visibleItems: const [DockItemId.bots, DockItemId.create],
-          pinnedItemId: DockItemId.create,
+          visibleItems: const [DockItemId.create, DockItemId.bots],
           showBack: true,
         );
 
         // "bots" is the only non-pinned item, so it is the one dropped;
-        // "create" (pinned) survives.
+        // "create" (first/pinned) survives.
         expect(slots, [null, DockItemId.create]);
       },
     );
 
-    test('empty visible list stays empty regardless of Back', () {
-      expect(
-        resolveDockSlots(
-          visibleItems: const [],
-          pinnedItemId: DockItemId.create,
+    test(
+      'a single visible item (trivially the pinned one) survives Back by growing the bar by one slot',
+      () {
+        // Regression for the doc/code contradiction fixed in E: the doc
+        // always said "the pinned item is never removed", but the old code
+        // removed it anyway when it was the only visible item. The bar
+        // itself does not change size in practice (each tile just narrows),
+        // so growing from 1 to 2 slots is the correct, doc-matching fix.
+        final slots = resolveDockSlots(
+          visibleItems: const [DockItemId.create],
           showBack: true,
-        ),
+        );
+
+        expect(slots, [null, DockItemId.create]);
+      },
+    );
+
+    test(
+      'an empty visible list still shows Back instead of an empty floating bar',
+      () {
+        // Regression for A4: a profile with every item hidden used to
+        // resolve to an empty slot list even with Back requested, leaving a
+        // floating bar with no items and no way to navigate. The old test
+        // here froze that bug as expected behavior; this asserts the fix.
+        expect(
+          resolveDockSlots(visibleItems: const [], showBack: true),
+          [null],
+        );
+      },
+    );
+
+    test('an empty visible list stays empty when Back is not shown', () {
+      expect(
+        resolveDockSlots(visibleItems: const [], showBack: false),
         isEmpty,
       );
     });
@@ -212,6 +308,28 @@ void main() {
       expect(value.bots.toJson(), DockPreferences.defaults().bots.toJson());
     });
 
+    test(
+      'a well-formed payload with an unexpected field type also fails closed (not just malformed JSON)',
+      () async {
+        // Regression for C1: `load()` used to catch only `FormatException`
+        // (malformed JSON syntax). A syntactically valid JSON document with
+        // an unexpected type deep inside — here a String where `bots` is
+        // expected to be a Map — throws a `TypeError` at
+        // `(json['bots'] as Map?)`, which used to escape uncaught from
+        // `unawaited(ensureLoaded())`.
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(
+          'dock_preferences_v1',
+          jsonEncode({'schema_version': 1, 'bots': 'oops', 'general': {}}),
+        );
+        final store = DockPreferencesStore(prefs);
+
+        final value = store.load();
+
+        expect(value.bots.toJson(), DockPreferences.defaults().bots.toJson());
+      },
+    );
+
     test('clear removes the persisted payload', () async {
       final prefs = await SharedPreferences.getInstance();
       final store = DockPreferencesStore(prefs);
@@ -247,5 +365,38 @@ void main() {
       // this test's writes to the process-wide controller instance.
       await controller.resetBots();
     });
+
+    test(
+      'persist: false updates memory instantly without writing to disk; a '
+      'later persist: true call writes the value that is currently in memory',
+      () async {
+        // Regression for C4: the transparency slider used to write to
+        // `SharedPreferences` on every `onChanged` frame while dragging.
+        // `persist: false` must update the reactive in-memory value (so a
+        // live preview keeps working) without touching disk at all; disk
+        // catches up only once persistence is explicitly requested.
+        final controller = DockPreferencesController.instance;
+        await controller.ensureLoaded();
+        final prefs = await SharedPreferences.getInstance();
+
+        await controller.updateBots(
+          (p) => p.copyWith(style: p.style.copyWith(transparency: 0.42)),
+          persist: false,
+        );
+
+        expect(controller.value.bots.style.transparency, 0.42);
+        final onDiskDuringDrag = DockPreferencesStore(prefs).load();
+        expect(onDiskDuringDrag.bots.style.transparency, isNot(0.42));
+
+        await controller.updateBots(
+          (p) => p.copyWith(style: p.style.copyWith(transparency: 0.42)),
+        );
+
+        final onDiskAfterCommit = DockPreferencesStore(prefs).load();
+        expect(onDiskAfterCommit.bots.style.transparency, 0.42);
+
+        await controller.resetBots();
+      },
+    );
   });
 }

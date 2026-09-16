@@ -824,7 +824,7 @@ void main() {
         reason: '${destination.key} debe publicar la acción tap en Android',
       );
     }
-    // El dock real pinta solo iconos (ver bot_mode_dock.dart): la etiqueta
+    // El dock real pinta solo iconos (ver dock.dart): la etiqueta
     // ya no es un Text visible en la barra, así que la cobertura de
     // accesibilidad se comprueba por el `label` semántico publicado, no por
     // `find.text` (que sí sigue encontrando "Bots" en otras superficies de

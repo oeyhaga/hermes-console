@@ -65,6 +65,23 @@ enum DockItemId {
       .firstWhere((candidate) => candidate?.name == value, orElse: () => null);
 }
 
+/// Cuál de los dos perfiles de dock usa una pantalla.
+///
+/// Existe porque hay UN solo widget de dock (ver `widgets/dock.dart`): el
+/// perfil dejó de ser "qué widget monto" para pasar a ser un parámetro.
+enum DockProfileId {
+  bots,
+  general;
+
+  /// Prefijo estable de las keys de widget del dock de este perfil
+  /// (`bot-mode-dock-bots`, `general-mode-floating-dock`, ...). Vive aquí, en
+  /// un único sitio, para que ninguna pantalla se invente el suyo.
+  String get keyPrefix => switch (this) {
+    DockProfileId.bots => 'bot-mode',
+    DockProfileId.general => 'general-mode',
+  };
+}
+
 /// Estilo visual de un perfil de dock: bordes, transparencia y profundidad.
 class DockStyle {
   static const schemaVersion = 1;
@@ -99,7 +116,15 @@ class DockStyle {
   };
 
   factory DockStyle.fromJson(Map<String, Object?>? json) {
-    if (json == null || json['schema_version'] != schemaVersion) {
+    // Acepta cualquier versión <= la actual (parseo campo a campo,
+    // defensivo, más abajo, hace de "migración" en la práctica mientras no
+    // haya un cambio de forma real que la requiera); solo una versión
+    // FUTURA (mayor que la que este binario entiende, p.ej. tras un
+    // downgrade de la app) falla cerrado a los valores por defecto en vez
+    // de arriesgarse a malinterpretar un formato que aún no existe (ver
+    // C3). `is! int` cubre también el caso de un valor corrupto/ausente.
+    final version = json?['schema_version'];
+    if (json == null || version is! int || version > schemaVersion) {
       return const DockStyle();
     }
     final rawTransparency = json['transparency'];
@@ -132,7 +157,12 @@ class DockItemConfig {
   static DockItemConfig? fromJson(Map<String, Object?> json) {
     final id = DockItemId.parse(json['id']);
     if (id == null) return null;
-    return DockItemConfig(id: id, visible: json['visible'] != false);
+    // Comprobación de tipo explícita en vez de `!= false`: con `!= false`
+    // cualquier valor no booleano (un número, una cadena, `null`) cuela
+    // como "visible" en vez de caer a un valor por defecto razonable (bug
+    // confirmado: C5).
+    final rawVisible = json['visible'];
+    return DockItemConfig(id: id, visible: rawVisible is bool ? rawVisible : true);
   }
 }
 
@@ -141,16 +171,11 @@ class DockProfileConfig {
   static const schemaVersion = 1;
 
   final List<DockItemConfig> items;
-
-  /// Elemento destacado: nunca se retira aunque aparezca "Atrás" y no cabría
-  /// el resto de elementos visibles.
-  final DockItemId pinnedItemId;
   final bool showBackOnSubscreens;
   final DockStyle style;
 
   const DockProfileConfig({
     required this.items,
-    required this.pinnedItemId,
     this.showBackOnSubscreens = true,
     this.style = const DockStyle(),
   });
@@ -162,12 +187,10 @@ class DockProfileConfig {
 
   DockProfileConfig copyWith({
     List<DockItemConfig>? items,
-    DockItemId? pinnedItemId,
     bool? showBackOnSubscreens,
     DockStyle? style,
   }) => DockProfileConfig(
     items: items ?? this.items,
-    pinnedItemId: pinnedItemId ?? this.pinnedItemId,
     showBackOnSubscreens: showBackOnSubscreens ?? this.showBackOnSubscreens,
     style: style ?? this.style,
   );
@@ -175,7 +198,6 @@ class DockProfileConfig {
   Map<String, Object?> toJson() => {
     'schema_version': schemaVersion,
     'items': [for (final item in items) item.toJson()],
-    'pinned_item_id': pinnedItemId.name,
     'show_back_on_subscreens': showBackOnSubscreens,
     'style': style.toJson(),
   };
@@ -184,11 +206,17 @@ class DockProfileConfig {
     Map<String, Object?>? json,
     DockProfileConfig fallback,
   ) {
-    if (json == null || json['schema_version'] != schemaVersion) {
+    // Ver el comentario equivalente en `DockStyle.fromJson` (C3): solo una
+    // versión futura falla cerrado; el resto sigue al parseo campo a campo
+    // de más abajo, que ya cae a `fallback` por su cuenta ante datos
+    // insuficientes (lista de items vacía, etc.).
+    final version = json?['schema_version'];
+    if (json == null || version is! int || version > schemaVersion) {
       return fallback;
     }
     final rawItems = json['items'];
     final parsedItems = <DockItemConfig>[];
+    final seenIds = <DockItemId>{};
     if (rawItems is List) {
       for (final entry in rawItems) {
         if (entry is Map) {
@@ -197,26 +225,32 @@ class DockProfileConfig {
               if (e.key is String) e.key as String: e.value,
           };
           final item = DockItemConfig.fromJson(asStringMap);
-          if (item != null) parsedItems.add(item);
+          // Un id repetido en lo persistido (dato corrupto o de una versión
+          // con un bug propio) rompía las suposiciones de `resolveDockSlots`
+          // (una entrada por id); se deduplica al parsear en vez de
+          // propagar la corrupción al resto del dock (bug confirmado: C5).
+          if (item != null && seenIds.add(item.id)) parsedItems.add(item);
         }
       }
     }
+    // Nada útil que rescatar de lo persistido (ausente/vacío/todo
+    // corrupto): al `fallback` completo, ANTES de rellenar con el catálogo
+    // por defecto más abajo — si este check viviera después de ese
+    // relleno, `parsedItems` ya no estaría vacío nunca (se habría llenado
+    // con todo el catálogo por defecto oculto) y este caso devolvería un
+    // perfil con todo oculto en vez del `fallback` real.
+    if (parsedItems.isEmpty) return fallback;
     // Cualquier id del catálogo por defecto que falte en lo persistido (por
     // ejemplo, tras una actualización que añade un elemento nuevo) se agrega
     // al final, oculto, para no perder elementos futuros silenciosamente ni
     // reordenar lo que el usuario ya configuró.
-    final knownIds = parsedItems.map((item) => item.id).toSet();
     for (final defaultItem in fallback.items) {
-      if (!knownIds.contains(defaultItem.id)) {
+      if (!seenIds.contains(defaultItem.id)) {
         parsedItems.add(defaultItem.copyWith(visible: false));
       }
     }
-    if (parsedItems.isEmpty) return fallback;
-    final pinnedItemId =
-        DockItemId.parse(json['pinned_item_id']) ?? fallback.pinnedItemId;
     return DockProfileConfig(
       items: parsedItems,
-      pinnedItemId: pinnedItemId,
       showBackOnSubscreens: json['show_back_on_subscreens'] != false,
       style: DockStyle.fromJson(
         (json['style'] as Map?)?.cast<String, Object?>(),
@@ -238,7 +272,6 @@ class DockProfileConfig {
       DockItemConfig(id: DockItemId.sessions, visible: false),
       DockItemConfig(id: DockItemId.tools, visible: false),
     ],
-    pinnedItemId: DockItemId.create,
   );
 
   static DockProfileConfig defaultGeneral() => const DockProfileConfig(
@@ -254,18 +287,36 @@ class DockProfileConfig {
       DockItemConfig(id: DockItemId.sessions, visible: false),
       DockItemConfig(id: DockItemId.tools, visible: false),
     ],
-    pinnedItemId: DockItemId.create,
   );
 }
 
-/// Raíz persistida: un [DockProfileConfig] por perfil.
+/// Raíz persistida: un [DockProfileConfig] por perfil, más el interruptor
+/// GLOBAL (no por perfil) que apaga el dock flotante en toda la app.
 class DockPreferences {
   static const schemaVersion = 1;
 
   final DockProfileConfig bots;
   final DockProfileConfig general;
 
-  const DockPreferences({required this.bots, required this.general});
+  /// Activado por defecto. Cuando es `false`, ningún dock (ni "Bots" ni
+  /// "General") se pinta en ninguna pantalla: la app debe seguir siendo
+  /// 100% navegable/funcional solo con la UI nativa de cada pantalla (ver
+  /// `GeneralDockShell`, que en ese caso devuelve el `body` sin envolver
+  /// nada, y las acciones nativas — FAB, back nativo del `AppBar` — que
+  /// nunca deben depender exclusivamente del dock para existir).
+  final bool useDock;
+
+  const DockPreferences({
+    required this.bots,
+    required this.general,
+    this.useDock = true,
+  });
+
+  /// Único punto donde un [DockProfileId] se traduce a su configuración.
+  DockProfileConfig profile(DockProfileId id) => switch (id) {
+    DockProfileId.bots => bots,
+    DockProfileId.general => general,
+  };
 
   factory DockPreferences.defaults() => DockPreferences(
     bots: DockProfileConfig.defaultBots(),
@@ -275,22 +326,28 @@ class DockPreferences {
   DockPreferences copyWith({
     DockProfileConfig? bots,
     DockProfileConfig? general,
+    bool? useDock,
   }) => DockPreferences(
     bots: bots ?? this.bots,
     general: general ?? this.general,
+    useDock: useDock ?? this.useDock,
   );
 
   Map<String, Object?> toJson() => {
     'schema_version': schemaVersion,
     'bots': bots.toJson(),
     'general': general.toJson(),
+    'use_dock': useDock,
   };
 
   factory DockPreferences.fromJson(Map<String, Object?>? json) {
     final defaults = DockPreferences.defaults();
-    if (json == null || json['schema_version'] != schemaVersion) {
+    // Ver el comentario equivalente en `DockStyle.fromJson` (C3).
+    final version = json?['schema_version'];
+    if (json == null || version is! int || version > schemaVersion) {
       return defaults;
     }
+    final rawUseDock = json['use_dock'];
     return DockPreferences(
       bots: DockProfileConfig.fromJson(
         (json['bots'] as Map?)?.cast<String, Object?>(),
@@ -300,6 +357,7 @@ class DockPreferences {
         (json['general'] as Map?)?.cast<String, Object?>(),
         defaults.general,
       ),
+      useDock: rawUseDock is bool ? rawUseDock : defaults.useDock,
     );
   }
 }
@@ -308,18 +366,36 @@ class DockPreferences {
 /// perfil, en orden, con "Atrás" (representado como `null`) insertado en el
 /// primer hueco cuando [showBack] es true.
 ///
-/// El dock nunca cambia de tamaño: si hace falta sitio para "Atrás" se
-/// retira el último elemento visible que no sea [pinnedItemId] (el
-/// destacado nunca se retira). Al volver al nivel superior basta con volver
-/// a llamar con `showBack: false` para recuperar la lista completa.
+/// El "destacado" (el elemento que nunca se retira para hacerle sitio a
+/// "Atrás") ya no es un campo persistido aparte (ver C6): es, por
+/// definición, el primer elemento de [visibleItems] — exactamente lo mismo
+/// que ya calculaba Ajustes › Dock (antes como `pinnedItemId` recalculado en
+/// cada edición) para decidir qué item "no se puede robar" a otro. Con una
+/// sola fuente de verdad, el orden ya IMPLICA qué item queda protegido.
+///
+/// Para no añadir un hueco extra a la barra se retira el último elemento
+/// visible que no sea el destacado. Si el único elemento visible YA ES el
+/// destacado (por ser el único, y por tanto también el primero), no hay
+/// nada que retirar sin romper esa garantía: la barra gana un hueco más en
+/// vez de perder el destacado (caso raro — la barra en sí no cambia de
+/// tamaño, cada item solo se estrecha un poco más; antes el código
+/// contradecía este mismo doc y lo retiraba igual, ver E).
+///
+/// Si el perfil no tiene NINGÚN elemento visible (todos ocultos desde
+/// Ajustes › Dock) pero [showBack] es true, el resultado es `[null]`: nunca
+/// se deja una barra flotante vacía y sin navegación (bug confirmado: A4).
+///
+/// Al volver al nivel superior basta con volver a llamar con
+/// `showBack: false` para recuperar la lista completa.
 List<DockItemId?> resolveDockSlots({
   required List<DockItemId> visibleItems,
-  required DockItemId pinnedItemId,
   required bool showBack,
 }) {
-  if (!showBack || visibleItems.isEmpty) return visibleItems;
+  if (!showBack) return List<DockItemId?>.from(visibleItems);
+  if (visibleItems.isEmpty) return const <DockItemId?>[null];
   final result = List<DockItemId>.from(visibleItems);
+  final pinnedItemId = result.first;
   final removeIndex = result.lastIndexWhere((id) => id != pinnedItemId);
-  result.removeAt(removeIndex == -1 ? result.length - 1 : removeIndex);
+  if (removeIndex != -1) result.removeAt(removeIndex);
   return <DockItemId?>[null, ...result];
 }

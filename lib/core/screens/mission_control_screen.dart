@@ -29,7 +29,8 @@ import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_drawer.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_ui.dart';
-import '../widgets/bot_mode_dock.dart';
+import '../widgets/dock.dart';
+import '../widgets/dock_style.dart' show dockShowsBack;
 import '../widgets/chat_surface_coordinator.dart';
 import '../widgets/dock_shortcuts.dart';
 import '../widgets/mission_profile_avatar.dart';
@@ -144,7 +145,7 @@ class MissionControlScreen extends StatefulWidget {
 enum _MissionDestination { bots, work }
 
 class _MissionControlScreenState extends State<MissionControlScreen>
-    with WidgetsBindingObserver, RouteAware {
+    with WidgetsBindingObserver {
   late final MissionControlDataSource _dataSource;
   late final MissionProfileAvatarCache? _profileAvatarCache;
   late final MissionOrganizationStoreContract _organizationStore;
@@ -177,12 +178,6 @@ class _MissionControlScreenState extends State<MissionControlScreen>
   bool _initialOpenDispatched = false;
   _MissionDestination _destination = _MissionDestination.bots;
   late final ChatSurfaceCoordinator _surfaceCoordinator;
-  // Observador de rutas (least-invasive: no toca el sistema de navegación,
-  // solo se suscribe a él) para saber si hay una subpantalla abierta encima
-  // de Mission Control y mostrar el "Atrás" contextual del dock (perfil
-  // Bots).
-  PageRoute<dynamic>? _dockRoute;
-  bool _hasSubscreenAbove = false;
   final Map<WorkItem, int> _workItemGenerations = Map.identity();
   final Map<String, WorkDestination> _validatedWorkDestinations = {};
 
@@ -250,28 +245,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     _activeChats = service;
     _activeChats?.activeIds.addListener(_onActiveIdsChanged);
     _syncLiveSubscriptions();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute<dynamic> && !identical(route, _dockRoute)) {
-      hermesRouteObserver.unsubscribe(this);
-      _dockRoute = route;
-      hermesRouteObserver.subscribe(this, route);
-    }
-  }
-
-  @override
-  void didPushNext() {
-    if (mounted) setState(() => _hasSubscreenAbove = true);
-  }
-
-  @override
-  void didPopNext() {
-    if (mounted) setState(() => _hasSubscreenAbove = false);
   }
 
   @override
   void dispose() {
     _disposed = true;
-    hermesRouteObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
     _activeChats?.activeIds.removeListener(_onActiveIdsChanged);
     _cancelLiveSubscriptions();
@@ -1994,56 +1972,20 @@ class _MissionControlScreenState extends State<MissionControlScreen>
               AnimatedBuilder(
                 animation: _surfaceCoordinator,
                 builder: (context, _) => _surfaceCoordinator.dockVisible
-                    ? BotModeDock(
+                    ? Dock(
+                        profileId: DockProfileId.bots,
                         coordinator: _surfaceCoordinator,
-                        selectedIndex: _destination.index,
-                        onDestinationSelected: (index) => setState(
-                          () =>
-                              _destination = _MissionDestination.values[index],
-                        ),
-                        onCreateBot:
-                            widget.connection.readOnly ||
-                                snapshot?.profilesCapability !=
-                                    MissionCapabilityState.available
-                            ? null
-                            : () => unawaited(_createAgentFromMission()),
-                        onCreateRoom: _canCreateHostedRoom
-                            ? () => unawaited(_createHostedRoom())
-                            : widget.connection.readOnly ||
-                                  snapshot?.hostedGroupsCapability ==
-                                      MissionCapabilityState.available ||
-                                  snapshot?.profilesCapability !=
-                                      MissionCapabilityState.available ||
-                                  (snapshot?.profiles.length ?? 0) < 2
-                            ? null
-                            : () => unawaited(_editRoom()),
-                        createRoomLabel: _canCreateHostedRoom
-                            ? null
-                            : copy.createLocalRoom,
-                        showBackContext: _hasSubscreenAbove,
+                        // Mismo inset que reserva el cuerpo de esta pantalla
+                        // (`scrollReservation`), para que dock y contenido no
+                        // discrepen.
+                        bottomInset: _surfaceCoordinator.bottomInset,
+                        showBackContext: dockShowsBack(context),
                         onBack: () => Navigator.of(context).maybePop(),
-                        // "Inicio" saca de Bots al dashboard general: el
-                        // catálogo de Bots lo incluye por defecto (antes no
-                        // había forma de volver a Inicio desde aquí, bug
-                        // confirmado en dispositivo real).
-                        onOpenHome: () =>
-                            Navigator.of(context).popUntil((r) => r.isFirst),
-                        // Accesos directos opcionales (ocultos de fábrica);
-                        // mismas pantallas/criterios que ya usa HermesDrawer.
-                        onOpenCron: () =>
-                            openDockCron(context, widget.connection),
-                        onOpenTasks: () =>
-                            openDockTasks(context, widget.connection),
-                        onOpenSessions: () => openDockSessions(
-                          context,
-                          widget.connection,
-                          widget.connManager,
-                        ),
-                        onOpenTools: () => openDockTools(
-                          context,
-                          widget.connection,
-                          widget.connManager,
-                        ),
+                        // El "+" de Bots no ejecuta una acción única: abre la
+                        // bandeja con estas dos órbitas de creación (capa
+                        // opcional del dock; el perfil General no la usa).
+                        createOrbits: _botDockCreateOrbits(copy),
+                        actions: _botDockActions(),
                       )
                     : const SizedBox.shrink(),
               ),
@@ -2052,6 +1994,99 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         },
       ),
     );
+  }
+
+  /// Qué sabe hacer cada elemento del catálogo del dock DESDE Mission
+  /// Control. El dock (`widgets/dock.dart`) es genérico y no conoce ninguna
+  /// pantalla: estas son las acciones que le da esta.
+  ///
+  /// `settings` no está en el mapa a propósito: el perfil Bots no ofrece un
+  /// destino de Ajustes propio, así que ese elemento ni se pinta ni ocupa un
+  /// hueco en la barra aunque una configuración antigua/corrupta lo traiga
+  /// visible.
+  Map<DockItemId, DockItemAction> _botDockActions() {
+    void selectDestination(_MissionDestination value) {
+      if (_destination == value) return;
+      setState(() => _destination = value);
+    }
+
+    return {
+      // "Inicio" saca de Bots al dashboard general: el catálogo de Bots lo
+      // incluye por defecto (antes no había forma de volver a Inicio desde
+      // aquí, bug confirmado en dispositivo real).
+      DockItemId.home: DockItemAction(
+        onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+      ),
+      DockItemId.bots: DockItemAction(
+        onTap: () => selectDestination(_MissionDestination.bots),
+        selected: _destination == _MissionDestination.bots,
+        semanticsKey: const ValueKey('mission-destination-bots'),
+      ),
+      DockItemId.work: DockItemAction(
+        onTap: () => selectDestination(_MissionDestination.work),
+        selected: _destination == _MissionDestination.work,
+        semanticsKey: const ValueKey('mission-destination-work'),
+      ),
+      // El "+" lo gobierna el propio dock mientras tenga órbitas (abre y
+      // cierra la bandeja); aquí solo se declara que el elemento existe en
+      // esta pantalla.
+      DockItemId.create: const DockItemAction(),
+      // Accesos directos opcionales (ocultos de fábrica); mismas
+      // pantallas/criterios que ya usa HermesDrawer.
+      DockItemId.cron: DockItemAction(
+        onTap: () =>
+            openDockCron(context, widget.connection, widget.connManager),
+      ),
+      DockItemId.tasks: DockItemAction(
+        onTap: () =>
+            openDockTasks(context, widget.connection, widget.connManager),
+      ),
+      DockItemId.sessions: DockItemAction(
+        onTap: () =>
+            openDockSessions(context, widget.connection, widget.connManager),
+      ),
+      DockItemId.tools: DockItemAction(
+        onTap: () =>
+            openDockTools(context, widget.connection, widget.connManager),
+      ),
+    };
+  }
+
+  /// Las dos órbitas de creación del perfil Bots. `onTap: null` deja la
+  /// órbita visible pero deshabilitada (sin permisos o sin capacidad en el
+  /// gateway), igual que antes.
+  List<DockCreateOrbit> _botDockCreateOrbits(MissionControlCopy copy) {
+    final strings = Strings.of(context);
+    final snapshot = _snapshot;
+    return [
+      DockCreateOrbit(
+        controlKey: const ValueKey('bot-mode-create-bot'),
+        label: strings.missionCreateBotLabel,
+        icon: Icons.smart_toy_outlined,
+        onTap:
+            widget.connection.readOnly ||
+                snapshot?.profilesCapability != MissionCapabilityState.available
+            ? null
+            : () => unawaited(_createAgentFromMission()),
+      ),
+      DockCreateOrbit(
+        controlKey: const ValueKey('bot-mode-create-room'),
+        label: _canCreateHostedRoom
+            ? strings.missionCreateRoomLabel
+            : copy.createLocalRoom,
+        icon: Icons.groups_2_outlined,
+        onTap: _canCreateHostedRoom
+            ? () => unawaited(_createHostedRoom())
+            : widget.connection.readOnly ||
+                  snapshot?.hostedGroupsCapability ==
+                      MissionCapabilityState.available ||
+                  snapshot?.profilesCapability !=
+                      MissionCapabilityState.available ||
+                  (snapshot?.profiles.length ?? 0) < 2
+            ? null
+            : () => unawaited(_editRoom()),
+      ),
+    ];
   }
 
   Widget _buildBody(MissionControlCopy copy) {

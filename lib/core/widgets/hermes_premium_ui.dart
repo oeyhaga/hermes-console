@@ -106,6 +106,47 @@ class _HermesFloatingSurfaceRoute<T> extends PageRouteBuilder<T> {
   }
 }
 
+/// Disposes [controllers] exactly when this widget actually leaves the
+/// tree, instead of on a fixed delay guessed to outlast whatever route
+/// closing animation currently wraps it.
+///
+/// `Navigator.push`'s returned future completes the instant `pop()` is
+/// called — not when the route's reverse transition finishes removing its
+/// widget subtree. A form's own `TextEditingController`s are commonly local
+/// variables owned by the function that opened the route (not by a widget
+/// with its own lifecycle), so disposing them right after that future
+/// resolves races the still-mounted `TextField` against its now-disposed
+/// controller. Wrapping the route content here ties disposal to the actual
+/// unmount instead of a magic duration.
+class DisposeControllersOnUnmount extends StatefulWidget {
+  const DisposeControllersOnUnmount({
+    super.key,
+    required this.controllers,
+    required this.child,
+  });
+
+  final List<ChangeNotifier> controllers;
+  final Widget child;
+
+  @override
+  State<DisposeControllersOnUnmount> createState() =>
+      _DisposeControllersOnUnmountState();
+}
+
+class _DisposeControllersOnUnmountState
+    extends State<DisposeControllersOnUnmount> {
+  @override
+  Widget build(BuildContext context) => widget.child;
+
+  @override
+  void dispose() {
+    for (final controller in widget.controllers) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+}
+
 class _HermesFloatingSurfaceFrame extends StatelessWidget {
   const _HermesFloatingSurfaceFrame({
     required this.surfaceKey,

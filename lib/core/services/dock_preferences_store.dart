@@ -29,7 +29,15 @@ class DockPreferencesStore {
           if (entry.key is String) entry.key as String: entry.value,
       };
       return DockPreferences.fromJson(json);
-    } on FormatException {
+    } catch (_) {
+      // Un payload corrupto puede fallar con `FormatException` (JSON
+      // inválido) o con un `TypeError` en cuanto `DockPreferences.fromJson`
+      // encuentra un tipo inesperado en un campo (p.ej. un número donde se
+      // esperaba un mapa): antes solo se capturaba el primer caso, así que
+      // el segundo escapaba como una excepción async sin dueño desde
+      // `unawaited(ensureLoaded())` (bug confirmado: C1). Cualquier fallo de
+      // parseo debe fallar cerrado a los valores por defecto, igual que un
+      // esquema desconocido.
       return DockPreferences.defaults();
     }
   }
@@ -69,18 +77,31 @@ class DockPreferencesController {
   /// primera llamada toca disco.
   Future<void> ensureLoaded() async {
     if (_initialized) return;
-    _initialized = true;
-    final prefs = await SharedPreferences.getInstance();
-    _notifier.value = DockPreferencesStore(prefs).load();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _notifier.value = DockPreferencesStore(prefs).load();
+      _initialized = true;
+    } catch (_) {
+      // No se marca `_initialized` en caso de fallo (p.ej.
+      // `SharedPreferences.getInstance()` lanzando por un canal de
+      // plataforma caído): antes se marcaba ANTES del `await`, así que un
+      // fallo aquí dejaba la app entera atascada en la configuración por
+      // defecto en memoria para el resto del proceso, sin ningún reintento
+      // posible (bug confirmado: C2). El valor en memoria ya es
+      // `DockPreferences.defaults()` desde la construcción del notifier;
+      // la siguiente pantalla que instancie un dock reintentará solo.
+    }
   }
 
   Future<void> updateBots(
-    DockProfileConfig Function(DockProfileConfig) update,
-  ) => _updateProfile(bots: update(value.bots));
+    DockProfileConfig Function(DockProfileConfig) update, {
+    bool persist = true,
+  }) => _updateProfile(bots: update(value.bots), persist: persist);
 
   Future<void> updateGeneral(
-    DockProfileConfig Function(DockProfileConfig) update,
-  ) => _updateProfile(general: update(value.general));
+    DockProfileConfig Function(DockProfileConfig) update, {
+    bool persist = true,
+  }) => _updateProfile(general: update(value.general), persist: persist);
 
   Future<void> resetBots() =>
       _updateProfile(bots: DockProfileConfig.defaultBots());
@@ -88,12 +109,30 @@ class DockPreferencesController {
   Future<void> resetGeneral() =>
       _updateProfile(general: DockProfileConfig.defaultGeneral());
 
+  /// Interruptor GLOBAL (no por perfil): apaga el dock flotante en toda la
+  /// app. `GeneralDockShell` y el propio `Dock` reaccionan al
+  /// instante vía `listenable`, igual que cualquier otro cambio de este
+  /// controlador.
+  Future<void> setUseDock(bool enabled) =>
+      _updateProfile(useDock: enabled);
+
+  /// `persist: false` solo actualiza el `ValueNotifier` en memoria (los
+  /// docks/la vista previa reaccionan al instante vía `ListenableBuilder`)
+  /// sin escribir a disco: antes CADA notificación (incluido cada frame de
+  /// un arrastre de slider) también escribía en `SharedPreferences`, cientos
+  /// de veces por segundo mientras se arrastraba (bug confirmado: C4). Quien
+  /// llama con `persist: false` es responsable de volver a llamar con
+  /// `persist: true` (el valor por defecto) al terminar el gesto para que el
+  /// valor final sí quede guardado.
   Future<void> _updateProfile({
     DockProfileConfig? bots,
     DockProfileConfig? general,
+    bool? useDock,
+    bool persist = true,
   }) async {
-    final next = value.copyWith(bots: bots, general: general);
+    final next = value.copyWith(bots: bots, general: general, useDock: useDock);
     _notifier.value = next;
+    if (!persist) return;
     final prefs = await SharedPreferences.getInstance();
     await DockPreferencesStore(prefs).save(next);
   }
