@@ -25,9 +25,9 @@ import '../utils/home_recent_sessions.dart';
 import '../utils/assistant_operational_artifacts.dart';
 import '../utils/relative_time.dart';
 import '../widgets/attachment_source_sheet.dart';
+import '../widgets/dock.dart';
 import '../widgets/dock_shortcuts.dart';
 import '../widgets/dock_style.dart' show dockShowsBack;
-import '../widgets/general_mode_dock.dart';
 import '../widgets/hermes_drawer.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/home_prompt_composer.dart';
@@ -1310,7 +1310,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                   active.kind != InstanceKind.localhost &&
                   !_healthOk &&
                   !_checking;
-              // El dock flotante (`GeneralModeDock`) se pinta como overlay
+              // El dock flotante (`Dock`) se pinta como overlay
               // (Positioned) ENCIMA de esta lista, no reserva espacio por sí
               // mismo. Sin este margen extra, el último item de recientes
               // quedaba tapado/cortado por el dock (confirmado por captura
@@ -1447,45 +1447,69 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               return content;
             }(),
           ),
-          GeneralModeDock(
-            onCreate: _active == null ? null : _newChat,
-            onOpenBots: _active == null
-                ? null
-                : () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => MissionControlScreen(
-                        connection: _active!,
-                        connManager: widget.connManager,
-                      ),
-                    ),
-                  ).then((_) => _refreshStatus()),
-            onOpenSettings: _active == null
-                ? null
-                : () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => SettingsScreen(
-                        connection: _active!,
-                        connManager: widget.connManager,
-                      ),
-                    ),
-                  ).then((_) => _reload()),
+          Dock(
+            profileId: DockProfileId.general,
             showBackContext: dockShowsBack(context),
             onBack: () => Navigator.of(context).maybePop(),
-            // Accesos directos opcionales (ocultos de fábrica en el
-            // catálogo); mismas pantallas/criterios que ya usa HermesDrawer.
-            onOpenCron: _active == null
-                ? null
-                : () => openDockCron(context, _active!, widget.connManager),
-            onOpenTasks: _active == null
-                ? null
-                : () => openDockTasks(context, _active!, widget.connManager),
-            onOpenSessions: _active == null
-                ? null
-                : () => openDockSessions(context, _active!, widget.connManager),
-            onOpenTools: () =>
-                openDockTools(context, _active, widget.connManager),
+            actions: {
+              // Este dock YA vive en Inicio: "Inicio" se pinta como sección
+              // activa y sin acción propia, en vez de navegar a sí mismo.
+              DockItemId.home: const DockItemAction(selected: true),
+              DockItemId.create: DockItemAction(
+                onTap: _active == null ? null : _newChat,
+              ),
+              DockItemId.bots: DockItemAction(
+                onTap: _active == null
+                    ? null
+                    : () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => MissionControlScreen(
+                            connection: _active!,
+                            connManager: widget.connManager,
+                          ),
+                        ),
+                      ).then((_) => _refreshStatus()),
+              ),
+              DockItemId.settings: DockItemAction(
+                onTap: _active == null
+                    ? null
+                    : () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => SettingsScreen(
+                            connection: _active!,
+                            connManager: widget.connManager,
+                          ),
+                        ),
+                      ).then((_) => _reload()),
+              ),
+              // Accesos directos opcionales (ocultos de fábrica en el
+              // catálogo); mismas pantallas/criterios que ya usa HermesDrawer.
+              DockItemId.cron: DockItemAction(
+                onTap: _active == null
+                    ? null
+                    : () => openDockCron(context, _active!, widget.connManager),
+              ),
+              DockItemId.tasks: DockItemAction(
+                onTap: _active == null
+                    ? null
+                    : () =>
+                          openDockTasks(context, _active!, widget.connManager),
+              ),
+              DockItemId.sessions: DockItemAction(
+                onTap: _active == null
+                    ? null
+                    : () => openDockSessions(
+                        context,
+                        _active!,
+                        widget.connManager,
+                      ),
+              ),
+              DockItemId.tools: DockItemAction(
+                onTap: () => openDockTools(context, _active, widget.connManager),
+              ),
+            },
           ),
         ],
       ),

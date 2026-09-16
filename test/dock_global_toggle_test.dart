@@ -17,6 +17,7 @@ import 'package:hermes_android/core/screens/cron_screen.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/dock_preferences_store.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
+import 'package:hermes_android/core/widgets/dock.dart';
 import 'package:hermes_android/core/widgets/general_dock_shell.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:http/http.dart' as http;
@@ -111,6 +112,81 @@ void main() {
         }
       },
     );
+  });
+
+  // El interruptor global vivía duplicado en los dos widgets de dock que
+  // había antes (`BotModeDock` y `GeneralModeDock`) más en el propio shell.
+  // Ahora hay un único `Dock`, así que la guarda es una sola: se comprueba
+  // que sigue valiendo también para el perfil Bots, que es el que se montaba
+  // por su cuenta (Mission Control lo monta directo en su `Stack`, sin pasar
+  // por `GeneralDockShell`).
+  group('the Bots profile honors the same global switch', () {
+    Widget botsHost() => MaterialApp(
+      locale: const Locale('en'),
+      localizationsDelegates: Strings.localizationsDelegates,
+      supportedLocales: Strings.supportedLocales,
+      theme: AppTheme.fromId('dark'),
+      home: Scaffold(
+        body: Stack(
+          children: [
+            const SizedBox.expand(key: ValueKey('bots-body')),
+            Dock(
+              profileId: DockProfileId.bots,
+              actions: const {
+                DockItemId.home: DockItemAction(),
+                DockItemId.bots: DockItemAction(selected: true),
+                DockItemId.work: DockItemAction(),
+                DockItemId.create: DockItemAction(),
+              },
+              createOrbits: [
+                DockCreateOrbit(
+                  controlKey: const ValueKey('bot-mode-create-bot'),
+                  label: 'New bot',
+                  icon: Icons.smart_toy_outlined,
+                  onTap: () {},
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    testWidgets('paints the dock when the switch is on (default)', (
+      tester,
+    ) async {
+      await controller.ensureLoaded();
+      await tester.pumpWidget(botsHost());
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('bot-mode-floating-dock')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('paints nothing at all when the switch is off', (tester) async {
+      await controller.setUseDock(false);
+      await tester.pumpWidget(botsHost());
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('bot-mode-floating-dock')),
+        findsNothing,
+      );
+      for (final key in [
+        'bot-mode-dock-home',
+        'bot-mode-dock-bots',
+        'bot-mode-dock-work',
+        'bot-mode-dock-create',
+        'bot-mode-dock-back',
+      ]) {
+        expect(find.byKey(ValueKey(key)), findsNothing);
+      }
+      // La pantalla de debajo sigue entera: apagar el dock nunca quita
+      // funcionalidad nativa.
+      expect(find.byKey(const ValueKey('bots-body')), findsOneWidget);
+    });
   });
 
   group('Cron stays fully usable without the dock', () {

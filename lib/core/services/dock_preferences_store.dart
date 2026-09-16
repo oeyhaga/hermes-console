@@ -110,7 +110,7 @@ class DockPreferencesController {
       _updateProfile(general: DockProfileConfig.defaultGeneral());
 
   /// Interruptor GLOBAL (no por perfil): apaga el dock flotante en toda la
-  /// app. `GeneralDockShell`/`GeneralModeDock`/`BotModeDock` reaccionan al
+  /// app. `GeneralDockShell` y el propio `Dock` reaccionan al
   /// instante vía `listenable`, igual que cualquier otro cambio de este
   /// controlador.
   Future<void> setUseDock(bool enabled) =>

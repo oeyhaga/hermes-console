@@ -245,12 +245,13 @@ class _DockPreview extends StatelessWidget {
                 selectedIcon: dockItemVisual(slot).selectedIcon,
                 label: dockItemLabel(strings, slot),
                 selected: slot == firstVisible,
-                // El acento es SIEMPRE el "+" (igual que en el dock real,
-                // `general_mode_dock.dart`/`bot_mode_dock.dart`): no está
+                // Misma regla de acento que el dock real, leída de la misma
+                // función compartida (`dockItemIsAccent`) en vez de repetir
+                // aquí la condición: el acento es SIEMPRE el "+", y no está
                 // ligado al primer item visible, que solo protege de la
                 // retirada al insertar "Atrás", sin control manual en esta
                 // UI.
-                accent: slot == DockItemId.create,
+                accent: dockItemIsAccent(slot),
                 innerRadius: visual.innerRadius,
                 // El dock real SIEMPRE usa `compact: true` (icono arriba,
                 // etiqueta debajo); la vista previa pintaba la rama no

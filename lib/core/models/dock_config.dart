@@ -65,6 +65,23 @@ enum DockItemId {
       .firstWhere((candidate) => candidate?.name == value, orElse: () => null);
 }
 
+/// Cuál de los dos perfiles de dock usa una pantalla.
+///
+/// Existe porque hay UN solo widget de dock (ver `widgets/dock.dart`): el
+/// perfil dejó de ser "qué widget monto" para pasar a ser un parámetro.
+enum DockProfileId {
+  bots,
+  general;
+
+  /// Prefijo estable de las keys de widget del dock de este perfil
+  /// (`bot-mode-dock-bots`, `general-mode-floating-dock`, ...). Vive aquí, en
+  /// un único sitio, para que ninguna pantalla se invente el suyo.
+  String get keyPrefix => switch (this) {
+    DockProfileId.bots => 'bot-mode',
+    DockProfileId.general => 'general-mode',
+  };
+}
+
 /// Estilo visual de un perfil de dock: bordes, transparencia y profundidad.
 class DockStyle {
   static const schemaVersion = 1;
@@ -294,6 +311,12 @@ class DockPreferences {
     required this.general,
     this.useDock = true,
   });
+
+  /// Único punto donde un [DockProfileId] se traduce a su configuración.
+  DockProfileConfig profile(DockProfileId id) => switch (id) {
+    DockProfileId.bots => bots,
+    DockProfileId.general => general,
+  };
 
   factory DockPreferences.defaults() => DockPreferences(
     bots: DockProfileConfig.defaultBots(),

@@ -4,7 +4,7 @@
 // pantalla está tapada por la ruta nueva, momento en el que su dock es
 // invisible) y que ya se había corregido en `GeneralDockShell`
 // (`general_dock_shell_test.dart`) pero no aquí. Este test es el análogo
-// para Mission Control / `BotModeDock`: empuja la pantalla desde una ruta
+// para Mission Control / el perfil Bots del dock: empuja la pantalla desde una ruta
 // raíz y comprueba que "Atrás" aparece de inmediato.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

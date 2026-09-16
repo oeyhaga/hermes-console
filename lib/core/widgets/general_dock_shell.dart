@@ -3,22 +3,21 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
-import '../models/dock_config.dart' show DockItemId;
 import '../screens/chat_screen.dart';
 import '../screens/mission_control_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/connection_manager.dart';
 import '../services/dock_preferences_store.dart';
+import 'dock.dart';
 import 'dock_shortcuts.dart';
 import 'dock_style.dart' show dockShowsBack;
-import 'general_mode_dock.dart';
 
 /// Envuelve el `body` de una pantalla de navegación del perfil "General"
 /// (fuera de una conversación abierta) con el mismo dock flotante que ya usa
-/// `HomeDashboardScreen`: mismo patrón Stack + Positioned + callbacks
-/// (onCreate/onOpenBots/onOpenSettings/...), gestionando por su cuenta el
-/// "Atrás" contextual (RouteAware) para no duplicar esa lógica ni la lista
-/// de callbacks en cada pantalla que se sume (Ajustes, lista de sesiones).
+/// `HomeDashboardScreen`: el componente único [Dock] con el perfil
+/// `general`, gestionando por su cuenta el "Atrás" contextual y el mapa de
+/// acciones para no duplicar esa lógica en cada pantalla que se sume
+/// (Ajustes, lista de sesiones, Cron, Tareas, Herramientas).
 ///
 /// Deliberadamente NO se usa dentro de una conversación (`ChatScreen`): ahí
 /// ya viven el composer y el pill flotante de subagentes; superponer el
@@ -36,7 +35,7 @@ class GeneralDockShell extends StatefulWidget {
 
   /// Variante contextual de [onCreate]: cuando no es null, tiene prioridad
   /// sobre `onCreate`/el fallback genérico. Recibe la `GlobalKey` ya anclada
-  /// al tile "+" del dock (ver [GeneralModeDock.createAnchorKey]) para que
+  /// al tile "+" del dock (ver [DockItemAction.anchorKey]) para que
   /// quien la use pueda abrir un popover anclado a ese botón (p.ej. crear un
   /// cron job o una tarea directamente ahí) en vez de navegar.
   final void Function(GlobalKey anchorKey)? onCreateAnchored;
@@ -163,7 +162,7 @@ class _GeneralDockShellState extends State<GeneralDockShell> {
       builder: (context, _) {
         // Interruptor global "Usar dock flotante" (Ajustes): cuando está
         // apagado, esta pantalla es simplemente su `body`, sin el `Stack`
-        // ni el propio `GeneralModeDock` de por medio — nada de dock
+        // ni el propio `Dock` de por medio — nada de dock
         // corriendo de fondo, ni un hueco vacío donde solía estar (pedido
         // explícito del usuario). El resto de acciones de la pantalla
         // (FAB nativo, back nativo del `AppBar`, etc.) nunca dependen de
@@ -176,48 +175,72 @@ class _GeneralDockShellState extends State<GeneralDockShell> {
           fit: StackFit.expand,
           children: [
             widget.body,
-            GeneralModeDock(
-              onCreate: _handleCreate,
-              createAnchorKey: widget.onCreateAnchored != null
-                  ? _createAnchorKey
-                  : null,
-              onOpenBots: _openBots,
-              onOpenSettings: widget.includeSettingsAction
-                  ? _openSettings
-                  : null,
-              onOpenHome: () =>
-                  Navigator.of(context).popUntil((r) => r.isFirst),
-              onOpenCron: current == DockItemId.cron
-                  ? null
-                  : () => openDockCron(
-                      context,
-                      widget.connection,
-                      widget.connManager,
-                    ),
-              onOpenTasks: current == DockItemId.tasks
-                  ? null
-                  : () => openDockTasks(
-                      context,
-                      widget.connection,
-                      widget.connManager,
-                    ),
-              onOpenSessions: widget.includeSessionsAction
-                  ? () => openDockSessions(
-                      context,
-                      widget.connection,
-                      widget.connManager,
-                    )
-                  : null,
-              onOpenTools: current == DockItemId.tools
-                  ? null
-                  : () => openDockTools(
-                      context,
-                      widget.connection,
-                      widget.connManager,
-                    ),
-              currentDestination: current,
+            Dock(
+              profileId: DockProfileId.general,
               showBackContext: _isSubscreen,
               onBack: () => Navigator.of(context).maybePop(),
+              // Qué sabe hacer el perfil "General" desde una pantalla
+              // envuelta por este shell. Un id ausente de este mapa
+              // sencillamente no existe aquí y ni se pinta ni ocupa hueco
+              // (`work`, que no tiene destino propio fuera de Bots); un id
+              // presente con `onTap: null` se pinta inerte (la pantalla en
+              // la que ya estamos).
+              actions: {
+                DockItemId.home: DockItemAction(
+                  onTap: () => Navigator.of(context).popUntil((r) => r.isFirst),
+                ),
+                DockItemId.create: DockItemAction(
+                  onTap: _handleCreate,
+                  anchorKey: widget.onCreateAnchored != null
+                      ? _createAnchorKey
+                      : null,
+                ),
+                DockItemId.bots: DockItemAction(onTap: _openBots),
+                DockItemId.settings: DockItemAction(
+                  onTap: widget.includeSettingsAction ? _openSettings : null,
+                  selected: current == DockItemId.settings,
+                ),
+                DockItemId.cron: DockItemAction(
+                  onTap: current == DockItemId.cron
+                      ? null
+                      : () => openDockCron(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
+                  selected: current == DockItemId.cron,
+                ),
+                DockItemId.tasks: DockItemAction(
+                  onTap: current == DockItemId.tasks
+                      ? null
+                      : () => openDockTasks(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
+                  selected: current == DockItemId.tasks,
+                ),
+                DockItemId.sessions: DockItemAction(
+                  onTap: widget.includeSessionsAction
+                      ? () => openDockSessions(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        )
+                      : null,
+                  selected: current == DockItemId.sessions,
+                ),
+                DockItemId.tools: DockItemAction(
+                  onTap: current == DockItemId.tools
+                      ? null
+                      : () => openDockTools(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
+                  selected: current == DockItemId.tools,
+                ),
+              },
             ),
           ],
         );

@@ -1,18 +1,21 @@
-// Los tests existentes de `GeneralModeDock`/`BotModeDock` solo cubrían el
-// catálogo por defecto de cada perfil (4-5 items). Este archivo recorre el
-// catálogo COMPLETO (`DockItemId.values`) con todo visible, para cazar el
-// tipo de bug que un catálogo pequeño no expone: un id sin acción real que
-// aun así ocupa un hueco en la barra (A5 [media, MEDIDO] — `work` en
+// Recorre el catálogo COMPLETO (`DockItemId.values`) con todo visible, para
+// cazar el tipo de bug que un catálogo pequeño no expone: un id sin acción
+// real que aun así ocupa un hueco en la barra (A5 [media, MEDIDO] — `work` en
 // "General" y `settings` en "Bots" contaban en `visibleItemIds` pese a
 // pintarse como `SizedBox.shrink()`, estrechando el resto de items y
 // alterando qué item se retira al insertar "Atrás").
+//
+// Desde la unificación del dock (un único `Dock` parametrizado, ver
+// `widgets/dock.dart`) esa exclusión ya no es una lista negra codificada por
+// perfil: un id que no aparece en el mapa `actions` que le pasa la pantalla
+// simplemente no existe para ella. Estos tests verifican esa regla genérica
+// en los dos perfiles.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/dock_config.dart';
 import 'package:hermes_android/core/services/dock_preferences_store.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
-import 'package:hermes_android/core/widgets/bot_mode_dock.dart';
-import 'package:hermes_android/core/widgets/general_mode_dock.dart';
+import 'package:hermes_android/core/widgets/dock.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,10 +27,10 @@ Widget _wrap(Widget child) => MaterialApp(
   home: Scaffold(body: child),
 );
 
-/// `GeneralModeDock` se pinta con un `Positioned` propio (ver
-/// `general_mode_dock.dart`), pensado para vivir dentro de un `Stack`
-/// externo (así lo monta `GeneralDockShell`/`HomeDashboardScreen`) — a
-/// diferencia de `BotModeDock`, que ya construye su propio `Stack` interno.
+/// El dock unificado construye su propio `Stack`, así que funciona igual
+/// suelto o dentro de uno externo. El perfil "General" se monta en la app
+/// real dentro de un `Stack` (`GeneralDockShell`/`HomeDashboardScreen`), así
+/// que se prueba en esa misma disposición.
 Widget _wrapInStack(Widget child) => _wrap(Stack(children: [child]));
 
 void main() {
@@ -43,7 +46,7 @@ void main() {
   });
 
   testWidgets(
-    'GeneralModeDock: every catalog item paints a real, tappable tile, '
+    'General profile: every catalog item paints a real, tappable tile, '
     'except the documented no-op ("work"), which is fully excluded',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(390, 844));
@@ -57,19 +60,25 @@ void main() {
       );
 
       final taps = <DockItemId, int>{};
-      void bump(DockItemId id) => taps[id] = (taps[id] ?? 0) + 1;
+      DockItemAction bump(DockItemId id) =>
+          DockItemAction(onTap: () => taps[id] = (taps[id] ?? 0) + 1);
 
       await tester.pumpWidget(
         _wrapInStack(
-          GeneralModeDock(
-            onCreate: () => bump(DockItemId.create),
-            onOpenBots: () => bump(DockItemId.bots),
-            onOpenSettings: () => bump(DockItemId.settings),
-            onOpenHome: () => bump(DockItemId.home),
-            onOpenCron: () => bump(DockItemId.cron),
-            onOpenTasks: () => bump(DockItemId.tasks),
-            onOpenSessions: () => bump(DockItemId.sessions),
-            onOpenTools: () => bump(DockItemId.tools),
+          Dock(
+            profileId: DockProfileId.general,
+            // `work` NO está en el mapa: no tiene destino propio fuera de
+            // Bots.
+            actions: {
+              DockItemId.home: bump(DockItemId.home),
+              DockItemId.create: bump(DockItemId.create),
+              DockItemId.bots: bump(DockItemId.bots),
+              DockItemId.settings: bump(DockItemId.settings),
+              DockItemId.cron: bump(DockItemId.cron),
+              DockItemId.tasks: bump(DockItemId.tasks),
+              DockItemId.sessions: bump(DockItemId.sessions),
+              DockItemId.tools: bump(DockItemId.tools),
+            },
           ),
         ),
       );
@@ -108,7 +117,7 @@ void main() {
   );
 
   testWidgets(
-    'BotModeDock: every catalog item paints a real, tappable tile, '
+    'Bots profile: every catalog item paints a real, tappable tile, '
     'except the documented no-op ("settings"), which is fully excluded',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(390, 844));
@@ -121,41 +130,46 @@ void main() {
         ),
       );
 
-      var destinationSelected = -1;
       final taps = <DockItemId, int>{};
-      void bump(DockItemId id) => taps[id] = (taps[id] ?? 0) + 1;
+      DockItemAction bump(DockItemId id) =>
+          DockItemAction(onTap: () => taps[id] = (taps[id] ?? 0) + 1);
 
       await tester.pumpWidget(
         _wrap(
-          BotModeDock(
-            // Ninguno de los dos destinos reales (0 = bots, 1 = work)
-            // coincide con el seleccionado, así que tocar cualquiera de
-            // los dos dispara `onDestinationSelected` de verdad.
-            selectedIndex: -1,
-            onDestinationSelected: (index) => destinationSelected = index,
-            onOpenHome: () => bump(DockItemId.home),
-            onOpenCron: () => bump(DockItemId.cron),
-            onOpenTasks: () => bump(DockItemId.tasks),
-            onOpenSessions: () => bump(DockItemId.sessions),
-            onOpenTools: () => bump(DockItemId.tools),
+          Dock(
+            profileId: DockProfileId.bots,
+            // `settings` NO está en el mapa: el perfil Bots no ofrece un
+            // destino de Ajustes propio.
+            actions: {
+              DockItemId.home: bump(DockItemId.home),
+              DockItemId.bots: bump(DockItemId.bots),
+              DockItemId.work: bump(DockItemId.work),
+              DockItemId.create: const DockItemAction(),
+              DockItemId.cron: bump(DockItemId.cron),
+              DockItemId.tasks: bump(DockItemId.tasks),
+              DockItemId.sessions: bump(DockItemId.sessions),
+              DockItemId.tools: bump(DockItemId.tools),
+            },
+            createOrbits: const [
+              DockCreateOrbit(
+                controlKey: ValueKey('bot-mode-create-bot'),
+                label: 'Bot',
+                icon: Icons.smart_toy_outlined,
+              ),
+              DockCreateOrbit(
+                controlKey: ValueKey('bot-mode-create-room'),
+                label: 'Room',
+                icon: Icons.groups_2_outlined,
+              ),
+            ],
           ),
         ),
       );
       await tester.pumpAndSettle();
 
-      // "bots"/"work" enrutan a través de `onDestinationSelected`, no de un
-      // callback por id.
-      await tester.tap(find.byKey(const ValueKey('bot-mode-dock-bots')));
-      await tester.pump();
-      expect(destinationSelected, 0);
-
-      await tester.tap(find.byKey(const ValueKey('bot-mode-dock-work')));
-      await tester.pump();
-      expect(destinationSelected, 1);
-
-      // "create" abre el menú de dos órbitas (estado interno del propio
+      // "create" abre la bandeja de dos órbitas (estado interno del propio
       // dock, no un callback directo): basta con comprobar que el toque
-      // realmente lo despliega.
+      // realmente la despliega.
       await tester.tap(find.byKey(const ValueKey('bot-mode-dock-create')));
       await tester.pumpAndSettle();
       expect(
@@ -167,6 +181,8 @@ void main() {
 
       const directAction = [
         DockItemId.home,
+        DockItemId.bots,
+        DockItemId.work,
         DockItemId.cron,
         DockItemId.tasks,
         DockItemId.sessions,
@@ -189,6 +205,114 @@ void main() {
       expect(
         find.byKey(const ValueKey('bot-mode-dock-settings')),
         findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'one shared component, two independent profiles: same Dock class, but '
+    'each profile keeps its own catalog, style and widget keys',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(390, 844));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await controller.ensureLoaded();
+      // Estilos deliberadamente distintos por perfil: el usuario corrigió
+      // explícitamente que el estilo NO se comparte entre perfiles.
+      await controller.updateBots(
+        (p) => p.copyWith(
+          style: const DockStyle(
+            borderShape: DockBorderShape.rounded,
+            depth: DockDepth.floating,
+          ),
+        ),
+      );
+      await controller.updateGeneral(
+        (p) => p.copyWith(
+          style: const DockStyle(
+            borderShape: DockBorderShape.square,
+            depth: DockDepth.flat,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          Stack(
+            children: [
+              Dock(
+                profileId: DockProfileId.bots,
+                actions: const {
+                  DockItemId.bots: DockItemAction(),
+                  DockItemId.work: DockItemAction(),
+                },
+              ),
+              Dock(
+                profileId: DockProfileId.general,
+                actions: const {
+                  DockItemId.home: DockItemAction(),
+                  DockItemId.settings: DockItemAction(),
+                },
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Un único componente instanciado dos veces...
+      expect(find.byType(Dock), findsNWidgets(2));
+
+      // ...pero cada perfil conserva sus propias keys estables...
+      expect(
+        find.byKey(const ValueKey('bot-mode-floating-dock')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('general-mode-floating-dock')),
+        findsOneWidget,
+      );
+
+      // ...su propio catálogo (nada de "Trabajo" en General, nada de
+      // "Ajustes" en Bots)...
+      expect(find.byKey(const ValueKey('bot-mode-dock-work')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('general-mode-dock-work')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('general-mode-dock-settings')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('bot-mode-dock-settings')),
+        findsNothing,
+      );
+
+      // ...y su propio estilo: el radio exterior de cada barra sale del
+      // `DockStyle` de SU perfil, no de uno compartido.
+      BorderRadius radiusOf(String key) {
+        final decoration =
+            tester
+                    .widgetList<DecoratedBox>(
+                      find.descendant(
+                        of: find.byKey(ValueKey(key)),
+                        matching: find.byType(DecoratedBox),
+                      ),
+                    )
+                    .first
+                    .decoration
+                as BoxDecoration;
+        return decoration.borderRadius! as BorderRadius;
+      }
+
+      expect(
+        radiusOf('bot-mode-floating-dock').topLeft.x,
+        DockBorderShape.rounded.outerRadius,
+      );
+      expect(
+        radiusOf('general-mode-floating-dock').topLeft.x,
+        DockBorderShape.square.outerRadius,
       );
     },
   );

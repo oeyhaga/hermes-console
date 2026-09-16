@@ -6,9 +6,10 @@ import '../../l10n/app_localizations.dart';
 import '../models/dock_config.dart';
 import '../theme/app_theme.dart';
 
-/// Metadatos visuales de un elemento de catálogo, compartidos por el dock de
-/// Bots, el de General y la lista de la pantalla de personalización, para
-/// que los tres pinten siempre el mismo icono/etiqueta para un mismo id.
+/// Metadatos visuales de un elemento de catálogo, compartidos por el dock
+/// (`dock.dart`, un único componente para los dos perfiles) y la lista de la
+/// pantalla de personalización, para que ambos pinten siempre el mismo
+/// icono/etiqueta para un mismo id.
 class DockItemVisual {
   final IconData icon;
   final IconData? selectedIcon;
@@ -48,6 +49,12 @@ DockItemVisual dockItemVisual(DockItemId id) =>
 /// Icono del elemento contextual "Atrás": no vive en el catálogo (ver
 /// [DockItemId]), así que no tiene entrada en [dockItemVisual].
 const IconData dockBackIcon = Icons.arrow_back_rounded;
+
+/// Qué elemento se pinta con el color de acento. Es una propiedad del
+/// catálogo, no de la pantalla: vive aquí (y no en lo que cada pantalla le
+/// pasa al dock) para que ningún contexto pueda decidir por su cuenta que
+/// otro elemento es el destacado y volver a divergir del resto.
+bool dockItemIsAccent(DockItemId id) => id == DockItemId.create;
 
 /// Señal correcta para mostrar "Atrás" en el dock flotante: esta pantalla es
 /// en sí misma una subpantalla (se llegó a ella con un push), no si algo se
@@ -324,8 +331,8 @@ class DockItemTile extends StatelessWidget {
                     horizontal: 10,
                     vertical: compact ? 4 : 6,
                   ),
-                  // `compact` (el dock real, ver bot_mode_dock.dart /
-                  // general_mode_dock.dart) apila icono arriba y etiqueta
+                  // `compact` (el dock real, ver dock.dart) apila el
+                  // icono arriba y la etiqueta
                   // debajo: con 4+ items visibles, icono+etiqueta EN LÍNEA no
                   // cabe y Flutter corta el texto con "..." (confirmado por
                   // captura real del dispositivo). Apilar en vertical, no
