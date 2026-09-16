@@ -4453,6 +4453,7 @@ class _ChatScreenState extends State<ChatScreen>
       case ActiveChatEvent.goalUpdated:
         // The generic setState above already repaints _buildGoalStrip; no
         // extra behavior (scrolling, etc.) is needed for a status change.
+      case ActiveChatEvent.backgroundTaskComplete:
         break;
     }
   }
@@ -9482,6 +9483,7 @@ class _ChatScreenState extends State<ChatScreen>
                         ),
                         _buildStopStatusStrip(colors),
                         _buildGoalStrip(colors),
+                        _buildBackgroundTaskStrip(colors),
                         _buildQueueStrip(colors),
                         if ((_vc?.active ?? false) && !showVoiceSurface)
                           _buildVoiceReturnBar(
@@ -11507,7 +11509,101 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// Indicaciones que no pudieron entrar en el turno vivo. Viven junto al
+  /// Resultado de una tarea de `prompt.background` (Agent Center). Una sola
+  /// línea, sin `ListTile` ni chevron — tocar abre el texto completo, la X
+  /// descarta sin verlo. Si hay más de una pendiente, se muestra la más
+  /// reciente con un contador; las demás esperan su turno.
+  Widget _buildBackgroundTaskStrip(HermesThemeColors colors) {
+    final outcomes = _chat.backgroundTaskOutcomes;
+    if (outcomes.isEmpty) return const SizedBox.shrink();
+    final s = Strings.of(context);
+    final taskId = outcomes.keys.last;
+    final outcome = outcomes[taskId]!;
+    final extra = outcomes.length - 1;
+    final label = extra > 0
+        ? '${outcome.isError ? s.chaBackgroundTaskError : s.chaBackgroundTaskDone} (+$extra)'
+        : (outcome.isError ? s.chaBackgroundTaskError : s.chaBackgroundTaskDone);
+    final color = outcome.isError ? colors.error : colors.accent;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
+      child: Semantics(
+        liveRegion: true,
+        label: label,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 40),
+          child: Row(
+            children: [
+              Icon(
+                outcome.isError
+                    ? Icons.error_outline_rounded
+                    : Icons.task_alt_rounded,
+                size: 16,
+                color: color,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () =>
+                      unawaited(_showBackgroundTaskResult(taskId, outcome)),
+                  child: Text(
+                    label,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: color),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+              IconButton(
+                iconSize: 16,
+                // Objetivo táctil real de 44dp aunque el icono visible sea de
+                // 16dp: `BoxConstraints()` vacío colapsaba el hit-test al
+                // tamaño del icono, justo al lado del composer.
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                tooltip: s.inAppDismiss,
+                onPressed: () => _chat.dismissBackgroundTaskOutcome(taskId),
+                icon: Icon(Icons.close_rounded, color: colors.textDisabled),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showBackgroundTaskResult(
+    String taskId,
+    ({String text, bool isError}) outcome,
+  ) async {
+    final colors = Theme.of(context).hermes;
+    final s = Strings.of(context);
+    await showHermesFloatingSurface<void>(
+      context: context,
+      surfaceKey: const ValueKey('chat-background-task-result'),
+      maxWidth: 560,
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              outcome.isError
+                  ? s.chaBackgroundTaskError
+                  : s.chaBackgroundTaskDone,
+              style: Theme.of(sheetContext).textTheme.titleSmall?.copyWith(
+                color: outcome.isError ? colors.error : colors.accent,
+              ),
+            ),
+            const SizedBox(height: 12),
+            SelectableText(outcome.text, style: Theme.of(sheetContext).textTheme.bodyMedium),
+          ],
+        ),
+      ),
+    );
+    _chat.dismissBackgroundTaskOutcome(taskId);
+  }
   /// composer, no como burbujas apiladas, y pueden cancelarse antes de enviarse.
   Widget _buildQueueStrip(HermesThemeColors colors) {
     final queuedEntries = _chat.queuedEntries;
