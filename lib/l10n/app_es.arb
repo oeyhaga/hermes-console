@@ -1784,6 +1784,15 @@
   "kanbanGroupNotes": "Anotadas (sin asignar)",
   "kanbanGroupDone": "Hechas",
   "kanbanUnassigned": "sin asignar",
+  "kanbanViewList": "Lista",
+  "kanbanViewBoard": "Tablero",
+  "kanbanCardProgress": "{done} de {total} pasos",
+  "@kanbanCardProgress": {
+    "placeholders": {
+      "done": {},
+      "total": {}
+    }
+  },
   "kanbanEmptyTitle": "Tu tablero con Hermes",
   "kanbanEmptyBody": "Crea una tarea y asígnala a un perfil: el agente la ejecutará solo y la moverá a «Hechas». Sin asignar perfil, queda solo como una nota.",
   "kanbanEmptyCta": "Crear primera tarea",

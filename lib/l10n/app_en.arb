@@ -1169,6 +1169,15 @@
   "kanbanGroupNotes": "Notes (unassigned)",
   "kanbanGroupDone": "Done",
   "kanbanUnassigned": "unassigned",
+  "kanbanViewList": "List",
+  "kanbanViewBoard": "Board",
+  "kanbanCardProgress": "{done} of {total} steps",
+  "@kanbanCardProgress": {
+    "placeholders": {
+      "done": {},
+      "total": {}
+    }
+  },
   "kanbanEmptyTitle": "Your board with Hermes",
   "kanbanEmptyBody": "Create a task and assign it to a profile: the agent will run it on its own and move it to \"Done\". Without a profile, it's just a note.",
   "kanbanEmptyCta": "Create first task",
