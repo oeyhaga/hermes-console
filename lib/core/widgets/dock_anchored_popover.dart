@@ -7,11 +7,19 @@ import 'package:flutter/material.dart';
 ///
 /// Pensado para el "+" contextual del dock flotante en Cron y Tareas: en vez
 /// de navegar a una pantalla aparte, la superficie de creación rápida debe
-/// sentir que "sale" del propio botón. [builder] recibe el `BuildContext` de
-/// la ruta y debe aportar su propia decoración (Material/Dialog con su
-/// sombra y forma) — este helper solo resuelve el posicionamiento, no
-/// decora, para poder alojar tanto un `Dialog` ya existente (que trae su
-/// propio Material) como un formulario a medida sin duplicar chrome.
+/// sentir que "sale" del propio botón.
+///
+/// Igual que `showHermesFloatingSurface`, conserva un [FocusScopeNode] propio
+/// y lo libera antes de cerrarse — necesario para alojar `TextField`s sin
+/// dejar un `EditableText` enlazado a una ruta que ya se está desmontando.
+///
+/// Cuando [decorated] es `true` (por defecto), [builder] recibe solo su
+/// contenido: el propio helper lo envuelve en el mismo `Material` que usa
+/// `showHermesFloatingSurface`, para que ambas superficies flotantes se
+/// sientan la misma pieza en vez de que cada pantalla llamante lo reinvente
+/// con su propio color/elevación/radio a mano. Con `decorated: false`,
+/// [builder] debe aportar su propia decoración (p. ej. para alojar un
+/// `Dialog` ya existente sin duplicar chrome).
 ///
 /// Si el `RenderBox` de [anchorKey] no está disponible (p. ej. el dock quedó
 /// oculto entre frames), cae a una posición por defecto cerca de donde vive
@@ -22,59 +30,105 @@ Future<T?> showDockAnchoredPopover<T>({
   required WidgetBuilder builder,
   double maxWidth = 360,
   bool barrierDismissible = true,
+  bool decorated = true,
 }) {
   final renderObject = anchorKey.currentContext?.findRenderObject();
   final anchorBox = renderObject is RenderBox && renderObject.attached
       ? renderObject
       : null;
   final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+  final focusScopeNode = FocusScopeNode(debugLabel: 'DockAnchoredPopover');
   return Navigator.of(context).push<T>(
-    PageRouteBuilder<T>(
-      opaque: false,
+    _DockAnchoredPopoverRoute<T>(
+      anchor: anchorBox,
+      builder: builder,
+      focusScopeNode: focusScopeNode,
+      maxWidth: maxWidth,
+      decorated: decorated,
       barrierDismissible: barrierDismissible,
-      barrierColor: Colors.black.withValues(alpha: 0.4),
       barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
-      transitionDuration: reduceMotion
-          ? Duration.zero
-          : const Duration(milliseconds: 200),
-      reverseTransitionDuration: reduceMotion
-          ? Duration.zero
-          : const Duration(milliseconds: 150),
-      pageBuilder: (routeContext, animation, secondaryAnimation) =>
-          _DockAnchoredPopoverFrame(
-            anchor: anchorBox,
-            maxWidth: maxWidth,
-            child: Builder(builder: builder),
-          ),
-      transitionsBuilder: (routeContext, animation, secondaryAnimation, child) {
-        if (reduceMotion) return child;
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
-        );
-        return FadeTransition(
-          opacity: curved,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.85, end: 1).animate(curved),
-            alignment: Alignment.bottomCenter,
-            child: child,
-          ),
-        );
-      },
+      reduceMotion: reduceMotion,
     ),
   );
+}
+
+class _DockAnchoredPopoverRoute<T> extends PageRouteBuilder<T> {
+  _DockAnchoredPopoverRoute({
+    required RenderBox? anchor,
+    required WidgetBuilder builder,
+    required FocusScopeNode focusScopeNode,
+    required double maxWidth,
+    required bool decorated,
+    required super.barrierDismissible,
+    required String barrierLabel,
+    required bool reduceMotion,
+  }) : _focusScopeNode = focusScopeNode,
+       super(
+         opaque: false,
+         barrierColor: Colors.black.withValues(alpha: 0.4),
+         barrierLabel: barrierLabel,
+         transitionDuration: reduceMotion
+             ? Duration.zero
+             : const Duration(milliseconds: 200),
+         reverseTransitionDuration: reduceMotion
+             ? Duration.zero
+             : const Duration(milliseconds: 150),
+         pageBuilder: (routeContext, animation, secondaryAnimation) => PopScope(
+           child: FocusScope(
+             node: focusScopeNode,
+             child: _DockAnchoredPopoverFrame(
+               anchor: anchor,
+               maxWidth: maxWidth,
+               decorated: decorated,
+               child: Builder(builder: builder),
+             ),
+           ),
+         ),
+         transitionsBuilder:
+             (routeContext, animation, secondaryAnimation, child) {
+               if (reduceMotion) return child;
+               final curved = CurvedAnimation(
+                 parent: animation,
+                 curve: Curves.easeOutCubic,
+                 reverseCurve: Curves.easeInCubic,
+               );
+               return FadeTransition(
+                 opacity: curved,
+                 child: ScaleTransition(
+                   scale: Tween<double>(begin: 0.85, end: 1).animate(curved),
+                   alignment: Alignment.bottomCenter,
+                   child: child,
+                 ),
+               );
+             },
+       );
+
+  final FocusScopeNode _focusScopeNode;
+
+  @override
+  bool didPop(T? result) {
+    _focusScopeNode.unfocus(disposition: UnfocusDisposition.scope);
+    return super.didPop(result);
+  }
+
+  @override
+  void dispose() {
+    _focusScopeNode.dispose();
+    super.dispose();
+  }
 }
 
 class _DockAnchoredPopoverFrame extends StatelessWidget {
   const _DockAnchoredPopoverFrame({
     required this.anchor,
     required this.maxWidth,
+    required this.decorated,
     required this.child,
   });
 
   final RenderBox? anchor;
   final double maxWidth;
+  final bool decorated;
   final Widget child;
 
   @override
@@ -117,6 +171,25 @@ class _DockAnchoredPopoverFrame extends StatelessWidget {
     final bottom = desiredGap.clamp(minBottom, maxBottom);
     final availableHeight = screen.height - bottom - media.padding.top - 24;
 
+    Widget content = child;
+    if (decorated) {
+      // Mismo shape/color/elevación que `_HermesFloatingSurfaceFrame`, para
+      // que ambas superficies flotantes se sientan la misma pieza en vez de
+      // que cada pantalla llamante lo reinvente con su propio radio a mano
+      // (Cron y Tareas divergían: 22 vs 20 — bug A3).
+      final theme = Theme.of(context);
+      content = Material(
+        color: theme.dialogTheme.backgroundColor,
+        surfaceTintColor: Colors.transparent,
+        elevation: theme.dialogTheme.elevation ?? 12,
+        shape:
+            theme.dialogTheme.shape ??
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        clipBehavior: Clip.antiAlias,
+        child: content,
+      );
+    }
+
     return Stack(
       children: [
         Positioned(
@@ -127,7 +200,7 @@ class _DockAnchoredPopoverFrame extends StatelessWidget {
             constraints: BoxConstraints(
               maxHeight: availableHeight <= 0 ? 0 : availableHeight,
             ),
-            child: child,
+            child: content,
           ),
         ),
       ],

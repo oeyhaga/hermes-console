@@ -709,8 +709,10 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       context: context,
       surfaceKey: const ValueKey('kanban-filter-surface'),
       maxWidth: 560,
-      builder: (sheetCtx) => StatefulBuilder(
-        builder: (sheetCtx, setSheet) => SingleChildScrollView(
+      builder: (sheetCtx) => DisposeControllersOnUnmount(
+        controllers: [queryCtrl],
+        child: StatefulBuilder(
+          builder: (sheetCtx, setSheet) => SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -772,9 +774,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+        ),
       ),
     );
-    Future.delayed(const Duration(milliseconds: 400), queryCtrl.dispose);
     if (selected == null || !mounted) return;
     await _applyTaskFilter(selected);
   }
@@ -1153,7 +1155,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       context: context,
       anchorKey: anchorKey,
       maxWidth: 320,
-      builder: (popoverContext) => StatefulBuilder(
+      builder: (popoverContext) => DisposeControllersOnUnmount(
+        controllers: [titleCtrl],
+        child: StatefulBuilder(
         builder: (popoverContext, setPopover) {
           final colors = Theme.of(popoverContext).hermes;
           final s = Strings.of(popoverContext);
@@ -1164,12 +1168,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
             _create(title, null, priority, _defaultAssignee());
           }
 
-          return Material(
-            color: colors.surface,
-            elevation: 12,
-            borderRadius: BorderRadius.circular(20),
-            clipBehavior: Clip.antiAlias,
-            child: Padding(
+          return Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1239,15 +1238,11 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            ),
           );
         },
       ),
+      ),
     );
-    // Igual que en `_openTaskForm`: liberar el controller inmediatamente
-    // (con el popover aún cerrándose) hacía que el TextField re-escuchara
-    // un controller ya destruido en el siguiente frame → crash en cascada.
-    Future.delayed(const Duration(milliseconds: 400), titleCtrl.dispose);
   }
 
   Future<void> _openTaskForm({KanbanTask? existing}) async {
@@ -1275,7 +1270,9 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       surfaceKey: const ValueKey('kanban-task-form-surface'),
       maxWidth: 620,
       maxHeightFactor: 0.9,
-      builder: (sheetCtx) => Padding(
+      builder: (sheetCtx) => DisposeControllersOnUnmount(
+        controllers: [titleCtrl, bodyCtrl],
+        child: Padding(
         padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
         child: StatefulBuilder(
           builder: (sheetCtx, setSheet) => SingleChildScrollView(
@@ -1410,16 +1407,8 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
           ),
         ),
       ),
+      ),
     );
-    // Libera los controllers DESPUÉS de la animación de cierre del sheet.
-    // Liberarlos de inmediato (con la hoja aún cerrándose) hacía que el TextField
-    // re-escuchara un TextEditingController ya destruido en el siguiente frame
-    // → crash en cascada `_dependents.isEmpty`. Son variables locales: la closure
-    // sigue siendo válida aunque la pantalla se cierre antes.
-    Future.delayed(const Duration(milliseconds: 400), () {
-      titleCtrl.dispose();
-      bodyCtrl.dispose();
-    });
   }
 
   String _priorityLabel(Strings s, String value) {
