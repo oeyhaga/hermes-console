@@ -411,11 +411,29 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
   /// creación (siempre `job: null`); editar un job existente sigue usando
   /// el diálogo centrado desde su fila en la lista.
   Future<void> _showAnchoredEditor(GlobalKey anchorKey) async {
+    // `showDockAnchoredPopover` (a diferencia de `showHermesFloatingSurface`)
+    // no aporta ninguna carcasa a propósito (ver su doc comment) — y
+    // `_CronEditorDialog` tampoco pinta la suya, porque normalmente vive
+    // dentro de esa otra superficie. Sin envolverlo aquí, cualquier widget
+    // Material del formulario (el desplegable de modelo/entrega) revienta
+    // en runtime con "No Material widget found" (confirmado probando en
+    // dispositivo real). Mismo shape/color/elevación que
+    // `_HermesFloatingSurfaceFrame` para que se sienta la misma pieza.
+    final theme = Theme.of(context);
     final result = await showDockAnchoredPopover<_CronEditorResult>(
       context: context,
       anchorKey: anchorKey,
       maxWidth: 420,
-      builder: (_) => _CronEditorDialog(repository: _repository),
+      builder: (_) => Material(
+        color: theme.dialogTheme.backgroundColor,
+        surfaceTintColor: Colors.transparent,
+        elevation: theme.dialogTheme.elevation ?? 12,
+        shape:
+            theme.dialogTheme.shape ??
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        clipBehavior: Clip.antiAlias,
+        child: _CronEditorDialog(repository: _repository),
+      ),
     );
     await _applyEditorResult(result, null);
   }
