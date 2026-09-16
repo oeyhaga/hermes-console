@@ -305,32 +305,69 @@ class DockItemTile extends StatelessWidget {
                   borderRadius: BorderRadius.circular(innerRadius),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
+                  padding: EdgeInsets.symmetric(
                     horizontal: 10,
-                    vertical: 6,
+                    vertical: compact ? 4 : 6,
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(displayIcon, size: 21, color: color),
-                      if (!compact) ...[
-                        const SizedBox(width: 7),
-                        Flexible(
-                          child: Text(
-                            label,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: color,
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700,
+                  // `compact` (el dock real, ver bot_mode_dock.dart /
+                  // general_mode_dock.dart) apila icono arriba y etiqueta
+                  // debajo: con 4+ items visibles, icono+etiqueta EN LÍNEA no
+                  // cabe y Flutter corta el texto con "..." (confirmado por
+                  // captura real del dispositivo). Apilar en vertical, no
+                  // ocultar la etiqueta, resuelve lo mismo sin perder el
+                  // texto — sigue con maxLines: 1 + ellipsis por si algún
+                  // idioma/tamaño de fuente sigue sin caber en el ancho del
+                  // segmento. El modo en línea (usado hoy solo por la vista
+                  // previa de Ajustes › Dock, con más espacio disponible) se
+                  // mantiene igual que antes.
+                  child: compact
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(displayIcon, size: 21, color: color),
+                            const SizedBox(height: 2),
+                            // Sin escalar con la fuente del sistema: el
+                            // icono de encima tampoco escala, y a 2x el
+                            // texto ya no cabe en la altura fija del tile
+                            // (48dp) apilado bajo un icono de 21dp — se
+                            // confirmó overflow real en los tests a 2.0x.
+                            // La etiqueta sigue siendo accesible sin
+                            // recorte propio vía Tooltip/Semantics.
+                            Text(
+                              label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textScaler: TextScaler.noScaling,
+                              style: TextStyle(
+                                color: color,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                height: 1,
+                              ),
                             ),
-                          ),
+                          ],
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(displayIcon, size: 21, color: color),
+                            const SizedBox(width: 7),
+                            Flexible(
+                              child: Text(
+                                label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: color,
+                                  fontSize: 12.5,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
-                    ],
-                  ),
                 ),
               ),
             ),

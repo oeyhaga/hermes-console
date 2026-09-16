@@ -216,7 +216,13 @@ class _BotModeDockState extends State<BotModeDock>
   Widget _buildWithProfile(BuildContext context, DockProfileConfig profile) {
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
-    final compact = MediaQuery.textScalerOf(context).scale(14) > 17;
+    // El dock real siempre apila icono arriba y etiqueta debajo (ver
+    // `DockItemTile.compact` en dock_style.dart): con 4+ items visibles
+    // (Inicio/Crear/Bots/Ajustes...) icono+etiqueta EN LÍNEA no cabe y
+    // Flutter corta el texto con "..." (confirmado por captura real del
+    // dispositivo); apilar en vertical mantiene la etiqueta visible sin
+    // ese recorte.
+    const compact = true;
     final visual = resolveDockVisual(colors, profile.style);
     final showBack =
         widget.showBackContext &&

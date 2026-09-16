@@ -63,7 +63,10 @@ class GeneralModeDock extends StatelessWidget {
   Widget _build(BuildContext context, DockProfileConfig profile) {
     final strings = Strings.of(context);
     final colors = Theme.of(context).hermes;
-    final compact = MediaQuery.textScalerOf(context).scale(14) > 17;
+    // Mismo criterio que en BotModeDock: el dock real siempre apila icono
+    // arriba y etiqueta debajo (ver comentario equivalente en
+    // bot_mode_dock.dart).
+    const compact = true;
     final visual = resolveDockVisual(colors, profile.style);
     final showBack =
         showBackContext && profile.showBackOnSubscreens && onBack != null;

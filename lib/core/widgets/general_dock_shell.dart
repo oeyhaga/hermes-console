@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
-import '../../main.dart';
 import '../screens/chat_screen.dart';
 import '../screens/mission_control_screen.dart';
 import '../screens/settings_screen.dart';
@@ -52,36 +51,19 @@ class GeneralDockShell extends StatefulWidget {
   State<GeneralDockShell> createState() => _GeneralDockShellState();
 }
 
-class _GeneralDockShellState extends State<GeneralDockShell> with RouteAware {
-  bool _hasSubscreenAbove = false;
-  PageRoute<dynamic>? _route;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final route = ModalRoute.of(context);
-    if (route is PageRoute<dynamic> && !identical(route, _route)) {
-      hermesRouteObserver.unsubscribe(this);
-      _route = route;
-      hermesRouteObserver.subscribe(this, route);
-    }
-  }
-
-  @override
-  void dispose() {
-    hermesRouteObserver.unsubscribe(this);
-    super.dispose();
-  }
-
-  @override
-  void didPopNext() {
-    if (mounted) setState(() => _hasSubscreenAbove = false);
-  }
-
-  @override
-  void didPushNext() {
-    if (mounted) setState(() => _hasSubscreenAbove = true);
-  }
+class _GeneralDockShellState extends State<GeneralDockShell> {
+  // "Atrás" debe aparecer en cuanto ESTA pantalla es en sí misma una
+  // subpantalla (se llegó a ella con un push, p.ej. desde Inicio), no
+  // cuando algo se apila POR ENCIMA de ella: lo segundo, que es lo que
+  // rastreaba la versión anterior vía RouteAware (`didPushNext`/
+  // `didPopNext`), solo se vuelve true justo cuando esta pantalla queda
+  // tapada por la nueva ruta — momento en el que su propio dock (con el
+  // "Atrás" ya activado) es invisible para el usuario. Por eso "Atrás"
+  // nunca llegaba a verse en la práctica (bug confirmado en dispositivo
+  // real): la señal se calculaba sobre la pantalla equivocada del par
+  // padre/hijo. `Route.isFirst` sobre la ruta de ESTA pantalla es la señal
+  // correcta y no necesita observar el Navigator en absoluto.
+  bool get _isSubscreen => ModalRoute.of(context)?.isFirst != true;
 
   void _defaultCreate() {
     final session = Session(
@@ -149,7 +131,7 @@ class _GeneralDockShellState extends State<GeneralDockShell> with RouteAware {
               : null,
           onOpenTools: () =>
               openDockTools(context, widget.connection, widget.connManager),
-          showBackContext: _hasSubscreenAbove,
+          showBackContext: _isSubscreen,
           onBack: () => Navigator.of(context).maybePop(),
         ),
       ],
