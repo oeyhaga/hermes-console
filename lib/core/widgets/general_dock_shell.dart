@@ -29,6 +29,13 @@ class GeneralDockShell extends StatefulWidget {
   /// pasan aquí en vez de usar el fallback.
   final VoidCallback? onCreate;
 
+  /// Variante contextual de [onCreate]: cuando no es null, tiene prioridad
+  /// sobre `onCreate`/el fallback genérico. Recibe la `GlobalKey` ya anclada
+  /// al tile "+" del dock (ver [GeneralModeDock.createAnchorKey]) para que
+  /// quien la use pueda abrir un popover anclado a ese botón (p.ej. crear un
+  /// cron job o una tarea directamente ahí) en vez de navegar.
+  final void Function(GlobalKey anchorKey)? onCreateAnchored;
+
   /// False cuando esta pantalla YA ES Ajustes: evita apilar Ajustes sobre
   /// Ajustes al tocar el item "Ajustes" del dock.
   final bool includeSettingsAction;
@@ -42,6 +49,7 @@ class GeneralDockShell extends StatefulWidget {
     required this.connection,
     required this.connManager,
     this.onCreate,
+    this.onCreateAnchored,
     this.includeSettingsAction = true,
     this.includeSessionsAction = true,
     super.key,
@@ -64,6 +72,21 @@ class _GeneralDockShellState extends State<GeneralDockShell> {
   // padre/hijo. `Route.isFirst` sobre la ruta de ESTA pantalla es la señal
   // correcta y no necesita observar el Navigator en absoluto.
   bool get _isSubscreen => ModalRoute.of(context)?.isFirst != true;
+
+  // Solo se instancia cuando `onCreateAnchored` está presente: el resto de
+  // pantallas (Ajustes, Sesiones) no necesitan que el "+" cargue una key.
+  final GlobalKey _createAnchorKey = GlobalKey(
+    debugLabel: 'general-dock-create-anchor',
+  );
+
+  void _handleCreate() {
+    final anchored = widget.onCreateAnchored;
+    if (anchored != null) {
+      anchored(_createAnchorKey);
+      return;
+    }
+    (widget.onCreate ?? _defaultCreate)();
+  }
 
   void _defaultCreate() {
     final session = Session(
@@ -116,12 +139,17 @@ class _GeneralDockShellState extends State<GeneralDockShell> {
       children: [
         widget.body,
         GeneralModeDock(
-          onCreate: widget.onCreate ?? _defaultCreate,
+          onCreate: _handleCreate,
+          createAnchorKey: widget.onCreateAnchored != null
+              ? _createAnchorKey
+              : null,
           onOpenBots: _openBots,
           onOpenSettings: widget.includeSettingsAction ? _openSettings : null,
           onOpenHome: () => Navigator.of(context).popUntil((r) => r.isFirst),
-          onOpenCron: () => openDockCron(context, widget.connection),
-          onOpenTasks: () => openDockTasks(context, widget.connection),
+          onOpenCron: () =>
+              openDockCron(context, widget.connection, widget.connManager),
+          onOpenTasks: () =>
+              openDockTasks(context, widget.connection, widget.connManager),
           onOpenSessions: widget.includeSessionsAction
               ? () => openDockSessions(
                   context,

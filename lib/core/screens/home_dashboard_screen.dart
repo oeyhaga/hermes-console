@@ -1486,10 +1486,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
             // catálogo); mismas pantallas/criterios que ya usa HermesDrawer.
             onOpenCron: _active == null
                 ? null
-                : () => openDockCron(context, _active!),
+                : () => openDockCron(context, _active!, widget.connManager),
             onOpenTasks: _active == null
                 ? null
-                : () => openDockTasks(context, _active!),
+                : () => openDockTasks(context, _active!, widget.connManager),
             onOpenSessions: _active == null
                 ? null
                 : () => openDockSessions(context, _active!, widget.connManager),

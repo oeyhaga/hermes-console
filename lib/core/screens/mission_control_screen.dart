@@ -1992,10 +1992,16 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                             Navigator.of(context).popUntil((r) => r.isFirst),
                         // Accesos directos opcionales (ocultos de fábrica);
                         // mismas pantallas/criterios que ya usa HermesDrawer.
-                        onOpenCron: () =>
-                            openDockCron(context, widget.connection),
-                        onOpenTasks: () =>
-                            openDockTasks(context, widget.connection),
+                        onOpenCron: () => openDockCron(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
+                        onOpenTasks: () => openDockTasks(
+                          context,
+                          widget.connection,
+                          widget.connManager,
+                        ),
                         onOpenSessions: () => openDockSessions(
                           context,
                           widget.connection,

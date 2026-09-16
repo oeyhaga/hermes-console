@@ -198,7 +198,7 @@ List<HermesToolDestination> buildHermesToolDestinations({
       label: strings.drawerCron,
       enabled: enabled(capabilities.cronRead),
       disabledReason: disabledReason(capabilities.cronRead),
-      builder: (_) => CronScreen(connection: conn!),
+      builder: (_) => CronScreen(connection: conn!, connManager: connManager),
     ),
     HermesToolDestination(
       id: 'soul',
@@ -349,7 +349,11 @@ class HermesDrawer extends StatelessWidget {
     _go(
       context,
       DrawerSection.tools,
-      () => ToolsHubScreen(destinations: destinations),
+      () => ToolsHubScreen(
+        destinations: destinations,
+        connection: connection,
+        connManager: connManager,
+      ),
     );
   }
 
@@ -483,7 +487,10 @@ class HermesDrawer extends StatelessWidget {
                         ? _go(
                             context,
                             DrawerSection.kanban,
-                            () => TasksScreen(connection: conn),
+                            () => TasksScreen(
+                              connection: conn,
+                              connManager: connManager,
+                            ),
                           )
                         : _showNeedsGateway(context),
                   ),
@@ -502,7 +509,10 @@ class HermesDrawer extends StatelessWidget {
                         : _go(
                             context,
                             DrawerSection.cron,
-                            () => CronScreen(connection: conn),
+                            () => CronScreen(
+                              connection: conn,
+                              connManager: connManager,
+                            ),
                           ),
                   ),
                   _DrawerItem(

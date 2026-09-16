@@ -36,6 +36,12 @@ class GeneralModeDock extends StatelessWidget {
   final VoidCallback? onOpenSessions;
   final VoidCallback? onOpenTools;
 
+  /// Cuando no es null, el tile de "Crear" se envuelve en un [KeyedSubtree]
+  /// con esta key: permite a quien construye este dock (ver
+  /// [GeneralDockShell]) localizar el `RenderBox` del botón "+" para anclar
+  /// ahí un popover contextual en vez de navegar (Cron, Tareas).
+  final GlobalKey? createAnchorKey;
+
   const GeneralModeDock({
     this.onCreate,
     this.onOpenBots,
@@ -47,6 +53,7 @@ class GeneralModeDock extends StatelessWidget {
     this.onOpenTasks,
     this.onOpenSessions,
     this.onOpenTools,
+    this.createAnchorKey,
     super.key,
   });
 
@@ -130,7 +137,7 @@ class GeneralModeDock extends StatelessWidget {
           onTap: onOpenHome,
         );
       case DockItemId.create:
-        return DockItemTile(
+        final tile = DockItemTile(
           controlKey: const ValueKey('general-mode-dock-create'),
           icon: Icons.add_rounded,
           label: dockItemLabel(strings, DockItemId.create),
@@ -139,6 +146,9 @@ class GeneralModeDock extends StatelessWidget {
           compact: compact,
           onTap: onCreate,
         );
+        return createAnchorKey == null
+            ? tile
+            : KeyedSubtree(key: createAnchorKey, child: tile);
       case DockItemId.bots:
         final meta = dockItemVisual(DockItemId.bots);
         return DockItemTile(

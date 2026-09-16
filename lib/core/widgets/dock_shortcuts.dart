@@ -16,17 +16,31 @@ import 'hermes_drawer.dart' show buildHermesToolDestinations;
 /// Reutilizan EXACTAMENTE las mismas pantallas y criterios de capacidades
 /// que ya usa [HermesDrawer] para las mismas secciones, para no duplicar
 /// navegación (ver [buildHermesToolDestinations]).
-void openDockCron(BuildContext context, SavedConnection connection) {
+void openDockCron(
+  BuildContext context,
+  SavedConnection connection,
+  ConnectionManager connManager,
+) {
   Navigator.push(
     context,
-    MaterialPageRoute(builder: (_) => CronScreen(connection: connection)),
+    MaterialPageRoute(
+      builder: (_) =>
+          CronScreen(connection: connection, connManager: connManager),
+    ),
   );
 }
 
-void openDockTasks(BuildContext context, SavedConnection connection) {
+void openDockTasks(
+  BuildContext context,
+  SavedConnection connection,
+  ConnectionManager connManager,
+) {
   Navigator.push(
     context,
-    MaterialPageRoute(builder: (_) => TasksScreen(connection: connection)),
+    MaterialPageRoute(
+      builder: (_) =>
+          TasksScreen(connection: connection, connManager: connManager),
+    ),
   );
 }
 
@@ -61,7 +75,11 @@ void openDockTools(
   Navigator.push(
     context,
     MaterialPageRoute(
-      builder: (_) => ToolsHubScreen(destinations: destinations),
+      builder: (_) => ToolsHubScreen(
+        destinations: destinations,
+        connection: connection,
+        connManager: connManager,
+      ),
     ),
   );
 }
