@@ -805,9 +805,13 @@ class _LocalInstanceControlScreenState
                     IconButton(
                       icon: const Icon(Icons.refresh, size: 18),
                       tooltip: str.statusRefresh,
-                      visualDensity: VisualDensity.compact,
-                      constraints: const BoxConstraints(),
-                      padding: const EdgeInsets.all(4),
+                      // Objetivo táctil real de 44dp aunque el icono visible
+                      // sea de 18dp: `BoxConstraints()` vacío colapsaba el
+                      // hit-test al tamaño del icono.
+                      constraints: const BoxConstraints(
+                        minWidth: 44,
+                        minHeight: 44,
+                      ),
                       color: colors.accentHover,
                       onPressed: _probeBridge,
                     ),
