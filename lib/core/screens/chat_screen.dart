@@ -12071,6 +12071,7 @@ class _ChatScreenState extends State<ChatScreen>
             children: [
               if (_pendingAttachments.isNotEmpty)
                 _AttachmentPreviewStrip(
+                  key: const ValueKey('composer-attachment-preview'),
                   attachments: _pendingAttachments,
                   onRemove: _roomTaskMutationLocked
                       ? null
@@ -12120,6 +12121,7 @@ class _ChatScreenState extends State<ChatScreen>
                   ),
                 ),
               Row(
+                key: const ValueKey('composer-input-row'),
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   if (!_isRecording)
@@ -14080,6 +14082,7 @@ class _AttachmentPreviewStrip extends StatelessWidget {
     required this.attachments,
     required this.onRemove,
     required this.onRetry,
+    super.key,
   });
 
   @override

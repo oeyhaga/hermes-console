@@ -38,6 +38,13 @@ are not releases.
   no longer times out calls that a desktop connection would complete
   comfortably. Call sites that already pin their own explicit timeout are
   unaffected.
+- Fixed the on-screen keyboard closing unexpectedly while typing in the chat
+  composer. The attachment preview strip and the text-field row had no
+  `Key`, so attaching a file (or a session compression starting) while
+  typing changed the number of children ahead of the row and Flutter
+  reconciled by position, remounting the row — and its `EditableText` — even
+  though the same `FocusNode` stayed logically focused. Both now have stable
+  keys.
 
 ## 1.2.10 (9008) — 2026-09-14
 
