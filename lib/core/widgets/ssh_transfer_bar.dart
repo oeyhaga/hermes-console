@@ -101,9 +101,10 @@ class SshTransferBar extends StatelessWidget {
           if (!t.isRunning)
             IconButton(
               icon: Icon(Icons.close, size: 15, color: colors.textDisabled),
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(),
+              // Objetivo táctil real de 44dp aunque el icono visible sea de
+              // 15dp: `BoxConstraints()` vacío colapsaba el hit-test al
+              // tamaño del icono.
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               tooltip: 'Descartar',
               onPressed: service.clearFinished,
             ),
