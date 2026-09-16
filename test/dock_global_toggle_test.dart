@@ -279,14 +279,17 @@ void main() {
         // La lista vacía ya pinta su propio CTA nativo ("New task"),
         // independiente del dock — no sirve para probar que el FAB en
         // concreto funciona. Se comprueba en su lugar que tocar el FAB
-        // abre de verdad el editor (un `Dialog` modal), no un botón
-        // decorativo.
-        expect(find.byType(Dialog), findsNothing);
+        // abre de verdad el editor real (el campo de prompt del
+        // formulario), no un botón decorativo. Se identifica por su key,
+        // no por `Dialog`: el rediseño de Cron (feat/cron-dialogs-subagent-
+        // redesign) puede envolver el mismo editor en una superficie
+        // flotante en vez de un `Dialog` de Material.
+        expect(find.byKey(const ValueKey('cron-prompt-field')), findsNothing);
 
         await tester.tap(fab);
         await tester.pumpAndSettle();
 
-        expect(find.byType(Dialog), findsOneWidget);
+        expect(find.byKey(const ValueKey('cron-prompt-field')), findsOneWidget);
       },
     );
   });
