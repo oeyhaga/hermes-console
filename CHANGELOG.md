@@ -33,6 +33,11 @@ are not releases.
   Android reaps it) — there is no gateway endpoint yet to reconstruct a
   background task's outcome after a cold start; closing that gap needs either
   a new poll endpoint or the shared gateway.
+- Raised the default JSON-RPC request timeout from 30 s to 120 s across the
+  gateway client's general-purpose request paths, so a slow mobile connection
+  no longer times out calls that a desktop connection would complete
+  comfortably. Call sites that already pin their own explicit timeout are
+  unaffected.
 
 ## 1.2.10 (9008) — 2026-09-14
 
