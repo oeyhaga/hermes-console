@@ -26,6 +26,7 @@ import '../utils/assistant_operational_artifacts.dart';
 import '../utils/relative_time.dart';
 import '../widgets/attachment_source_sheet.dart';
 import '../widgets/dock_shortcuts.dart';
+import '../widgets/dock_style.dart' show dockShowsBack;
 import '../widgets/general_mode_dock.dart';
 import '../widgets/hermes_drawer.dart';
 import '../widgets/hermes_premium_ui.dart';
@@ -106,10 +107,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   Timer? _localStartPoll;
   int _localStartTicks = 0;
 
-  // Dock flotante (perfil "General"): true cuando hay una subpantalla
-  // abierta encima de Home, para mostrar su "Atrás" contextual.
-  bool _hasSubscreenAbove = false;
-
   @override
   void dispose() {
     hermesRouteObserver.unsubscribe(this);
@@ -141,16 +138,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   void didPush() => unawaited(DrawerGestureExclusion.setEnabled(true));
 
   @override
-  void didPopNext() {
-    unawaited(DrawerGestureExclusion.setEnabled(true));
-    if (mounted) setState(() => _hasSubscreenAbove = false);
-  }
+  void didPopNext() => unawaited(DrawerGestureExclusion.setEnabled(true));
 
   @override
-  void didPushNext() {
-    unawaited(DrawerGestureExclusion.setEnabled(false));
-    if (mounted) setState(() => _hasSubscreenAbove = true);
-  }
+  void didPushNext() => unawaited(DrawerGestureExclusion.setEnabled(false));
 
   @override
   void didPop() => unawaited(DrawerGestureExclusion.setEnabled(false));
@@ -1480,7 +1471,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                       ),
                     ),
                   ).then((_) => _reload()),
-            showBackContext: _hasSubscreenAbove,
+            showBackContext: dockShowsBack(context),
             onBack: () => Navigator.of(context).maybePop(),
             // Accesos directos opcionales (ocultos de fábrica en el
             // catálogo); mismas pantallas/criterios que ya usa HermesDrawer.

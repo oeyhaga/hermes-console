@@ -16,9 +16,11 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/cron_job.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../navigation/chat_route.dart';
 import '../services/connection_manager.dart';
 import '../services/cron_repository.dart';
+import '../services/dock_preferences_store.dart';
 
 import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
@@ -660,18 +662,32 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
           ],
         ),
       ),
-      // Con el dock presente, su "+" contextual (`_showAnchoredEditor`)
-      // reemplaza a este FAB — mantenerlos ambos duplicaría la acción de
-      // crear y competiría visualmente con la barra flotante del dock.
-      floatingActionButton: widget.connManager != null
-          ? null
-          : (_mutationsDisabled
-                ? null
-                : FloatingActionButton(
-                    tooltip: s.crnAddNew,
-                    onPressed: _loading ? null : () => _showEditor(),
-                    child: const Icon(Icons.add),
-                  )),
+      // Con el dock activo y presente, su "+" contextual
+      // (`_showAnchoredEditor`) reemplaza a este FAB — mantenerlos ambos
+      // duplicaría la acción de crear y competiría visualmente con la barra
+      // flotante del dock. Pero "dock presente" no es lo mismo que
+      // "pantalla compatible con dock" (`widget.connManager != null`): con
+      // el interruptor global "Usar dock flotante" apagado, esta pantalla
+      // sigue teniendo `connManager`, pero NINGÚN dock se pinta encima, así
+      // que el FAB debe reaparecer o la única forma de crear un cron job
+      // desaparecería con él (bug confirmado, pedido explícito del
+      // usuario). Reactivo vía `ListenableBuilder`: si el interruptor
+      // cambia mientras esta pantalla está viva, el FAB aparece/desaparece
+      // sin necesidad de reabrir la pantalla.
+      floatingActionButton: ListenableBuilder(
+        listenable: DockPreferencesController.instance.listenable,
+        builder: (context, _) {
+          final dockActive =
+              widget.connManager != null &&
+              DockPreferencesController.instance.value.useDock;
+          if (dockActive || _mutationsDisabled) return const SizedBox.shrink();
+          return FloatingActionButton(
+            tooltip: s.crnAddNew,
+            onPressed: _loading ? null : () => _showEditor(),
+            child: const Icon(Icons.add),
+          );
+        },
+      ),
     );
   }
 
@@ -682,6 +698,7 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       connection: widget.connection,
       connManager: connManager,
       onCreateAnchored: _showAnchoredEditor,
+      currentDestination: DockItemId.cron,
       body: body,
     );
   }

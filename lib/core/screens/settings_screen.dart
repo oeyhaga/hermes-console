@@ -3,7 +3,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../l10n/app_localizations.dart';
 
+import 'dart:async';
 import 'dart:convert';
+
+import '../services/dock_preferences_store.dart';
 
 import 'package:http/http.dart' as http;
 
@@ -176,6 +179,7 @@ class SettingsScreen extends StatelessWidget {
                 _FontStyleEntry(),
                 _LanguageEntry(),
                 _HeaderTitleField(),
+                _UseDockTile(),
                 _DockTile(),
               ],
             ),
@@ -759,6 +763,35 @@ class _VoiceTile extends StatelessWidget {
         context,
         MaterialPageRoute(
           builder: (_) => VoiceSettingsScreen(connection: connection),
+        ),
+      ),
+    );
+  }
+}
+
+/// Interruptor GLOBAL (no por perfil, a diferencia de todo lo demás en
+/// `DockSettingsScreen`): apaga por completo el dock flotante en toda la
+/// app. Activado por defecto. Vive aquí, junto al resto de ajustes de
+/// apariencia, en vez de dentro de Ajustes › Dock, porque "usar o no dock"
+/// es una decisión previa a personalizarlo.
+class _UseDockTile extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final strings = Strings.of(context);
+    final controller = DockPreferencesController.instance;
+    return ListenableBuilder(
+      listenable: controller.listenable,
+      // `Material(type: transparency)`: ver el comentario equivalente en
+      // `dock_settings_screen.dart` sobre `HermesGroup` + `HermesSwitchTile`
+      // sin un `Material` propio de por medio.
+      builder: (context, _) => Material(
+        type: MaterialType.transparency,
+        child: HermesSwitchTile(
+          controlKey: const ValueKey('settings-use-dock'),
+          title: strings.settingsUseDockTitle,
+          subtitle: strings.settingsUseDockSubtitle,
+          value: controller.value.useDock,
+          onChanged: (value) => unawaited(controller.setUseDock(value)),
         ),
       ),
     );

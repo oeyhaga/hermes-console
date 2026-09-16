@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 /// Abre una superficie modal anclada a la posición actual de [anchorKey], en
@@ -89,28 +91,46 @@ class _DockAnchoredPopoverFrame extends StatelessWidget {
     final width = maxWidth > screen.width - 24 ? screen.width - 24 : maxWidth;
     var left = anchorTopLeft.dx + anchorSize.width / 2 - width / 2;
     left = left.clamp(12.0, screen.width - width - 12.0);
-    final bottom = (screen.height - anchorTopLeft.dy + 10).clamp(
-      12.0,
-      screen.height - 96,
-    );
-    final availableHeight = anchorTopLeft.dy - media.padding.top - 24;
 
-    return SafeArea(
-      child: Stack(
-        children: [
-          Positioned(
-            left: left,
-            bottom: bottom,
-            width: width,
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: availableHeight <= 0 ? 0 : availableHeight,
-              ),
-              child: child,
+    // Todo el cálculo vive en coordenadas GLOBALES de pantalla completa —
+    // el mismo espacio en el que `localToGlobal` ya nos dio `anchorTopLeft`
+    // — y este widget ya NO se envuelve en un `SafeArea`: mezclar ambos
+    // espacios (coordenadas globales para el ancla, locales-tras-SafeArea
+    // para el `Positioned`) desalineaba el popover del botón exactamente
+    // por el inset inferior del sistema (medido: 44dp de separación en vez
+    // de los 10dp buscados — bug A6). El inset inferior/superior del
+    // sistema se aplica ahora a mano, una sola vez, vía `media.padding`.
+    final desiredGap = screen.height - anchorTopLeft.dy + 10;
+    // Suelo del popover: nunca por debajo del borde del sistema (gesto/nav
+    // bar) NI por debajo del teclado cuando está visible — antes este
+    // cálculo ignoraba `viewInsets.bottom` por completo y el popover
+    // quedaba casi entero tapado al abrir un `TextField(autofocus: true)`
+    // dentro (medido: 216 de 220px tapados — bug A1).
+    final minBottom = math.max(
+      media.padding.bottom + 12,
+      media.viewInsets.bottom + 8,
+    );
+    // `math.max` evita que el clamp reciba un límite superior menor que el
+    // inferior (pantalla pequeña + teclado alto): en ese caso el popover
+    // simplemente se pega al suelo ya calculado en vez de fallar.
+    final maxBottom = math.max(minBottom, screen.height - 96);
+    final bottom = desiredGap.clamp(minBottom, maxBottom);
+    final availableHeight = screen.height - bottom - media.padding.top - 24;
+
+    return Stack(
+      children: [
+        Positioned(
+          left: left,
+          bottom: bottom,
+          width: width,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: availableHeight <= 0 ? 0 : availableHeight,
             ),
+            child: child,
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

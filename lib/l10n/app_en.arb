@@ -5385,9 +5385,23 @@
   "missionCreateLabel": "Create",
   "missionCreateBotLabel": "New bot",
   "missionCreateRoomLabel": "New room",
+  "settingsUseDockTitle": "Use floating dock",
+  "settingsUseDockSubtitle": "Turn it off to navigate using only the screens and their own buttons",
   "dockSettingsTitle": "Dock",
   "dockSettingsSubtitle": "Items, behavior and style",
   "dockSettingsReset": "Reset",
+  "dockSettingsResetProfile": "Reset {profile}",
+  "@dockSettingsResetProfile": {
+    "placeholders": {
+      "profile": {"type": "String"}
+    }
+  },
+  "dockSettingsResetConfirmBody": "This resets items, Back behavior and style for the {profile} profile. Current settings for this profile will be lost.",
+  "@dockSettingsResetConfirmBody": {
+    "placeholders": {
+      "profile": {"type": "String"}
+    }
+  },
   "dockProfileBots": "Bots",
   "dockProfileGeneral": "General",
   "dockProfileBotsDescription": "Used inside Bots and in mission rooms.",
@@ -5420,6 +5434,13 @@
   "dockSettingsLabel": "Settings",
   "dockCreateGeneralSubtitle": "New conversation",
   "dockCreateBotsSubtitle": "New bot · New room",
+  "dockItemsKeepOneVisible": "Keep at least one item visible",
+  "dockItemDragHandleLabel": "Drag to reorder {item}",
+  "@dockItemDragHandleLabel": {
+    "placeholders": {
+      "item": {"type": "String"}
+    }
+  },
   "missionSharedRooms": "Shared rooms",
   "missionCreateSharedRoom": "Create shared room",
   "missionNoSharedRooms": "No official shared rooms are available.",

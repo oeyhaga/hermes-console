@@ -13,7 +13,7 @@ import 'dock_style.dart';
 /// [BotModeDock] (`DockBar`/`DockItemTile`, estilo y personalización por
 /// perfil), pero sin el menú de creación de dos órbitas: "Crear" aquí es
 /// una acción única (nueva conversación).
-class GeneralModeDock extends StatelessWidget {
+class GeneralModeDock extends StatefulWidget {
   final VoidCallback? onCreate;
   final VoidCallback? onOpenBots;
   final VoidCallback? onOpenSettings;
@@ -42,6 +42,14 @@ class GeneralModeDock extends StatelessWidget {
   /// ahí un popover contextual en vez de navegar (Cron, Tareas).
   final GlobalKey? createAnchorKey;
 
+  /// Id del item que representa la pantalla donde vive este dock ahora
+  /// mismo (Ajustes/Sesiones/Cron/Tareas/Herramientas): se pinta como
+  /// sección activa (`selected: true`) en vez de sin marcar. Quien
+  /// construye este dock ya se encarga de no pasarle una acción de
+  /// navegación a ese mismo item (ver [GeneralDockShell]); esto solo añade
+  /// la señal visual que le faltaba (ver B3).
+  final DockItemId? currentDestination;
+
   const GeneralModeDock({
     this.onCreate,
     this.onOpenBots,
@@ -54,16 +62,41 @@ class GeneralModeDock extends StatelessWidget {
     this.onOpenSessions,
     this.onOpenTools,
     this.createAnchorKey,
+    this.currentDestination,
     super.key,
   });
 
   @override
-  Widget build(BuildContext context) {
+  State<GeneralModeDock> createState() => _GeneralModeDockState();
+}
+
+class _GeneralModeDockState extends State<GeneralModeDock> {
+  @override
+  void initState() {
+    super.initState();
+    // Carga en `initState`, no en `build()`: `BotModeDock` ya lo hace así
+    // (`bot_mode_dock.dart`); hacerlo en `build()` repetía la llamada (sin
+    // coste real por el guard de `ensureLoaded`, pero) en cada
+    // reconstrucción del padre, y sobre todo dejaba un parpadeo
+    // config-por-defecto → config-real en frío de 100-300ms en el primer
+    // frame (bug confirmado: C7).
     unawaited(DockPreferencesController.instance.ensureLoaded());
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: DockPreferencesController.instance.listenable,
-      builder: (context, _) =>
-          _build(context, DockPreferencesController.instance.value.general),
+      builder: (context, _) {
+        final prefs = DockPreferencesController.instance.value;
+        // Interruptor global "Usar dock flotante" (Ajustes): con él
+        // apagado este widget no pinta nada, sin dejar hueco reservado.
+        // Guarda propia (además de la de `GeneralDockShell`) porque
+        // `HomeDashboardScreen` monta este dock directamente, sin pasar
+        // por el shell.
+        if (!prefs.useDock) return const SizedBox.shrink();
+        return _build(context, prefs.general);
+      },
     );
   }
 
@@ -76,10 +109,23 @@ class GeneralModeDock extends StatelessWidget {
     const compact = true;
     final visual = resolveDockVisual(colors, profile.style);
     final showBack =
-        showBackContext && profile.showBackOnSubscreens && onBack != null;
+        widget.showBackContext &&
+        profile.showBackOnSubscreens &&
+        widget.onBack != null;
+    // `work` vive oculto en el catálogo de "general" (sin acción propia en
+    // este perfil: se pinta como `SizedBox.shrink()` más abajo) pero SÍ
+    // contaba en `visibleItemIds` si el usuario lo activaba desde Ajustes,
+    // estrechando el resto de items y alterando qué item se retira al
+    // insertar "Atrás" sin que hubiera nada visible que lo justificara (bug
+    // confirmado, MEDIDO: A5). Se excluye aquí, en el punto donde de verdad
+    // importa (qué ocupa un hueco real en la barra), sin tocar el catálogo
+    // genérico del modelo.
+    final visibleItems = [
+      for (final id in profile.visibleItemIds)
+        if (id != DockItemId.work) id,
+    ];
     final slots = resolveDockSlots(
-      visibleItems: profile.visibleItemIds,
-      pinnedItemId: profile.pinnedItemId,
+      visibleItems: visibleItems,
       showBack: showBack,
     );
     final bottomInset = MediaQuery.paddingOf(context).bottom;
@@ -116,7 +162,7 @@ class GeneralModeDock extends StatelessWidget {
         label: strings.dockBackLabel,
         innerRadius: innerRadius,
         compact: compact,
-        onTap: onBack,
+        onTap: widget.onBack,
       );
     }
     switch (slot) {
@@ -131,10 +177,10 @@ class GeneralModeDock extends StatelessWidget {
           // (caso histórico): "Inicio" se pinta como sección activa sin
           // acción propia. Con `onOpenHome` (dock integrado en otra
           // pantalla) deja de estar "seleccionado" y navega de vuelta.
-          selected: onOpenHome == null,
+          selected: widget.onOpenHome == null,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenHome,
+          onTap: widget.onOpenHome,
         );
       case DockItemId.create:
         final tile = DockItemTile(
@@ -144,11 +190,11 @@ class GeneralModeDock extends StatelessWidget {
           accent: true,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onCreate,
+          onTap: widget.onCreate,
         );
-        return createAnchorKey == null
+        return widget.createAnchorKey == null
             ? tile
-            : KeyedSubtree(key: createAnchorKey, child: tile);
+            : KeyedSubtree(key: widget.createAnchorKey, child: tile);
       case DockItemId.bots:
         final meta = dockItemVisual(DockItemId.bots);
         return DockItemTile(
@@ -158,7 +204,7 @@ class GeneralModeDock extends StatelessWidget {
           label: dockItemLabel(strings, DockItemId.bots),
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenBots,
+          onTap: widget.onOpenBots,
         );
       case DockItemId.settings:
         final meta = dockItemVisual(DockItemId.settings);
@@ -167,9 +213,10 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.settings),
+          selected: widget.currentDestination == DockItemId.settings,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenSettings,
+          onTap: widget.onOpenSettings,
         );
       case DockItemId.work:
         // Fuera de catálogo por defecto en "general" (oculto de fábrica);
@@ -183,9 +230,10 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.cron),
+          selected: widget.currentDestination == DockItemId.cron,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenCron,
+          onTap: widget.onOpenCron,
         );
       case DockItemId.tasks:
         final meta = dockItemVisual(DockItemId.tasks);
@@ -194,9 +242,10 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.tasks),
+          selected: widget.currentDestination == DockItemId.tasks,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenTasks,
+          onTap: widget.onOpenTasks,
         );
       case DockItemId.sessions:
         final meta = dockItemVisual(DockItemId.sessions);
@@ -205,9 +254,10 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.sessions),
+          selected: widget.currentDestination == DockItemId.sessions,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenSessions,
+          onTap: widget.onOpenSessions,
         );
       case DockItemId.tools:
         final meta = dockItemVisual(DockItemId.tools);
@@ -216,9 +266,10 @@ class GeneralModeDock extends StatelessWidget {
           icon: meta.icon,
           selectedIcon: meta.selectedIcon,
           label: dockItemLabel(strings, DockItemId.tools),
+          selected: widget.currentDestination == DockItemId.tools,
           innerRadius: innerRadius,
           compact: compact,
-          onTap: onOpenTools,
+          onTap: widget.onOpenTools,
         );
     }
   }

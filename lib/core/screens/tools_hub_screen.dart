@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../services/connection_manager.dart';
 import '../theme/app_theme.dart';
 import '../widgets/general_dock_shell.dart';
@@ -209,6 +210,7 @@ class _ToolsHubScreenState extends State<ToolsHubScreen> {
     return GeneralDockShell(
       connection: connection,
       connManager: connManager,
+      currentDestination: DockItemId.tools,
       body: body,
     );
   }

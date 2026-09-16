@@ -11,6 +11,16 @@ import '../widgets/hermes_ui.dart';
 
 enum _DockTab { bots, general }
 
+/// `persist: false` actualiza solo el valor en memoria (útil durante un
+/// arrastre continuo, p.ej. el slider de transparencia — ver C4): la
+/// escritura a disco real se hace en la siguiente llamada con
+/// `persist: true` (el valor por defecto), normalmente al soltar.
+typedef DockProfileUpdater =
+    Future<void> Function(
+      DockProfileConfig Function(DockProfileConfig) update, {
+      bool persist,
+    });
+
 /// Ajustes › Dock: entorno real de personalización de los dos perfiles de
 /// dock (Bots/General). Cada perfil guarda su propio orden de elementos,
 /// visibilidad, elemento destacado, comportamiento de "Atrás" y estilo
@@ -27,14 +37,50 @@ class _DockSettingsScreenState extends State<DockSettingsScreen> {
   _DockTab _tab = _DockTab.bots;
 
   Future<void> _updateProfile(
-    DockProfileConfig Function(DockProfileConfig) update,
-  ) => _tab == _DockTab.bots
-      ? _controller.updateBots(update)
-      : _controller.updateGeneral(update);
+    DockProfileConfig Function(DockProfileConfig) update, {
+    bool persist = true,
+  }) => _tab == _DockTab.bots
+      ? _controller.updateBots(update, persist: persist)
+      : _controller.updateGeneral(update, persist: persist);
 
   Future<void> _reset() => _tab == _DockTab.bots
       ? _controller.resetBots()
       : _controller.resetGeneral();
+
+  String _profileLabel(Strings strings) =>
+      _tab == _DockTab.bots ? strings.dockProfileBots : strings.dockProfileGeneral;
+
+  // "Restablecer" reseteaba solo el perfil activo sin decirlo ni pedir
+  // confirmación: con dos perfiles delante (Bots/General) se lee como un
+  // reset global (bug confirmado: D5). El label ya nombra el perfil
+  // afectado y la confirmación lo repite explícitamente.
+  Future<void> _confirmAndReset(BuildContext context) async {
+    final strings = Strings.of(context);
+    final colors = Theme.of(context).hermes;
+    final profile = _profileLabel(strings);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: colors.surface,
+        title: Text(strings.dockSettingsResetProfile(profile)),
+        content: Text(
+          strings.dockSettingsResetConfirmBody(profile),
+          style: TextStyle(fontSize: 13, color: colors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(strings.commonCancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(strings.dockSettingsReset),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await _reset();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -44,8 +90,8 @@ class _DockSettingsScreenState extends State<DockSettingsScreen> {
         title: Text(strings.dockSettingsTitle),
         actions: [
           TextButton(
-            onPressed: () => unawaited(_reset()),
-            child: Text(strings.dockSettingsReset),
+            onPressed: () => unawaited(_confirmAndReset(context)),
+            child: Text(strings.dockSettingsResetProfile(_profileLabel(strings))),
           ),
         ],
       ),
@@ -70,8 +116,7 @@ class _DockSettingsBody extends StatelessWidget {
   final _DockTab tab;
   final DockProfileConfig profile;
   final ValueChanged<_DockTab> onTabChanged;
-  final Future<void> Function(DockProfileConfig Function(DockProfileConfig))
-  onUpdate;
+  final DockProfileUpdater onUpdate;
 
   const _DockSettingsBody({
     required this.tab,
@@ -122,13 +167,25 @@ class _DockSettingsBody extends StatelessWidget {
         HermesSectionHeader(strings.dockBehaviorSectionTitle),
         HermesGroup(
           children: [
-            HermesSwitchTile(
-              controlKey: const ValueKey('dock-settings-show-back'),
-              title: strings.dockShowBackTitle,
-              subtitle: strings.dockShowBackSubtitle,
-              value: profile.showBackOnSubscreens,
-              onChanged: (value) => unawaited(
-                onUpdate((p) => p.copyWith(showBackOnSubscreens: value)),
+            // `HermesGroup` pinta su propio fondo con color (un
+            // `Container` con `BoxDecoration.color`) directamente por
+            // encima de `HermesSwitchTile` (internamente, un tile con
+            // ripple basado en `ListTile`); sin un `Material` de por medio,
+            // Flutter detecta en depuración que el fondo/ripple del switch
+            // quedaría invisible bajo ese `Container` (aviso real, no solo
+            // de test). `Material(type: transparency)` no añade superficie
+            // ni cambia nada visible: solo le da al switch el ancestro
+            // `Material` más cercano que la propia guía de Flutter pide.
+            Material(
+              type: MaterialType.transparency,
+              child: HermesSwitchTile(
+                controlKey: const ValueKey('dock-settings-show-back'),
+                title: strings.dockShowBackTitle,
+                subtitle: strings.dockShowBackSubtitle,
+                value: profile.showBackOnSubscreens,
+                onChanged: (value) => unawaited(
+                  onUpdate((p) => p.copyWith(showBackOnSubscreens: value)),
+                ),
               ),
             ),
           ],
@@ -160,11 +217,22 @@ class _DockPreview extends StatelessWidget {
     final strings = Strings.of(context);
     final colors = Theme.of(context).hermes;
     final visual = resolveDockVisual(colors, profile.style);
+    // La vista previa refleja el estado REAL del switch "Mostrar Atrás en
+    // subpantallas": antes fijaba `showBack: false` a fuego, así que
+    // tocarlo no cambiaba nada visible en la propia vista previa que está
+    // justo encima (bug confirmado: D2).
     final slots = resolveDockSlots(
       visibleItems: profile.visibleItemIds,
-      pinnedItemId: profile.pinnedItemId,
-      showBack: false,
+      showBack: profile.showBackOnSubscreens,
     );
+    // El primer item VISIBLE en el orden actual (no el primero del catálogo
+    // completo, que puede estar oculto y entonces no resaltar nada) es el
+    // que `resolveDockSlots` protege de la retirada al insertar "Atrás" —
+    // ver su doc. Antes se comparaba contra `profile.items.first.id` sin
+    // mirar visibilidad (bug confirmado: D3).
+    final firstVisible = profile.visibleItemIds.isEmpty
+        ? null
+        : profile.visibleItemIds.first;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: DockBar(
@@ -176,13 +244,20 @@ class _DockPreview extends StatelessWidget {
                 icon: dockItemVisual(slot).icon,
                 selectedIcon: dockItemVisual(slot).selectedIcon,
                 label: dockItemLabel(strings, slot),
-                selected: slot == profile.items.first.id,
+                selected: slot == firstVisible,
                 // El acento es SIEMPRE el "+" (igual que en el dock real,
                 // `general_mode_dock.dart`/`bot_mode_dock.dart`): no está
-                // ligado a `pinnedItemId`, que ahora es un detalle interno
-                // (el primer item visible) sin control manual en esta UI.
+                // ligado al primer item visible, que solo protege de la
+                // retirada al insertar "Atrás", sin control manual en esta
+                // UI.
                 accent: slot == DockItemId.create,
                 innerRadius: visual.innerRadius,
+                // El dock real SIEMPRE usa `compact: true` (icono arriba,
+                // etiqueta debajo); la vista previa pintaba la rama no
+                // compacta (icono y etiqueta en línea), así que no
+                // representaba de verdad cómo se ve el dock (bug
+                // confirmado: D1).
+                compact: true,
               ),
         ],
       ),
@@ -190,25 +265,10 @@ class _DockPreview extends StatelessWidget {
   }
 }
 
-/// El item "nunca se retira" al insertar "Atrás" (ver `resolveDockSlots`)
-/// ahora es puramente automático: el primer item visible en el orden
-/// actual. Sin esto habría que pedirle al usuario que declarara un
-/// "destacado" a mano, justo el paso que pidió eliminar.
-DockItemId _firstVisibleId(
-  List<DockItemConfig> items, {
-  required DockItemId fallback,
-}) {
-  for (final item in items) {
-    if (item.visible) return item.id;
-  }
-  return fallback;
-}
-
 class _DockItemList extends StatelessWidget {
   final DockProfileConfig profile;
   final _DockTab tab;
-  final Future<void> Function(DockProfileConfig Function(DockProfileConfig))
-  onUpdate;
+  final DockProfileUpdater onUpdate;
 
   const _DockItemList({
     required this.profile,
@@ -228,10 +288,18 @@ class _DockItemList extends StatelessWidget {
     final strings = Strings.of(context);
     final colors = Theme.of(context).hermes;
     final items = profile.items;
+    final visibleCount = items.where((i) => i.visible).length;
+    // Altura por item derivada del escalado de texto activo en vez de un
+    // valor fijo: a `textScale` alto (2.0x en el peor caso medido) el
+    // contenido de cada fila (la etiqueta, sobre todo) ya no cabía en los
+    // 54dp fijos y Flutter lanzaba overflow de layout real (bug confirmado,
+    // MEDIDO: B1). El resto de la fila (icono/asa/switch) no escala, así
+    // que crece con margen de sobra.
+    final rowHeight = MediaQuery.textScalerOf(context).scale(54.0);
     return HermesGroup(
       children: [
         SizedBox(
-          height: 54.0 * items.length,
+          height: rowHeight * items.length,
           child: ReorderableListView.builder(
             buildDefaultDragHandles: false,
             physics: const NeverScrollableScrollPhysics(),
@@ -240,24 +308,22 @@ class _DockItemList extends StatelessWidget {
               final next = List<DockItemConfig>.from(items);
               final moved = next.removeAt(oldIndex);
               next.insert(newIndex, moved);
-              unawaited(
-                onUpdate(
-                  (p) => p.copyWith(
-                    items: next,
-                    pinnedItemId: _firstVisibleId(
-                      next,
-                      fallback: p.pinnedItemId,
-                    ),
-                  ),
-                ),
-              );
+              unawaited(onUpdate((p) => p.copyWith(items: next)));
             },
             itemBuilder: (context, index) {
               final item = items[index];
               final visual = dockItemVisual(item.id);
+              final itemLabel = dockItemLabel(strings, item.id);
+              // Impide apagar el ÚLTIMO elemento visible: sin esto se podía
+              // dejar un perfil entero sin ningún item, dejando una barra
+              // flotante vacía y sin navegación (bug confirmado, MEDIDO:
+              // A4). El switch se deshabilita (además de la señal visual
+              // propia de un `Switch` inhabilitado, un tooltip explica por
+              // qué al mantener pulsado/en hover).
+              final isLastVisible = item.visible && visibleCount <= 1;
               return Container(
                 key: ValueKey('dock-item-${item.id.name}'),
-                height: 54,
+                height: rowHeight,
                 decoration: index == items.length - 1
                     ? null
                     : BoxDecoration(
@@ -269,14 +335,20 @@ class _DockItemList extends StatelessWidget {
                       ),
                 child: Row(
                   children: [
-                    ReorderableDragStartListener(
-                      index: index,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: Icon(
-                          Icons.drag_indicator_rounded,
-                          size: 20,
-                          color: colors.textDisabled,
+                    Semantics(
+                      label: strings.dockItemDragHandleLabel(itemLabel),
+                      child: ReorderableDragStartListener(
+                        index: index,
+                        child: Padding(
+                          // Área táctil ampliada a 44dp (antes ~36dp, por
+                          // debajo del mínimo de accesibilidad) sin cambiar
+                          // el tamaño visual del icono (bug confirmado: B4).
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Icon(
+                            Icons.drag_indicator_rounded,
+                            size: 20,
+                            color: colors.textDisabled,
+                          ),
                         ),
                       ),
                     ),
@@ -294,7 +366,17 @@ class _DockItemList extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            dockItemLabel(strings, item.id),
+                            itemLabel,
+                            // `maxLines`/`overflow`, antes ausentes: sin
+                            // ellos, a `textScale` alto una etiqueta larga
+                            // ("Scheduled tasks", "Herramientas"...) envuelve
+                            // a una segunda línea y desborda la altura fija
+                            // de la fila (`rowHeight`, ya escalada para UNA
+                            // línea) — parte del overflow real medido en
+                            // B1, junto con el resto del layout de esta
+                            // pantalla.
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 14.5,
                               fontWeight: FontWeight.w500,
@@ -308,6 +390,8 @@ class _DockItemList extends StatelessWidget {
                               padding: const EdgeInsets.only(top: 2),
                               child: Text(
                                 _subtitleFor(strings, item.id)!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: colors.textSecondary,
@@ -322,28 +406,32 @@ class _DockItemList extends StatelessWidget {
                     // item sin un paso previo que "se lo robe" a otro
                     // ("no entiendo para qué quiero seleccionarlos, si
                     // simplemente se debería quitar o poner o moverlos").
-                    // El switch de visibilidad funciona SIEMPRE, para todos
-                    // los items; `pinnedItemId` (qué item nunca se retira al
-                    // insertar "Atrás") se recalcula solo, como el primer
-                    // item que quede visible tras el cambio.
-                    Switch(
-                      value: item.visible,
-                      onChanged: (value) => unawaited(
-                        onUpdate((p) {
-                          final next = [
-                            for (final it in p.items)
-                              it.id == item.id
-                                  ? it.copyWith(visible: value)
-                                  : it,
-                          ];
-                          return p.copyWith(
-                            items: next,
-                            pinnedItemId: _firstVisibleId(
-                              next,
-                              fallback: p.pinnedItemId,
-                            ),
-                          );
-                        }),
+                    // El elemento que nunca se retira al insertar "Atrás"
+                    // se calcula solo, como el primer item visible (ver
+                    // `resolveDockSlots`); no hace falta guardarlo aparte.
+                    Tooltip(
+                      message: isLastVisible
+                          ? strings.dockItemsKeepOneVisible
+                          : itemLabel,
+                      child: Semantics(
+                        label: itemLabel,
+                        child: Switch(
+                          value: item.visible,
+                          onChanged: isLastVisible
+                              ? null
+                              : (value) => unawaited(
+                                  onUpdate(
+                                    (p) => p.copyWith(
+                                      items: [
+                                        for (final it in p.items)
+                                          it.id == item.id
+                                              ? it.copyWith(visible: value)
+                                              : it,
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                        ),
                       ),
                     ),
                   ],
@@ -402,8 +490,7 @@ List<BoxShadow> _swatchShadows(DockStyle style) {
 /// palabra ("Suave", "Elevado") sin more contexto visual.
 class _DockStyleEditor extends StatelessWidget {
   final DockProfileConfig profile;
-  final Future<void> Function(DockProfileConfig Function(DockProfileConfig))
-  onUpdate;
+  final DockProfileUpdater onUpdate;
 
   const _DockStyleEditor({required this.profile, required this.onUpdate});
 
@@ -417,34 +504,31 @@ class _DockStyleEditor extends StatelessWidget {
       children: [
         _StyleRow(
           label: strings.dockStyleBorderLabel,
-          child: Row(
-            children: [
-              for (final shape in DockBorderShape.values) ...[
-                if (shape != DockBorderShape.values.first)
-                  const SizedBox(width: 10),
-                Expanded(
-                  child: _StyleSwatch(
-                    selected: style.borderShape == shape,
-                    label: switch (shape) {
-                      DockBorderShape.square => strings.dockStyleBorderSquare,
-                      DockBorderShape.soft => strings.dockStyleBorderSoft,
-                      DockBorderShape.rounded =>
-                        strings.dockStyleBorderRounded,
-                    },
-                    candidate: style.copyWith(borderShape: shape),
-                    colors: colors,
-                    onTap: () => unawaited(
-                      onUpdate(
-                        (p) => p.copyWith(
-                          style: style.copyWith(borderShape: shape),
-                        ),
-                      ),
-                    ),
+          child: _swatchRow(context, [
+            for (final shape in DockBorderShape.values)
+              _StyleSwatch(
+                selected: style.borderShape == shape,
+                label: switch (shape) {
+                  DockBorderShape.square => strings.dockStyleBorderSquare,
+                  DockBorderShape.soft => strings.dockStyleBorderSoft,
+                  DockBorderShape.rounded => strings.dockStyleBorderRounded,
+                },
+                candidate: style.copyWith(borderShape: shape),
+                colors: colors,
+                // `p.style.copyWith(...)`, no `style.copyWith(...)`: el
+                // closure capturaba el `style` de ESTE build (`profile` en
+                // el momento de construir el widget) en vez del `style`
+                // ACTUAL del `p` recibido en la actualización — dos toques
+                // rápidos en distintas dimensiones de estilo (borde,
+                // transparencia, profundidad) se pisaban entre sí (bug
+                // confirmado, E).
+                onTap: () => unawaited(
+                  onUpdate(
+                    (p) => p.copyWith(style: p.style.copyWith(borderShape: shape)),
                   ),
                 ),
-              ],
-            ],
-          ),
+              ),
+          ]),
         ),
         _StyleRow(
           label: strings.dockStyleTransparencyLabel,
@@ -459,10 +543,25 @@ class _DockStyleEditor extends StatelessWidget {
             ),
             child: Slider(
               value: style.transparency,
+              // Pasos discretos navegables sin vista + anuncio del valor al
+              // lector de pantalla mientras se arrastra: antes no tenía
+              // `divisions` ni `label` (bug confirmado: B5).
+              divisions: 10,
+              label: '${(style.transparency * 100).round()} %',
+              // `persist: false` en cada frame del arrastre: antes cada
+              // `onChanged` escribía a `SharedPreferences`, cientos de
+              // veces por segundo mientras se arrastraba el thumb (bug
+              // confirmado: C4). El valor final se persiste una sola vez en
+              // `onChangeEnd`.
               onChanged: (value) => unawaited(
                 onUpdate(
-                  (p) =>
-                      p.copyWith(style: style.copyWith(transparency: value)),
+                  (p) => p.copyWith(style: p.style.copyWith(transparency: value)),
+                  persist: false,
+                ),
+              ),
+              onChangeEnd: (value) => unawaited(
+                onUpdate(
+                  (p) => p.copyWith(style: p.style.copyWith(transparency: value)),
                 ),
               ),
             ),
@@ -470,35 +569,51 @@ class _DockStyleEditor extends StatelessWidget {
         ),
         _StyleRow(
           label: strings.dockStyleDepthLabel,
-          child: Row(
-            children: [
-              for (final depth in DockDepth.values) ...[
-                if (depth != DockDepth.values.first) const SizedBox(width: 10),
-                Expanded(
-                  child: _StyleSwatch(
-                    selected: style.depth == depth,
-                    label: switch (depth) {
-                      DockDepth.flat => strings.dockStyleDepthFlat,
-                      DockDepth.elevated => strings.dockStyleDepthElevated,
-                      DockDepth.floating => strings.dockStyleDepthFloating,
-                    },
-                    candidate: style.copyWith(depth: depth),
-                    colors: colors,
-                    onTap: () => unawaited(
-                      onUpdate(
-                        (p) =>
-                            p.copyWith(style: style.copyWith(depth: depth)),
-                      ),
-                    ),
+          child: _swatchRow(context, [
+            for (final depth in DockDepth.values)
+              _StyleSwatch(
+                selected: style.depth == depth,
+                label: switch (depth) {
+                  DockDepth.flat => strings.dockStyleDepthFlat,
+                  DockDepth.elevated => strings.dockStyleDepthElevated,
+                  DockDepth.floating => strings.dockStyleDepthFloating,
+                },
+                candidate: style.copyWith(depth: depth),
+                colors: colors,
+                onTap: () => unawaited(
+                  onUpdate(
+                    (p) => p.copyWith(style: p.style.copyWith(depth: depth)),
                   ),
                 ),
-              ],
-            ],
-          ),
+              ),
+          ]),
         ),
       ],
     );
   }
+}
+
+/// Fila de miniaturas de Bordes/Profundidad: en línea (una `Expanded` por
+/// opción) salvo que el escalado de texto supere ~1.3x, caso en el que ya no
+/// caben una junto a otra sin desbordar (bug confirmado, MEDIDO: B1) y se
+/// apilan en un `Wrap` en su lugar.
+Widget _swatchRow(BuildContext context, List<Widget> swatches) {
+  final scaled = MediaQuery.textScalerOf(context).scale(14.0) / 14.0;
+  if (scaled > 1.3) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [for (final swatch in swatches) SizedBox(width: 140, child: swatch)],
+    );
+  }
+  return Row(
+    children: [
+      for (var i = 0; i < swatches.length; i++) ...[
+        if (i != 0) const SizedBox(width: 10),
+        Expanded(child: swatches[i]),
+      ],
+    ],
+  );
 }
 
 /// Fila de la sección Estilo: etiqueta (+ opcional indicador a la derecha,

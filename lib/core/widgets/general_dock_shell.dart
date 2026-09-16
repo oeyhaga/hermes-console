@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../screens/chat_screen.dart';
 import '../screens/mission_control_screen.dart';
 import '../screens/settings_screen.dart';
 import '../services/connection_manager.dart';
+import '../services/dock_preferences_store.dart';
 import 'dock_shortcuts.dart';
+import 'dock_style.dart' show dockShowsBack;
 import 'general_mode_dock.dart';
 
 /// Envuelve el `body` de una pantalla de navegación del perfil "General"
@@ -44,6 +49,14 @@ class GeneralDockShell extends StatefulWidget {
   /// el usuario activó el acceso opcional "Sesiones" del catálogo).
   final bool includeSessionsAction;
 
+  /// Id del item del catálogo que representa la pantalla que YA ES esta
+  /// (Cron/Tareas/Herramientas): a diferencia de Ajustes/Sesiones, estos
+  /// accesos no tenían forma de desactivarse al estar ya dentro, así que
+  /// tocarlos apilaba una copia de la misma pantalla indefinidamente (bug
+  /// confirmado: A3). Cuando coincide con un slot, ese item se pinta como
+  /// sección activa (`selected: true`) sin acción propia en vez de navegar.
+  final DockItemId? currentDestination;
+
   const GeneralDockShell({
     required this.body,
     required this.connection,
@@ -52,6 +65,7 @@ class GeneralDockShell extends StatefulWidget {
     this.onCreateAnchored,
     this.includeSettingsAction = true,
     this.includeSessionsAction = true,
+    this.currentDestination,
     super.key,
   });
 
@@ -60,24 +74,21 @@ class GeneralDockShell extends StatefulWidget {
 }
 
 class _GeneralDockShellState extends State<GeneralDockShell> {
-  // "Atrás" debe aparecer en cuanto ESTA pantalla es en sí misma una
-  // subpantalla (se llegó a ella con un push, p.ej. desde Inicio), no
-  // cuando algo se apila POR ENCIMA de ella: lo segundo, que es lo que
-  // rastreaba la versión anterior vía RouteAware (`didPushNext`/
-  // `didPopNext`), solo se vuelve true justo cuando esta pantalla queda
-  // tapada por la nueva ruta — momento en el que su propio dock (con el
-  // "Atrás" ya activado) es invisible para el usuario. Por eso "Atrás"
-  // nunca llegaba a verse en la práctica (bug confirmado en dispositivo
-  // real): la señal se calculaba sobre la pantalla equivocada del par
-  // padre/hijo. `Route.isFirst` sobre la ruta de ESTA pantalla es la señal
-  // correcta y no necesita observar el Navigator en absoluto.
-  bool get _isSubscreen => ModalRoute.of(context)?.isFirst != true;
+  // Ver el doc de `dockShowsBack` (dock_style.dart) para el porqué de este
+  // criterio frente al RouteAware que usaba la versión anterior.
+  bool get _isSubscreen => dockShowsBack(context);
 
   // Solo se instancia cuando `onCreateAnchored` está presente: el resto de
   // pantallas (Ajustes, Sesiones) no necesitan que el "+" cargue una key.
   final GlobalKey _createAnchorKey = GlobalKey(
     debugLabel: 'general-dock-create-anchor',
   );
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(DockPreferencesController.instance.ensureLoaded());
+  }
 
   void _handleCreate() {
     final anchored = widget.onCreateAnchored;
@@ -132,37 +143,85 @@ class _GeneralDockShellState extends State<GeneralDockShell> {
     );
   }
 
+  // Único criterio de "esta pantalla ya soy yo": lo declarado explícitamente
+  // (Cron/Tareas/Herramientas, vía `currentDestination`) o, si no, lo que ya
+  // señalan los flags `include*Action` existentes (Ajustes/Sesiones), para
+  // que ambos mecanismos alimenten la misma marca visual de sección activa
+  // (ver B3) sin que Ajustes/Sesiones tengan que migrar de flag.
+  DockItemId? get _currentDestination {
+    final explicit = widget.currentDestination;
+    if (explicit != null) return explicit;
+    if (!widget.includeSettingsAction) return DockItemId.settings;
+    if (!widget.includeSessionsAction) return DockItemId.sessions;
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        widget.body,
-        GeneralModeDock(
-          onCreate: _handleCreate,
-          createAnchorKey: widget.onCreateAnchored != null
-              ? _createAnchorKey
-              : null,
-          onOpenBots: _openBots,
-          onOpenSettings: widget.includeSettingsAction ? _openSettings : null,
-          onOpenHome: () => Navigator.of(context).popUntil((r) => r.isFirst),
-          onOpenCron: () =>
-              openDockCron(context, widget.connection, widget.connManager),
-          onOpenTasks: () =>
-              openDockTasks(context, widget.connection, widget.connManager),
-          onOpenSessions: widget.includeSessionsAction
-              ? () => openDockSessions(
-                  context,
-                  widget.connection,
-                  widget.connManager,
-                )
-              : null,
-          onOpenTools: () =>
-              openDockTools(context, widget.connection, widget.connManager),
-          showBackContext: _isSubscreen,
-          onBack: () => Navigator.of(context).maybePop(),
-        ),
-      ],
+    return ListenableBuilder(
+      listenable: DockPreferencesController.instance.listenable,
+      builder: (context, _) {
+        // Interruptor global "Usar dock flotante" (Ajustes): cuando está
+        // apagado, esta pantalla es simplemente su `body`, sin el `Stack`
+        // ni el propio `GeneralModeDock` de por medio — nada de dock
+        // corriendo de fondo, ni un hueco vacío donde solía estar (pedido
+        // explícito del usuario). El resto de acciones de la pantalla
+        // (FAB nativo, back nativo del `AppBar`, etc.) nunca dependen de
+        // este widget, así que la pantalla sigue siendo 100% funcional.
+        if (!DockPreferencesController.instance.value.useDock) {
+          return widget.body;
+        }
+        final current = _currentDestination;
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            widget.body,
+            GeneralModeDock(
+              onCreate: _handleCreate,
+              createAnchorKey: widget.onCreateAnchored != null
+                  ? _createAnchorKey
+                  : null,
+              onOpenBots: _openBots,
+              onOpenSettings: widget.includeSettingsAction
+                  ? _openSettings
+                  : null,
+              onOpenHome: () =>
+                  Navigator.of(context).popUntil((r) => r.isFirst),
+              onOpenCron: current == DockItemId.cron
+                  ? null
+                  : () => openDockCron(
+                      context,
+                      widget.connection,
+                      widget.connManager,
+                    ),
+              onOpenTasks: current == DockItemId.tasks
+                  ? null
+                  : () => openDockTasks(
+                      context,
+                      widget.connection,
+                      widget.connManager,
+                    ),
+              onOpenSessions: widget.includeSessionsAction
+                  ? () => openDockSessions(
+                      context,
+                      widget.connection,
+                      widget.connManager,
+                    )
+                  : null,
+              onOpenTools: current == DockItemId.tools
+                  ? null
+                  : () => openDockTools(
+                      context,
+                      widget.connection,
+                      widget.connManager,
+                    ),
+              currentDestination: current,
+              showBackContext: _isSubscreen,
+              onBack: () => Navigator.of(context).maybePop(),
+            ),
+          ],
+        );
+      },
     );
   }
 }

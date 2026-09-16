@@ -207,10 +207,15 @@ class _BotModeDockState extends State<BotModeDock>
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: DockPreferencesController.instance.listenable,
-    builder: (context, _) => _buildWithProfile(
-      context,
-      DockPreferencesController.instance.value.bots,
-    ),
+    builder: (context, _) {
+      final prefs = DockPreferencesController.instance.value;
+      // Interruptor global "Usar dock flotante" (Ajustes): con él apagado
+      // este widget no pinta nada. Guarda propia porque
+      // `MissionControlScreen` monta `BotModeDock` directamente dentro de
+      // su propio `Stack`, sin pasar por `GeneralDockShell`.
+      if (!prefs.useDock) return const SizedBox.shrink();
+      return _buildWithProfile(context, prefs.bots);
+    },
   );
 
   Widget _buildWithProfile(BuildContext context, DockProfileConfig profile) {
@@ -228,9 +233,18 @@ class _BotModeDockState extends State<BotModeDock>
         widget.showBackContext &&
         profile.showBackOnSubscreens &&
         widget.onBack != null;
+    // `settings` no forma parte del catálogo de "bots" por defecto y no
+    // tiene acción propia en este perfil (se pinta como `SizedBox.shrink()`
+    // más abajo); si llegara a colarse visible (config corrupta o
+    // migración futura) no debe contar para el hueco que ocupa cada item ni
+    // para qué se retira al insertar "Atrás" — mismo patrón que `work` en
+    // `general_mode_dock.dart` (ver A5).
+    final visibleItems = [
+      for (final id in profile.visibleItemIds)
+        if (id != DockItemId.settings) id,
+    ];
     final slots = resolveDockSlots(
-      visibleItems: profile.visibleItemIds,
-      pinnedItemId: profile.pinnedItemId,
+      visibleItems: visibleItems,
       showBack: showBack,
     );
     final createIndex = slots.indexOf(DockItemId.create);

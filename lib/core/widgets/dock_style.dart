@@ -49,6 +49,20 @@ DockItemVisual dockItemVisual(DockItemId id) =>
 /// [DockItemId]), así que no tiene entrada en [dockItemVisual].
 const IconData dockBackIcon = Icons.arrow_back_rounded;
 
+/// Señal correcta para mostrar "Atrás" en el dock flotante: esta pantalla es
+/// en sí misma una subpantalla (se llegó a ella con un push), no si algo se
+/// apiló POR ENCIMA de ella. Lo segundo (rastreado antes con `RouteAware`
+/// vía `didPushNext`/`didPopNext` en cada pantalla que integraba el dock)
+/// solo se vuelve true justo cuando la pantalla queda tapada por la nueva
+/// ruta — momento en el que su propio dock, con "Atrás" ya activado, es
+/// invisible para el usuario. `Route.isFirst` sobre la ruta de ESTA
+/// pantalla es la señal correcta y no necesita observar el Navigator en
+/// absoluto (bug confirmado en dispositivo real en `GeneralDockShell`;
+/// compartido aquí para que `MissionControlScreen`/otras pantallas con dock
+/// no repitan el mismo criterio, o lo desincronicen).
+bool dockShowsBack(BuildContext context) =>
+    ModalRoute.of(context)?.isFirst != true;
+
 String dockItemLabel(Strings strings, DockItemId id) => switch (id) {
   DockItemId.bots => strings.missionBotsLabel,
   DockItemId.work => strings.missionWorkLabel,
@@ -278,6 +292,7 @@ class DockItemTile extends StatelessWidget {
       child: Semantics(
         key: semanticsKey,
         button: true,
+        enabled: onTap != null,
         selected: selected,
         toggled: toggled,
         label: label,

@@ -6547,9 +6547,23 @@
   "missionCreateLabel": "Crear",
   "missionCreateBotLabel": "Nuevo bot",
   "missionCreateRoomLabel": "Nueva sala",
+  "settingsUseDockTitle": "Usar dock flotante",
+  "settingsUseDockSubtitle": "Desactívalo para navegar solo con las pantallas y sus propios botones",
   "dockSettingsTitle": "Dock",
   "dockSettingsSubtitle": "Elementos, comportamiento y estilo",
   "dockSettingsReset": "Restablecer",
+  "dockSettingsResetProfile": "Restablecer {profile}",
+  "@dockSettingsResetProfile": {
+    "placeholders": {
+      "profile": {"type": "String"}
+    }
+  },
+  "dockSettingsResetConfirmBody": "Se restablecerán elementos, comportamiento de Atrás y estilo del perfil {profile}. Los ajustes actuales de este perfil se perderán.",
+  "@dockSettingsResetConfirmBody": {
+    "placeholders": {
+      "profile": {"type": "String"}
+    }
+  },
   "dockProfileBots": "Bots",
   "dockProfileGeneral": "General",
   "dockProfileBotsDescription": "Se usa dentro de Bots y en las salas de misión.",
@@ -6582,6 +6596,13 @@
   "dockSettingsLabel": "Ajustes",
   "dockCreateGeneralSubtitle": "Nueva conversación",
   "dockCreateBotsSubtitle": "Nuevo bot · Nueva sala",
+  "dockItemsKeepOneVisible": "Mantén al menos un elemento visible",
+  "dockItemDragHandleLabel": "Arrastrar para reordenar {item}",
+  "@dockItemDragHandleLabel": {
+    "placeholders": {
+      "item": {"type": "String"}
+    }
+  },
   "missionSharedRooms": "Salas compartidas",
   "missionCreateSharedRoom": "Crear sala compartida",
   "missionNoSharedRooms": "No hay salas compartidas oficiales disponibles.",

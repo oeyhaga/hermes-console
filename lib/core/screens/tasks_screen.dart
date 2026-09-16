@@ -16,12 +16,14 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
 import '../models/connection.dart';
+import '../models/dock_config.dart' show DockItemId;
 import '../models/kanban.dart';
 import '../services/kanban_client.dart';
 import '../services/connection_manager.dart'
     show ConnectionManager, DashboardHttpException;
 import '../theme/app_theme.dart';
 import '../widgets/accent_card.dart';
+import '../services/dock_preferences_store.dart';
 import '../widgets/dock_anchored_popover.dart';
 import '../widgets/general_dock_shell.dart';
 import '../widgets/hermes_app_bar.dart';
@@ -627,23 +629,37 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       ),
       // FAB circular simple: el botón extendido se recortaba contra el borde.
       // Sólo cuando hay tareas (con el board vacío ya está el CTA grande).
-      // Con el dock presente, su "+" contextual (creación rápida anclada)
-      // reemplaza a este FAB para no duplicar la acción ni competir
-      // visualmente con la barra flotante del dock.
-      floatingActionButton:
-          (widget.connManager == null &&
+      // Con el dock activo Y presente, su "+" contextual (creación rápida
+      // anclada) reemplaza a este FAB para no duplicar la acción ni
+      // competir visualmente con la barra flotante del dock. "Dock activo"
+      // (interruptor global "Usar dock flotante" en Ajustes) es una
+      // condición aparte de "pantalla compatible con dock"
+      // (`widget.connManager != null`): con el interruptor apagado el FAB
+      // debe reaparecer, o crear una tarea dejaría de ser posible desde
+      // aquí. Reactivo vía `ListenableBuilder` para no requerir reabrir la
+      // pantalla tras cambiar el interruptor.
+      floatingActionButton: ListenableBuilder(
+        listenable: DockPreferencesController.instance.listenable,
+        builder: (context, _) {
+          final dockActive =
+              widget.connManager != null &&
+              DockPreferencesController.instance.value.useDock;
+          final showFab =
+              !dockActive &&
               _board != null &&
               _error == null &&
               _board!.taskCount > 0 &&
               !widget.connection.readOnly &&
-              _taskFilter != KanbanMobileGroup.archived)
-          ? FloatingActionButton(
-              backgroundColor: colors.accent,
-              tooltip: s.kanbanNewTask,
-              onPressed: () => _openTaskForm(),
-              child: Icon(Icons.add, color: colors.onAccent),
-            )
-          : null,
+              _taskFilter != KanbanMobileGroup.archived;
+          if (!showFab) return const SizedBox.shrink();
+          return FloatingActionButton(
+            backgroundColor: colors.accent,
+            tooltip: s.kanbanNewTask,
+            onPressed: () => _openTaskForm(),
+            child: Icon(Icons.add, color: colors.onAccent),
+          );
+        },
+      ),
       body: _wrapWithDock(_buildBody(colors)),
     );
   }
@@ -657,6 +673,7 @@ class _TasksScreenState extends State<TasksScreen> with WidgetsBindingObserver {
       onCreateAnchored: widget.connection.readOnly
           ? null
           : _showAnchoredQuickCreate,
+      currentDestination: DockItemId.tasks,
       body: body,
     );
   }
