@@ -11332,9 +11332,10 @@ class _ChatScreenState extends State<ChatScreen>
               ),
               IconButton(
                 iconSize: 16,
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
+                // Objetivo táctil real de 44dp aunque el icono visible sea de
+                // 16dp: `BoxConstraints()` vacío colapsaba el hit-test al
+                // tamaño del icono, justo al lado del composer.
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                 tooltip: s.inAppDismiss,
                 onPressed: () => _chat.dismissBackgroundTaskOutcome(taskId),
                 icon: Icon(Icons.close_rounded, color: colors.textDisabled),
