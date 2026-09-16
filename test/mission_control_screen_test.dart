@@ -1033,6 +1033,51 @@ void main() {
   );
 
   testWidgets(
+    'appearance-only metadata resumes the existing hidden Bot Chat via '
+    'canonical_session instead of orphaning it (issue #11)',
+    (tester) async {
+      final manager = await _manager();
+      final botStore = MissionBotChatStore(manager.prefs);
+      Session? opened;
+      // Stock Hermes Agent install: `hermes-bots` carries appearance only
+      // (no `chat` key at all — not even `null`), but the profile already
+      // has a hidden "Bot Chat" session with real history. The gateway
+      // resolves it server-side by title and reports it as
+      // `canonical_session` on `profiles.list`.
+      final appearanceOnlyWithHistory = AgentProfile.fromJson({
+        'name': 'self-hosted',
+        'ui_meta': {
+          'hermes-bots': {'title': 'Ops', 'shape': 'cloud'},
+        },
+        'canonical_session': {
+          'id': 'canon-bot-chat-1',
+          'root_title': 'Bot Chat',
+          'title': 'Bot Chat',
+          'message_count': 340,
+        },
+      });
+
+      await tester.pumpWidget(
+        _host(
+          manager: manager,
+          botChatStore: botStore,
+          botChatOpenObserver: (session) => opened = session,
+          snapshot: _snapshot(profiles: [appearanceOnlyWithHistory]),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _openBotChat(tester, 'self-hosted');
+
+      // Resumes the existing canonical row instead of minting a new,
+      // zero-message hidden session on every attempt.
+      expect(opened?.lineageRootId, 'canon-bot-chat-1');
+      // Not yet an official ui_meta pin: goes through the local-pin send
+      // path so the first prompt promotes it to one.
+      expect(opened?.source, 'bot-mode-local');
+    },
+  );
+
+  testWidgets(
     'an explicit null official pin opens the Bot Chat instead of blocking',
     (tester) async {
       final manager = await _manager();
@@ -1066,6 +1111,40 @@ void main() {
         find.textContaining('No se pudo verificar el Bot Chat'),
         findsNothing,
       );
+    },
+  );
+
+  testWidgets(
+    'an explicit null official pin ignores a stale canonical_session too',
+    (tester) async {
+      final manager = await _manager();
+      final botStore = MissionBotChatStore(manager.prefs);
+      Session? opened;
+      // Desktop is mid-recreation of the pin (`chat: null`): even if the
+      // registry still reports the about-to-be-replaced row, this is a real
+      // reset and must defer to create-on-first-submit, not resume the old row.
+      final resetMidFlight = AgentProfile.fromJson({
+        'name': 'codex-qa',
+        'ui_meta': {
+          'hermes-bots': {'chat': null, 'title': 'QA'},
+        },
+        'canonical_session': {'id': 'stale-before-recreate'},
+      });
+
+      await tester.pumpWidget(
+        _host(
+          manager: manager,
+          botChatStore: botStore,
+          botChatOpenObserver: (session) => opened = session,
+          snapshot: _snapshot(profiles: [resetMidFlight]),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await _openBotChat(tester, 'codex-qa');
+
+      expect(opened, isNotNull);
+      expect(opened?.lineageRootId, isNull);
+      expect(opened?.source, 'mobile-bot');
     },
   );
 

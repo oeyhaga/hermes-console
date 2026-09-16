@@ -118,6 +118,20 @@ int? _nonNegativeInt(Object? raw) {
   return raw.toInt();
 }
 
+/// Same validation `AgentProfile.fromJson` applies to `ui_meta.hermes-bots.chat`:
+/// a durable gateway session id is never client-minted (`mob-` prefixed).
+String? _safeGatewaySessionId(String? raw) {
+  if (raw == null) return null;
+  final value = raw.trim();
+  if (value.isEmpty ||
+      value.startsWith('mob-') ||
+      value.length > 512 ||
+      value.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f)) {
+    return null;
+  }
+  return value;
+}
+
 /// Perfil de agente devuelto por GET /api/profiles (Dashboard, puerto 9119).
 ///
 /// Cada perfil es un home aislado (`~/.hermes/profiles/<name>/`) con su propio
@@ -140,6 +154,7 @@ class AgentProfile {
   final bool hasAvatar;
   final AgentProfileSessionSummary? lastSession;
   final AgentProfileSessionSummary? preferredSession;
+  final AgentProfileSessionSummary? canonicalSession;
   final AgentProfileWorkerSession? workerSession;
 
   /// Si proviene de una distribución (perfil compartido como repo Git).
@@ -165,6 +180,7 @@ class AgentProfile {
     this.hasAvatar = false,
     this.lastSession,
     this.preferredSession,
+    this.canonicalSession,
     this.workerSession,
     this.distributionName,
     this.distributionVersion,
@@ -187,6 +203,27 @@ class AgentProfile {
       (botModeUiMeta.containsKey('chat') &&
           botModeUiMeta['chat'] != null &&
           botChatSessionId == null);
+
+  /// True only when Desktop explicitly wrote `chat: null` to reset the pin
+  /// (e.g. while recreating the forever-chat). A missing `chat` key is not a
+  /// reset — appearance-only `hermes-bots` metadata (title/shape/colour, no
+  /// `chat` key) is common on stock Agent installs and must not be treated
+  /// as one, or the existing hidden "Bot Chat" history gets orphaned.
+  bool get botChatPinExplicitlyReset =>
+      botModeUiMeta.containsKey('chat') && botModeUiMeta['chat'] == null;
+
+  /// Server-resolved forever-chat for this profile (`profiles.list`'s
+  /// `canonical_session`, present when `include_sessions` is requested).
+  /// Unlike the `ui_meta.hermes-bots.chat` pin, this is not a client-written
+  /// pointer: the gateway resolves it fresh on every call by title
+  /// uniqueness against the profile's own state.db, so it is the right
+  /// fallback when no pin has been published yet.
+  String? get canonicalBotChatSessionId {
+    final summary = canonicalSession;
+    if (summary == null) return null;
+    final id = _safeGatewaySessionId(summary.resolvedId) ?? _safeGatewaySessionId(summary.id);
+    return id;
+  }
 
   String? get botTitle => _botMetaText('title', 128);
 
@@ -266,14 +303,7 @@ class AgentProfile {
     String? botChatSessionId(Map<String, dynamic> botMeta) {
       final raw = botMeta['chat'];
       if (raw is! String) return null;
-      final value = raw.trim();
-      if (value.isEmpty ||
-          value.startsWith('mob-') ||
-          value.length > 512 ||
-          value.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f)) {
-        return null;
-      }
-      return value;
+      return _safeGatewaySessionId(raw);
     }
 
     final botMeta = botModeUiMeta();
@@ -296,6 +326,9 @@ class AgentProfile {
       lastSession: AgentProfileSessionSummary.tryParse(json['last_session']),
       preferredSession: AgentProfileSessionSummary.tryParse(
         json['preferred_session'],
+      ),
+      canonicalSession: AgentProfileSessionSummary.tryParse(
+        json['canonical_session'],
       ),
       workerSession: AgentProfileWorkerSession.tryParse(json['worker_session']),
       distributionName: str(json['distribution_name']),
