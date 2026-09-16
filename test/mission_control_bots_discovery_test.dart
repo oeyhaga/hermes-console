@@ -286,7 +286,15 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(find.byKey(const ValueKey('mission-bot-infra')));
+    // Tocar la fila abre el detalle; abrir el Bot Chat pasa por "Abrir
+    // chat" en la hoja de acciones rápidas (mantener pulsada la fila o
+    // tocar el ⋯), según la especificación del mockup "Bots con fijados".
+    await tester.tap(find.byKey(const ValueKey('mission-bot-details-infra')));
+    await tester.pumpAndSettle();
+    final openChatItem = find.byKey(const ValueKey('bot-quick-open-chat'));
+    await tester.ensureVisible(openChatItem);
+    await tester.pumpAndSettle();
+    await tester.tap(openChatItem);
     final openedSession = await tester.runAsync(
       () => opened.future.timeout(const Duration(seconds: 1)),
     );

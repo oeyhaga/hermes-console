@@ -1629,6 +1629,7 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         builder: (_) => ProfileEditorScreen(
           connection: widget.connection,
           profile: profile,
+          onOpenSkills: () => _openSkills(profile: profile.name),
         ),
       ),
     );
@@ -2067,8 +2068,8 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                 copy: copy,
                 avatarCache: _profileAvatarCache,
                 activityStore: _botActivityStore,
-                onOpenChat: _openChat,
-                onDetails: _openBotQuickActions,
+                onOpenDetail: _openAgent,
+                onQuickActions: _openBotQuickActions,
                 onAttention:
                     projection.approvals.isNotEmpty ||
                         projection.blockedCount > 0
@@ -2516,8 +2517,8 @@ class _BotsTab extends StatefulWidget {
   final MissionControlCopy copy;
   final MissionProfileAvatarCache? avatarCache;
   final MissionBotActivityStore activityStore;
-  final ValueChanged<MissionAgent> onOpenChat;
-  final ValueChanged<MissionAgent> onDetails;
+  final ValueChanged<MissionAgent> onOpenDetail;
+  final ValueChanged<MissionAgent> onQuickActions;
   final VoidCallback? onAttention;
   final VoidCallback? onCreateAgent;
 
@@ -2528,8 +2529,8 @@ class _BotsTab extends StatefulWidget {
     required this.copy,
     required this.avatarCache,
     required this.activityStore,
-    required this.onOpenChat,
-    required this.onDetails,
+    required this.onOpenDetail,
+    required this.onQuickActions,
     required this.onAttention,
     required this.onCreateAgent,
   });
@@ -2621,8 +2622,8 @@ class _BotsTabState extends State<_BotsTab> {
           ),
           copy: widget.copy,
           avatarCache: widget.avatarCache,
-          onOpen: () => widget.onOpenChat(agent),
-          onQuickActions: () => widget.onDetails(agent),
+          onOpen: () => widget.onOpenDetail(agent),
+          onQuickActions: () => widget.onQuickActions(agent),
           pinBadgeColor: !showPinBadge || !agent.profile.botPinned
               ? null
               : (_query.trim().isEmpty
@@ -2642,6 +2643,42 @@ class _BotsTabState extends State<_BotsTab> {
     }
     return widgets;
   }
+
+  /// Fila horizontal con scroll lateral para "Fijados": avatares de 64px con
+  /// anillo de estado y nombre debajo, en vez de la lista vertical que usan
+  /// el resto de secciones. Especificación confirmada con el usuario tras
+  /// una ronda de mockups contradictorios (ver PR #29): la primera versión
+  /// de este parche probó una sección vertical y no era la acordada.
+  Widget _pinnedStrip(BuildContext context, List<MissionAgent> agents) =>
+      SizedBox(
+        height: 96,
+        child: ListView.separated(
+          key: const ValueKey('mission-pinned-strip'),
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          clipBehavior: Clip.none,
+          itemCount: agents.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 18),
+          itemBuilder: (context, index) {
+            final agent = agents[index];
+            final activityAtMs = _missionBotActivityMs(agent);
+            return _PinnedBotTile(
+              key: ValueKey('mission-pinned-tile-${agent.profile.name}'),
+              agent: agent,
+              needsYou: _needsYou(agent),
+              activeNow: _activeNow(agent),
+              unread: widget.activityStore.isUnread(
+                widget.connectionId,
+                agent.profile.name,
+                activityAtMs,
+              ),
+              avatarCache: widget.avatarCache,
+              onOpen: () => widget.onOpenDetail(agent),
+              onQuickActions: () => widget.onQuickActions(agent),
+            );
+          },
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -2815,8 +2852,8 @@ class _BotsTabState extends State<_BotsTab> {
                 count: pinned.length,
                 icon: Icons.push_pin_rounded,
               ),
-              const SizedBox(height: 4),
-              ..._botRows(context, pinned, showPinBadge: false),
+              const SizedBox(height: 9),
+              _pinnedStrip(context, pinned),
               if (active.isNotEmpty || resting.isNotEmpty)
                 const SizedBox(height: 18),
             ],
@@ -4883,9 +4920,11 @@ class _LoungeEmptyState extends StatelessWidget {
   }
 }
 
-/// Fila única de bot para todo Mission Control: tap abre su Bot Chat y el
-/// overflow/long-press abre la ficha. Cuando el snapshot ya contiene la sesión
-/// pineada oficialmente, la fila muestra su preview y hora como en Bot Mode.
+/// Fila única de bot para todo Mission Control: tap abre la ficha del bot
+/// (`_AgentDetail`) y mantener pulsado/el overflow abre la hoja de acciones
+/// rápidas (fijar, ocultar, abrir chat, ver detalles). Cuando el snapshot ya
+/// contiene la sesión pineada oficialmente, la fila muestra su preview y hora
+/// como en Bot Mode.
 class _BotRow extends StatelessWidget {
   final MissionAgent agent;
   final Session? pinnedChat;
@@ -5091,6 +5130,154 @@ class _BotRow extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Columna de 72px de una fila "Fijados": avatar de 64px con anillo de
+/// estado (verde si activo, rojo si error, sin anillo si inactivo) y nombre
+/// debajo. Mismas acciones que [_BotRow] (tap abre el detalle, mantener
+/// pulsado abre la hoja de acciones rápidas): solo cambia la presentación.
+class _PinnedBotTile extends StatelessWidget {
+  final MissionAgent agent;
+  final bool needsYou;
+  final bool activeNow;
+  final bool unread;
+  final MissionProfileAvatarCache? avatarCache;
+  final VoidCallback onOpen;
+  final VoidCallback onQuickActions;
+
+  const _PinnedBotTile({
+    required this.agent,
+    required this.needsYou,
+    required this.activeNow,
+    required this.unread,
+    required this.avatarCache,
+    required this.onOpen,
+    required this.onQuickActions,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final profile = agent.profile;
+    final displayName = profile.botTitle ?? profile.name;
+    final isError =
+        agent.status == MissionAgentStatus.error ||
+        agent.status == MissionAgentStatus.blocked;
+    final ringColor = isError
+        ? colors.error
+        : activeNow
+        ? colors.success
+        : null;
+    return Semantics(
+      container: true,
+      button: true,
+      label: displayName,
+      child: InkWell(
+        onTap: onOpen,
+        onLongPress: onQuickActions,
+        borderRadius: BorderRadius.circular(16),
+        child: SizedBox(
+          width: 72,
+          child: Column(
+            children: [
+              SizedBox(
+                width: 64,
+                height: 64,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: ringColor == null
+                            ? null
+                            : [
+                                BoxShadow(
+                                  color: colors.surface,
+                                  spreadRadius: 2.5,
+                                ),
+                                BoxShadow(color: ringColor, spreadRadius: 5),
+                                BoxShadow(
+                                  color: ringColor.withValues(alpha: 0.42),
+                                  blurRadius: 22,
+                                ),
+                              ],
+                      ),
+                      child: MissionProfileAvatar(
+                        profileName: profile.name,
+                        hasAvatar: profile.hasAvatar,
+                        cache: avatarCache,
+                        size: 64,
+                        shape: profile.botShape,
+                        colorHex: profile.botColorHex,
+                        imageKind: profile.botImageKind,
+                      ),
+                    ),
+                    if (needsYou)
+                      PositionedDirectional(
+                        top: -4,
+                        end: -4,
+                        child: Container(
+                          width: 22,
+                          height: 22,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: colors.warning,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: colors.surface, width: 3),
+                          ),
+                          child: const Text(
+                            '!',
+                            style: TextStyle(
+                              // Texto oscuro fijo sobre el ámbar del badge,
+                              // como en el mockup: no depende del tema.
+                              color: Color(0xFF1A1200),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w900,
+                              height: 1,
+                            ),
+                          ),
+                        ),
+                      )
+                    else if (unread)
+                      PositionedDirectional(
+                        top: -2,
+                        end: -2,
+                        child: Container(
+                          width: 16,
+                          height: 16,
+                          decoration: BoxDecoration(
+                            color: colors.accent,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: colors.surface, width: 3),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 9),
+              Text(
+                displayName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: needsYou || unread
+                      ? colors.textPrimary
+                      : colors.textSecondary,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.1,
+                ),
+              ),
+            ],
           ),
         ),
       ),

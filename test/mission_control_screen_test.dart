@@ -324,9 +324,16 @@ Future<void> _openAgentDetail(WidgetTester tester, String profile) async {
   await tester.pumpAndSettle();
 }
 
-/// Tocar la fila abre el chat del bot directamente.
+/// Tocar la fila abre el detalle del bot; abrir su Bot Chat pasa por el
+/// "Abrir chat" de la hoja de acciones rápidas (mantener pulsada la fila o
+/// tocar el ⋯), según la especificación del mockup "Bots con fijados".
 Future<void> _openBotChat(WidgetTester tester, String profile) async {
-  await tester.tap(find.byKey(ValueKey('mission-bot-$profile')));
+  await tester.tap(find.byKey(ValueKey('mission-bot-details-$profile')));
+  await tester.pumpAndSettle();
+  final openChatItem = find.byKey(const ValueKey('bot-quick-open-chat'));
+  await tester.ensureVisible(openChatItem);
+  await tester.pumpAndSettle();
+  await tester.tap(openChatItem);
   await tester.pumpAndSettle();
 }
 
@@ -519,7 +526,7 @@ void main() {
     expect(opened!.source, 'bot-mode');
   });
 
-  testWidgets('bot row opens chat directly; quick actions reach full detail', (
+  testWidgets('bot row opens detail; quick actions reach chat directly', (
     tester,
   ) async {
     final manager = await _manager();
@@ -537,18 +544,23 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('mission-bot-infra')));
     await tester.pumpAndSettle();
 
-    // Tocar la fila abre el chat directamente: es el gesto primario según
-    // el rediseño más reciente de las tarjetas de bot.
-    expect(opened?.profile, 'infra');
-    expect(opened?.title, 'Bot Chat');
-    expect(find.byKey(const ValueKey('mission-agent-detail')), findsNothing);
-
-    // El ⋯ (o mantener pulsada la fila) abre en cambio la hoja de
-    // acciones rápidas, desde la que "Detalles del bot" sigue llevando a
-    // la ficha completa con el botón "Abrir chat" explícito.
-    await _openAgentDetail(tester, 'infra');
+    // Tocar la fila sigue abriendo el detalle del bot, como especifica la
+    // nota de interacción del mockup "Bots con fijados": el chat directo ya
+    // no es el gesto primario de la fila.
+    expect(opened, isNull);
     expect(find.byKey(const ValueKey('mission-agent-detail')), findsOneWidget);
     expect(find.byKey(const ValueKey('bot-detail-chat')), findsOneWidget);
+    Navigator.of(
+      tester.element(find.byKey(const ValueKey('mission-agent-detail'))),
+    ).pop();
+    await tester.pumpAndSettle();
+
+    // Mantener pulsada la fila (o tocar el ⋯) abre en cambio la hoja de
+    // acciones rápidas, cuyo "Abrir chat" explícito sigue llevando al Bot
+    // Chat directamente.
+    await _openBotChat(tester, 'infra');
+    expect(opened?.profile, 'infra');
+    expect(opened?.title, 'Bot Chat');
   });
 
   testWidgets('working bot row prioritizes its task over chat preview', (
@@ -2313,6 +2325,12 @@ void main() {
   testWidgets(
     'skill selection degrades without profiles.describe and applies toggles',
     (tester) async {
+      // "Personalizar" agrupa varias filas colapsables (mockup de crear
+      // bot); un viewport más alto que el tamaño de prueba por defecto
+      // evita que la fila "Skills" quede solo parcialmente visible tras
+      // desplazar, que es suficiente para fallar el hit-test del tap.
+      await tester.binding.setSurfaceSize(const Size(390, 1400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final manager = await _manager();
       final gateway = _FakeBotCreateGateway()
         ..skills = const [
@@ -2349,8 +2367,10 @@ void main() {
 
       await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
       await _pumpCreateUi(tester);
-      await _scrollCreateFormTo(tester, 'bot-create-advanced');
-      await tester.tap(find.byKey(const ValueKey('bot-create-advanced')));
+      // Skills es su propia fila colapsable en "Personalizar" (mockup de
+      // Editar/Crear bot); ya no depende de expandir "Avanzado".
+      await _scrollCreateFormTo(tester, 'bot-create-skills-row');
+      await tester.tap(find.byKey(const ValueKey('bot-create-skills-row')));
       await _pumpCreateUi(tester);
 
       expect(gateway.calls, ['describe:default']);
@@ -2382,11 +2402,11 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
       await _pumpCreateUi(tester);
       gateway.skills = null;
-      await _scrollCreateFormTo(tester, 'bot-create-advanced');
-      await tester.tap(find.byKey(const ValueKey('bot-create-advanced')));
+      await _scrollCreateFormTo(tester, 'bot-create-skills-row');
+      await tester.tap(find.byKey(const ValueKey('bot-create-skills-row')));
       await _pumpCreateUi(tester);
-      // La nota de degradación vive justo encima del campo SOUL.
-      await _scrollCreateFormTo(tester, 'bot-create-soul');
+      // La nota de degradación vive dentro de la fila "Skills".
+      await _scrollCreateFormTo(tester, 'bot-create-skills-row');
       expect(
         find.text(
           'El catálogo de skills necesita un gateway más reciente '
