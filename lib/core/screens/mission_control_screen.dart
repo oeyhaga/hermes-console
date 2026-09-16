@@ -1058,17 +1058,32 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       localPin = lookup.sessionId;
     }
     if (!mounted) return;
-    final pinnedId = officialPin ?? localPin;
+    // Appearance-only `hermes-bots` metadata (title/shape/colour, no `chat`
+    // key) is common on stock Agent installs and is not a Desktop reset —
+    // only an explicit `chat: null` is. In that case, before minting a new
+    // conversation, fall back to the gateway's own server-resolved registry
+    // row (`canonical_session`) so the existing hidden "Bot Chat" history is
+    // reused instead of orphaned.
+    final canonicalPin = officialPin == null && !agent.profile.botChatPinExplicitlyReset
+        ? agent.profile.canonicalBotChatSessionId
+        : null;
+    final pinnedId = officialPin ?? canonicalPin ?? localPin;
+    // A discovered `canonicalPin` is not yet an official `ui_meta` pin — it
+    // must go through the same 'bot-mode-local' send path as a local pin so
+    // `_persistBotChatPinBeforePrompt` promotes it to an official pin before
+    // the first prompt, instead of the stricter 'bot-mode' path that asserts
+    // the (still absent) official pin still matches and would fail closed.
+    final source = pinnedId == null
+        ? 'mobile-bot'
+        : officialPin != null
+        ? 'bot-mode'
+        : 'bot-mode-local';
     final session = Session(
       id: 'mob-bot-${agent.profile.name}',
       lineageRootId: pinnedId,
       title: 'Bot Chat',
       model: agent.profile.model.isEmpty ? 'hermes-agent' : agent.profile.model,
-      source: pinnedId == null
-          ? 'mobile-bot'
-          : officialPin != null
-          ? 'bot-mode'
-          : 'bot-mode-local',
+      source: source,
       messageCount: pinnedId == null ? 0 : 1,
       isActive: true,
       preview: '',
