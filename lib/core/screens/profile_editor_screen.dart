@@ -16,6 +16,7 @@ import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
 import '../companion/models/companion_animation_state.dart';
 import '../companion/render/spritesheet_renderer.dart';
+import '../widgets/bot_settings_group.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_bot_face.dart';
 import '../widgets/hermes_ui.dart';
@@ -53,6 +54,11 @@ class ProfileEditorScreen extends StatefulWidget {
   @visibleForTesting
   final ProfilePetVisualMaterializer? petVisualMaterializer;
 
+  /// Abre la pantalla de skills de este bot desde la fila "Skills" de
+  /// "Personalizar". `null` la deja como fila informativa sin navegación
+  /// (p. ej. en tests que no ejercitan esta ruta).
+  final VoidCallback? onOpenSkills;
+
   const ProfileEditorScreen({
     required this.connection,
     required this.profile,
@@ -61,6 +67,7 @@ class ProfileEditorScreen extends StatefulWidget {
     this.imagePicker,
     this.imageNormalizer,
     this.petVisualMaterializer,
+    this.onOpenSkills,
     super.key,
   });
 
@@ -483,7 +490,47 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
         if (!didPop) unawaited(_confirmDiscard());
       },
       child: Scaffold(
-        appBar: HermesAppBar(title: Text(copy.editBotTitle)),
+        appBar: HermesAppBar(
+          title: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(copy.editBotTitle),
+              Text(
+                '@$_profileName',
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            if (_dirty)
+              Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.warning.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    _text('Sin guardar', 'Unsaved'),
+                    style: TextStyle(
+                      color: colors.warning,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
         body: Column(
           children: [
             Expanded(
@@ -498,16 +545,79 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
                     controller: _titleCtrl,
                     hint: copy.botDisplayNameHint,
                   ),
-                  HermesSectionHeader(
-                    _text('Identidad visual', 'Visual identity'),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4, top: 4),
+                    child: Text(
+                      _text(
+                        'El identificador @$_profileName no cambia',
+                        'The @$_profileName identifier does not change',
+                      ),
+                      style: TextStyle(
+                        color: colors.textDisabled,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
-                  _identitySelector(colors),
-                  const SizedBox(height: 8),
-                  switch (_mode) {
-                    _IdentityMode.pet => _buildPetSection(copy, colors),
-                    _IdentityMode.image => _buildImageSection(colors),
-                    _IdentityMode.face => _buildFaceSection(colors),
-                  },
+                  const SizedBox(height: 22),
+                  Text(
+                    _text('Personalizar', 'Customize'),
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14.5,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  BotSettingsGroup(
+                    children: [
+                      BotSettingsRow(
+                        rowKey: const ValueKey('profile-editor-identity-row'),
+                        label: _text('Identidad visual', 'Visual identity'),
+                        summary: switch (_mode) {
+                          _IdentityMode.pet => _text('Mascota', 'Pet'),
+                          _IdentityMode.image => _text('Imagen', 'Image'),
+                          _IdentityMode.face => _text('Cara', 'Face'),
+                        },
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _identitySelector(colors),
+                            const SizedBox(height: 8),
+                            switch (_mode) {
+                              _IdentityMode.pet => _buildPetSection(
+                                copy,
+                                colors,
+                              ),
+                              _IdentityMode.image => _buildImageSection(colors),
+                              _IdentityMode.face => _buildFaceSection(colors),
+                            },
+                          ],
+                        ),
+                      ),
+                      _infoRow(
+                        colors,
+                        label: _text('Descripción', 'Description'),
+                        value: widget.profile.description.trim().isEmpty
+                            ? _text('Sin descripción', 'No description')
+                            : widget.profile.description,
+                      ),
+                      _infoRow(
+                        colors,
+                        label: copy.modelLabel,
+                        value: widget.profile.model.trim().isEmpty
+                            ? _text('Automático', 'Automatic')
+                            : widget.profile.model,
+                      ),
+                      _navRow(
+                        colors,
+                        key: const ValueKey('profile-editor-skills-row'),
+                        label: copy.skills,
+                        value: _text('Ver skills', 'View skills'),
+                        onTap: widget.onOpenSkills,
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -517,6 +627,98 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
       ),
     );
   }
+
+  /// Fila de solo lectura dentro de "Personalizar": muestra datos del bot
+  /// que hoy no se pueden editar desde esta pantalla (no hay escritura de
+  /// `description`/`model` en el gateway de perfiles), sin fingir un control
+  /// interactivo que no lleva a ningún sitio.
+  Widget _infoRow(
+    HermesThemeColors colors, {
+    required String label,
+    required String value,
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    child: Row(
+      children: [
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colors.textPrimary,
+              fontWeight: FontWeight.w700,
+              fontSize: 15,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: colors.textSecondary, fontSize: 13.5),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  /// Fila de navegación dentro de "Personalizar" hacia una pantalla ya
+  /// existente (p. ej. Skills). Sin `onTap` se degrada a informativa: nunca
+  /// muestra una flecha que no lleve a ningún sitio.
+  Widget _navRow(
+    HermesThemeColors colors, {
+    required Key key,
+    required String label,
+    required String value,
+    required VoidCallback? onTap,
+  }) => Material(
+    color: Colors.transparent,
+    child: InkWell(
+      key: key,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: colors.textPrimary,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                value,
+                textAlign: TextAlign.right,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: colors.textSecondary, fontSize: 13.5),
+              ),
+            ),
+            if (onTap != null) ...[
+              const SizedBox(width: 6),
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 20,
+                color: colors.textSecondary,
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
 
   Widget _identitySelector(HermesThemeColors colors) => Wrap(
     spacing: 8,
@@ -561,19 +763,21 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
     button: true,
     child: InkWell(
       key: key,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(999),
       onTap: onTap,
       child: Container(
-        constraints: const BoxConstraints(minHeight: 48, minWidth: 86),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        constraints: const BoxConstraints(minHeight: 40, minWidth: 86),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: selected
-              ? colors.accent.withValues(alpha: 0.12)
-              : colors.surfaceVariant.withValues(alpha: 0.28),
-          borderRadius: BorderRadius.circular(12),
+              ? colors.accent.withValues(alpha: 0.16)
+              : colors.surfaceVariant.withValues(alpha: 0.9),
+          borderRadius: BorderRadius.circular(999),
           border: Border.all(
-            color: selected ? colors.accent : colors.divider,
-            width: selected ? 1.5 : 1,
+            color: selected
+                ? colors.accent.withValues(alpha: 0.38)
+                : colors.divider,
+            width: 1,
           ),
         ),
         child: Row(
@@ -600,6 +804,7 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
   );
 
   Widget _buildPreview() {
+    final accent = Theme.of(context).hermes.accent;
     return Container(
       key: const ValueKey('profile-editor-preview'),
       width: 120,
@@ -608,7 +813,13 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
       decoration: BoxDecoration(
         color: Theme.of(context).hermes.surfaceVariant.withValues(alpha: 0.28),
         borderRadius: BorderRadius.circular(28),
-        border: Border.all(color: Theme.of(context).hermes.divider),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: 0.28),
+            blurRadius: 18,
+            spreadRadius: -2,
+          ),
+        ],
       ),
       child: switch (_mode) {
         _IdentityMode.pet => _petPreview(),
