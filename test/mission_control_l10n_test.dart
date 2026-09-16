@@ -51,7 +51,17 @@ void main() {
         );
         await tester.pumpAndSettle();
 
-        expect(find.text(entry.value[0]), findsOneWidget);
+        // El dock real pinta solo iconos (ver bot_mode_dock.dart): la
+        // etiqueta ya no es un Text visible en la barra, así que la
+        // localización se comprueba por el `label` semántico publicado.
+        expect(
+          tester
+              .getSemantics(
+                find.byKey(const ValueKey('mission-destination-work')),
+              )
+              .label,
+          entry.value[0],
+        );
         final create = find.byKey(const ValueKey('bot-mode-dock-create'));
         expect(tester.getSemantics(create).label, entry.value[1]);
         await tester.tap(create);

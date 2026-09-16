@@ -799,8 +799,19 @@ void main() {
         reason: '${destination.key} debe publicar la acción tap en Android',
       );
     }
+    // El dock real pinta solo iconos (ver bot_mode_dock.dart): la etiqueta
+    // ya no es un Text visible en la barra, así que la cobertura de
+    // accesibilidad se comprueba por el `label` semántico publicado, no por
+    // `find.text` (que sí sigue encontrando "Bots" en otras superficies de
+    // la pantalla, como la lista de agentes).
     expect(find.text('Bots'), findsWidgets);
-    expect(find.text('Trabajo'), findsOneWidget);
+    expect(
+      tester
+          .getSemantics(find.byKey(const ValueKey('mission-destination-work')))
+          .getSemanticsData()
+          .label,
+      'Trabajo',
+    );
 
     expect(
       tester
