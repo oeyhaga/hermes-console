@@ -1698,8 +1698,13 @@ class ApiClient {
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       deleted = data['deleted'] != false; // ausente → asumir borrada
     } catch (e) {
-      debugPrint('[connection] excepción silenciada (se asume true): $e');
-      deleted = true;
+      // Un cuerpo que no se puede parsear (p.ej. un proxy o un gateway a
+      // medio reiniciar devolviendo HTML/vacío con 200) no es evidencia de
+      // que se borró — asumir `true` aquí anunciaba "conversación borrada"
+      // con la fila todavía en el servidor. `false` la manda al cubo
+      // "rechazada" de deleteRemoteSession en vez de darla por buena.
+      debugPrint('[connection] cuerpo de delete no parseable (se asume no borrada): $e');
+      deleted = false;
     }
     if (deleted) await _clearSessionRecovery(sessionId, profile: profile);
     return deleted;
