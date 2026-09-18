@@ -3836,7 +3836,18 @@ void main() {
       await tester.pump();
       expect(find.text('Turno durable'), findsOneWidget);
       expect(find.text('Respuesta durable'), findsNothing);
-      expect(find.text('Trabajo en segundo plano'), findsOneWidget);
+      // "Trabajo en segundo plano" now lives only in the pill's
+      // accessibility semantics label, not as visible text — see the same
+      // fix elsewhere in this file for why.
+      final backgroundSemantics = tester.widget<Semantics>(
+        find
+            .descendant(
+              of: find.byType(SubagentActivityCard),
+              matching: find.byType(Semantics),
+            )
+            .first,
+      );
+      expect(backgroundSemantics.properties.label, 'Trabajo en segundo plano');
 
       restRows = [
         {
