@@ -3825,8 +3825,16 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<bool> _refreshPassiveTranscript() async {
     if (!_canProbePassiveRemoteActivity) return true;
+    final ownedLiveTurn = _chat.remoteSurfaceOwnsLiveTurn;
     await _chat.refreshPassiveRemoteActivity();
-    if (!_canPassivelyRefreshTranscript) return true;
+    if (!_canProbePassiveRemoteActivity) return true;
+    // Another surface's assistant is not in REST until the turn ends. The
+    // busy poll therefore never sees the reply; fetch once more on idle.
+    final remoteTurnSettled =
+        ownedLiveTurn && !_chat.remoteSurfaceOwnsLiveTurn;
+    if (!_canPassivelyRefreshTranscript && !remoteTurnSettled) {
+      return true;
+    }
     return _fetchMessages(passiveOnly: true);
   }
 

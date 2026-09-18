@@ -3805,6 +3805,69 @@ void main() {
   );
 
   testWidgets(
+    'al terminar el turno remoto recarga REST y muestra la respuesta',
+    (tester) async {
+      var restRows = <Map<String, dynamic>>[
+        {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+      ];
+      final gateway = _UiRewindGateway()
+        ..activeSessionList = const DesktopActiveSessionList(
+          sessions: [
+            DesktopActiveSession(
+              runtimeSessionId: 'runtime-owned-by-desktop',
+              storedSessionId: 'sess-test',
+              status: 'working',
+            ),
+          ],
+        );
+      await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-passive-settled-rest'),
+        messagesLoaded: false,
+        initialStoredSessionId: 'sess-test',
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) async =>
+            restRows.map(Map<String, dynamic>.from).toList(growable: false),
+      );
+
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+      expect(find.text('Turno durable'), findsOneWidget);
+      expect(find.text('Respuesta durable'), findsNothing);
+      expect(find.text('Trabajo en segundo plano'), findsOneWidget);
+
+      restRows = [
+        {
+          'id': 'stable-assistant',
+          'role': 'assistant',
+          'content': 'Respuesta durable',
+        },
+        {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+      ];
+      gateway.activeSessionList = const DesktopActiveSessionList(
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-idle-on-desktop',
+            storedSessionId: 'sess-test',
+            status: 'idle',
+          ),
+        ],
+      );
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+
+      expect(find.text('Turno durable'), findsOneWidget);
+      expect(find.text('Respuesta durable'), findsOneWidget);
+      expect(find.text('Trabajo en segundo plano'), findsNothing);
+      expect(gateway.resumeExistingCalls, 0);
+      expect(gateway.createCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'active_list tardío no revive actividad cerrada por una lectura nueva',
     (tester) async {
       final staleWorking = Completer<DesktopActiveSessionList>();
