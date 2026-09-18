@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
@@ -11,17 +12,13 @@ import '../models/bot_mode_v13.dart';
 import '../models/hosted_groups.dart';
 import '../models/kanban.dart';
 import '../models/mission_control.dart';
-import '../models/mission_room.dart';
-import '../models/mission_room_projection.dart';
 import '../navigation/chat_route.dart';
 import '../services/active_chat_service.dart';
-import '../services/chat_draft_store.dart';
 import '../services/connection_manager.dart';
 import '../services/mission_control_repository.dart';
 import '../services/mission_bot_activity_store.dart';
 import '../services/mission_bot_chat_store.dart';
 import '../services/mission_organization_store.dart';
-import '../services/mission_room_store.dart';
 import '../services/notifications/notification_service.dart';
 import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
@@ -35,13 +32,13 @@ import '../widgets/chat_surface_coordinator.dart';
 import '../widgets/dock_shortcuts.dart';
 import '../widgets/mission_profile_avatar.dart';
 import '../widgets/room_avatar_stack.dart';
+import '../widgets/room_team_row.dart';
 import 'bot_create_screen.dart';
 import 'chat_screen.dart';
 import 'cron_screen.dart';
 import 'memory_screen.dart';
 import 'mission_control_copy.dart';
 import 'profile_editor_screen.dart';
-import 'profiles_screen.dart';
 import 'skills_screen.dart';
 import 'soul_screen.dart';
 import 'tasks_screen.dart';
@@ -87,6 +84,9 @@ final class MissionControlOpenTarget {
   }) : surface = MissionControlOwnedSurface.bot,
        roomId = null;
 
+  // La sala local ya no existe: un aviso de tipo "room" siempre apunta a una
+  // sala compartida real (`HostedGroupRoom`, identificada por `roomId`), la
+  // única sala que sigue existiendo en la app.
   const MissionControlOpenTarget.room({
     required this.sessionId,
     required this.roomId,
@@ -99,19 +99,13 @@ class MissionControlScreen extends StatefulWidget {
   final ConnectionManager connManager;
   final MissionControlDataSource? dataSource;
   final MissionOrganizationStoreContract? organizationStore;
-  final MissionRoomStoreContract? roomStore;
   @visibleForTesting
   final MissionBotChatStore? botChatStore;
   @visibleForTesting
   final MissionBotActivityStore? botActivityStore;
   @visibleForTesting
-  final ChatDraftStore? chatDraftStore;
   final ActiveChatService? activeChats;
   final MissionControlOpenTarget? initialOpenTarget;
-  @visibleForTesting
-  final void Function(MissionRoom room, Session session)? roomOpenObserver;
-  @visibleForTesting
-  final ValueChanged<MissionRoomTaskLink>? roomTaskOpenObserver;
   @visibleForTesting
   final ValueChanged<Session>? botChatOpenObserver;
   @visibleForTesting
@@ -127,14 +121,10 @@ class MissionControlScreen extends StatefulWidget {
     required this.connManager,
     this.dataSource,
     this.organizationStore,
-    this.roomStore,
     this.botChatStore,
     this.botActivityStore,
-    this.chatDraftStore,
     this.activeChats,
     this.initialOpenTarget,
-    this.roomOpenObserver,
-    this.roomTaskOpenObserver,
     this.botChatOpenObserver,
     this.botCreateGateway,
     this.profileAssetsGateway,
@@ -153,15 +143,12 @@ class _MissionControlScreenState extends State<MissionControlScreen>
   late final MissionControlDataSource _dataSource;
   late final MissionProfileAvatarCache? _profileAvatarCache;
   late final MissionOrganizationStoreContract _organizationStore;
-  late final MissionRoomStoreContract _roomStore;
   late final MissionBotChatStore _botChatStore;
   late final MissionBotActivityStore _botActivityStore;
-  late final ChatDraftStore _chatDraftStore;
   TuiGatewayClient? _ownedProfileAssetsGateway;
   late final HermesDesktopProfileAssetsGateway _profileAssetsGateway;
   MissionBackendSnapshot? _snapshot;
   List<MissionOrganization> _organizations = const [];
-  List<MissionRoom> _rooms = const [];
   String? _selectedOrganizationId;
   Object? _loadFailure;
   bool _loading = true;
@@ -211,14 +198,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     _organizationStore =
         widget.organizationStore ??
         MissionOrganizationStore(widget.connManager.prefs);
-    _roomStore = widget.roomStore ?? MissionRoomStore(widget.connManager.prefs);
     _botChatStore =
         widget.botChatStore ?? MissionBotChatStore(widget.connManager.prefs);
     _botActivityStore =
         widget.botActivityStore ??
         MissionBotActivityStore(widget.connManager.prefs);
-    _chatDraftStore =
-        widget.chatDraftStore ?? ChatDraftStore(widget.connManager.prefs);
     final injectedAssets = widget.profileAssetsGateway;
     if (injectedAssets != null) {
       _profileAssetsGateway = injectedAssets;
@@ -228,10 +212,6 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       _profileAssetsGateway = gateway;
     }
     _organizations = _organizationStore.load(widget.connection.id);
-    _rooms = _roomStore.load(widget.connection.id);
-    if (widget.initialOpenTarget?.surface == MissionControlOwnedSurface.room) {
-      _destination = _MissionDestination.work;
-    }
     WidgetsBinding.instance.addObserver(this);
     unawaited(_load());
   }
@@ -386,14 +366,68 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       case MissionControlOwnedSurface.room:
         final roomId = target.roomId;
         if (roomId == null || roomId.isEmpty) return;
-        MissionRoom? room;
-        for (final candidate in _rooms) {
-          if (candidate.id == roomId) {
-            room = candidate;
-            break;
-          }
-        }
-        if (room != null) await _openRoomChat(room);
+        final rooms = snapshot.hostedGroups.rooms;
+        final index = rooms.indexWhere((room) => room.roomId == roomId);
+        if (index == -1) return;
+        final capabilities = snapshot.hostedGroups.capabilities;
+        final enabled = !widget.connection.readOnly;
+        setState(() => _destination = _MissionDestination.work);
+        if (!mounted) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => _HostedRoomWorkspace(
+              room: rooms[index],
+              log: index < snapshot.hostedGroups.logs.length
+                  ? snapshot.hostedGroups.logs[index]
+                  : null,
+              copy: MissionControlCopy.of(context),
+              avatarCache: _profileAvatarCache,
+              localProfiles: {
+                for (final profile in snapshot.profiles) profile.name: profile,
+              },
+              onOpenMember: _openRoomMember,
+              canSend:
+                  enabled &&
+                  (capabilities?.supports(GroupMethod.send) ?? false),
+              canRename:
+                  enabled &&
+                  (capabilities?.supports(GroupMethod.rename) ?? false),
+              canStop:
+                  enabled &&
+                  (capabilities?.supports(GroupMethod.stop) ?? false),
+              canDisband:
+                  enabled &&
+                  (capabilities?.supports(GroupMethod.disband) ?? false),
+              onSend: (text, attempt) => _mutateHostedGroup(
+                index,
+                (source, room, generation) => source.sendHostedGroupText(
+                  room,
+                  text: text,
+                  attempt: attempt,
+                  generation: generation,
+                ),
+              ),
+              onRename: (name) => _mutateHostedGroup(
+                index,
+                (source, room, generation) => source.renameHostedGroup(
+                  room,
+                  name: name,
+                  generation: generation,
+                ),
+              ),
+              onStop: () => _mutateHostedGroup(
+                index,
+                (source, room, generation) =>
+                    source.stopHostedGroup(room, generation: generation),
+              ),
+              onDisband: () => _mutateHostedGroup(
+                index,
+                (source, room, generation) =>
+                    source.disbandHostedGroup(room, generation: generation),
+              ),
+            ),
+          ),
+        );
         return;
     }
   }
@@ -491,11 +525,42 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     }
   }
 
+  // Huella de todo lo que el build lee de los chats vivos (ver `_liveChats`,
+  // `_missionPhase` y `_approvalRoute`), capturada en el último build.
+  //
+  // `chat.changes` emite en cada token del stream; con el debounce de 80 ms
+  // eso eran ~12 reconstrucciones por segundo de TODO Mission Control
+  // (proyección, ordenación del roster, las dos pestañas del IndexedStack)
+  // mientras cualquier bot escribía, aunque en pantalla no cambiara nada: la
+  // fase, la aprobación pendiente o el título solo cambian en transiciones.
+  // Se repinta únicamente cuando alguno de esos campos, o el conjunto de
+  // chats vivos, difiere de lo ya pintado.
+  List<Object?>? _renderedLiveFingerprint;
+
+  List<Object?> _liveFingerprint() {
+    final service = _activeChats;
+    if (service == null) return const [];
+    return [
+      for (final chat in _resolveActiveChats(service)) ...[
+        chat,
+        chat.state,
+        chat.activityKind,
+        chat.pendingApproval,
+        chat.sessionTitle,
+        chat.sessionId,
+        chat.storedSessionId,
+        chat.sessionProfile,
+      ],
+    ];
+  }
+
   void _scheduleLiveRefresh() {
     if (_disposed || !mounted) return;
     _liveRefreshDebounce?.cancel();
     _liveRefreshDebounce = Timer(const Duration(milliseconds: 80), () {
-      if (!_disposed && mounted) setState(() {});
+      if (_disposed || !mounted) return;
+      if (listEquals(_liveFingerprint(), _renderedLiveFingerprint)) return;
+      setState(() {});
     });
   }
 
@@ -809,16 +874,6 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         final connection = destination.mode == WorkRouteMode.read
             ? widget.connection.copyWith(readOnly: true)
             : widget.connection;
-        final observer = widget.roomTaskOpenObserver;
-        if (observer != null) {
-          observer(
-            MissionRoomTaskLink(
-              boardId: destination.boardId,
-              taskId: destination.taskId,
-            ),
-          );
-          return;
-        }
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => TasksScreen(
@@ -876,16 +931,6 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     final pendingRequest =
         pending?['request_id'] ?? pending?['approval_id'] ?? pending?['id'];
     if (live == null || pendingRequest != route.requestId) return;
-    if (live.notificationSurface == NotificationChatSurface.room) {
-      final roomId = live.notificationRoomId;
-      for (final room in _rooms) {
-        if (room.id == roomId) {
-          await _openRoomChat(room);
-          return;
-        }
-      }
-      return;
-    }
     if (live.notificationSurface == NotificationChatSurface.bot) {
       final snapshot = _snapshot;
       if (snapshot == null) return;
@@ -991,15 +1036,10 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       ),
     );
     if (confirmed != true) return;
-    // Unlink first: if that durable write fails, the Organization remains and
-    // no Room can become orphaned. If the later delete fails, the remaining
-    // Organization is merely empty and can be retried safely.
-    await _roomStore.unlinkOrganization(widget.connection.id, organization.id);
     await _organizationStore.delete(widget.connection.id, organization.id);
     if (!mounted) return;
     setState(() {
       _organizations = _organizationStore.load(widget.connection.id);
-      _rooms = _roomStore.load(widget.connection.id);
       if (_selectedOrganizationId == organization.id) {
         _selectedOrganizationId = null;
       }
@@ -1064,7 +1104,8 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     // conversation, fall back to the gateway's own server-resolved registry
     // row (`canonical_session`) so the existing hidden "Bot Chat" history is
     // reused instead of orphaned.
-    final canonicalPin = officialPin == null && !agent.profile.botChatPinExplicitlyReset
+    final canonicalPin =
+        officialPin == null && !agent.profile.botChatPinExplicitlyReset
         ? agent.profile.canonicalBotChatSessionId
         : null;
     final pinnedId = officialPin ?? canonicalPin ?? localPin;
@@ -1131,8 +1172,13 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         surfaceKey: const ValueKey('mission-agent-detail'),
         maxWidth: 560,
         maxHeightFactor: 0.9,
-        builder: (sheetContext) => SizedBox(
-          height: MediaQuery.sizeOf(sheetContext).height * 0.72,
+        // Sin alto fijo: la ficha se mide por su contenido (su `ListView` va
+        // en `shrinkWrap`) y solo llega al 90 % de la pantalla cuando de
+        // verdad hace falta. El 72 % fijo anterior dejaba la hoja siempre del
+        // mismo tamaño, así que un bot sin descripción ni tareas salía con
+        // media ventana vacía debajo de los botones.
+        builder: (sheetContext) => SafeArea(
+          top: false,
           child: _AgentDetail(
             agent: agent,
             assignedTasks: [
@@ -1240,353 +1286,30 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     }
   }
 
-  Future<void> _editRoom([MissionRoom? existing]) async {
-    if (widget.connection.readOnly) return;
-    if (existing != null && await _roomMutationBlocked(existing)) return;
-    if (!mounted) return;
+  void _openRoomMember(String profileName) {
     final snapshot = _snapshot;
     if (snapshot == null) return;
-    if (snapshot.profilesCapability != MissionCapabilityState.available) {
-      _showRoomRosterUnavailable();
-      return;
+    for (final agent in _projection(snapshot).agents) {
+      if (agent.profile.name == profileName) {
+        _openAgent(agent);
+        return;
+      }
     }
-    final organization = _selectedOrganization;
-    final scopedProfiles = organization == null
-        ? snapshot.profiles
-        : snapshot.profiles
-              .where(
-                (profile) => organization.profileNames.contains(profile.name),
-              )
-              .toList(growable: false);
-    if (scopedProfiles.isEmpty ||
-        (existing != null &&
-            !scopedProfiles.any(
-              (profile) => profile.name == existing.managerProfile,
-            ))) {
-      _showRoomRosterUnavailable();
-      return;
-    }
-    if (existing == null && scopedProfiles.length < 2) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(MissionControlCopy.of(context).needTwoAgents)),
-      );
-      return;
-    }
-    _surfaceCoordinator.setRouteActive(false);
-    final _RoomDraft? result;
-    try {
-      result = await showHermesFloatingSurface<_RoomDraft>(
-        context: context,
-        surfaceKey: const ValueKey('mission-room-editor'),
-        maxWidth: 540,
-        maxHeightFactor: 0.92,
-        barrierDismissible: false,
-        systemDismissible: false,
-        builder: (context) => _RoomEditor(
-          copy: MissionControlCopy.of(context),
-          profiles: scopedProfiles,
-          avatarCache: _profileAvatarCache,
-          suggestedManager: organization?.managerProfile,
-          existing: existing,
-          onManageProfiles: () {
-            Navigator.pop(context);
-            unawaited(_openProfiles());
-          },
-        ),
-      );
-    } finally {
-      if (mounted) _surfaceCoordinator.setRouteActive(true);
-    }
-    if (result == null) return;
-    if (existing != null && await _roomMutationBlocked(existing)) return;
-    final fresh = await _loadAuthoritativeRoomSnapshot();
-    if (fresh == null) return;
-    final freshScopedProfiles = organization == null
-        ? fresh.profiles
-        : fresh.profiles
-              .where(
-                (profile) => organization.profileNames.contains(profile.name),
-              )
-              .toList(growable: false);
-    final freshNames = freshScopedProfiles
-        .map((profile) => profile.name)
-        .toSet();
-    if (!freshNames.contains(result.managerProfile) ||
-        !freshNames.containsAll(result.memberProfiles)) {
-      _showRoomRosterUnavailable();
-      return;
-    }
-    final previousOrganizationId = existing?.organizationId;
-    final knownOrganizationIds = _organizations.map((item) => item.id).toSet();
-    final saved = await _roomStore.save(
-      connectionId: widget.connection.id,
-      name: result.name,
-      purposeLabel: result.purposeLabel,
-      managerProfile: result.managerProfile,
-      memberProfiles: result.memberProfiles,
-      organizationId:
-          organization?.id ??
-          (knownOrganizationIds.contains(previousOrganizationId)
-              ? previousOrganizationId
-              : null),
-      existing: existing,
-    );
-    if (!mounted) return;
-    setState(() {
-      _rooms = _roomStore.load(widget.connection.id);
-    });
-    if (existing == null) unawaited(_openRoomDetail(saved));
-  }
-
-  Future<void> _deleteRoom(MissionRoom room) async {
-    if (widget.connection.readOnly) return;
-    if (await _roomMutationBlocked(room)) return;
-    if (!mounted) return;
-    final copy = MissionControlCopy.of(context);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(copy.deleteRoomTitle),
-        content: Text(copy.deleteRoomBody),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(copy.cancel),
+    for (final profile in snapshot.profiles) {
+      if (profile.name == profileName) {
+        unawaited(
+          _openChat(
+            MissionAgent(
+              profile: profile,
+              status: MissionAgentStatus.idle,
+              statusEvidence: '',
+              usage: const MissionUsage(),
+            ),
           ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(copy.delete),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    if (await _roomMutationBlocked(room)) return;
-    await _roomStore.delete(widget.connection.id, room.id);
-    if (mounted) {
-      setState(() => _rooms = _roomStore.load(widget.connection.id));
-    }
-  }
-
-  Future<bool> _roomMutationBlocked(MissionRoom room) async {
-    try {
-      final draft = await _chatDraftStore.load(
-        widget.connection.id,
-        'mob-room-${room.id}',
-        profile: room.managerProfile,
-        claimUnscopedLegacy: true,
-      );
-      if (!draft.hasMissionRoomOperation) return false;
-    } catch (_) {
-      // A storage failure is ambiguous: mutating the Room could still orphan a
-      // recoverable operation, so fail closed until the draft can be read.
-    }
-    if (mounted) {
-      final copy = MissionControlCopy.of(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(copy.roomOperationPending)));
-    }
-    return true;
-  }
-
-  void _showRoomRosterUnavailable() {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(Strings.of(context).missionRoomRosterUnavailable)),
-    );
-  }
-
-  Future<MissionBackendSnapshot?> _loadAuthoritativeRoomSnapshot() async {
-    try {
-      final fresh = await _dataSource.load();
-      if (!mounted) return null;
-      if (fresh.profilesCapability != MissionCapabilityState.available) {
-        _showRoomRosterUnavailable();
-        return null;
-      }
-      return fresh;
-    } catch (_) {
-      if (mounted) _showRoomRosterUnavailable();
-      return null;
-    }
-  }
-
-  _RoomDetailData? _roomDetailData(String roomId) {
-    final snapshot = _snapshot;
-    if (snapshot == null) return null;
-    MissionRoom? room;
-    for (final candidate in _rooms) {
-      if (candidate.id == roomId) {
-        room = candidate;
-        break;
+        );
+        return;
       }
     }
-    if (room == null) return null;
-    final projection = _projection(snapshot);
-    final roomWork = MissionRoomWorkProjector.build(
-      rooms: _rooms,
-      snapshot: snapshot,
-      mission: projection,
-      ownershipRooms: _rooms,
-    ).forRoom(roomId);
-    if (roomWork == null) return null;
-    return _RoomDetailData(room: room, snapshot: snapshot, work: roomWork);
-  }
-
-  Future<void> _openRoomDetail(MissionRoom room) async {
-    if (!mounted) return;
-    var data = _roomDetailData(room.id);
-    if (data == null) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (routeContext) => StatefulBuilder(
-          builder: (context, setDetailState) {
-            Future<void> refreshDetail({bool remote = true}) async {
-              if (remote) await _load(refresh: true);
-              if (!routeContext.mounted) return;
-              final refreshed = _roomDetailData(room.id);
-              if (refreshed == null) {
-                Navigator.of(routeContext).pop();
-                return;
-              }
-              setDetailState(() => data = refreshed);
-            }
-
-            final current = data!;
-            return _MissionRoomDetailScreen(
-              room: current.room,
-              snapshot: current.snapshot,
-              roomWork: current.work,
-              copy: MissionControlCopy.of(context),
-              avatarCache: _profileAvatarCache,
-              readOnly: widget.connection.readOnly,
-              canOpenChat:
-                  current.snapshot.profilesCapability ==
-                  MissionCapabilityState.available,
-              onRefresh: refreshDetail,
-              onOpenChat: () async {
-                await _openRoomChat(current.room);
-                await refreshDetail(remote: false);
-              },
-              onOpenTask: (link) async {
-                await _openRoomTask(link);
-                await refreshDetail();
-              },
-              onOpenKanban: () async {
-                await _openTasks();
-                await refreshDetail();
-              },
-              onEdit: widget.connection.readOnly
-                  ? null
-                  : () async {
-                      await _editRoom(current.room);
-                      await refreshDetail(remote: false);
-                    },
-              onDelete: widget.connection.readOnly
-                  ? null
-                  : () async {
-                      await _deleteRoom(current.room);
-                      await refreshDetail(remote: false);
-                    },
-            );
-          },
-        ),
-      ),
-    );
-    if (!mounted) return;
-    setState(() => _rooms = _roomStore.load(widget.connection.id));
-  }
-
-  Future<void> _openRoomChat(MissionRoom room) async {
-    final snapshot = await _loadAuthoritativeRoomSnapshot();
-    if (!mounted || snapshot == null) return;
-    final freshProfiles = snapshot.profiles
-        .map((profile) => profile.name)
-        .toSet();
-    if (!freshProfiles.contains(room.managerProfile) ||
-        !freshProfiles.containsAll(room.memberProfiles)) {
-      _showRoomRosterUnavailable();
-      return;
-    }
-    final roomProfiles = Map<String, AgentProfile>.unmodifiable({
-      for (final profile in snapshot.profiles)
-        if (room.memberProfiles.contains(profile.name)) profile.name: profile,
-    });
-    Session? existing;
-    if (room.hasDurableManagerSession) {
-      for (final session in snapshot.sessions) {
-        if (session.profile?.trim() != room.managerProfile) continue;
-        if (session.id == room.managerSessionId ||
-            session.logicalId == room.managerSessionId) {
-          existing = session;
-          break;
-        }
-      }
-    }
-    // Stable local identity for encrypted drafts/outbox only. It is never
-    // persisted in the Room as a Hermes session id; the first canonical
-    // `session.create` must replace it with the opaque stored id.
-    final draftId = 'mob-room-${room.id}';
-    final session = Session(
-      id: draftId,
-      lineageRootId: room.hasDurableManagerSession
-          ? room.managerSessionId
-          : null,
-      title: existing?.title ?? '#${room.name}',
-      model: existing?.model ?? 'hermes-agent',
-      source: room.hasDurableManagerSession ? 'room-local' : 'mobile-room',
-      messageCount: existing?.messageCount ?? 0,
-      isActive: existing?.isActive ?? false,
-      preview: existing?.preview ?? '',
-      startedAt:
-          existing?.startedAt ??
-          DateTime.now().millisecondsSinceEpoch.toDouble() / 1000,
-      profile: room.managerProfile,
-      isDefaultProfile: room.managerProfile == 'default',
-    );
-    final observer = widget.roomOpenObserver;
-    if (observer != null) {
-      observer(room, session);
-      return;
-    }
-    await openChatFromSection<void>(
-      context,
-      builder: (_) => ChatScreen(
-        connection: widget.connection,
-        session: session,
-        initialStoredSessionId: room.hasDurableManagerSession
-            ? room.managerSessionId
-            : null,
-        missionRoom: room,
-        missionRoomStore: _roomStore,
-        missionRoomProfiles: roomProfiles,
-        missionAvatarCache: _profileAvatarCache,
-        requestComposerFocus: true,
-      ),
-    );
-    if (!mounted) return;
-    setState(() => _rooms = _roomStore.load(widget.connection.id));
-    await _load(refresh: true);
-  }
-
-  Future<void> _openRoomTask(MissionRoomTaskLink link) async {
-    final observer = widget.roomTaskOpenObserver;
-    if (observer != null) {
-      observer(link);
-      return;
-    }
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => TasksScreen(
-          connection: widget.connection,
-          initialBoard: link.boardId == MissionRoomTaskLink.legacyCurrentBoard
-              ? null
-              : link.boardId,
-          initialTaskId: link.taskId,
-        ),
-      ),
-    );
   }
 
   Future<void> _openTasks({String? assignee}) async {
@@ -1626,19 +1349,6 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       builder: (_) => SoulScreen(connection: widget.connection),
     ),
   );
-
-  Future<void> _openProfiles() async {
-    if (widget.connection.readOnly) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => ProfilesScreen(
-          connection: widget.connection,
-          connManager: widget.connManager,
-        ),
-      ),
-    );
-    if (mounted) await _load(refresh: true);
-  }
 
   /// Edición de la identidad visible del bot (nombre, cara, sprite). Al
   /// guardar se invalida el caché de avatares y se relee el roster para que
@@ -1727,6 +1437,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     setState(() => _destination = _MissionDestination.work);
   }
 
+  /// Cuántas salas oficiales vivas se ven en el destino "Trabajo".
+  int _visibleRoomCount(MissionBackendSnapshot snapshot) {
+    return snapshot.hostedGroups.rooms.where((room) => !room.disbanded).length;
+  }
+
   MissionHostedGroupsDataSource? get _hostedGroupsDataSource {
     final source = _dataSource;
     return source is MissionHostedGroupsDataSource
@@ -1754,12 +1469,16 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         !mounted) {
       return;
     }
-    final draft = await showDialog<_HostedGroupDraft>(
+    final draft = await showHermesFloatingSurface<_HostedGroupDraft>(
       context: context,
+      surfaceKey: const ValueKey('mission-hosted-create-dialog'),
+      maxWidth: 480,
+      maxHeightFactor: 0.84,
       builder: (dialogContext) => _HostedGroupCreateDialog(
         copy: MissionControlCopy.of(dialogContext),
         connectionId: widget.connection.id,
         profiles: snapshot.profiles,
+        avatarCache: _profileAvatarCache,
       ),
     );
     if (draft == null || !mounted) return;
@@ -1880,6 +1599,7 @@ class _MissionControlScreenState extends State<MissionControlScreen>
 
   @override
   Widget build(BuildContext context) {
+    _renderedLiveFingerprint = _liveFingerprint();
     final copy = MissionControlCopy.of(context);
     final snapshot = _snapshot;
     final connected =
@@ -2088,22 +1808,20 @@ class _MissionControlScreenState extends State<MissionControlScreen>
             ? null
             : () => unawaited(_createAgentFromMission()),
       ),
+      // Antes, sin la capacidad `hosted_groups`, este mismo botón creaba una
+      // "sala local" (un chat de 1 bot con una lista de colaboradores
+      // habituales, sin interacción de equipo real) haciéndose pasar por
+      // sala. Eso ya no ocurre: una sala de verdad necesita la
+      // infraestructura de turnos multi-bot que solo el servidor tiene
+      // (igual que Desktop). Sin esa capacidad, el botón simplemente se
+      // deshabilita en vez de fingir un sustituto.
       DockCreateOrbit(
         controlKey: const ValueKey('bot-mode-create-room'),
-        label: _canCreateHostedRoom
-            ? strings.missionCreateRoomLabel
-            : copy.createLocalRoom,
+        label: strings.missionCreateRoomLabel,
         icon: Icons.groups_2_outlined,
         onTap: _canCreateHostedRoom
             ? () => unawaited(_createHostedRoom())
-            : widget.connection.readOnly ||
-                  snapshot?.hostedGroupsCapability ==
-                      MissionCapabilityState.available ||
-                  snapshot?.profilesCapability !=
-                      MissionCapabilityState.available ||
-                  (snapshot?.profiles.length ?? 0) < 2
-            ? null
-            : () => unawaited(_editRoom()),
+            : null,
       ),
     ];
   }
@@ -2183,10 +1901,22 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                             MissionCapabilityState.available
                     ? null
                     : _createAgentFromMission,
+                onCreateHostedRoom: _canCreateHostedRoom
+                    ? _createHostedRoom
+                    : null,
+                roomCount: _visibleRoomCount(snapshot),
+                onOpenWork: _destination == _MissionDestination.bots
+                    ? () => setState(
+                        () => _destination = _MissionDestination.work,
+                      )
+                    : null,
               ),
               _RoomsTab(
-                rooms: _rooms,
-                organization: _selectedOrganization,
+                onOpenBots: _destination == _MissionDestination.work
+                    ? () => setState(
+                        () => _destination = _MissionDestination.bots,
+                      )
+                    : null,
                 snapshot: snapshot,
                 projection: projection,
                 copy: copy,
@@ -2197,28 +1927,10 @@ class _MissionControlScreenState extends State<MissionControlScreen>
                 onCreateHostedRoom: _canCreateHostedRoom
                     ? _createHostedRoom
                     : null,
-                onOpen: _openRoomDetail,
-                onOpenTask: _openRoomTask,
+                onOpenMember: _openRoomMember,
                 workItems: _projectWorkItems(snapshot, projection),
                 onOpenWorkItem: _openWorkItem,
                 onRefresh: () => _load(refresh: true),
-                onOpenKanban: _openTasks,
-                onCreateRoom:
-                    widget.connection.readOnly ||
-                        snapshot.hostedGroupsCapability ==
-                            MissionCapabilityState.available ||
-                        snapshot.profilesCapability !=
-                            MissionCapabilityState.available ||
-                        projection.agents.length < 2
-                    ? null
-                    : _editRoom,
-                onEdit:
-                    widget.connection.readOnly ||
-                        snapshot.profilesCapability !=
-                            MissionCapabilityState.available
-                    ? null
-                    : _editRoom,
-                onDelete: widget.connection.readOnly ? null : _deleteRoom,
               ),
             ],
           ),
@@ -2239,11 +1951,13 @@ class _HostedGroupCreateDialog extends StatefulWidget {
   final MissionControlCopy copy;
   final String connectionId;
   final List<AgentProfile> profiles;
+  final MissionProfileAvatarCache? avatarCache;
 
   const _HostedGroupCreateDialog({
     required this.copy,
     required this.connectionId,
     required this.profiles,
+    required this.avatarCache,
   });
 
   @override
@@ -2253,12 +1967,36 @@ class _HostedGroupCreateDialog extends StatefulWidget {
 
 class _HostedGroupCreateDialogState extends State<_HostedGroupCreateDialog> {
   final TextEditingController _name = TextEditingController();
+  final TextEditingController _filter = TextEditingController();
   final Set<String> _selected = {};
+
+  /// Umbral a partir del cual la lista de bots deja de caber de un vistazo y
+  /// el buscador deja de ser adorno. Por debajo, un campo más solo añade
+  /// ruido a un diálogo que ya tiene nombre + lista + botones.
+  static const int _filterThreshold = 8;
+
+  bool get _canFilter => widget.profiles.length > _filterThreshold;
 
   @override
   void dispose() {
     _name.dispose();
+    _filter.dispose();
     super.dispose();
+  }
+
+  /// Solo filtra lo que se PINTA. `_submit` sigue recorriendo
+  /// `widget.profiles`, así que un bot ya elegido que el filtro esconda sigue
+  /// entrando en la sala: el filtro no puede perder selección.
+  List<AgentProfile> get _visibleProfiles {
+    final query = _filter.text.trim().toLowerCase();
+    if (!_canFilter || query.isEmpty) return widget.profiles;
+    return widget.profiles
+        .where(
+          (profile) =>
+              profile.name.toLowerCase().contains(query) ||
+              (profile.botTitle ?? '').toLowerCase().contains(query),
+        )
+        .toList(growable: false);
   }
 
   void _submit() {
@@ -2280,64 +2018,420 @@ class _HostedGroupCreateDialogState extends State<_HostedGroupCreateDialog> {
     );
   }
 
+  void _toggle(String profileName) => setState(() {
+    if (_selected.contains(profileName)) {
+      _selected.remove(profileName);
+    } else {
+      _selected.add(profileName);
+    }
+  });
+
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.copy.createSharedRoom),
-    content: SizedBox(
-      width: 420,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              key: const ValueKey('mission-hosted-create-name'),
-              controller: _name,
-              autofocus: true,
-              maxLength: 200,
-              decoration: InputDecoration(
-                labelText: widget.copy.sharedRoomName,
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final extra = _RoomsAreaCopy.of(context);
+    final visibleProfiles = _visibleProfiles;
+    final canSubmit = _name.text.trim().isNotEmpty && _selected.isNotEmpty;
+    // El inset del teclado NO se vuelve a sumar aquí. La superficie flotante
+    // (`_HermesFloatingSurfaceFrame`, `hermes_premium_ui.dart`) ya lo aplica
+    // dos veces por su cuenta: desplaza el diálogo con
+    // `padding.bottom = viewInsets.bottom` Y le recorta esa misma cantidad al
+    // `maxHeight`. Un `20 + viewInsets.bottom` interno contaba el teclado por
+    // tercera vez DENTRO de una caja ya encogida: con un teclado real de
+    // ~280-320 px la altura utilizable caía a unos pocos píxeles, así que
+    // título, campo y lista quedaban aplastados/invisibles y los botones
+    // fuera de la superficie. Eso es el diálogo "trabado" reportado en
+    // dispositivo real DESPUÉS de arreglar el desbordamiento de la lista (el
+    // parche anterior movió todo a un único scroll, pero el inset doble
+    // seguía dejando ese scroll con 0 px de alto útil, y con `autofocus` el
+    // teclado se abre solo al entrar, así que el diálogo nacía ya trabado).
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Todo el bloque de arriba (título, nombre, lista de miembros) va
+          // en un único scroll: antes la lista tenía su propio tope fijo de
+          // 320px vía `Flexible`+`ConstrainedBox` sin que nada por encima
+          // pudiera ceder espacio, así que en cuanto el teclado se abría (el
+          // `maxHeight` del surface flotante ya descuenta `viewInsets.bottom`,
+          // ver `_HermesFloatingSurfaceFrame`) el contenido fijo ya no cabía
+          // y desbordaba (barra de overflow amarilla/negra, confirmado en
+          // dispositivo real). Los botones quedan fuera del scroll para que
+          // sigan siempre visibles.
+          Flexible(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    widget.copy.createSharedRoom,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 18),
+                  TextField(
+                    key: const ValueKey('mission-hosted-create-name'),
+                    controller: _name,
+                    // El `autofocus` abría el teclado nada más entrar, y con
+                    // el diálogo ya sin margen vertical (ver el comentario de
+                    // `build()` sobre el inset del surface flotante) eso
+                    // dejaba la lista de bots reducida a una rendija de
+                    // media fila — "se ve todo cortito" / "cuando se abre el
+                    // teclado es terrible", confirmado en dispositivo real.
+                    // Sin autofocus el diálogo nace con el teclado cerrado y
+                    // la lista entera visible; el teclado solo aparece si el
+                    // usuario toca el campo a propósito.
+                    maxLength: 200,
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) => FocusScope.of(context).unfocus(),
+                    decoration: InputDecoration(
+                      labelText: widget.copy.sharedRoomName,
+                    ),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                  const SizedBox(height: 18),
+                  // Cabecera de la selección: instrucción + cuántos van
+                  // elegidos ahora mismo. Sin este recuento la única señal de
+                  // que la lista es multi-selección era el propio estado de
+                  // las filas, y no se leía como algo que haya que completar
+                  // antes de poder guardar.
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          widget.copy.chooseSharedMembers,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: colors.textSecondary,
+                          ),
+                        ),
+                      ),
+                      if (_selected.isNotEmpty)
+                        Text(
+                          widget.copy.roomMemberCount(_selected.length),
+                          key: const ValueKey(
+                            'mission-hosted-create-selected-count',
+                          ),
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: colors.accentText,
+                          ),
+                        ),
+                    ],
+                  ),
+                  // Los elegidos suben arriba como pills quitables. Es la
+                  // respuesta directa al "todos aparecen apilados en un
+                  // montón": lo que llevas hecho deja de estar escondido
+                  // dentro de N filas casi idénticas y se ve como una lista
+                  // corta, propia y editable.
+                  const SizedBox(height: 10),
+                  _HostedGroupChosenStrip(
+                    profiles: widget.profiles,
+                    selected: _selected,
+                    avatarCache: widget.avatarCache,
+                    extra: extra,
+                    onRemove: _toggle,
+                  ),
+                  if (_canFilter) ...[
+                    const SizedBox(height: 12),
+                    TextField(
+                      key: const ValueKey('mission-hosted-create-filter'),
+                      controller: _filter,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        prefixIcon: const Icon(Icons.search_rounded, size: 19),
+                        hintText: widget.copy.searchAgents,
+                        suffixIcon: _filter.text.isEmpty
+                            ? null
+                            : IconButton(
+                                key: const ValueKey(
+                                  'mission-hosted-create-filter-clear',
+                                ),
+                                tooltip: widget.copy.clearSearch,
+                                onPressed: () =>
+                                    setState(() => _filter.clear()),
+                                icon: const Icon(Icons.close_rounded, size: 18),
+                              ),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  if (visibleProfiles.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Text(
+                        widget.copy.noMatchingAgents,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colors.textSecondary,
+                        ),
+                      ),
+                    )
+                  else
+                    for (final profile in visibleProfiles)
+                      _HostedGroupMemberOption(
+                        key: ValueKey(
+                          'mission-hosted-create-member-${profile.name}',
+                        ),
+                        profile: profile,
+                        avatarCache: widget.avatarCache,
+                        selected: _selected.contains(profile.name),
+                        onTap: () => _toggle(profile.name),
+                      ),
+                ],
               ),
-              onChanged: (_) => setState(() {}),
             ),
-            const SizedBox(height: 8),
-            Text(
-              widget.copy.chooseSharedMembers,
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            for (final profile in widget.profiles)
-              CheckboxListTile(
-                key: ValueKey('mission-hosted-create-member-${profile.name}'),
-                value: _selected.contains(profile.name),
-                contentPadding: EdgeInsets.zero,
-                title: Text(profile.botTitle ?? profile.name),
-                subtitle: Text('@${profile.name}'),
-                onChanged: (selected) => setState(() {
-                  if (selected == true) {
-                    _selected.add(profile.name);
-                  } else {
-                    _selected.remove(profile.name);
-                  }
-                }),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: Text(widget.copy.cancel),
+                ),
               ),
-          ],
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  key: const ValueKey('mission-hosted-create-confirm'),
+                  onPressed: canSubmit ? _submit : null,
+                  child: Text(widget.copy.save),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Pills de los bots ya elegidos para la sala compartida.
+///
+/// Sube arriba, junto al recuento, lo que ya llevas hecho. Sin esto la única
+/// forma de saber a quién habías elegido era volver a recorrer la lista
+/// entera buscando círculos marcados, que es exactamente la sensación de
+/// "montón" que se reportó en dispositivo real. Cada pill se puede tocar
+/// para quitar a ese bot, así que corregir un toque mal dado no obliga a
+/// buscar su fila.
+class _HostedGroupChosenStrip extends StatelessWidget {
+  final List<AgentProfile> profiles;
+  final Set<String> selected;
+  final MissionProfileAvatarCache? avatarCache;
+  final _RoomsAreaCopy extra;
+  final ValueChanged<String> onRemove;
+
+  const _HostedGroupChosenStrip({
+    required this.profiles,
+    required this.selected,
+    required this.avatarCache,
+    required this.extra,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final chosen = profiles
+        .where((profile) => selected.contains(profile.name))
+        .toList(growable: false);
+    if (chosen.isEmpty) {
+      return Text(
+        extra.noMembersChosen,
+        key: const ValueKey('mission-hosted-create-chosen-empty'),
+        style: TextStyle(fontSize: 12.5, color: colors.textDisabled),
+      );
+    }
+    return Wrap(
+      key: const ValueKey('mission-hosted-create-chosen'),
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final profile in chosen)
+          Semantics(
+            button: true,
+            label: '${extra.removeMember} @${profile.name}',
+            excludeSemantics: true,
+            child: Material(
+              key: ValueKey('mission-hosted-create-chosen-${profile.name}'),
+              color: colors.accent.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(20),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(20),
+                onTap: () => onRemove(profile.name),
+                child: Padding(
+                  padding: const EdgeInsetsDirectional.fromSTEB(4, 4, 9, 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      MissionProfileAvatar(
+                        profileName: profile.name,
+                        hasAvatar: profile.hasAvatar,
+                        cache: avatarCache,
+                        size: 22,
+                        shape: profile.botShape,
+                        colorHex: profile.botColorHex,
+                        imageKind: profile.botImageKind,
+                      ),
+                      const SizedBox(width: 7),
+                      Text(
+                        profile.botTitle ?? profile.name,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: colors.accentText,
+                        ),
+                      ),
+                      const SizedBox(width: 5),
+                      Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: colors.accentText,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Fila de elección de un bot para la sala compartida.
+///
+/// Cada fila es su propia tarjeta separada, no un renglón de una lista
+/// continua: fondo propio, esquinas redondeadas y 8 px de aire entre filas.
+/// La versión anterior las apilaba con 2 px y sin fondo, así que N bots se
+/// leían como un solo bloque gris indistinguible — el "montón" reportado en
+/// dispositivo real.
+///
+/// El estado elegido no se juega a un detalle: tinte de acento en todo el
+/// fondo, borde de acento, nombre en negrita y círculo relleno con check.
+/// Sin elegir, el círculo queda vacío sobre un fondo neutro.
+class _HostedGroupMemberOption extends StatelessWidget {
+  final AgentProfile profile;
+  final MissionProfileAvatarCache? avatarCache;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _HostedGroupMemberOption({
+    required this.profile,
+    required this.avatarCache,
+    required this.selected,
+    required this.onTap,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final title = profile.botTitle ?? profile.name;
+    final radius = BorderRadius.circular(18);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Semantics(
+        selected: selected,
+        child: Material(
+          color: selected
+              ? colors.accent.withValues(alpha: 0.16)
+              : colors.surfaceVariant.withValues(alpha: 0.5),
+          borderRadius: radius,
+          child: InkWell(
+            borderRadius: radius,
+            onTap: onTap,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: radius,
+                border: Border.all(
+                  color: selected ? colors.accent : Colors.transparent,
+                  width: 1.5,
+                ),
+              ),
+              constraints: const BoxConstraints(minHeight: 56),
+              padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+              child: Row(
+                children: [
+                  MissionProfileAvatar(
+                    profileName: profile.name,
+                    hasAvatar: profile.hasAvatar,
+                    cache: avatarCache,
+                    size: 38,
+                    shape: profile.botShape,
+                    colorHex: profile.botColorHex,
+                    imageKind: profile.botImageKind,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: selected
+                                ? FontWeight.w700
+                                : FontWeight.w600,
+                            color: selected
+                                ? colors.accentText
+                                : colors.textPrimary,
+                          ),
+                        ),
+                        if (title != profile.name)
+                          Text(
+                            '@${profile.name}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 12,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: selected ? colors.accent : Colors.transparent,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: selected
+                            ? colors.accent
+                            : colors.divider.withValues(alpha: 0.9),
+                        width: 1.6,
+                      ),
+                    ),
+                    child: selected
+                        ? Icon(
+                            Icons.check_rounded,
+                            size: 15,
+                            color: colors.accentText,
+                          )
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: Text(widget.copy.cancel),
-      ),
-      TextButton(
-        key: const ValueKey('mission-hosted-create-confirm'),
-        onPressed: _name.text.trim().isNotEmpty && _selected.isNotEmpty
-            ? _submit
-            : null,
-        child: Text(widget.copy.save),
-      ),
-    ],
-  );
+    );
+  }
 }
 
 enum _WorkspaceActionKind { select, create, edit, delete }
@@ -2493,125 +2587,6 @@ class _WorkspaceSheet extends StatelessWidget {
   }
 }
 
-class _WorkActivityGroup extends StatelessWidget {
-  final List<MissionActivity> activity;
-  final MissionControlCopy copy;
-
-  const _WorkActivityGroup({
-    required this.activity,
-    required this.copy,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (activity.isEmpty) return _MessageCard(text: copy.noActivity);
-    final colors = Theme.of(context).hermes;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-      child: Column(
-        children: [
-          for (var index = 0; index < activity.length; index++) ...[
-            _WorkActivityEvent(
-              key: ValueKey(
-                'mission-work-activity-event-${activity[index].stableId}',
-              ),
-              event: activity[index],
-              copy: copy,
-            ),
-            if (index != activity.length - 1)
-              Divider(height: 1, color: colors.divider.withValues(alpha: 0.62)),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _WorkActivityEvent extends StatelessWidget {
-  final MissionActivity event;
-  final MissionControlCopy copy;
-
-  const _WorkActivityEvent({
-    required this.event,
-    required this.copy,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final color = _workActivityColor(colors, event.kind);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 11),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.11),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(_workActivityIcon(event.kind), size: 16, color: color),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  event.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  [
-                    copy.activityLabel(event.kind.name),
-                    event.profileName ?? copy.unknown,
-                  ].join(' · '),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: colors.textSecondary, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            _clock(event.timestamp),
-            style: TextStyle(
-              color: colors.textDisabled,
-              fontSize: 11,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-Color _workActivityColor(HermesThemeColors colors, MissionActivityKind kind) =>
-    switch (kind) {
-      MissionActivityKind.taskBlocked => colors.error,
-      MissionActivityKind.taskStarted => colors.success,
-      MissionActivityKind.taskCompleted => colors.accentText,
-      MissionActivityKind.taskCreated => colors.warning,
-      MissionActivityKind.sessionUpdated => colors.textSecondary,
-    };
-
-IconData _workActivityIcon(MissionActivityKind kind) => switch (kind) {
-  MissionActivityKind.sessionUpdated => Icons.chat_bubble_outline_rounded,
-  MissionActivityKind.taskCreated => Icons.add_task_rounded,
-  MissionActivityKind.taskStarted => Icons.play_arrow_rounded,
-  MissionActivityKind.taskCompleted => Icons.check_rounded,
-  MissionActivityKind.taskBlocked => Icons.block_rounded,
-};
-
 class _BotsTab extends StatefulWidget {
   final String connectionId;
   final MissionBackendSnapshot snapshot;
@@ -2624,6 +2599,24 @@ class _BotsTab extends StatefulWidget {
   final VoidCallback? onAttention;
   final VoidCallback? onCreateAgent;
 
+  /// Sin esto, "crear sala" solo era alcanzable desde la bandeja del dock
+  /// flotante (`_botDockCreateOrbits`) — con el dock apagado (interruptor
+  /// global de Ajustes), la cabecera de esta pestaña seguía ofreciendo
+  /// únicamente "Nuevo agente", así que crear una sala se volvía imposible
+  /// sin el dock (bug confirmado, pedido explícito del usuario). Null
+  /// cuando la capacidad no está disponible, igual que `onCreateAgent`.
+  final VoidCallback? onCreateHostedRoom;
+
+  /// Cuántas salas hay ahora en el destino "Trabajo" y cómo ir allí. Ver
+  /// [_MissionDestinationPill]: el dock es opcional y configurable, así que
+  /// el cambio de destino necesita una afordancia propia de la pantalla.
+  final int roomCount;
+
+  /// Null cuando este destino no es el activo: el `IndexedStack` construye
+  /// las dos pestañas a la vez, y una pestaña oculta no debe ofrecer (ni
+  /// duplicar en el árbol) la navegación de la que sí se ve.
+  final VoidCallback? onOpenWork;
+
   const _BotsTab({
     required this.connectionId,
     required this.snapshot,
@@ -2635,6 +2628,9 @@ class _BotsTab extends StatefulWidget {
     required this.onQuickActions,
     required this.onAttention,
     required this.onCreateAgent,
+    required this.onCreateHostedRoom,
+    required this.roomCount,
+    required this.onOpenWork,
   });
 
   @override
@@ -2650,6 +2646,50 @@ class _BotsTabState extends State<_BotsTab> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// Botón "+" de la cabecera: mismas dos opciones que la bandeja de
+  /// creación del dock (`_botDockCreateOrbits`), para que crear una sala
+  /// nunca dependa solo de que el dock flotante esté encendido. Si alguna
+  /// opción no está disponible ahora mismo (permisos, capacidad), su fila
+  /// simplemente no se pinta en vez de aparecer deshabilitada.
+  Future<void> _showCreateChooser(BuildContext context) async {
+    final onCreateAgent = widget.onCreateAgent;
+    final onCreateHostedRoom = widget.onCreateHostedRoom;
+    final strings = Strings.of(context);
+    if (onCreateAgent == null && onCreateHostedRoom == null) return;
+    await showHermesFloatingSurface<void>(
+      context: context,
+      surfaceKey: const ValueKey('mission-create-chooser'),
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (onCreateAgent != null)
+              ListTile(
+                key: const ValueKey('mission-create-chooser-bot'),
+                leading: const Icon(Icons.smart_toy_outlined),
+                title: Text(strings.missionCreateBotLabel),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  onCreateAgent();
+                },
+              ),
+            if (onCreateHostedRoom != null)
+              ListTile(
+                key: const ValueKey('mission-create-chooser-room'),
+                leading: const Icon(Icons.groups_2_outlined),
+                title: Text(strings.missionCreateRoomLabel),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  onCreateHostedRoom();
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Preview del Bot Chat pineado usando solo el snapshot ya cargado. Los pins
@@ -2828,6 +2868,16 @@ class _BotsTabState extends State<_BotsTab> {
       key: const ValueKey('mission-bots'),
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
       children: [
+        if (widget.onOpenWork != null) ...[
+          _MissionDestinationPill(
+            controlKey: const ValueKey('mission-goto-work'),
+            icon: Icons.groups_2_outlined,
+            label: widget.copy.work,
+            detail: widget.copy.roomCount(widget.roomCount),
+            onTap: widget.onOpenWork!,
+          ),
+          const SizedBox(height: 14),
+        ],
         if (widget.projection.approvals.isNotEmpty ||
             widget.projection.blockedCount > 0) ...[
           Material(
@@ -2894,9 +2944,12 @@ class _BotsTabState extends State<_BotsTab> {
           title: copy.bots,
           subtitle: copy.botCount(allAgents.length),
           actionKey: const ValueKey('mission-create-agent'),
-          actionLabel: copy.newAgent,
-          actionIcon: Icons.person_add_alt_1_rounded,
-          onAction: widget.onCreateAgent,
+          actionLabel: Strings.of(context).missionCreateLabel,
+          actionIcon: Icons.add_rounded,
+          onAction:
+              widget.onCreateAgent == null && widget.onCreateHostedRoom == null
+              ? null
+              : () => unawaited(_showCreateChooser(context)),
         ),
         const SizedBox(height: 14),
         if (widget.snapshot.profilesCapability ==
@@ -2995,16 +3048,26 @@ int _missionBotActivityMs(MissionAgent agent) {
   return createdMs > lastMs ? createdMs : lastMs;
 }
 
+// Compiladas una sola vez: con búsqueda activa `_matches` pliega hasta seis
+// campos por bot en cada build de la pestaña, y la pestaña se reconstruye con
+// cada refresco de Mission Control.
+final RegExp _foldSearchA = RegExp(r'[áàäâãå]');
+final RegExp _foldSearchE = RegExp(r'[éèëê]');
+final RegExp _foldSearchI = RegExp(r'[íìïî]');
+final RegExp _foldSearchO = RegExp(r'[óòöôõ]');
+final RegExp _foldSearchU = RegExp(r'[úùüû]');
+final RegExp _foldSearchSpaces = RegExp(r'\s+');
+
 String _foldBotSearch(String value) => value
     .trim()
     .toLowerCase()
-    .replaceAll(RegExp(r'[áàäâãå]'), 'a')
-    .replaceAll(RegExp(r'[éèëê]'), 'e')
-    .replaceAll(RegExp(r'[íìïî]'), 'i')
-    .replaceAll(RegExp(r'[óòöôõ]'), 'o')
-    .replaceAll(RegExp(r'[úùüû]'), 'u')
+    .replaceAll(_foldSearchA, 'a')
+    .replaceAll(_foldSearchE, 'e')
+    .replaceAll(_foldSearchI, 'i')
+    .replaceAll(_foldSearchO, 'o')
+    .replaceAll(_foldSearchU, 'u')
     .replaceAll('ñ', 'n')
-    .replaceAll(RegExp(r'\s+'), ' ');
+    .replaceAll(_foldSearchSpaces, ' ');
 
 class _BotSectionLabel extends StatelessWidget {
   final String title;
@@ -3050,312 +3113,7 @@ class _BotSectionLabel extends StatelessWidget {
   }
 }
 
-final class _RoomDetailData {
-  final MissionRoom room;
-  final MissionBackendSnapshot snapshot;
-  final MissionRoomWorkProjection work;
-
-  const _RoomDetailData({
-    required this.room,
-    required this.snapshot,
-    required this.work,
-  });
-}
-
-class _MissionRoomDetailScreen extends StatelessWidget {
-  final MissionRoom room;
-  final MissionBackendSnapshot snapshot;
-  final MissionRoomWorkProjection roomWork;
-  final MissionControlCopy copy;
-  final MissionProfileAvatarCache? avatarCache;
-  final bool readOnly;
-  final bool canOpenChat;
-  final Future<void> Function() onRefresh;
-  final Future<void> Function() onOpenChat;
-  final Future<void> Function(MissionRoomTaskLink) onOpenTask;
-  final Future<void> Function() onOpenKanban;
-  final Future<void> Function()? onEdit;
-  final Future<void> Function()? onDelete;
-
-  const _MissionRoomDetailScreen({
-    required this.room,
-    required this.snapshot,
-    required this.roomWork,
-    required this.copy,
-    required this.avatarCache,
-    required this.readOnly,
-    required this.canOpenChat,
-    required this.onRefresh,
-    required this.onOpenChat,
-    required this.onOpenTask,
-    required this.onOpenKanban,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final profiles = <String, AgentProfile>{
-      for (final profile in snapshot.profiles) profile.name: profile,
-    };
-    final hasApproval = roomWork.approvals.isNotEmpty;
-    final stateColor = roomWork.spineState == MissionRoomSpineState.blocked
-        ? colors.error
-        : hasApproval
-        ? colors.warning
-        : switch (roomWork.spineState) {
-            MissionRoomSpineState.active => colors.success,
-            MissionRoomSpineState.warning => colors.warning,
-            MissionRoomSpineState.neutral => colors.divider,
-            MissionRoomSpineState.blocked => colors.error,
-          };
-    final stateLabel = roomWork.spineState == MissionRoomSpineState.blocked
-        ? copy.roomBlocked
-        : hasApproval
-        ? copy.needsYou
-        : switch (roomWork.spineState) {
-            MissionRoomSpineState.active => copy.roomActive,
-            MissionRoomSpineState.warning => copy.roomReview,
-            MissionRoomSpineState.neutral => null,
-            MissionRoomSpineState.blocked => copy.roomBlocked,
-          };
-    return Scaffold(
-      appBar: HermesAppBar(
-        title: Text('#${room.name}'),
-        actions: [
-          if (!readOnly && (onEdit != null || onDelete != null))
-            PopupMenuButton<String>(
-              key: ValueKey('room-detail-menu-${room.id}'),
-              icon: const Icon(Icons.more_horiz_rounded),
-              onSelected: (value) async {
-                if (value == 'edit') {
-                  await onEdit?.call();
-                }
-                if (value == 'delete') {
-                  await onDelete?.call();
-                }
-              },
-              itemBuilder: (_) => [
-                if (onEdit != null)
-                  PopupMenuItem(value: 'edit', child: Text(copy.editRoom)),
-                if (onDelete != null)
-                  PopupMenuItem(value: 'delete', child: Text(copy.delete)),
-              ],
-            ),
-        ],
-      ),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: RefreshIndicator(
-            onRefresh: onRefresh,
-            child: ListView(
-              key: ValueKey('mission-room-detail-${room.id}'),
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-              children: [
-                _RoomDetailSection(
-                  title: copy.roomSummary,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: colors.surface,
-                      border: Border.all(
-                        color: colors.divider.withValues(alpha: 0.6),
-                      ),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                    child: IntrinsicHeight(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Container(width: 4, color: stateColor),
-                          Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                14,
-                                14,
-                                14,
-                                15,
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      _RoomMemberStack(
-                                        room: room,
-                                        profiles: profiles,
-                                        avatarCache: avatarCache,
-                                      ),
-                                      const SizedBox(width: 11),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            if (stateLabel != null) ...[
-                                              Text(
-                                                stateLabel,
-                                                style: TextStyle(
-                                                  color: stateColor,
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 3),
-                                            ],
-                                            Text(
-                                              room.purposeLabel.isEmpty
-                                                  ? copy.roomNoPurpose
-                                                  : room.purposeLabel,
-                                              style: const TextStyle(
-                                                fontSize: 14,
-                                                height: 1.35,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 13),
-                                  Wrap(
-                                    spacing: 18,
-                                    runSpacing: 8,
-                                    children: [
-                                      _RoomInlineFact(
-                                        label: copy.roomCoordinatorShort,
-                                        value: '@${room.managerProfile}',
-                                      ),
-                                      _RoomInlineFact(
-                                        label: copy.roomTeam,
-                                        value: copy.roomMemberCount(
-                                          room.memberProfiles.length,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (roomWork.approvals.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  for (final approval in roomWork.approvals.take(3))
-                    _RoomApprovalAction(
-                      key: ValueKey(
-                        'room-approval-${approval.sessionId}-${approval.requestId ?? ''}',
-                      ),
-                      icon: Icons.approval_outlined,
-                      color: colors.warning,
-                      title: approval.description,
-                      subtitle: copy.needsYou,
-                      onTap: () => unawaited(onOpenChat()),
-                    ),
-                ],
-                const SizedBox(height: 14),
-                FilledButton.icon(
-                  key: ValueKey('room-open-chat-${room.id}'),
-                  onPressed: canOpenChat ? () => unawaited(onOpenChat()) : null,
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 19),
-                  label: Text(copy.talkToCoordinator(room.managerProfile)),
-                ),
-                const SizedBox(height: 24),
-                _RoomDetailSection(
-                  title: copy.roomTasks,
-                  child: roomWork.linkedTasks.isEmpty
-                      ? _MessageCard(text: copy.roomNoLinkedWork)
-                      : Column(
-                          children: [
-                            for (final entry in roomWork.linkedTasks)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 4),
-                                child: entry.task != null
-                                    ? _RoomTaskLine(
-                                        key: ValueKey(
-                                          'room-detail-task-${entry.link.boardId}-${entry.link.taskId}',
-                                        ),
-                                        task: entry.task!,
-                                        copy: copy,
-                                        onTap: () =>
-                                            unawaited(onOpenTask(entry.link)),
-                                      )
-                                    : _RoomUnavailableTaskLine(
-                                        key: ValueKey(
-                                          'room-detail-task-${entry.link.boardId}-${entry.link.taskId}',
-                                        ),
-                                        link: entry.link,
-                                        copy: copy,
-                                        onTap: () =>
-                                            unawaited(onOpenTask(entry.link)),
-                                      ),
-                              ),
-                          ],
-                        ),
-                ),
-                const SizedBox(height: 24),
-                _RoomDetailSection(
-                  title: copy.roomActivity,
-                  child: roomWork.activity.isEmpty
-                      ? _MessageCard(text: copy.roomNoActivity)
-                      : _WorkActivityGroup(
-                          key: ValueKey('room-activity-${room.id}'),
-                          activity: roomWork.activity,
-                          copy: copy,
-                        ),
-                ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: AlignmentDirectional.centerEnd,
-                  child: TextButton.icon(
-                    key: ValueKey('room-open-kanban-${room.id}'),
-                    onPressed: () => unawaited(onOpenKanban()),
-                    icon: const Icon(Icons.view_kanban_outlined, size: 17),
-                    label: Text(copy.openKanban),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _RoomDetailSection extends StatelessWidget {
-  final String title;
-  final Widget child;
-
-  const _RoomDetailSection({required this.title, required this.child});
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Text(
-        title,
-        style: Theme.of(
-          context,
-        ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-      ),
-      const SizedBox(height: 8),
-      child,
-    ],
-  );
-}
-
 class _RoomsTab extends StatelessWidget {
-  final List<MissionRoom> rooms;
-  final MissionOrganization? organization;
   final MissionBackendSnapshot snapshot;
   final MissionProjection projection;
   final MissionControlCopy copy;
@@ -3373,19 +3131,13 @@ class _RoomsTab extends StatelessWidget {
   )
   onHostedMutation;
   final VoidCallback? onCreateHostedRoom;
-  final ValueChanged<MissionRoom> onOpen;
-  final ValueChanged<MissionRoomTaskLink> onOpenTask;
+  final ValueChanged<String> onOpenMember;
   final List<WorkItem> workItems;
   final Future<void> Function(WorkItem, WorkDestination) onOpenWorkItem;
   final Future<void> Function() onRefresh;
-  final VoidCallback onOpenKanban;
-  final VoidCallback? onCreateRoom;
-  final ValueChanged<MissionRoom>? onEdit;
-  final ValueChanged<MissionRoom>? onDelete;
+  final VoidCallback? onOpenBots;
 
   const _RoomsTab({
-    required this.rooms,
-    required this.organization,
     required this.snapshot,
     required this.projection,
     required this.copy,
@@ -3394,107 +3146,58 @@ class _RoomsTab extends StatelessWidget {
     required this.readOnly,
     required this.onHostedMutation,
     required this.onCreateHostedRoom,
-    required this.onOpen,
-    required this.onOpenTask,
+    required this.onOpenMember,
     required this.workItems,
     required this.onOpenWorkItem,
     required this.onRefresh,
-    required this.onOpenKanban,
-    required this.onCreateRoom,
-    required this.onEdit,
-    required this.onDelete,
+    required this.onOpenBots,
   });
 
   @override
   Widget build(BuildContext context) {
-    final scoped = organization == null
-        ? rooms
-        : rooms
-              .where((room) => room.organizationId == organization!.id)
-              .toList(growable: false);
-    final profiles = <String, AgentProfile>{
-      for (final profile in snapshot.profiles) profile.name: profile,
-    };
-    final workSet = MissionRoomWorkProjector.build(
-      rooms: scoped,
-      snapshot: snapshot,
-      mission: projection,
-      ownershipRooms: rooms,
-    );
-    final canOpen =
-        snapshot.profilesCapability == MissionCapabilityState.available;
-    final roomRows = scoped
-        .map((room) {
-          final roomWork = workSet.forRoom(room.id)!;
-          return _RoomFirstCard(
-            key: ValueKey('mission-room-${room.id}'),
-            room: room,
-            work: roomWork,
-            copy: copy,
-            profiles: profiles,
-            avatarCache: avatarCache,
-            onOpen: () => onOpen(room),
-            onOpenTask: onOpenTask,
-            onEdit: onEdit == null ? null : () => onEdit!(room),
-            onDelete: onDelete == null ? null : () => onDelete!(room),
-          );
-        })
+    final extra = _RoomsAreaCopy.of(context);
+    final boardItems = workItems
+        .where((item) => item.destination is BoardDestination)
         .toList(growable: false);
+    final boardItem = boardItems.isEmpty ? null : boardItems.first;
     return RefreshIndicator(
       onRefresh: onRefresh,
       child: ListView(
         key: const ValueKey('mission-work-feed'),
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
         children: [
-          if (snapshot.hostedGroupsCapability !=
-              MissionCapabilityState.unsupported) ...[
-            _HostedRoomsSection(
-              snapshot: snapshot,
-              copy: copy,
-              enabled:
-                  !readOnly &&
-                  hostedGroupsDataSource != null &&
-                  snapshot.hostedGroupsCapability ==
-                      MissionCapabilityState.available,
-              onMutation: onHostedMutation,
-              onCreate: onCreateHostedRoom,
+          if (onOpenBots != null) ...[
+            _MissionDestinationPill(
+              controlKey: const ValueKey('mission-goto-bots'),
+              icon: Icons.smart_toy_outlined,
+              label: copy.bots,
+              detail: copy.botCount(projection.agents.length),
+              onTap: onOpenBots!,
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 4),
           ],
-          KeyedSubtree(
-            key: const ValueKey('mission-local-rooms'),
-            child: KeyedSubtree(
-              key: const ValueKey('mission-rooms'),
-              child: _LoungeSectionHeader(
-                title: copy.rooms,
-                subtitle: copy.roomCount(scoped.length),
-                actionKey: const ValueKey('mission-create-room'),
-                actionLabel: copy.createLocalRoom,
-                actionIcon: Icons.add_rounded,
-                onAction: onCreateRoom,
-              ),
-            ),
+          // Los miembros locales de una sala se resuelven contra
+          // `snapshot.profiles` (para pintar avatar real y abrir su ficha);
+          // sin esa capacidad las salas guardadas se siguen viendo, pero solo
+          // en modo consulta (sin poder verificar quién es cada miembro).
+          if (snapshot.profilesCapability == MissionCapabilityState.unsupported)
+            _MessageCard(text: copy.roomsBrowseOnly),
+          _HostedRoomsSection(
+            snapshot: snapshot,
+            copy: copy,
+            extra: extra,
+            avatarCache: avatarCache,
+            first: onOpenBots == null,
+            enabled:
+                !readOnly &&
+                hostedGroupsDataSource != null &&
+                snapshot.hostedGroupsCapability ==
+                    MissionCapabilityState.available,
+            onMutation: onHostedMutation,
+            onCreate: onCreateHostedRoom,
+            onOpenMember: onOpenMember,
           ),
-          const SizedBox(height: 7),
-          if (!canOpen) ...[
-            _InlineNotice(
-              icon: Icons.visibility_outlined,
-              text: copy.roomsBrowseOnly,
-            ),
-            const SizedBox(height: 6),
-          ],
-          if (scoped.isEmpty)
-            _RoomsEmptyState(
-              message: projection.agents.length < 2
-                  ? copy.needMoreBots
-                  : copy.noRooms,
-              actionLabel: copy.createLocalRoom,
-              onCreate: projection.agents.length < 2 ? null : onCreateRoom,
-            )
-          else
-            ...roomRows,
-          const SizedBox(height: 12),
           if (snapshot.kanbanCapability != MissionCapabilityState.available)
             _MessageCard(text: copy.kanbanUnavailable),
           _GlobalWorkTray(
@@ -3503,7 +3206,97 @@ class _RoomsTab extends StatelessWidget {
             onDestination: (item, destination) =>
                 unawaited(onOpenWorkItem(item, destination)),
           ),
+          if (boardItem != null)
+            _BoardSection(
+              item: boardItem,
+              extra: extra,
+              onOpen: (destination) =>
+                  unawaited(onOpenWorkItem(boardItem, destination)),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+/// Acceso nativo entre los dos destinos de esta pantalla (Bots ↔ Trabajo).
+class _MissionDestinationPill extends StatelessWidget {
+  /// Va en la pill en sí (no en el `Align` que la alinea a la derecha), para
+  /// que la clave identifique el área que de verdad recibe el toque.
+  final Key controlKey;
+  final IconData icon;
+  final String label;
+  final String detail;
+  final VoidCallback onTap;
+
+  const _MissionDestinationPill({
+    required this.controlKey,
+    required this.icon,
+    required this.label,
+    required this.detail,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    // Con tipografías muy grandes la pill se queda solo con la etiqueta: el
+    // recuento es contexto, no navegación, y a 2x no cabe en 320 dp.
+    final compact = MediaQuery.textScalerOf(context).scale(1) > 1.5;
+    return Align(
+      alignment: AlignmentDirectional.centerEnd,
+      child: Material(
+        key: controlKey,
+        color: colors.surfaceVariant.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(22),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsetsDirectional.only(start: 14, end: 8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, size: 17, color: colors.accentText),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textPrimary,
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (!compact) ...[
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        detail,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: colors.textSecondary,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 17,
+                    color: colors.textDisabled,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -3512,6 +3305,9 @@ class _RoomsTab extends StatelessWidget {
 class _HostedRoomsSection extends StatelessWidget {
   final MissionBackendSnapshot snapshot;
   final MissionControlCopy copy;
+  final _RoomsAreaCopy extra;
+  final MissionProfileAvatarCache? avatarCache;
+  final bool first;
   final bool enabled;
   final Future<HostedGroupWorkspaceReadback> Function(
     int index,
@@ -3525,12 +3321,19 @@ class _HostedRoomsSection extends StatelessWidget {
   onMutation;
   final VoidCallback? onCreate;
 
+  /// Ver `_RoomsTab.onOpenMember`.
+  final ValueChanged<String> onOpenMember;
+
   const _HostedRoomsSection({
     required this.snapshot,
     required this.copy,
+    required this.extra,
+    required this.avatarCache,
+    required this.first,
     required this.enabled,
     required this.onMutation,
     required this.onCreate,
+    required this.onOpenMember,
   });
 
   Future<String?> _promptText(
@@ -3668,11 +3471,14 @@ class _HostedRoomsSection extends StatelessWidget {
         key: const ValueKey('mission-shared-rooms'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _LoungeSectionHeader(
-            title: copy.sharedRooms,
-            subtitle: visible
-                ? copy.roomCount(activeRooms.length)
+          _RoomsSectionLabel(
+            icon: Icons.cloud_outlined,
+            label: copy.sharedRooms,
+            count: visible ? activeRooms.length : null,
+            caption: visible
+                ? extra.sharedRoomsExplanation
                 : copy.sharedRoomsUnavailable,
+            first: first,
             actionKey: const ValueKey('mission-hosted-create'),
             actionLabel: copy.createSharedRoom,
             actionIcon: Icons.add_rounded,
@@ -3680,114 +3486,126 @@ class _HostedRoomsSection extends StatelessWidget {
                 ? onCreate
                 : null,
           ),
-          if (!visible)
-            _MessageCard(text: copy.sharedRoomsUnavailable)
-          else if (activeRooms.isEmpty)
-            _MessageCard(text: copy.noSharedRooms)
-          else
-            for (var index = 0; index < activeRooms.length; index++)
-              _HostedRoomCard(
-                key: ValueKey('mission-hosted-room-$index'),
-                room: activeRooms[index].room,
-                log: activeRooms[index].log,
-                copy: copy,
-                canSend: enabled && capabilities!.supports(GroupMethod.send),
-                canRename:
-                    enabled && capabilities!.supports(GroupMethod.rename),
-                canStop: enabled && capabilities!.supports(GroupMethod.stop),
-                canDisband:
-                    enabled && capabilities!.supports(GroupMethod.disband),
-                onOpen: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => _HostedRoomWorkspace(
-                      room: activeRooms[index].room,
-                      log: activeRooms[index].log,
-                      copy: copy,
-                      canSend:
-                          enabled && capabilities!.supports(GroupMethod.send),
-                      canRename:
-                          enabled && capabilities!.supports(GroupMethod.rename),
-                      canStop:
-                          enabled && capabilities!.supports(GroupMethod.stop),
-                      canDisband:
-                          enabled &&
-                          capabilities!.supports(GroupMethod.disband),
-                      onSend: (text, attempt) => onMutation(
-                        activeRooms[index].sourceIndex,
-                        (source, room, generation) =>
-                            source.sendHostedGroupText(
-                              room,
-                              text: text,
-                              attempt: attempt,
-                              generation: generation,
-                            ),
-                      ),
-                      onRename: (name) => onMutation(
-                        activeRooms[index].sourceIndex,
-                        (source, room, generation) => source.renameHostedGroup(
-                          room,
-                          name: name,
-                          generation: generation,
-                        ),
-                      ),
-                      onStop: () => onMutation(
-                        activeRooms[index].sourceIndex,
-                        (source, room, generation) => source.stopHostedGroup(
-                          room,
-                          generation: generation,
-                        ),
-                      ),
-                      onDisband: () => onMutation(
-                        activeRooms[index].sourceIndex,
-                        (source, room, generation) => source.disbandHostedGroup(
-                          room,
-                          generation: generation,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                onSend: () async {
-                  final text = await _promptText(
-                    context,
-                    title: copy.sendSharedMessage,
-                  );
-                  if (text == null || !context.mounted) return;
-                  final attempt = HostedGroupSendAttempt.forClientEvent(
-                    const Uuid().v4(),
-                  );
-                  await _consumePresentedMutation(
-                    () => onMutation(
-                      activeRooms[index].sourceIndex,
-                      (source, room, generation) => source.sendHostedGroupText(
-                        room,
-                        text: text,
-                        attempt: attempt,
-                        generation: generation,
-                      ),
-                    ),
-                  );
-                },
-                onRename: () => _renameRoom(
-                  context,
-                  activeRooms[index].sourceIndex,
-                  activeRooms[index].room.name,
-                ),
-                onStop: () =>
-                    _stopRoom(context, activeRooms[index].sourceIndex),
-                onDisband: () =>
-                    _disbandRoom(context, activeRooms[index].sourceIndex),
-              ),
+          if (visible)
+            _RoomsCardGroup(
+              rows: [
+                if (activeRooms.isEmpty)
+                  _RoomsCardNote(text: copy.noSharedRooms)
+                else
+                  for (var index = 0; index < activeRooms.length; index++)
+                    _hostedRoomCard(context, capabilities, activeRooms, index),
+              ],
+            ),
         ],
       ),
     );
   }
+
+  Widget _hostedRoomCard(
+    BuildContext context,
+    GroupsCapabilities? capabilities,
+    List<({int sourceIndex, HostedGroupRoom room, HostedGroupLogPage? log})>
+    activeRooms,
+    int index,
+  ) => _HostedRoomCard(
+    key: ValueKey('mission-hosted-room-$index'),
+    room: activeRooms[index].room,
+    log: activeRooms[index].log,
+    copy: copy,
+    avatarCache: avatarCache,
+    localProfiles: {
+      for (final profile in snapshot.profiles) profile.name: profile,
+    },
+    canSend: enabled && capabilities!.supports(GroupMethod.send),
+    canRename: enabled && capabilities!.supports(GroupMethod.rename),
+    canStop: enabled && capabilities!.supports(GroupMethod.stop),
+    canDisband: enabled && capabilities!.supports(GroupMethod.disband),
+    onOpen: () => Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _HostedRoomWorkspace(
+          room: activeRooms[index].room,
+          log: activeRooms[index].log,
+          copy: copy,
+          avatarCache: avatarCache,
+          localProfiles: {
+            for (final profile in snapshot.profiles) profile.name: profile,
+          },
+          onOpenMember: onOpenMember,
+          canSend: enabled && capabilities!.supports(GroupMethod.send),
+          canRename: enabled && capabilities!.supports(GroupMethod.rename),
+          canStop: enabled && capabilities!.supports(GroupMethod.stop),
+          canDisband: enabled && capabilities!.supports(GroupMethod.disband),
+          onSend: (text, attempt) => onMutation(
+            activeRooms[index].sourceIndex,
+            (source, room, generation) => source.sendHostedGroupText(
+              room,
+              text: text,
+              attempt: attempt,
+              generation: generation,
+            ),
+          ),
+          onRename: (name) => onMutation(
+            activeRooms[index].sourceIndex,
+            (source, room, generation) => source.renameHostedGroup(
+              room,
+              name: name,
+              generation: generation,
+            ),
+          ),
+          onStop: () => onMutation(
+            activeRooms[index].sourceIndex,
+            (source, room, generation) =>
+                source.stopHostedGroup(room, generation: generation),
+          ),
+          onDisband: () => onMutation(
+            activeRooms[index].sourceIndex,
+            (source, room, generation) =>
+                source.disbandHostedGroup(room, generation: generation),
+          ),
+        ),
+      ),
+    ),
+    onSend: () async {
+      final text = await _promptText(context, title: copy.sendSharedMessage);
+      if (text == null || !context.mounted) return;
+      final attempt = HostedGroupSendAttempt.forClientEvent(const Uuid().v4());
+      await _consumePresentedMutation(
+        () => onMutation(
+          activeRooms[index].sourceIndex,
+          (source, room, generation) => source.sendHostedGroupText(
+            room,
+            text: text,
+            attempt: attempt,
+            generation: generation,
+          ),
+        ),
+      );
+    },
+    onRename: () => _renameRoom(
+      context,
+      activeRooms[index].sourceIndex,
+      activeRooms[index].room.name,
+    ),
+    onStop: () => _stopRoom(context, activeRooms[index].sourceIndex),
+    onDisband: () => _disbandRoom(context, activeRooms[index].sourceIndex),
+  );
 }
 
 class _HostedRoomWorkspace extends StatefulWidget {
   final HostedGroupRoom room;
   final HostedGroupLogPage? log;
   final MissionControlCopy copy;
+  final MissionProfileAvatarCache? avatarCache;
+
+  // Perfiles LOCALES a esta conexión, por nombre, con el mismo criterio que
+  // `_HostedRoomCard.localProfiles`: un miembro que coincide aquí es uno de
+  // tus propios bots y puede pintar su avatar real y abrir su ficha. Los que
+  // no coinciden son miembros de otra conexión (sala federada) y de ellos la
+  // app no tiene ficha ninguna.
+  final Map<String, AgentProfile> localProfiles;
+
+  /// Ver `_RoomsTab.onOpenMember`.
+  final ValueChanged<String> onOpenMember;
   final bool canSend;
   final bool canRename;
   final bool canStop;
@@ -3806,6 +3624,9 @@ class _HostedRoomWorkspace extends StatefulWidget {
     required this.room,
     required this.log,
     required this.copy,
+    required this.avatarCache,
+    required this.localProfiles,
+    required this.onOpenMember,
     required this.canSend,
     required this.canRename,
     required this.canStop,
@@ -3831,12 +3652,20 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
   String? _pendingText;
   String? _pendingThreadId;
 
+  // El backend real ya resuelve @menciones del texto plano del mensaje
+  // (`resolve_mentions` en el gateway, confirmado leyendo el código del
+  // servidor) — @all/@everyone incluidos. Esto es solo el autocompletado:
+  // pura UX de cliente sobre algo que el protocolo ya entiende, no un
+  // invento de Console.
+  String? _mentionQuery;
+
   @override
   void initState() {
     super.initState();
     _room = widget.room;
     _log = widget.log;
     _composer.addListener(_retireChangedAttempt);
+    _composer.addListener(_updateMentionQuery);
   }
 
   void _retireChangedAttempt() {
@@ -3847,9 +3676,60 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
     }
   }
 
+  void _updateMentionQuery() {
+    final text = _composer.text;
+    final cursor = _composer.selection.baseOffset;
+    if (cursor < 0 || cursor > text.length) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    final upToCursor = text.substring(0, cursor);
+    final at = upToCursor.lastIndexOf('@');
+    if (at == -1 || (at > 0 && !RegExp(r'\s').hasMatch(upToCursor[at - 1]))) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    final fragment = upToCursor.substring(at + 1);
+    // Un espacio cierra la mención en curso — coincide con cómo el propio
+    // servidor extrae handles del texto (`@([A-Za-z0-9][A-Za-z0-9._:-]*)`).
+    if (fragment.contains(RegExp(r'\s'))) {
+      if (_mentionQuery != null) setState(() => _mentionQuery = null);
+      return;
+    }
+    setState(() => _mentionQuery = fragment);
+  }
+
+  List<HostedGroupMember> _mentionMatches() {
+    final query = _mentionQuery;
+    if (query == null) return const [];
+    final lower = query.toLowerCase();
+    return _room.members
+        .where((member) => member.handle.toLowerCase().startsWith(lower))
+        .take(6)
+        .toList(growable: false);
+  }
+
+  void _applyMention(String handle) {
+    final text = _composer.text;
+    final cursor = _composer.selection.baseOffset;
+    if (cursor < 0 || cursor > text.length) return;
+    final upToCursor = text.substring(0, cursor);
+    final at = upToCursor.lastIndexOf('@');
+    if (at == -1) return;
+    final replaced =
+        '${text.substring(0, at)}@$handle ${text.substring(cursor)}';
+    final newOffset = at + handle.length + 2;
+    _composer.value = TextEditingValue(
+      text: replaced,
+      selection: TextSelection.collapsed(offset: newOffset),
+    );
+    setState(() => _mentionQuery = null);
+  }
+
   @override
   void dispose() {
     _composer.removeListener(_retireChangedAttempt);
+    _composer.removeListener(_updateMentionQuery);
     _composer.dispose();
     super.dispose();
   }
@@ -4013,12 +3893,12 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
                 if (widget.canStop)
                   PopupMenuItem(
                     value: 'stop',
-                    child: Text(widget.copy.stopSharedRoom),
+                    child: Text(widget.copy.stopSharedRoomAction),
                   ),
                 if (widget.canDisband)
                   PopupMenuItem(
                     value: 'disband',
-                    child: Text(widget.copy.disbandSharedRoom),
+                    child: Text(widget.copy.disbandSharedRoomAction),
                   ),
               ],
             ),
@@ -4027,19 +3907,24 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
       body: SafeArea(
         child: Column(
           children: [
-            ExpansionTile(
-              key: const ValueKey('mission-hosted-members'),
-              minTileHeight: 48,
-              title: Text(widget.copy.viewMembers),
-              subtitle: Text(widget.copy.roomMemberCount(_room.members.length)),
-              children: [
-                for (final member in _room.members)
-                  ListTile(
-                    minTileHeight: 48,
-                    leading: const Icon(Icons.person_outline_rounded),
-                    title: Text('@${member.handle}'),
-                  ),
-              ],
+            // Antes esto era un `ExpansionTile` "Ver miembros" con un
+            // `ListTile` por miembro: icono genérico de persona y `@handle`,
+            // sin avatar, sin nombre, sin estado y sin nada que tocar. Es
+            // literalmente el "entro en la sala, voy al equipo y no sale
+            // nada" reportado en dispositivo real.
+            // `Flexible`: con el equipo desplegado y el teclado abierto, una
+            // sección de alto fijo desbordaba esta columna (comprobado en un
+            // viewport de 360×640 con 300 px de IME). Así el desplegable cede
+            // alto en vez de romper la conversación.
+            Flexible(
+              child: _HostedRoomTeamSection(
+                key: const ValueKey('mission-hosted-members'),
+                room: _room,
+                copy: widget.copy,
+                avatarCache: widget.avatarCache,
+                localProfiles: widget.localProfiles,
+                onOpenMember: widget.onOpenMember,
+              ),
             ),
             if (widget.canSend) ...[
               Padding(
@@ -4101,48 +3986,347 @@ class _HostedRoomWorkspaceState extends State<_HostedRoomWorkspace> {
                         },
                       ),
               ),
-              if (widget.canSend)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+              if (_mentionMatches().isNotEmpty)
+                SizedBox(
+                  key: const ValueKey('mission-hosted-mention-suggestions'),
+                  height: 40,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                     children: [
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey('mission-hosted-composer'),
-                          controller: _composer,
-                          minLines: 1,
-                          maxLines: 5,
-                          decoration: InputDecoration(
-                            labelText: _threadId == null
-                                ? widget.copy.sendSharedMessage
-                                : widget.copy.replyInThread,
+                      for (final member in _mentionMatches())
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ActionChip(
+                            key: ValueKey(
+                              'mission-hosted-mention-${member.handle}',
+                            ),
+                            avatar: const Icon(Icons.alternate_email, size: 16),
+                            label: Text(member.displayName ?? member.handle),
+                            onPressed: () => _applyMention(member.handle),
                           ),
-                          onSubmitted: (_) => _send(),
+                        ),
+                    ],
+                  ),
+                ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        key: const ValueKey('mission-hosted-composer'),
+                        controller: _composer,
+                        minLines: 1,
+                        maxLines: 5,
+                        decoration: InputDecoration(
+                          labelText: _threadId == null
+                              ? widget.copy.sendSharedMessage
+                              : widget.copy.replyInThread,
+                        ),
+                        onSubmitted: (_) => _send(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton.filled(
+                      key: const ValueKey('mission-hosted-composer-send'),
+                      constraints: const BoxConstraints.tightFor(
+                        width: 48,
+                        height: 48,
+                      ),
+                      onPressed: _sending ? null : _send,
+                      icon: _sending
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.send_rounded),
+                    ),
+                  ],
+                ),
+              ),
+            ] else
+              // Antes esta rama no existía: la sala se quedaba en blanco
+              // bajo el desplegable de miembros, sin conversación ni
+              // composer y sin decir por qué — "si entro en una sala no
+              // hace nada", confirmado en dispositivo real.
+              Expanded(
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: Text(
+                      _RoomsAreaCopy.of(context).cannotSendInRoom,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Theme.of(context).hermes.textSecondary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Sección "Equipo" de una sala compartida: cabecera plegada con la pila de
+/// avatares de la sala y, al desplegarla, una fila real por miembro.
+///
+/// Las salas compartidas no tienen coordinador (eso es cosa de las salas
+/// locales), así que aquí no hay rol ni anillo de manager: inventarse uno por
+/// el orden de la lista sería mentir. Un miembro que resuelve a un perfil
+/// local de esta conexión abre su ficha; uno federado (sin perfil local) no
+/// lleva a ningún sitio y lo dice en su subtítulo en vez de fingir destino.
+class _HostedRoomTeamSection extends StatefulWidget {
+  final HostedGroupRoom room;
+  final MissionControlCopy copy;
+  final MissionProfileAvatarCache? avatarCache;
+  final Map<String, AgentProfile> localProfiles;
+  final ValueChanged<String> onOpenMember;
+
+  const _HostedRoomTeamSection({
+    required this.room,
+    required this.copy,
+    required this.avatarCache,
+    required this.localProfiles,
+    required this.onOpenMember,
+    super.key,
+  });
+
+  @override
+  State<_HostedRoomTeamSection> createState() => _HostedRoomTeamSectionState();
+}
+
+class _HostedRoomTeamSectionState extends State<_HostedRoomTeamSection> {
+  /// El modelo admite hasta 128 miembros por sala. La caché de avatares
+  /// guarda 64 entradas y resuelve 4 a la vez
+  /// (`MissionProfileAvatarCache.maxEntries`/`maxConcurrent`), así que pintar
+  /// las 128 filas de golpe dentro de esta columna no cabría en pantalla y
+  /// además pediría más avatares de los que la caché retiene. Una docena es
+  /// lo que entra de verdad en el desplegable; el resto se ve en su propia
+  /// pantalla, con lista perezosa.
+  static const int _inlineLimit = 12;
+
+  bool _expanded = false;
+
+  List<RoomAvatarOfficialMember> get _members =>
+      sortedOfficialRoomAvatarMembers([
+        for (final member in widget.room.members)
+          RoomAvatarOfficialMember(
+            owner: member.owner,
+            // Cadena de respaldo exacta para la que se añadió `display_name`
+            // al modelo: el nombre publicado por el servidor si lo hay, y si
+            // no el handle, que siempre existe.
+            displayName: member.displayName ?? member.handle,
+            handle: member.handle,
+            profile: widget.localProfiles[member.owner.profile],
+          ),
+      ]);
+
+  /// Miembros de los que el servidor sí publica `display_name`.
+  Set<AvatarOwner> get _namedOwners => {
+    for (final member in widget.room.members)
+      if (member.displayName != null) member.owner,
+  };
+
+  Widget _row(RoomAvatarOfficialMember member, Set<AvatarOwner> named) {
+    final profile = member.profile;
+    final extra = _RoomsAreaCopy.of(context);
+    return RoomTeamRow(
+      key: ValueKey(
+        'mission-hosted-member-'
+        '${member.owner.connectionId}-${member.owner.profile}',
+      ),
+      profileName: member.handle,
+      handle: member.handle,
+      displayName: member.displayName,
+      profile: profile,
+      avatarCache: widget.avatarCache,
+      roleLabel: null,
+      subtitle: profile == null ? extra.federatedMember : null,
+      // Un miembro federado del que el servidor sí publica nombre no está
+      // "no disponible", solo es de otra conexión. El tratamiento apagado se
+      // reserva a quien no tiene ni perfil local ni nombre publicado: de ese
+      // no hay literalmente nada que mostrar más allá de su handle.
+      unavailable: profile == null && !named.contains(member.owner),
+      onTap: profile == null
+          ? null
+          : () => widget.onOpenMember(member.owner.profile),
+    );
+  }
+
+  void _openAllMembers(
+    List<RoomAvatarOfficialMember> members,
+    Set<AvatarOwner> named,
+  ) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => Scaffold(
+          key: const ValueKey('mission-hosted-members-screen'),
+          appBar: HermesAppBar(title: Text(widget.copy.roomTeam)),
+          body: SafeArea(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+              itemCount: members.length,
+              itemBuilder: (_, index) => _row(members[index], named),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final members = _members;
+    final named = _namedOwners;
+    final inline = members.take(_inlineLimit).toList(growable: false);
+    final extra = _RoomsAreaCopy.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Semantics(
+          container: true,
+          button: true,
+          label: [
+            widget.copy.roomTeam,
+            widget.copy.roomMemberCount(widget.room.members.length),
+          ].join(', '),
+          excludeSemantics: true,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const ValueKey('mission-hosted-members-header'),
+              onTap: () => setState(() => _expanded = !_expanded),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                  child: Row(
+                    children: [
+                      RoomAvatarStack.official(
+                        avatarCache: widget.avatarCache,
+                        members: members,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.copy.roomTeam,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 15.5,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.copy.roomMemberCount(
+                                widget.room.members.length,
+                              ),
+                              style: TextStyle(
+                                color: colors.textSecondary,
+                                fontSize: 12.5,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      IconButton.filled(
-                        key: const ValueKey('mission-hosted-composer-send'),
-                        constraints: const BoxConstraints.tightFor(
-                          width: 48,
-                          height: 48,
-                        ),
-                        onPressed: _sending ? null : _send,
-                        icon: _sending
-                            ? const SizedBox.square(
-                                dimension: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(Icons.send_rounded),
+                      Icon(
+                        _expanded
+                            ? Icons.expand_less_rounded
+                            : Icons.expand_more_rounded,
+                        color: colors.textSecondary,
                       ),
                     ],
                   ),
                 ),
-            ],
-          ],
+              ),
+            ),
+          ),
+        ),
+        if (_expanded)
+          // El cuerpo de la sala es una columna con la conversación en un
+          // `Expanded`: una lista de miembros sin techo le comería el alto y
+          // desbordaría. `Flexible` (la sección entera va dentro de otro
+          // `Flexible`, ver el cuerpo de la sala) le da el alto que sobra y
+          // el tope del 38 % evita que con pantalla de sobra el equipo tape
+          // la conversación. Dentro, la lista se desplaza sola.
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight:
+                      (MediaQuery.sizeOf(context).height -
+                          MediaQuery.viewInsetsOf(context).bottom) *
+                      0.38,
+                ),
+                child: SingleChildScrollView(
+                  child: _RoomsCardGroup(
+                    rows: [
+                      for (final member in inline) _row(member, named),
+                      if (members.length > inline.length)
+                        _RoomsCardAction(
+                          key: const ValueKey('mission-hosted-members-all'),
+                          label: extra.allMembers(members.length),
+                          onTap: () => _openAllMembers(members, named),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Fila de acción dentro de una tarjeta de sección (salto a una lista
+/// completa). Misma altura mínima y mismo relleno que las filas de contenido.
+class _RoomsCardAction extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _RoomsCardAction({required this.label, required this.onTap, super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: colors.accentText,
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: colors.textSecondary,
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -4153,6 +4337,13 @@ class _HostedRoomCard extends StatelessWidget {
   final HostedGroupRoom room;
   final HostedGroupLogPage? log;
   final MissionControlCopy copy;
+  final MissionProfileAvatarCache? avatarCache;
+  // Perfiles LOCALES a esta conexión, por nombre. Un miembro cuyo nombre
+  // coincida aquí es (con certeza suficiente para una miniatura, no para
+  // autorización) uno de tus propios bots, así que puede pintar su avatar
+  // real en vez del círculo de color neutro reservado a miembros de otra
+  // conexión (salas federadas) de los que no hay avatar en caché.
+  final Map<String, AgentProfile> localProfiles;
   final bool canSend;
   final bool canRename;
   final bool canStop;
@@ -4167,6 +4358,8 @@ class _HostedRoomCard extends StatelessWidget {
     required this.room,
     required this.log,
     required this.copy,
+    required this.avatarCache,
+    required this.localProfiles,
     required this.canSend,
     required this.canRename,
     required this.canStop,
@@ -4194,118 +4387,108 @@ class _HostedRoomCard extends StatelessWidget {
         child: InkWell(
           onTap: onOpen,
           child: Padding(
-            padding: const EdgeInsetsDirectional.fromSTEB(2, 10, 0, 0),
+            padding: const EdgeInsetsDirectional.fromSTEB(14, 12, 6, 12),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 RoomAvatarStack.official(
+                  avatarCache: avatarCache,
                   members: room.members.map(
                     (member) => RoomAvatarOfficialMember(
                       owner: member.owner,
                       displayName: member.handle,
                       handle: member.handle,
+                      profile: localProfiles[member.owner.profile],
                     ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: Container(
-                    padding: const EdgeInsetsDirectional.only(bottom: 10),
-                    decoration: BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(
-                          color: Theme.of(
-                            context,
-                          ).hermes.divider.withValues(alpha: 0.46),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              room.name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              copy.roomMemberCount(room.members.length),
+                              style: TextStyle(
+                                color: Theme.of(context).hermes.textSecondary,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                room.name,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                copy.roomMemberCount(room.members.length),
-                                style: TextStyle(
-                                  color: Theme.of(context).hermes.textSecondary,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
+                      if (canSend)
+                        IconButton(
+                          key: ValueKey(
+                            'mission-hosted-send-${_indexFromKey()}',
                           ),
+                          tooltip: copy.sendSharedMessage,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 48,
+                            height: 48,
+                          ),
+                          onPressed: onSend,
+                          icon: const Icon(Icons.send_outlined),
                         ),
-                        if (canSend)
-                          IconButton(
-                            key: ValueKey(
-                              'mission-hosted-send-${_indexFromKey()}',
-                            ),
-                            tooltip: copy.sendSharedMessage,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 48,
-                              height: 48,
-                            ),
-                            onPressed: onSend,
-                            icon: const Icon(Icons.send_outlined),
+                      if (management.isNotEmpty)
+                        PopupMenuButton<String>(
+                          key: ValueKey(
+                            'mission-hosted-more-${_indexFromKey()}',
                           ),
-                        if (management.isNotEmpty)
-                          PopupMenuButton<String>(
-                            key: ValueKey(
-                              'mission-hosted-more-${_indexFromKey()}',
-                            ),
-                            tooltip: MaterialLocalizations.of(
-                              context,
-                            ).moreButtonTooltip,
-                            constraints: const BoxConstraints(
-                              minWidth: 48,
-                              minHeight: 48,
-                            ),
-                            onSelected: (value) {
-                              if (value == 'rename') onRename();
-                              if (value == 'stop') onStop();
-                              if (value == 'disband') onDisband();
-                            },
-                            itemBuilder: (_) => [
-                              if (canRename)
-                                PopupMenuItem(
-                                  key: ValueKey(
-                                    'mission-hosted-rename-${_indexFromKey()}',
-                                  ),
-                                  value: 'rename',
-                                  child: Text(copy.renameSharedRoom),
-                                ),
-                              if (canStop)
-                                PopupMenuItem(
-                                  key: ValueKey(
-                                    'mission-hosted-stop-${_indexFromKey()}',
-                                  ),
-                                  value: 'stop',
-                                  child: Text(copy.stopSharedRoom),
-                                ),
-                              if (canDisband)
-                                PopupMenuItem(
-                                  key: ValueKey(
-                                    'mission-hosted-disband-${_indexFromKey()}',
-                                  ),
-                                  value: 'disband',
-                                  child: Text(copy.disbandSharedRoom),
-                                ),
-                            ],
+                          tooltip: MaterialLocalizations.of(
+                            context,
+                          ).moreButtonTooltip,
+                          constraints: const BoxConstraints(
+                            minWidth: 48,
+                            minHeight: 48,
                           ),
-                      ],
-                    ),
+                          onSelected: (value) {
+                            if (value == 'rename') onRename();
+                            if (value == 'stop') onStop();
+                            if (value == 'disband') onDisband();
+                          },
+                          itemBuilder: (_) => [
+                            if (canRename)
+                              PopupMenuItem(
+                                key: ValueKey(
+                                  'mission-hosted-rename-${_indexFromKey()}',
+                                ),
+                                value: 'rename',
+                                child: Text(copy.renameSharedRoom),
+                              ),
+                            if (canStop)
+                              PopupMenuItem(
+                                key: ValueKey(
+                                  'mission-hosted-stop-${_indexFromKey()}',
+                                ),
+                                value: 'stop',
+                                child: Text(copy.stopSharedRoomAction),
+                              ),
+                            if (canDisband)
+                              PopupMenuItem(
+                                key: ValueKey(
+                                  'mission-hosted-disband-${_indexFromKey()}',
+                                ),
+                                value: 'disband',
+                                child: Text(copy.disbandSharedRoomAction),
+                              ),
+                          ],
+                        ),
+                    ],
                   ),
                 ),
               ],
@@ -4350,24 +4533,13 @@ class _GlobalWorkTray extends StatelessWidget {
               left.attention,
             ).compareTo(_globalTaskPriority(right.attention)),
           );
-    final boardItems = items
-        .where((item) => item.destination is BoardDestination)
-        .toList(growable: false);
+    // El tablero NO es un pendiente: vive en su propia sección explicada
+    // (`_BoardSection`) y ya no cuelga de la cola de esta bandeja. Colgado
+    // aquí era un enlace suelto llamado "Tablero completo" al final de una
+    // lista de cosas que reclaman atención, que es justo lo que no se
+    // entendía en dispositivo real.
     if (approvalItems.isEmpty && taskItems.isEmpty) {
-      return Align(
-        alignment: AlignmentDirectional.centerEnd,
-        child: boardItems.isEmpty
-            ? const SizedBox.shrink()
-            : TextButton.icon(
-                key: const ValueKey('mission-open-global-kanban'),
-                onPressed: () => onDestination(
-                  boardItems.first,
-                  boardItems.first.destination!,
-                ),
-                icon: const Icon(Icons.view_kanban_outlined, size: 18),
-                label: Text(copy.openKanban),
-              ),
-      );
+      return const SizedBox.shrink();
     }
     final taskLimit = approvalItems.length >= 3 ? 0 : 3 - approvalItems.length;
     return Semantics(
@@ -4377,66 +4549,47 @@ class _GlobalWorkTray extends StatelessWidget {
         key: const ValueKey('mission-global-work-tray'),
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsetsDirectional.fromSTEB(2, 8, 2, 4),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.inbox_outlined,
-                  size: 18,
-                  color: approvalItems.isNotEmpty
-                      ? colors.warning
-                      : colors.accentText,
-                ),
-                const SizedBox(width: 9),
-                Expanded(
-                  child: Text(
-                    copy.globalWorkTray,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ],
-            ),
+          _RoomsSectionLabel(
+            icon: Icons.inbox_outlined,
+            iconColor: approvalItems.isNotEmpty ? colors.warning : null,
+            label: copy.globalWorkTray,
+            count: approvalItems.length + taskItems.take(taskLimit).length,
+            first: false,
           ),
-          for (var index = 0; index < approvalItems.length; index++)
-            MissionWorkItemAction(
-              key: ValueKey('mission-global-approval-$index'),
-              item: approvalItems[index],
-              icon: Icons.approval_outlined,
-              color: colors.warning,
-              onDestination: (destination) =>
-                  onDestination(approvalItems[index], destination),
-            ),
-          for (final item in taskItems.take(taskLimit))
-            MissionWorkItemAction(
-              key: ValueKey(
-                'mission-global-task-${item.taskRef!.boardId}-${item.taskRef!.taskId}',
-              ),
-              item: item,
-              icon: switch (item.attention) {
-                WorkAttention.blocked => Icons.block_outlined,
-                WorkAttention.running => Icons.play_arrow_rounded,
-                WorkAttention.review => Icons.rate_review_outlined,
-                _ => Icons.schedule_outlined,
-              },
-              color: switch (item.attention) {
-                WorkAttention.blocked => colors.error,
-                WorkAttention.running => colors.success,
-                WorkAttention.review => colors.warning,
-                _ => colors.accentText,
-              },
-              onDestination: (destination) => onDestination(item, destination),
-            ),
-          for (final item in boardItems.take(1))
-            Align(
-              alignment: AlignmentDirectional.centerEnd,
-              child: TextButton.icon(
-                key: const ValueKey('mission-open-global-kanban'),
-                onPressed: () => onDestination(item, item.destination!),
-                icon: const Icon(Icons.view_kanban_outlined, size: 18),
-                label: Text(copy.openKanban),
-              ),
-            ),
+          _RoomsCardGroup(
+            rows: [
+              for (var index = 0; index < approvalItems.length; index++)
+                MissionWorkItemAction(
+                  key: ValueKey('mission-global-approval-$index'),
+                  item: approvalItems[index],
+                  icon: Icons.approval_outlined,
+                  color: colors.warning,
+                  onDestination: (destination) =>
+                      onDestination(approvalItems[index], destination),
+                ),
+              for (final item in taskItems.take(taskLimit))
+                MissionWorkItemAction(
+                  key: ValueKey(
+                    'mission-global-task-${item.taskRef!.boardId}-${item.taskRef!.taskId}',
+                  ),
+                  item: item,
+                  icon: switch (item.attention) {
+                    WorkAttention.blocked => Icons.block_outlined,
+                    WorkAttention.running => Icons.play_arrow_rounded,
+                    WorkAttention.review => Icons.rate_review_outlined,
+                    _ => Icons.schedule_outlined,
+                  },
+                  color: switch (item.attention) {
+                    WorkAttention.blocked => colors.error,
+                    WorkAttention.running => colors.success,
+                    WorkAttention.review => colors.warning,
+                    _ => colors.accentText,
+                  },
+                  onDestination: (destination) =>
+                      onDestination(item, destination),
+                ),
+            ],
+          ),
         ],
       ),
     );
@@ -4450,64 +4603,6 @@ class _GlobalWorkTray extends StatelessWidget {
         WorkAttention.ready => 3,
         _ => 4,
       };
-}
-
-class _RoomApprovalAction extends StatelessWidget {
-  final IconData icon;
-  final Color color;
-  final String title;
-  final String subtitle;
-  final VoidCallback onTap;
-
-  const _RoomApprovalAction({
-    required this.icon,
-    required this.color,
-    required this.title,
-    required this.subtitle,
-    required this.onTap,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    label: '$title, $subtitle',
-    excludeSemantics: true,
-    child: InkWell(
-      onTap: onTap,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
-          child: Row(
-            children: [
-              Icon(icon, size: 17, color: color),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, size: 19),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
 }
 
 class MissionWorkItemAction extends StatelessWidget {
@@ -4538,11 +4633,14 @@ class MissionWorkItemAction extends StatelessWidget {
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 48),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+            // Estas filas ahora viven dentro de una tarjeta redondeada
+            // (`_RoomsCardGroup`), así que el texto necesita el mismo margen
+            // interno que el resto de las filas de la tarjeta.
+            padding: const EdgeInsets.fromLTRB(14, 9, 10, 9),
             child: Row(
               children: [
                 Icon(icon, size: 17, color: color),
-                const SizedBox(width: 9),
+                const SizedBox(width: 10),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -4579,317 +4677,331 @@ class MissionWorkItemAction extends StatelessWidget {
   }
 }
 
-class _RoomFirstCard extends StatelessWidget {
-  final MissionRoom room;
-  final MissionRoomWorkProjection work;
-  final MissionControlCopy copy;
-  final Map<String, AgentProfile> profiles;
-  final MissionProfileAvatarCache? avatarCache;
-  final VoidCallback? onOpen;
-  final ValueChanged<MissionRoomTaskLink> onOpenTask;
-  final VoidCallback? onEdit;
-  final VoidCallback? onDelete;
+final class _RoomsAreaCopy {
+  final bool _english;
 
-  const _RoomFirstCard({
-    required this.room,
-    required this.work,
-    required this.copy,
-    required this.profiles,
-    required this.avatarCache,
-    required this.onOpen,
-    required this.onOpenTask,
-    required this.onEdit,
-    required this.onDelete,
-    super.key,
+  const _RoomsAreaCopy._(this._english);
+
+  factory _RoomsAreaCopy.of(BuildContext context) => _RoomsAreaCopy._(
+    Localizations.localeOf(context).languageCode.toLowerCase() == 'en',
+  );
+
+  String get sharedRoomsExplanation => _english
+      ? 'The whole team sees it, from any device — for working together '
+            'in the open.'
+      : 'La ve todo el equipo, desde cualquier dispositivo — para '
+            'trabajar juntos a la vista de todos.';
+
+  /// Antes, si `canSend` era falso (conexión de solo lectura, o el servidor
+  /// aún no soporta el método `send` de salas compartidas), la sala entera
+  /// se quedaba en blanco tras el desplegable de miembros — ni conversación,
+  /// ni composer, ni ningún aviso. Eso es justo el "si entro en una sala no
+  /// hace nada" reportado en dispositivo real. Ahora se explica por qué.
+  String get cannotSendInRoom => _english
+      ? "You can't send messages in this room right now — the connection "
+            'is read-only or the server doesn\'t support it yet.'
+      : 'No puedes enviar mensajes en esta sala ahora mismo — la conexión '
+            'es de solo lectura o el servidor todavía no lo soporta.';
+
+  /// El tablero se llamaba solo "Tablero completo" y aparecía como un enlace
+  /// suelto al final de la lista de pendientes, sin decir qué abría.
+  String get boardSection => _english ? 'Task board' : 'Tablero de tareas';
+  String get boardTitle =>
+      _english ? 'Open the shared board' : 'Abrir el tablero compartido';
+  String get boardExplanation => _english
+      ? 'All of the team\'s tasks in one board, by column.'
+      : 'Todas las tareas del equipo en un tablero, por columnas.';
+
+  /// Un miembro de una sala compartida que NO es un perfil local de esta
+  /// conexión (sala federada): la app no tiene su ficha, así que su fila no
+  /// lleva a ningún sitio. El subtítulo lo dice en vez de dejar una fila muda
+  /// que parece tocable y no responde.
+  String get federatedMember =>
+      _english ? 'Another connection' : 'Otra conexión';
+
+  /// Salto a la lista completa de miembros cuando la sala trae más de los que
+  /// se pintan en línea (el modelo admite hasta 128).
+  String allMembers(int count) =>
+      _english ? 'See all $count members' : 'Ver los $count miembros';
+
+  /// Cabecera de los bots ya elegidos en el diálogo de sala compartida.
+  String get selectedMembers => _english ? 'Chosen' : 'Elegidos';
+  String get removeMember => _english ? 'Remove' : 'Quitar';
+  String get noMembersChosen => _english
+      ? 'Tap a bot to add it to the room.'
+      : 'Toca un bot para añadirlo a la sala.';
+}
+
+/// Cabecera de sección del área de salas, en el mismo lenguaje que el
+/// rediseño de Conversaciones (`session_list_screen.dart`): etiqueta en
+/// mayúsculas, recuento discreto a la derecha y la tarjeta redondeada de la
+/// sección justo debajo.
+///
+/// Añade dos cosas que aquí hacían falta y `_LoungeSectionHeader` no daba:
+/// un icono de ámbito (nube para las compartidas, dispositivo para las
+/// locales) y una línea de explicación, para que se vea de un golpe qué
+/// salas son de este móvil y cuáles viven en el servidor. Antes las dos
+/// secciones eran títulos de 19 px idénticos y la única diferencia era el
+/// texto.
+class _RoomsSectionLabel extends StatelessWidget {
+  final IconData icon;
+  final Color? iconColor;
+  final String label;
+  final int? count;
+  final String? caption;
+  final bool first;
+  final Key? actionKey;
+  final String? actionLabel;
+  final IconData? actionIcon;
+  final VoidCallback? onAction;
+
+  const _RoomsSectionLabel({
+    required this.icon,
+    required this.label,
+    required this.first,
+    this.iconColor,
+    this.count,
+    this.caption,
+    this.actionKey,
+    this.actionLabel,
+    this.actionIcon,
+    this.onAction,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
-    final available = work.linkedTasks.where((entry) => entry.task != null);
-    final primary =
-        work.primaryTask ?? (available.isEmpty ? null : available.first);
-    final unresolved = work.linkedTasks.where((entry) => entry.task == null);
-    final hasApproval = work.approvals.isNotEmpty;
-    final stateColor = work.spineState == MissionRoomSpineState.blocked
-        ? colors.error
-        : hasApproval
-        ? colors.warning
-        : switch (work.spineState) {
-            MissionRoomSpineState.active => colors.success,
-            MissionRoomSpineState.warning => colors.warning,
-            MissionRoomSpineState.neutral => colors.divider,
-            MissionRoomSpineState.blocked => colors.error,
-          };
-    final stateLabel = work.spineState == MissionRoomSpineState.blocked
-        ? copy.roomBlocked
-        : hasApproval
-        ? copy.needsYou
-        : switch (work.spineState) {
-            MissionRoomSpineState.active => copy.roomActive,
-            MissionRoomSpineState.warning => copy.roomReview,
-            MissionRoomSpineState.neutral => null,
-            MissionRoomSpineState.blocked => copy.roomBlocked,
-          };
-    return Semantics(
-      container: true,
-      explicitChildNodes: true,
-      button: onOpen != null,
-      label: [
-        '#${room.name}',
-        ?stateLabel,
-        room.purposeLabel,
-      ].where((part) => part.isNotEmpty).join(', '),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          excludeFromSemantics: true,
-          onTap: onOpen,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 48),
-            child: Padding(
-              padding: const EdgeInsetsDirectional.fromSTEB(2, 12, 0, 12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  RoomAvatarStack(
-                    connectionId: room.connectionId,
-                    profiles: room.memberProfiles
-                        .map((name) => profiles[name])
-                        .whereType<AgentProfile>(),
-                    avatarCache: avatarCache,
+    final accent = iconColor ?? colors.accentText;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(4, first ? 8 : 26, 4, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 14, color: accent),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Semantics(
+                  header: true,
+                  child: Text(
+                    label.toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.4,
+                      color: colors.textSecondary,
+                    ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsetsDirectional.only(
-                        end: 4,
-                        bottom: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        border: Border(
-                          bottom: BorderSide(
-                            color: colors.divider.withValues(alpha: 0.46),
-                          ),
+                ),
+              ),
+              if (count != null)
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: colors.textDisabled,
+                  ),
+                ),
+              if (onAction != null) ...[
+                const SizedBox(width: 6),
+                Tooltip(
+                  message: actionLabel ?? '',
+                  child: Semantics(
+                    button: true,
+                    label: actionLabel,
+                    child: InkWell(
+                      key: actionKey,
+                      onTap: onAction,
+                      borderRadius: BorderRadius.circular(22),
+                      child: SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: Icon(
+                          actionIcon ?? Icons.add_rounded,
+                          size: 20,
+                          color: colors.accentText,
                         ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      '#${room.name}',
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w700,
-                                        fontSize: 16,
-                                        letterSpacing: -0.2,
-                                      ),
-                                    ),
-                                    if (stateLabel != null) ...[
-                                      const SizedBox(height: 2),
-                                      Row(
-                                        children: [
-                                          Container(
-                                            width: 6,
-                                            height: 6,
-                                            decoration: BoxDecoration(
-                                              color: stateColor,
-                                              shape: BoxShape.circle,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 6),
-                                          Flexible(
-                                            child: Text(
-                                              stateLabel,
-                                              style: TextStyle(
-                                                color: stateColor,
-                                                fontSize: 11.5,
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                              if (onEdit != null || onDelete != null)
-                                PopupMenuButton<String>(
-                                  tooltip: onEdit != null
-                                      ? copy.editRoom
-                                      : copy.deleteRoomTitle,
-                                  constraints: const BoxConstraints(
-                                    minWidth: 48,
-                                    minHeight: 48,
-                                  ),
-                                  icon: const Icon(
-                                    Icons.more_horiz_rounded,
-                                    size: 21,
-                                  ),
-                                  onSelected: (value) {
-                                    if (value == 'edit') onEdit?.call();
-                                    if (value == 'delete') onDelete?.call();
-                                  },
-                                  itemBuilder: (_) => [
-                                    if (onEdit != null)
-                                      PopupMenuItem(
-                                        value: 'edit',
-                                        child: Text(copy.editRoom),
-                                      ),
-                                    if (onDelete != null)
-                                      PopupMenuItem(
-                                        value: 'delete',
-                                        child: Text(copy.delete),
-                                      ),
-                                  ],
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 7),
-                          Text(
-                            room.purposeLabel.isEmpty
-                                ? copy.roomNoPurpose
-                                : room.purposeLabel,
-                            key: ValueKey('room-purpose-${room.id}'),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: room.purposeLabel.isEmpty
-                                  ? colors.textSecondary
-                                  : colors.textPrimary,
-                              fontSize: 13.5,
-                              height: 1.32,
-                            ),
-                          ),
-                          const SizedBox(height: 7),
-                          Container(
-                            key: ValueKey('room-work-${room.id}'),
-                            alignment: AlignmentDirectional.centerStart,
-                            child: primary != null
-                                ? _RoomTaskLine(
-                                    key: ValueKey(
-                                      'room-task-${primary.link.boardId}-${primary.link.taskId}',
-                                    ),
-                                    task: primary.task!,
-                                    copy: copy,
-                                    onTap: () => onOpenTask(primary.link),
-                                  )
-                                : unresolved.isNotEmpty
-                                ? _RoomUnavailableTaskLine(
-                                    link: unresolved.first.link,
-                                    copy: copy,
-                                    onTap: () =>
-                                        onOpenTask(unresolved.first.link),
-                                  )
-                                : Text(
-                                    copy.roomNoLinkedWork,
-                                    style: TextStyle(
-                                      color: colors.textSecondary,
-                                      fontSize: 12.5,
-                                    ),
-                                  ),
-                          ),
-                          SizedBox(
-                            key: ValueKey('room-footer-${room.id}'),
-                            height: 0,
-                          ),
-                        ],
                       ),
                     ),
                   ),
-                ],
+                ),
+              ],
+            ],
+          ),
+          if (caption != null && caption!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsetsDirectional.fromSTEB(33, 3, 0, 0),
+              child: Text(
+                caption!,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.3,
+                  color: colors.textDisabled,
+                ),
               ),
             ),
-          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Tarjeta redondeada de una sección de salas: agrupa sus filas sobre una
+/// superficie propia y dibuja separadores finos entre ellas, como las
+/// secciones de Conversaciones. Es lo que hace que "local" y "compartida"
+/// se lean como dos bloques distintos y no como una lista continua.
+///
+/// Deliberadamente NO usa `HermesCard`: las filas de salas compartidas se
+/// verifican por contrato como no anidadas en una `HermesCard`.
+class _RoomsCardGroup extends StatelessWidget {
+  final List<Widget> rows;
+
+  const _RoomsCardGroup({required this.rows});
+
+  @override
+  Widget build(BuildContext context) {
+    if (rows.isEmpty) return const SizedBox.shrink();
+    final colors = Theme.of(context).hermes;
+    final radius = BorderRadius.circular(
+      Theme.of(context).hermesComponents.profile.shape.groupRadius,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(color: colors.surface, borderRadius: radius),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var index = 0; index < rows.length; index++) ...[
+              if (index > 0)
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(start: 14),
+                  child: Divider(
+                    height: 1,
+                    thickness: 1,
+                    color: colors.divider.withValues(alpha: 0.55),
+                  ),
+                ),
+              rows[index],
+            ],
+          ],
         ),
       ),
     );
   }
 }
 
-class _RoomInlineFact extends StatelessWidget {
-  final String label;
-  final String value;
+/// Fila de texto dentro de una tarjeta de sección (sección vacía o aviso).
+class _RoomsCardNote extends StatelessWidget {
+  final String text;
 
-  const _RoomInlineFact({required this.label, required this.value});
+  const _RoomsCardNote({required this.text});
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    return Wrap(
-      spacing: 6,
-      runSpacing: 2,
-      children: [
-        Text(
-          label,
-          style: TextStyle(color: colors.textDisabled, fontSize: 11.5),
-        ),
-        Text(
-          value,
-          style: TextStyle(
-            color: colors.textPrimary,
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+    child: Text(
+      text,
+      style: TextStyle(
+        fontSize: 13,
+        height: 1.35,
+        color: Theme.of(context).hermes.textSecondary,
+      ),
+    ),
+  );
 }
 
-class _RoomUnavailableTaskLine extends StatelessWidget {
-  final MissionRoomTaskLink link;
-  final MissionControlCopy copy;
-  final VoidCallback onTap;
+/// El tablero, con su propia sección explicada.
+///
+/// Antes era un `TextButton` alineado a la derecha llamado "Tablero completo"
+/// colgado del final de "Otros pendientes". Dos problemas: no decía qué abría
+/// y estaba dentro de una lista de cosas que reclaman atención, cuando el
+/// tablero no es un pendiente sino un destino. Aquí es una sección propia con
+/// nombre, explicación y una fila tocable con chevron, igual que el resto del
+/// área. La capacidad no cambia: mismo `WorkItem.board`, mismo destino, misma
+/// clave `mission-open-global-kanban`.
+class _BoardSection extends StatelessWidget {
+  final WorkItem item;
+  final _RoomsAreaCopy extra;
+  final ValueChanged<WorkDestination> onOpen;
 
-  const _RoomUnavailableTaskLine({
-    required this.link,
-    required this.copy,
-    required this.onTap,
-    super.key,
+  const _BoardSection({
+    required this.item,
+    required this.extra,
+    required this.onOpen,
   });
 
   @override
   Widget build(BuildContext context) {
+    final destination = item.destination;
+    if (destination == null) return const SizedBox.shrink();
     final colors = Theme.of(context).hermes;
-    return Semantics(
-      key: ValueKey('room-task-${link.boardId}-${link.taskId}'),
-      button: true,
-      label: copy.unavailableTaskLink(link.boardId, link.taskId),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 48),
-          child: Row(
-            children: [
-              Icon(
-                Icons.work_outline_rounded,
-                size: 14,
-                color: colors.textDisabled,
-              ),
-              const SizedBox(width: 7),
-              Expanded(
-                child: Text(
-                  copy.unavailableLinkedWork,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: colors.textSecondary, fontSize: 12),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _RoomsSectionLabel(
+          icon: Icons.view_kanban_outlined,
+          label: extra.boardSection,
+          caption: extra.boardExplanation,
+          first: false,
+        ),
+        _RoomsCardGroup(
+          rows: [
+            Semantics(
+              button: true,
+              label: '${extra.boardTitle}, ${extra.boardExplanation}',
+              excludeSemantics: true,
+              child: InkWell(
+                key: const ValueKey('mission-open-global-kanban'),
+                onTap: () => onOpen(destination),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 56),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.view_kanban_outlined,
+                          size: 19,
+                          color: colors.accentText,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            extra.boardTitle,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        Icon(
+                          Icons.chevron_right_rounded,
+                          size: 19,
+                          color: colors.textDisabled,
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
-      ),
+      ],
     );
   }
 }
@@ -5387,654 +5499,6 @@ class _PinnedBotTile extends StatelessWidget {
   }
 }
 
-class _RoomsEmptyState extends StatelessWidget {
-  final String message;
-  final String actionLabel;
-  final VoidCallback? onCreate;
-
-  const _RoomsEmptyState({
-    required this.message,
-    required this.actionLabel,
-    required this.onCreate,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 48, 24, 12),
-      child: Column(
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: colors.accent.withValues(alpha: 0.08),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(
-              Icons.forum_outlined,
-              color: colors.accentText,
-              size: 23,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            message,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: colors.textSecondary,
-              fontSize: 14,
-              height: 1.4,
-            ),
-          ),
-          if (onCreate != null) ...[
-            const SizedBox(height: 14),
-            TextButton.icon(
-              onPressed: onCreate,
-              icon: const Icon(Icons.add_rounded, size: 18),
-              label: Text(actionLabel),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _RoomMemberStack extends StatelessWidget {
-  final MissionRoom room;
-  final Map<String, AgentProfile> profiles;
-  final MissionProfileAvatarCache? avatarCache;
-
-  const _RoomMemberStack({
-    required this.room,
-    required this.profiles,
-    required this.avatarCache,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final others =
-        room.memberProfiles
-            .where((profile) => profile != room.managerProfile)
-            .toList(growable: false)
-          ..sort();
-    final members = <String>[
-      room.managerProfile,
-      ...others,
-    ].take(3).toList(growable: false);
-    return SizedBox(
-      width: 38,
-      height: 38,
-      child: Stack(
-        children: [
-          for (var index = 0; index < members.length; index++)
-            PositionedDirectional(
-              start: index.isEven ? 0 : 16,
-              top: index < 2 ? 0 : 16,
-              child: Container(
-                key: ValueKey('room-member-avatar-$index-${members[index]}'),
-                width: 22,
-                height: 22,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: colors.surface,
-                  shape: BoxShape.circle,
-                  border: Border.all(color: colors.background, width: 2),
-                ),
-                child: MissionProfileAvatar(
-                  profileName: members[index],
-                  hasAvatar: profiles[members[index]]?.hasAvatar ?? false,
-                  cache: avatarCache,
-                  size: 18,
-                  manager: members[index] == room.managerProfile,
-                  shape: profiles[members[index]]?.botShape,
-                  colorHex: profiles[members[index]]?.botColorHex,
-                  imageKind: profiles[members[index]]?.botImageKind,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RoomTaskLine extends StatelessWidget {
-  final KanbanTask task;
-  final MissionControlCopy copy;
-  final VoidCallback onTap;
-
-  const _RoomTaskLine({
-    required this.task,
-    required this.copy,
-    required this.onTap,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final color = task.status == 'blocked'
-        ? colors.error
-        : task.status == 'running'
-        ? colors.success
-        : colors.warning;
-    return Semantics(
-      container: true,
-      button: true,
-      label: '${task.id}, ${copy.taskStatus(task.status)}',
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: onTap,
-          child: Row(
-            children: [
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  '@${task.assignee ?? '—'} · ${copy.taskStatus(task.status)} · ${task.title}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: colors.textSecondary, fontSize: 11.5),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _RoomDraft {
-  final String name;
-  final String purposeLabel;
-  final String managerProfile;
-  final Set<String> memberProfiles;
-
-  const _RoomDraft({
-    required this.name,
-    required this.purposeLabel,
-    required this.managerProfile,
-    required this.memberProfiles,
-  });
-}
-
-class _RoomEditor extends StatefulWidget {
-  final MissionControlCopy copy;
-  final List<AgentProfile> profiles;
-  final MissionProfileAvatarCache? avatarCache;
-  final String? suggestedManager;
-  final MissionRoom? existing;
-  final VoidCallback onManageProfiles;
-
-  const _RoomEditor({
-    required this.copy,
-    required this.profiles,
-    required this.avatarCache,
-    this.suggestedManager,
-    this.existing,
-    required this.onManageProfiles,
-  });
-
-  @override
-  State<_RoomEditor> createState() => _RoomEditorState();
-}
-
-class _RoomEditorState extends State<_RoomEditor> {
-  static const _maxNewRoomMembers = 6;
-
-  late final TextEditingController _name;
-  late final TextEditingController _purpose;
-  late final TextEditingController _search;
-  late final Set<String> _members;
-  String? _manager;
-  bool _nameWasEdited = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _name = TextEditingController(text: widget.existing?.name ?? '');
-    _purpose = TextEditingController(text: widget.existing?.purposeLabel ?? '');
-    _search = TextEditingController();
-    _nameWasEdited = widget.existing != null;
-    final authoritativeNames = widget.profiles
-        .map((profile) => profile.name)
-        .toSet();
-    _members = {
-      ...?widget.existing?.memberProfiles.where(authoritativeNames.contains),
-    };
-    final existingManager = widget.existing?.managerProfile;
-    final suggestedManager = widget.suggestedManager;
-    _manager =
-        (existingManager != null && authoritativeNames.contains(existingManager)
-            ? existingManager
-            : null) ??
-        (suggestedManager != null &&
-                authoritativeNames.contains(suggestedManager)
-            ? suggestedManager
-            : null) ??
-        (widget.profiles.isEmpty ? null : widget.profiles.first.name);
-    if (_manager != null) _members.add(_manager!);
-  }
-
-  @override
-  void dispose() {
-    _name.dispose();
-    _purpose.dispose();
-    _search.dispose();
-    super.dispose();
-  }
-
-  String get _normalizedName =>
-      _name.text.trim().replaceFirst(RegExp(r'^#+'), '').trim();
-
-  bool get _nameOnlyHashes =>
-      _name.text.trim().isNotEmpty && _normalizedName.isEmpty;
-
-  bool get _canSave =>
-      _normalizedName.isNotEmpty &&
-      _normalizedName.runes.length <= 64 &&
-      _purpose.text.trim().runes.length <= MissionRoom.maxPurposeLabelRunes &&
-      _manager != null &&
-      _members.contains(_manager) &&
-      (widget.existing != null || _members.length >= 2) &&
-      (widget.existing != null || _members.length <= _maxNewRoomMembers);
-
-  String _displayName(AgentProfile profile) =>
-      profile.botTitle?.trim().isNotEmpty == true
-      ? profile.botTitle!.trim()
-      : profile.name;
-
-  void _syncSuggestedName() {
-    if (_nameWasEdited || widget.existing != null) return;
-    final selected = widget.profiles
-        .where((profile) => _members.contains(profile.name))
-        .map(_displayName)
-        .toList(growable: false);
-    final suggestion = selected.join(' + ');
-    _name.value = TextEditingValue(
-      text: suggestion.characters.take(64).toString(),
-      selection: TextSelection.collapsed(
-        offset: suggestion.characters.take(64).length,
-      ),
-    );
-  }
-
-  void _setMember(String profile, bool selected) {
-    if (selected) {
-      if (_members.length >= _maxNewRoomMembers &&
-          !_members.contains(profile)) {
-        return;
-      }
-      _members.add(profile);
-    } else if (profile != _manager) {
-      _members.remove(profile);
-    }
-    _syncSuggestedName();
-  }
-
-  void _save() {
-    if (!_canSave) return;
-    Navigator.pop(
-      context,
-      _RoomDraft(
-        name: _normalizedName,
-        purposeLabel: _purpose.text.trim(),
-        managerProfile: _manager!,
-        memberProfiles: Set.unmodifiable(_members),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.hermes;
-    final titleStyle = theme.textTheme.titleMedium?.copyWith(
-      color: colors.textPrimary,
-      fontWeight: FontWeight.w700,
-      letterSpacing: 0,
-    );
-    final dropdownStyle = theme.textTheme.bodyLarge?.copyWith(
-      color: colors.textPrimary,
-      fontWeight: FontWeight.w500,
-    );
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final height = constraints.hasBoundedHeight
-            ? constraints.maxHeight
-            : MediaQuery.sizeOf(context).height * 0.8;
-        return SizedBox(
-          height: height,
-          child: Column(
-            children: [
-              Expanded(
-                child: SingleChildScrollView(
-                  key: const ValueKey('room-editor-scroll'),
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Text(
-                        widget.existing == null
-                            ? widget.copy.createLocalRoom
-                            : widget.copy.editRoom,
-                        key: const ValueKey('room-editor-title'),
-                        style: titleStyle,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        widget.copy.roomSelectionHint,
-                        key: const ValueKey('room-editor-intro'),
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        key: const ValueKey('room-name'),
-                        controller: _name,
-                        maxLength: 64,
-                        textCapitalization: TextCapitalization.sentences,
-                        decoration: InputDecoration(
-                          labelText: widget.copy.roomName,
-                          hintText: widget.copy.roomHint,
-                          prefixText: '#',
-                          errorText: _nameOnlyHashes
-                              ? widget.copy.roomNameInvalid
-                              : null,
-                        ),
-                        onChanged: (_) => setState(() => _nameWasEdited = true),
-                      ),
-                      TextField(
-                        key: const ValueKey('room-purpose'),
-                        controller: _purpose,
-                        minLines: 2,
-                        maxLines: 3,
-                        maxLength: MissionRoom.maxPurposeLabelRunes,
-                        textCapitalization: TextCapitalization.sentences,
-                        decoration: InputDecoration(
-                          labelText: widget.copy.roomPurpose,
-                          hintText: widget.copy.roomPurposeHint,
-                          alignLabelWithHint: true,
-                        ),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                      const SizedBox(height: 4),
-                      DropdownButtonFormField<String>(
-                        key: const ValueKey('room-manager'),
-                        initialValue: _manager,
-                        isExpanded: true,
-                        style: dropdownStyle,
-                        decoration: InputDecoration(
-                          labelText: widget.copy.roomCoordinator,
-                        ),
-                        items: widget.profiles
-                            .map(
-                              (profile) => DropdownMenuItem(
-                                value: profile.name,
-                                child: Text(
-                                  _displayName(profile) == profile.name
-                                      ? '@${profile.name}'
-                                      : '${_displayName(profile)} · @${profile.name}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            )
-                            .toList(growable: false),
-                        onChanged: (value) => setState(() {
-                          _manager = value;
-                          if (value != null) _members.add(value);
-                          _syncSuggestedName();
-                        }),
-                      ),
-                      const SizedBox(height: 16),
-                      Wrap(
-                        alignment: WrapAlignment.spaceBetween,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 12,
-                        runSpacing: 3,
-                        children: [
-                          Text(
-                            widget.copy.roomMembers,
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          Text(
-                            widget.copy.roomSelectionCount(_members.length),
-                            style: TextStyle(
-                              color: colors.textSecondary,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (_members.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Wrap(
-                          key: const ValueKey('room-selected-members'),
-                          spacing: 7,
-                          runSpacing: 7,
-                          children: [
-                            ...widget.profiles
-                                .where(
-                                  (profile) => _members.contains(profile.name),
-                                )
-                                .take(_maxNewRoomMembers)
-                                .map(
-                                  (profile) => InputChip(
-                                    key: ValueKey(
-                                      'room-selected-${profile.name}',
-                                    ),
-                                    avatar: SizedBox.square(
-                                      key: ValueKey(
-                                        'room-selected-avatar-${profile.name}',
-                                      ),
-                                      dimension: 24,
-                                      child: MissionProfileAvatar(
-                                        profileName: profile.name,
-                                        hasAvatar: profile.hasAvatar,
-                                        cache: widget.avatarCache,
-                                        size: 24,
-                                        shape: profile.botShape,
-                                        colorHex: profile.botColorHex,
-                                        imageKind: profile.botImageKind,
-                                      ),
-                                    ),
-                                    label: ConstrainedBox(
-                                      constraints: const BoxConstraints(
-                                        maxWidth: 140,
-                                      ),
-                                      child: Text(
-                                        _displayName(profile) == profile.name
-                                            ? '@${profile.name}'
-                                            : '${_displayName(profile)} · @${profile.name}',
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                    onDeleted: profile.name == _manager
-                                        ? null
-                                        : () => setState(
-                                            () =>
-                                                _setMember(profile.name, false),
-                                          ),
-                                  ),
-                                ),
-                            if (_members.length > _maxNewRoomMembers)
-                              Chip(
-                                label: Text(
-                                  '+${_members.length - _maxNewRoomMembers}',
-                                ),
-                              ),
-                          ],
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      TextField(
-                        key: const ValueKey('room-member-search'),
-                        controller: _search,
-                        textInputAction: TextInputAction.search,
-                        decoration: InputDecoration(
-                          hintText: widget.copy.searchAgents,
-                          prefixIcon: const Icon(Icons.search_rounded),
-                          suffixIcon: _search.text.isEmpty
-                              ? null
-                              : IconButton(
-                                  onPressed: () => setState(_search.clear),
-                                  icon: const Icon(Icons.close_rounded),
-                                ),
-                        ),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                      Align(
-                        alignment: AlignmentDirectional.centerStart,
-                        child: TextButton.icon(
-                          key: const ValueKey('room-manage-profiles'),
-                          onPressed: widget.onManageProfiles,
-                          icon: const Icon(
-                            Icons.person_add_alt_1_outlined,
-                            size: 18,
-                          ),
-                          label: Text(widget.copy.manageProfiles),
-                        ),
-                      ),
-                      Builder(
-                        builder: (context) {
-                          final query = _search.text.trim().toLowerCase();
-                          final visible = widget.profiles
-                              .where(
-                                (profile) =>
-                                    query.isEmpty ||
-                                    profile.name.toLowerCase().contains(
-                                      query,
-                                    ) ||
-                                    _displayName(
-                                      profile,
-                                    ).toLowerCase().contains(query) ||
-                                    profile.description.toLowerCase().contains(
-                                      query,
-                                    ),
-                              )
-                              .toList(growable: false);
-                          if (visible.isEmpty) {
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                              child: Text(
-                                widget.copy.noMatchingAgents,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: colors.textSecondary),
-                              ),
-                            );
-                          }
-                          return ListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: visible.length,
-                            itemBuilder: (context, index) {
-                              final profile = visible[index];
-                              final isManager = profile.name == _manager;
-                              final selected = _members.contains(profile.name);
-                              final atLimit =
-                                  _members.length >= _maxNewRoomMembers &&
-                                  !selected;
-                              return CheckboxListTile(
-                                key: ValueKey('room-member-${profile.name}'),
-                                dense: true,
-                                contentPadding: EdgeInsets.zero,
-                                secondary: SizedBox.square(
-                                  key: ValueKey(
-                                    'room-member-choice-avatar-${profile.name}',
-                                  ),
-                                  dimension: 40,
-                                  child: MissionProfileAvatar(
-                                    profileName: profile.name,
-                                    hasAvatar: profile.hasAvatar,
-                                    cache: widget.avatarCache,
-                                    size: 40,
-                                    shape: profile.botShape,
-                                    colorHex: profile.botColorHex,
-                                    imageKind: profile.botImageKind,
-                                  ),
-                                ),
-                                value: selected,
-                                onChanged: isManager || atLimit
-                                    ? null
-                                    : (value) => setState(
-                                        () => _setMember(
-                                          profile.name,
-                                          value == true,
-                                        ),
-                                      ),
-                                title: Text(_displayName(profile)),
-                                subtitle: Text(
-                                  isManager
-                                      ? '@${profile.name} · ${widget.copy.managerLabel}'
-                                      : '@${profile.name}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
-                            },
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                decoration: BoxDecoration(
-                  color: colors.surface,
-                  border: Border(
-                    top: BorderSide(
-                      color: colors.divider.withValues(alpha: 0.58),
-                    ),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: Text(widget.copy.cancel),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: FilledButton(
-                        key: const ValueKey('room-save'),
-                        onPressed: _canSave ? _save : null,
-                        child: Text(
-                          widget.existing == null
-                              ? widget.copy.createLocalRoom
-                              : widget.copy.save,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
 class _OrganizationDraft {
   final String name;
   final Set<String> profileNames;
@@ -6096,9 +5560,13 @@ class _OrganizationEditorState extends State<_OrganizationEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.viewInsetsOf(context).bottom;
+    // Sin `+ viewInsets.bottom`: ver el comentario largo en
+    // `_HostedGroupCreateDialogState.build`. La superficie flotante ya
+    // descuenta el teclado dos veces (desplazamiento + `maxHeight`), y
+    // sumarlo aquí dentro dejaba el formulario sin altura útil con el
+    // teclado abierto.
     return Padding(
-      padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + bottom),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -6387,12 +5855,17 @@ class _AgentDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
+    final profile = agent.profile;
     final model = [
       agent.provider,
       agent.model,
     ].whereType<String>().where((value) => value.isNotEmpty).join(' · ');
+    final session = agent.currentSession;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+      // `shrinkWrap`: la hoja se ajusta al contenido (ver `_openAgent`) y
+      // sigue haciendo scroll cuando el contenido supera el alto máximo.
+      shrinkWrap: true,
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 24),
       children: [
         Center(
           child: Container(
@@ -6404,14 +5877,17 @@ class _AgentDetail extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 16),
+        // 1. Identidad. Una sola línea de jerarquía: nombre visible, handle y
+        // el estado como pill (antes era texto de color suelto, que se leía
+        // como una frase más dentro del muro de texto).
         Row(
           children: [
             _AgentAvatar(
-              profile: agent.profile,
+              profile: profile,
               status: agent.status,
               avatarCache: avatarCache,
-              size: 48,
+              size: 52,
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -6419,12 +5895,33 @@ class _AgentDetail extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    agent.profile.botTitle ?? agent.profile.name,
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  Text(
-                    copy.status(agent.status.name),
+                    profile.botTitle ?? profile.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 19,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  const SizedBox(height: 1),
+                  // El `@handle` sustituye a la fila "Profile · nombre": es el
+                  // mismo dato, en el sitio donde ya se lee como identidad.
+                  Text(
+                    '@${profile.name}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                  const SizedBox(height: 7),
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: HermesBadge(
+                      copy.status(agent.status.name),
                       color: _statusColor(context, agent.status),
                     ),
                   ),
@@ -6433,35 +5930,21 @@ class _AgentDetail extends StatelessWidget {
             ),
           ],
         ),
-        if (agent.profile.description.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          Text(agent.profile.description),
-        ],
-        const SizedBox(height: 18),
-        _DetailLine(label: copy.profileLabel, value: agent.profile.name),
-        _DetailLine(
-          label: copy.modelLabel,
-          value: model.isEmpty ? copy.modelUnavailable : model,
-        ),
-        if (agent.currentSession != null)
-          _DetailLine(
-            label: copy.recentSessions,
-            value: agent.currentSession!.displayTitle,
-          ),
-        if (assignedTasks.isNotEmpty) ...[
-          const SizedBox(height: 16),
+        if (profile.description.isNotEmpty) ...[
+          const SizedBox(height: 14),
           Text(
-            copy.assignedTasks(assignedTasks.length),
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            profile.description,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: colors.textSecondary,
+              fontSize: 13.5,
+              height: 1.35,
+            ),
           ),
-          const SizedBox(height: 6),
-          for (final task in assignedTasks)
-            _DetailLine(label: task.status, value: task.title),
         ],
-        const SizedBox(height: 12),
-        _UsageCard(usage: agent.usage, copy: copy),
+        // 2. Acción principal, arriba: antes quedaba enterrada debajo de las
+        // filas de datos y del bloque de tokens.
         const SizedBox(height: 16),
         HermesPrimaryButton(
           key: const ValueKey('bot-detail-chat'),
@@ -6469,102 +5952,303 @@ class _AgentDetail extends StatelessWidget {
           icon: Icons.chat_bubble_outline,
           onTap: onChat,
         ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-edit-profile'),
-                label: copy.editProfile,
-                icon: Icons.tune,
-                onTap: onEditProfile,
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-routines'),
-                label: copy.routines,
-                icon: Icons.schedule_outlined,
-                onTap: onRoutines,
-              ),
-            ),
-          ],
+        // 3. Contexto técnico: dos líneas tenues de una sola línea cada una,
+        // en vez de la columna de etiquetas de 90 px ("Profile", "Modelo",
+        // "Sesiones recientes") que convertía la ficha en un muro de texto.
+        const SizedBox(height: 14),
+        _BotDetailMetaLine(
+          icon: Icons.memory_rounded,
+          text: model.isEmpty ? copy.modelUnavailable : model,
         ),
-        const SizedBox(height: 10),
-        Row(
+        if (session != null)
+          _BotDetailMetaLine(
+            icon: Icons.history_rounded,
+            text: session.displayTitle,
+          ),
+        // 4. Trabajo asignado, si hay: agrupado bajo su propio encabezado en
+        // vez de mezclado con las filas de datos del bot.
+        if (assignedTasks.isNotEmpty) ...[
+          HermesSectionHeader(copy.assignedTasks(assignedTasks.length)),
+          HermesGroup(
+            children: [
+              for (final task in assignedTasks)
+                _BotDetailTaskLine(title: task.title, status: task.status),
+            ],
+          ),
+        ],
+        // 5. Acciones, agrupadas por lo que hacen (no en una parrilla de 8
+        // botones iguales): lo que configura al bot en un grupo, y lo que solo
+        // afecta a cómo se ve en la lista de Bots en otro.
+        const SizedBox(height: 16),
+        HermesGroup(
           children: [
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-tasks'),
-                label: copy.tasks,
-                icon: Icons.view_kanban_outlined,
-                onTap: onTasks,
-              ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-edit-profile'),
+              icon: Icons.tune,
+              label: copy.editProfile,
+              onTap: onEditProfile,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-memory'),
-                label: copy.memory,
-                icon: Icons.psychology_outlined,
-                onTap: onMemory,
-              ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-routines'),
+              icon: Icons.schedule_outlined,
+              label: copy.routines,
+              onTap: onRoutines,
             ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-skills'),
-                label: copy.skills,
-                icon: Icons.extension_outlined,
-                onTap: onSkills,
-              ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-tasks'),
+              icon: Icons.view_kanban_outlined,
+              label: copy.tasks,
+              trailing: assignedTasks.isEmpty
+                  ? null
+                  : '${assignedTasks.length}',
+              onTap: onTasks,
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: HermesSecondaryButton(
-                key: const ValueKey('bot-detail-soul'),
-                label: copy.soul,
-                icon: Icons.auto_awesome_outlined,
-                onTap: onSoul,
-              ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-memory'),
+              icon: Icons.psychology_outlined,
+              label: copy.memory,
+              onTap: onMemory,
+            ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-skills'),
+              icon: Icons.extension_outlined,
+              label: copy.skills,
+              onTap: onSkills,
+            ),
+            _BotDetailActionRow(
+              key: const ValueKey('bot-detail-soul'),
+              icon: Icons.auto_awesome_outlined,
+              label: copy.soul,
+              onTap: onSoul,
             ),
           ],
         ),
         if (onTogglePinned != null || onToggleHidden != null) ...[
           const SizedBox(height: 10),
-          Row(
+          HermesGroup(
             children: [
-              Expanded(
-                child: HermesSecondaryButton(
+              if (onTogglePinned != null)
+                _BotDetailActionRow(
                   key: const ValueKey('bot-detail-toggle-pinned'),
-                  label: agent.profile.botPinned ? copy.unpinBot : copy.pinBot,
-                  icon: agent.profile.botPinned
+                  icon: profile.botPinned
                       ? Icons.push_pin_outlined
                       : Icons.push_pin_rounded,
+                  label: profile.botPinned ? copy.unpinBot : copy.pinBot,
+                  showChevron: false,
                   onTap: onTogglePinned,
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: HermesSecondaryButton(
+              if (onToggleHidden != null)
+                _BotDetailActionRow(
                   key: const ValueKey('bot-detail-toggle-hidden'),
-                  label: agent.profile.botHidden ? copy.showBot : copy.hideBot,
-                  icon: agent.profile.botHidden
+                  icon: profile.botHidden
                       ? Icons.visibility_outlined
                       : Icons.visibility_off_outlined,
+                  label: profile.botHidden ? copy.showBot : copy.hideBot,
+                  showChevron: false,
                   onTap: onToggleHidden,
                 ),
-              ),
             ],
           ),
         ],
+        // 6. Uso: una sola línea tenue al final. El desglose input/output/
+        // caché/reasoning ya no ocupa media ficha con cifras en grande — sigue
+        // disponible manteniendo pulsado (tooltip), que es donde importa.
+        const SizedBox(height: 16),
+        _BotUsageFooter(usage: agent.usage, copy: copy),
       ],
     );
+  }
+}
+
+/// Línea tenue de contexto (modelo, última sesión) dentro de la ficha del bot.
+class _BotDetailMetaLine extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _BotDetailMetaLine({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: colors.textDisabled),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: colors.textSecondary, fontSize: 12.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Fila de acción de la ficha del bot, para usar dentro de un [HermesGroup].
+///
+/// `onTap` nulo = acción no disponible en esta conexión (instancia en modo
+/// consulta): la fila sigue visible pero apagada, como antes hacía el botón
+/// deshabilitado, para no cambiar en silencio lo que el usuario ve según los
+/// permisos.
+class _BotDetailActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String? trailing;
+  final bool showChevron;
+  final VoidCallback? onTap;
+
+  const _BotDetailActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.trailing,
+    this.showChevron = true,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final enabled = onTap != null;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 20,
+              color: enabled ? colors.textSecondary : colors.textDisabled,
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 14.5,
+                  fontWeight: FontWeight.w600,
+                  color: enabled ? colors.textPrimary : colors.textDisabled,
+                ),
+              ),
+            ),
+            if (trailing != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                trailing!,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: colors.textSecondary,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+            if (showChevron) ...[
+              const SizedBox(width: 8),
+              Icon(
+                Icons.chevron_right_rounded,
+                size: 18,
+                color: colors.textDisabled,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Tarea asignada dentro de la ficha del bot: título + estado tenue, sin la
+/// columna de etiquetas que usaba la versión anterior.
+class _BotDetailTaskLine extends StatelessWidget {
+  final String title;
+  final String status;
+
+  const _BotDetailTaskLine({required this.title, required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w500,
+                color: colors.textPrimary,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            status,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: colors.textDisabled, fontSize: 11.5),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Pie de uso de la ficha del bot: total de tokens y coste en UNA línea
+/// tenue. El desglose por tipo (input/output/caché/reasoning) vive en el
+/// tooltip, no en la ficha: ocupaba media pantalla con cifras en grande que
+/// competían con las acciones del bot.
+class _BotUsageFooter extends StatelessWidget {
+  final MissionUsage usage;
+  final MissionControlCopy copy;
+
+  const _BotUsageFooter({required this.usage, required this.copy});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    final cost = usage.actualCostUsd ?? usage.estimatedCostUsd;
+    final total = usage.totalTokens;
+    final breakdown = [
+      if (usage.inputTokens != null)
+        '${copy.input} ${_compact(usage.inputTokens!)}',
+      if (usage.outputTokens != null)
+        '${copy.output} ${_compact(usage.outputTokens!)}',
+      if (usage.cacheReadTokens != null)
+        '${copy.cached} ${_compact(usage.cacheReadTokens!)}',
+      if (usage.reasoningTokens != null)
+        '${copy.reasoning} ${_compact(usage.reasoningTokens!)}',
+    ];
+    final parts = [
+      if (total != null) '${_compact(total)} ${copy.tokens}',
+      if (cost != null)
+        '\$${cost.toStringAsFixed(4)}${usage.costCoverage == MissionCostCoverage.partial ? ' · ${copy.partialCost}' : ''}',
+    ];
+    final line = parts.isEmpty
+        ? (breakdown.isEmpty ? copy.tokensUnavailable : breakdown.join(' · '))
+        : parts.join(' · ');
+    final text = Text(
+      line,
+      key: const ValueKey('bot-detail-usage'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: colors.textDisabled, fontSize: 11.5),
+    );
+    return breakdown.isEmpty
+        ? text
+        : Tooltip(message: breakdown.join(' · '), child: text);
   }
 }
 
@@ -6613,73 +6297,6 @@ class _AgentAvatar extends StatelessWidget {
             ),
           ),
         ),
-    ],
-  );
-}
-
-class _UsageCard extends StatelessWidget {
-  final MissionUsage usage;
-  final MissionControlCopy copy;
-
-  const _UsageCard({required this.usage, required this.copy});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final cost = usage.actualCostUsd ?? usage.estimatedCostUsd;
-    final tokenValues = <Widget>[
-      if (usage.inputTokens != null)
-        _UsageValue(label: copy.input, value: _compact(usage.inputTokens!)),
-      if (usage.outputTokens != null)
-        _UsageValue(label: copy.output, value: _compact(usage.outputTokens!)),
-      if (usage.cacheReadTokens != null)
-        _UsageValue(
-          label: copy.cached,
-          value: _compact(usage.cacheReadTokens!),
-        ),
-      if (usage.reasoningTokens != null)
-        _UsageValue(
-          label: copy.reasoning,
-          value: _compact(usage.reasoningTokens!),
-        ),
-    ];
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (tokenValues.isEmpty)
-            Text(
-              copy.tokensUnavailable,
-              style: TextStyle(color: colors.textSecondary, fontSize: 12),
-            )
-          else
-            Wrap(spacing: 16, runSpacing: 8, children: tokenValues),
-          const SizedBox(height: 12),
-          Text(
-            cost == null
-                ? copy.costUnavailable
-                : '\$${cost.toStringAsFixed(4)}${usage.costCoverage == MissionCostCoverage.partial ? ' · ${copy.partialCost}' : ''}',
-            style: TextStyle(color: colors.textSecondary, fontSize: 12),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _UsageValue extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _UsageValue({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(value, style: Theme.of(context).textTheme.titleMedium),
-      Text(label, style: Theme.of(context).textTheme.bodySmall),
     ],
   );
 }
@@ -6759,30 +6376,6 @@ class _CenteredState extends StatelessWidget {
       ),
     );
   }
-}
-
-class _DetailLine extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _DetailLine({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 5),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(width: 90, child: Text(label)),
-        Expanded(
-          child: Text(
-            value,
-            style: const TextStyle(fontWeight: FontWeight.w600),
-          ),
-        ),
-      ],
-    ),
-  );
 }
 
 Color _statusColor(BuildContext context, MissionAgentStatus status) {

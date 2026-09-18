@@ -10,6 +10,7 @@ import 'package:hermes_android/core/services/mission_control_repository.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/hermes_ui.dart';
 import 'package:hermes_android/core/widgets/room_avatar_stack.dart';
+import 'package:hermes_android/core/widgets/room_team_row.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -293,8 +294,6 @@ void main() {
         find.byKey(const ValueKey('mission-hosted-approve-0')),
         findsNothing,
       );
-      expect(find.byKey(const ValueKey('mission-local-rooms')), findsOneWidget);
-
       final publicTree = tester.allWidgets
           .map((widget) => '${widget.key} $widget')
           .join('\n');
@@ -510,10 +509,26 @@ void main() {
         find.byKey(const ValueKey('mission-hosted-room-workspace')),
         findsOneWidget,
       );
-      expect(find.text('View members'), findsOneWidget);
-      await tester.tap(find.text('View members'));
+      // El desplegable "Ver miembros" con `ListTile`s vacíos ya no existe:
+      // la sala tiene una sección "Equipo" plegada con su pila de avatares y
+      // una fila real por miembro al abrirla.
+      expect(
+        find.byKey(const ValueKey('mission-hosted-members')),
+        findsOneWidget,
+      );
+      expect(find.text('Team'), findsOneWidget);
+      expect(find.text('1 member'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('mission-hosted-members-header')),
+      );
       await tester.pumpAndSettle();
-      expect(find.text('@builder'), findsOneWidget);
+      final memberRow = find.byKey(const ValueKey('room-team-member-builder'));
+      expect(memberRow, findsOneWidget);
+      // Sin perfil local (sala federada): la fila informa de dónde viene y
+      // no finge un destino que la app no tiene.
+      expect(find.textContaining('@builder'), findsOneWidget);
+      expect(tester.widget<Semantics>(memberRow).properties.onTap, isNull);
+      expect(tester.widget<Semantics>(memberRow).properties.button, isFalse);
       expect(find.text('Before'), findsNothing);
       expect(find.text('Conversation'), findsNothing);
       expect(
@@ -546,7 +561,7 @@ void main() {
 
       await tester.tap(find.byType(PopupMenuButton<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Rename shared room'));
+      await tester.tap(find.text('Rename room'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextFormField).last, 'Renamed route');
       await tester.tap(find.text('Save').last);
@@ -555,15 +570,21 @@ void main() {
 
       await tester.tap(find.byType(PopupMenuButton<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Stop shared room?'));
+      // El ítem del menú es imperativo ("Stop room"); el diálogo de
+      // confirmación que abre sigue preguntando ("Stop room?") —
+      // antes ambos compartían el mismo texto con "?", lo que leía como una
+      // pregunta suelta en el menú (confirmado en dispositivo real).
+      await tester.tap(find.text('Stop room'));
       await tester.pumpAndSettle();
+      expect(find.text('Stop room?'), findsOneWidget);
       await tester.tap(find.text('Confirm').last);
       await tester.pumpAndSettle();
 
       await tester.tap(find.byType(PopupMenuButton<String>));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Disband shared room?'));
+      await tester.tap(find.text('Disband room'));
       await tester.pumpAndSettle();
+      expect(find.text('Disband room?'), findsOneWidget);
       await tester.tap(find.text('Confirm').last);
       await tester.pumpAndSettle();
 
@@ -649,19 +670,23 @@ void main() {
       expect(tester.widget<InkWell>(roomOrb).onTap, isNotNull);
       await tester.tap(roomOrb);
       await tester.pumpAndSettle();
-      expect(find.text('Create shared room'), findsOneWidget);
+      expect(find.text('Create room'), findsOneWidget);
       await tester.enterText(
         find.byKey(const ValueKey('mission-hosted-create-name')),
         'Release room',
       );
-      await tester.tap(find.byType(Checkbox).at(0));
+      await tester.tap(
+        find.byKey(const ValueKey('mission-hosted-create-member-builder')),
+      );
       await tester.pump();
-      await tester.tap(find.byType(Checkbox).at(1));
+      await tester.tap(
+        find.byKey(const ValueKey('mission-hosted-create-member-reviewer')),
+      );
       await tester.pump();
       final confirm = find.byKey(
         const ValueKey('mission-hosted-create-confirm'),
       );
-      expect(tester.widget<TextButton>(confirm).onPressed, isNotNull);
+      expect(tester.widget<FilledButton>(confirm).onPressed, isNotNull);
       await tester.tap(confirm);
       await tester.pumpAndSettle();
       expect(source.calls, contains('create:3:Release room:builder,reviewer'));
@@ -674,7 +699,611 @@ void main() {
       });
     },
   );
+
+  // El diálogo se abre con `autofocus` en el nombre, así que el teclado ya
+  // está fuera en el primer frame real. La superficie flotante descuenta ese
+  // inset por su cuenta (desplazamiento + `maxHeight`); cuando el diálogo lo
+  // volvía a sumar como padding interno, el contenido se quedaba sin altura
+  // utilizable y el resultado era la "ventana trabada" reportada en el Pixel.
+  testWidgets('the create-room dialog stays usable with the keyboard open', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    const size = Size(390, 844);
+    const keyboard = 320.0;
+    // `setSurfaceSize` cambia el lienzo pero no lo que `MediaQuery` publica
+    // (`MediaQueryData.fromView` lee la vista), y la superficie flotante mide
+    // con `MediaQuery`: hay que configurar la vista, no el lienzo.
+    tester.view.physicalSize = size * 3;
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: const [
+          AgentProfile(name: 'builder', botModeUiMeta: {'title': 'Builder'}),
+          AgentProfile(name: 'reviewer', botModeUiMeta: {'title': 'Reviewer'}),
+        ],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.available,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities([
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+            GroupMethod.create,
+          ]),
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        theme: AppTheme.fromId('dark'),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(
+            viewInsets: const EdgeInsets.only(bottom: keyboard),
+            disableAnimations: true,
+          ),
+          child: child!,
+        ),
+        home: MissionControlScreen(
+          connection: _connection,
+          connManager: manager,
+          dataSource: source,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('bot-mode-dock-create')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('bot-mode-create-room')));
+    await tester.pumpAndSettle();
+
+    // Nada desborda y todo el diálogo cabe por encima del teclado.
+    expect(tester.takeException(), isNull);
+    final dialog = find.byKey(const ValueKey('mission-hosted-create-dialog'));
+    expect(dialog, findsOneWidget);
+    expect(
+      tester.getRect(dialog).bottom,
+      lessThanOrEqualTo(size.height - keyboard),
+    );
+
+    // El campo de nombre, la lista y los botones siguen existiendo, con alto
+    // real y dentro de la superficie (antes quedaban aplastados a ~0 px).
+    final name = find.byKey(const ValueKey('mission-hosted-create-name'));
+    final confirm = find.byKey(const ValueKey('mission-hosted-create-confirm'));
+    expect(tester.getSize(name).height, greaterThan(24));
+    expect(tester.getSize(confirm).height, greaterThanOrEqualTo(36));
+    expect(tester.getRect(name).top, greaterThanOrEqualTo(0));
+    expect(
+      tester.getRect(confirm).bottom,
+      lessThanOrEqualTo(tester.getRect(dialog).bottom),
+    );
+    // El scroll del contenido conserva alto real: con el inset del teclado
+    // contado dos veces se quedaba en ~0 px y era lo que hacía que el diálogo
+    // se viera "trabado".
+    // El scroll del contenido conserva alto real: con el inset del teclado
+    // contado dos veces se quedaba en ~100 px o menos y era lo que hacía que
+    // el diálogo se viera "trabado".
+    expect(
+      tester
+          .getSize(
+            find
+                .descendant(of: dialog, matching: find.byType(Scrollable))
+                .first,
+          )
+          .height,
+      greaterThan(240),
+    );
+
+    // Y la selección responde al tacto con el teclado abierto.
+    await tester.enterText(name, 'Release room');
+    final builderRow = find.byKey(
+      const ValueKey('mission-hosted-create-member-builder'),
+    );
+    await tester.ensureVisible(builderRow);
+    await tester.pumpAndSettle();
+    await tester.tap(builderRow);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-selected-count')),
+      findsOneWidget,
+    );
+    expect(find.text('1 member'), findsOneWidget);
+    expect(tester.widget<FilledButton>(confirm).onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  // Las dos secciones eran títulos de 19 px idénticos y la única diferencia
+  // era el texto, así que nada decía de un golpe qué salas viven en este
+  // móvil y cuáles en el servidor. Ahora cada una lleva etiqueta en
+  // mayúsculas, icono de ámbito, recuento, una línea de explicación y su
+  // propia tarjeta redondeada.
+  // Antes había dos secciones ("SHARED ROOMS"/"LOCAL ROOMS"): la sala local
+  // se eliminó por completo (spec 061 — era un chat de 1 bot disfrazado de
+  // sala, sin respaldo real de servidor ni en Desktop). Ahora solo existe
+  // una sala, y su sección ya no lleva el calificador "compartida"/"shared".
+  testWidgets('rooms read as a single labeled scoped section', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    await _pumpHostedScreen(tester, manager, _workspaceSource());
+
+    expect(find.text('ROOMS'), findsOneWidget);
+    expect(
+      find.text(
+        'The whole team sees it, from any device — for working together '
+        'in the open.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('LOCAL ROOMS'), findsNothing);
+    expect(find.textContaining('sala local'), findsNothing);
+    expect(find.textContaining('local room'), findsNothing);
+
+    // La fila de sala va dentro de una tarjeta redondeada de sección
+    // (nunca una `HermesCard`, que es el contrato ya verificado arriba).
+    final room = find.byKey(const ValueKey('mission-hosted-room-0'));
+    expect(room, findsOneWidget);
+    expect(
+      find.ancestor(
+        of: room,
+        matching: find.byWidgetPredicate((widget) {
+          if (widget is! DecoratedBox) return false;
+          final decoration = widget.decoration;
+          return decoration is BoxDecoration &&
+              decoration.borderRadius != null &&
+              decoration.color != null;
+        }),
+      ),
+      findsWidgets,
+    );
+    expect(
+      find.ancestor(of: room, matching: find.byType(HermesCard)),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  // "Todos aparecen apilados en un montón": la lista de bots no daba ninguna
+  // estructura. Ahora los elegidos suben arriba como pills quitables y, con
+  // un roster largo, hay buscador. El filtro solo afecta a lo que se pinta:
+  // un bot ya elegido que el filtro esconda sigue entrando en la sala.
+  testWidgets('the member picker surfaces chosen bots and never loses one', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: [
+          const AgentProfile(
+            name: 'builder',
+            botModeUiMeta: {'title': 'Builder'},
+          ),
+          const AgentProfile(
+            name: 'reviewer',
+            botModeUiMeta: {'title': 'Reviewer'},
+          ),
+          for (var index = 0; index < 9; index++)
+            AgentProfile(name: 'filler_$index'),
+        ],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.unavailable,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities([
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+            GroupMethod.create,
+          ]),
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await _pumpHostedScreen(tester, manager, source);
+    await tester.tap(find.byKey(const ValueKey('mission-hosted-create')));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find.byKey(const ValueKey('mission-hosted-create-name')),
+      'Release room',
+    );
+    await tester.pump();
+
+    // Sin nadie elegido, el diálogo dice qué hacer en vez de dejar la
+    // franja vacía.
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-empty')),
+      findsOneWidget,
+    );
+
+    Future<void> tapMember(String profile) async {
+      final row = find.byKey(ValueKey('mission-hosted-create-member-$profile'));
+      await tester.ensureVisible(row);
+      await tester.pumpAndSettle();
+      await tester.tap(row);
+      await tester.pumpAndSettle();
+    }
+
+    await tapMember('builder');
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-builder')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-empty')),
+      findsNothing,
+    );
+
+    // Con 11 bots el buscador sí aparece.
+    final filter = find.byKey(const ValueKey('mission-hosted-create-filter'));
+    expect(filter, findsOneWidget);
+    await tester.enterText(filter, 'reviewer');
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-member-builder')),
+      findsNothing,
+    );
+    // Escondido de la lista, pero su pill sigue arriba: la selección no se
+    // pierde al filtrar.
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-builder')),
+      findsOneWidget,
+    );
+
+    await tapMember('reviewer');
+    expect(find.text('2 members'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-create-confirm')),
+    );
+    await tester.pumpAndSettle();
+    expect(source.calls, contains('create:3:Release room:builder,reviewer'));
+    expect(tester.takeException(), isNull);
+  });
+
+  // La pill de un elegido se toca para quitarlo, así que corregir un toque
+  // mal dado no obliga a volver a buscar su fila en la lista.
+  testWidgets('a chosen pill removes that bot from the room draft', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: const [
+          AgentProfile(name: 'builder', botModeUiMeta: {'title': 'Builder'}),
+          AgentProfile(name: 'reviewer', botModeUiMeta: {'title': 'Reviewer'}),
+        ],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.unavailable,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities([
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+            GroupMethod.create,
+          ]),
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await _pumpHostedScreen(tester, manager, source);
+    await tester.tap(find.byKey(const ValueKey('mission-hosted-create')));
+    await tester.pumpAndSettle();
+
+    // Con menos de 9 bots el buscador no aparece: la lista ya cabe.
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-filter')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-create-member-builder')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1 member'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-builder')),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-selected-count')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('mission-hosted-create-chosen-empty')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  // El equipo de una sala compartida era un desplegable con `ListTile`s de
+  // icono genérico y `@handle`: "entro en la sala, voy al equipo y no sale
+  // nada". Ahora cada miembro es una fila real, y solo los que resuelven a un
+  // perfil local de esta conexión llevan a algún sitio.
+  testWidgets('shared room team rows resolve local bots and mark federated', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: const [AgentProfile(name: 'builder')],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.available,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities(const [
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+          ]),
+          rooms: [_mixedMemberRoom()],
+          logs: const [],
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await _pumpHostedScreen(tester, manager, source);
+    await tester.tap(find.byKey(const ValueKey('mission-hosted-room-0')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-room-workspace')),
+      findsOneWidget,
+    );
+
+    // Plegada por defecto: cabecera con pila de avatares y recuento.
+    expect(
+      find.byKey(const ValueKey('mission-hosted-members')),
+      findsOneWidget,
+    );
+    expect(find.text('2 members'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('room-team-member-builder')),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-members-header')),
+    );
+    await tester.pumpAndSettle();
+
+    // Miembro local: nombre publicado por el servidor y ficha alcanzable.
+    final local = find.byKey(const ValueKey('room-team-member-builder'));
+    expect(local, findsOneWidget);
+    expect(find.text('Builder bot'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('room-team-unavailable-builder')),
+      findsNothing,
+    );
+    expect(tester.widget<Semantics>(local).properties.button, isTrue);
+
+    // Miembro federado con nombre publicado: no es "no disponible", pero de
+    // él no hay ficha local, así que su fila no es tocable.
+    final peer = find.byKey(const ValueKey('room-team-member-peer-handle'));
+    expect(peer, findsOneWidget);
+    expect(find.text('Peer bot'), findsOneWidget);
+    expect(tester.widget<Semantics>(peer).properties.onTap, isNull);
+    expect(
+      find.byKey(const ValueKey('room-team-unavailable-peer-handle')),
+      findsNothing,
+    );
+
+    // Las salas compartidas no tienen coordinador: ninguna fila lleva rol.
+    expect(find.byKey(const ValueKey('room-team-role-builder')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('room-team-role-peer-handle')),
+      findsNothing,
+    );
+
+    await tester.tap(local);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('mission-agent-detail')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  // El modelo admite hasta 128 miembros por sala: el desplegable no puede
+  // pintarlos todos en línea dentro del cuerpo de la sala.
+  testWidgets('a crowded shared room caps inline rows and lists the rest', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: const [],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.available,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities(const [
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+          ]),
+          rooms: [_crowdedRoom(14)],
+          logs: const [],
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await _pumpHostedScreen(tester, manager, source);
+    await tester.tap(find.byKey(const ValueKey('mission-hosted-room-0')));
+    await tester.pumpAndSettle();
+    expect(find.text('14 members'), findsOneWidget);
+
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-members-header')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(RoomTeamRow), findsNWidgets(12));
+    final all = find.byKey(const ValueKey('mission-hosted-members-all'));
+    expect(all, findsOneWidget);
+    expect(find.text('See all 14 members'), findsOneWidget);
+
+    // El desplegable tiene techo y se desplaza solo, para no comerle el alto
+    // a la conversación de la sala.
+    await Scrollable.ensureVisible(
+      tester.element(all),
+      duration: Duration.zero,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(all);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-members-screen')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  // Con el equipo desplegado y el teclado abierto la columna de la sala
+  // desbordaba (61 px en 360×640 con 300 px de IME) cuando el desplegable
+  // tenía alto fijo.
+  testWidgets('the expanded team yields height to the keyboard', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    SharedPreferences.setMockInitialValues({});
+    final manager = await ConnectionManager.create(
+      await SharedPreferences.getInstance(),
+    );
+    final source = _HostedScreenSource(
+      MissionBackendSnapshot(
+        profiles: const [],
+        board: const KanbanBoard(columns: []),
+        profilesCapability: MissionCapabilityState.available,
+        sessionsCapability: MissionCapabilityState.available,
+        kanbanCapability: MissionCapabilityState.available,
+        hostedGroupsCapability: MissionCapabilityState.available,
+        hostedGroups: HostedGroupsSnapshot(
+          capabilities: _capabilities(const [
+            GroupMethod.capabilities,
+            GroupMethod.list,
+            GroupMethod.state,
+            GroupMethod.log,
+            GroupMethod.send,
+          ]),
+          rooms: [_crowdedRoom(14)],
+          logs: const [],
+        ),
+        loadedAt: DateTime.fromMillisecondsSinceEpoch(1),
+      ),
+    );
+    await _pumpHostedScreen(tester, manager, source);
+    await tester.tap(find.byKey(const ValueKey('mission-hosted-room-0')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('mission-hosted-members-header')),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('mission-hosted-members-header')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
 }
+
+/// Sala compartida con `count` miembros locales, para el tope de filas en
+/// línea del desplegable de equipo y para el alto del desplegable.
+HostedGroupRoom _crowdedRoom(int count) => HostedGroupRoom.fromJson({
+  'room_id': 'room-private',
+  'name': 'Crowded room',
+  'members': [
+    for (var index = 0; index < count; index++)
+      {
+        'member_id': 'member-$index',
+        'handle': 'bot-$index',
+        'profile': 'bot-$index',
+        'target': {'kind': 'local', 'profile': 'bot-$index'},
+      },
+  ],
+  'authority_gateway_id': 'gateway-private',
+  'authority_epoch': 1,
+  'revision': 1,
+  'created_at': 1,
+  'updated_at': 2,
+  'latest_seq': 0,
+});
+
+/// Sala compartida con un miembro local a esta conexión y otro federado, los
+/// dos con `display_name` publicado por el servidor.
+HostedGroupRoom _mixedMemberRoom() => HostedGroupRoom.fromJson({
+  'room_id': 'room-private',
+  'name': 'Mixed room',
+  'members': [
+    {
+      'member_id': 'member-local',
+      'handle': 'builder',
+      'display_name': 'Builder bot',
+      'profile': 'builder',
+      'target': {'kind': 'local', 'profile': 'builder'},
+    },
+    {
+      'member_id': 'member-peer',
+      'handle': 'peer-handle',
+      'display_name': 'Peer bot',
+      'profile': 'peer-profile',
+      'target': {
+        'kind': 'peer',
+        'peer_id': 'peer-connection',
+        'installation_id': 'peer-installation',
+        'profile': 'peer-profile',
+        'capability_digest': 'a' * 64,
+      },
+    },
+  ],
+  'authority_gateway_id': 'gateway-private',
+  'authority_epoch': 1,
+  'revision': 1,
+  'created_at': 1,
+  'updated_at': 2,
+  'latest_seq': 0,
+});
 
 final _connection = SavedConnection(
   id: 'screen-connection',

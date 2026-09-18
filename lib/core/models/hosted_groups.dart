@@ -257,11 +257,13 @@ final class HostedGroupCreateMember {
 final class HostedGroupMember {
   final String memberId;
   final String handle;
+  final String? displayName;
   final AvatarOwner owner;
 
   const HostedGroupMember._({
     required this.memberId,
     required this.handle,
+    required this.displayName,
     required this.owner,
   });
 
@@ -312,6 +314,12 @@ final class HostedGroupMember {
     return HostedGroupMember._(
       memberId: _string(raw['member_id'], 'member id'),
       handle: _string(raw['handle'], 'member handle'),
+      displayName: _optionalCanonicalString(
+        raw,
+        'display_name',
+        'member display name',
+        200,
+      ),
       owner: AvatarOwner(connectionId: connectionId, profile: profile),
     );
   }

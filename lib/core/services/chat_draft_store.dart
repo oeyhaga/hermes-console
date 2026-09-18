@@ -11,38 +11,16 @@ import 'attachment_uploader.dart';
 import 'session_deletion.dart';
 import 'turn_outbox_store.dart';
 
-enum MissionRoomTaskPhase { prepared, submitting, outcomeUnknown }
-
 class ChatDraft {
   final String text;
   final List<AttachmentDraft> attachments;
   final String? preparedTurnClientTurnId;
-  final String? missionRoomIntentId;
-  final String? missionRoomWorkerProfile;
-  final String? missionRoomBoardId;
-  final String? missionRoomBoardQuery;
-  final MissionRoomTaskPhase? missionRoomTaskPhase;
 
   const ChatDraft({
     required this.text,
     required this.attachments,
     this.preparedTurnClientTurnId,
-    this.missionRoomIntentId,
-    this.missionRoomWorkerProfile,
-    this.missionRoomBoardId,
-    this.missionRoomBoardQuery,
-    this.missionRoomTaskPhase,
   });
-
-  bool get missionRoomOutcomeUnknown =>
-      missionRoomTaskPhase == MissionRoomTaskPhase.outcomeUnknown;
-
-  bool get hasMissionRoomOperation =>
-      missionRoomIntentId != null ||
-      missionRoomWorkerProfile != null ||
-      missionRoomBoardId != null ||
-      missionRoomBoardQuery != null ||
-      missionRoomTaskPhase != null;
 }
 
 /// Entrada recuperable de un chat que todavía no existe en el servidor.
@@ -194,13 +172,8 @@ class ChatDraftStore {
       final savedAt = DateTime.fromMillisecondsSinceEpoch(
         (data['savedAt'] as num?)?.toInt() ?? 0,
       );
-      final roomTaskPhase = _taskPhase(data['missionRoomTaskPhase']);
-      final unresolvedRoomWrite =
-          roomTaskPhase == MissionRoomTaskPhase.submitting ||
-          roomTaskPhase == MissionRoomTaskPhase.outcomeUnknown;
       if (savedAt.millisecondsSinceEpoch <= 0 ||
-          (!unresolvedRoomWrite &&
-              DateTime.now().difference(savedAt) > maxAge)) {
+          DateTime.now().difference(savedAt) > maxAge) {
         return null;
       }
       final attachments = <AttachmentDraft>[];
@@ -224,24 +197,6 @@ class ChatDraftStore {
         preparedTurnClientTurnId: _safeOpaqueIdentity(
           data['preparedTurnClientTurnId'],
         ),
-        missionRoomIntentId: _safeMetadata(
-          data['missionRoomIntentId'],
-          maxLength: 128,
-        ),
-        missionRoomWorkerProfile: _safeMetadata(
-          data['missionRoomWorkerProfile'],
-          maxLength: 64,
-          pattern: RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$'),
-        ),
-        missionRoomBoardId: _safeMetadata(
-          data['missionRoomBoardId'],
-          maxLength: 128,
-        ),
-        missionRoomBoardQuery: _safeMetadata(
-          data['missionRoomBoardQuery'],
-          maxLength: 128,
-        ),
-        missionRoomTaskPhase: roomTaskPhase,
       );
       if (draft.text.isEmpty && draft.attachments.isEmpty) return null;
       return ChatDraftEntry(
@@ -338,11 +293,6 @@ class ChatDraftStore {
     String text,
     List<AttachmentDraft> attachments, {
     String profile = 'default',
-    String? missionRoomIntentId,
-    String? missionRoomWorkerProfile,
-    String? missionRoomBoardId,
-    String? missionRoomBoardQuery,
-    MissionRoomTaskPhase? missionRoomTaskPhase,
     String? preparedTurnClientTurnId,
     LocalConversationLifecycle? lifecycle,
     // Admit before waiting on a screen's two-key move. Cleanup must see this
@@ -433,35 +383,10 @@ class ChatDraftStore {
             LocalConversationCleanupFence.ensureOperationAllowed(
               journalOperation,
             );
-            final safeIntentId = _safeMetadata(
-              missionRoomIntentId,
-              maxLength: 128,
-            );
-            final safeWorker = _safeMetadata(
-              missionRoomWorkerProfile,
-              maxLength: 64,
-              pattern: RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$'),
-            );
-            final safeBoardId = _safeMetadata(
-              missionRoomBoardId,
-              maxLength: 128,
-            );
-            final safeBoardQuery = _safeMetadata(
-              missionRoomBoardQuery,
-              maxLength: 128,
-            );
-            final safePhase = safeIntentId != null && safeWorker != null
-                ? missionRoomTaskPhase
-                : null;
             final encoded = jsonEncode({
               'savedAt': DateTime.now().millisecondsSinceEpoch,
               'text': text,
               'preparedTurnClientTurnId': ?safePreparedTurnId,
-              'missionRoomIntentId': ?safeIntentId,
-              'missionRoomWorkerProfile': ?safeWorker,
-              'missionRoomBoardId': ?safeBoardId,
-              'missionRoomBoardQuery': ?safeBoardQuery,
-              'missionRoomTaskPhase': ?safePhase?.name,
               'attachments': normalizedAttachments
                   .map((item) => item.toJson())
                   .toList(),
@@ -493,22 +418,6 @@ class ChatDraftStore {
     return didCommit;
   }
 
-  static String? _safeMetadata(
-    Object? value, {
-    required int maxLength,
-    RegExp? pattern,
-  }) {
-    if (value is! String) return null;
-    final normalized = value.trim();
-    if (normalized.isEmpty ||
-        normalized.length > maxLength ||
-        normalized.contains(RegExp(r'[\u0000-\u001f\u007f]')) ||
-        (pattern != null && !pattern.hasMatch(normalized))) {
-      return null;
-    }
-    return normalized;
-  }
-
   static String? _safeOpaqueIdentity(Object? value) {
     if (value is! String ||
         value.trim().isEmpty ||
@@ -517,14 +426,6 @@ class ChatDraftStore {
       return null;
     }
     return value;
-  }
-
-  static MissionRoomTaskPhase? _taskPhase(Object? value) {
-    if (value is! String) return null;
-    for (final phase in MissionRoomTaskPhase.values) {
-      if (phase.name == value) return phase;
-    }
-    return null;
   }
 
   Future<void> clear(

@@ -9,15 +9,14 @@ import 'package:hermes_android/core/models/agent_profile.dart';
 import 'package:hermes_android/core/models/bot_visual_identity.dart';
 import 'package:hermes_android/core/models/kanban.dart';
 import 'package:hermes_android/core/models/mission_control.dart';
-import 'package:hermes_android/core/models/mission_room.dart';
 import 'package:hermes_android/core/models/profile_pet.dart';
 import 'package:hermes_android/core/screens/mission_control_screen.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/dock_preferences_store.dart';
 import 'package:hermes_android/core/services/mission_control_repository.dart';
 import 'package:hermes_android/core/services/mission_bot_chat_store.dart';
 import 'package:hermes_android/core/services/mission_organization_store.dart';
-import 'package:hermes_android/core/services/mission_room_store.dart';
 import 'package:hermes_android/core/services/notifications/notification_service.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
@@ -255,7 +254,6 @@ Widget _host({
   required ConnectionManager manager,
   required MissionBackendSnapshot snapshot,
   MissionOrganizationStoreContract? store,
-  MissionRoomStoreContract? roomStore,
   MissionBotChatStore? botChatStore,
   ActiveChatService? activeChats,
   MissionControlDataSource? dataSource,
@@ -266,7 +264,6 @@ Widget _host({
   SavedConnection? connection,
   ValueChanged<Session>? botChatOpenObserver,
   MissionControlOpenTarget? initialOpenTarget,
-  ValueChanged<MissionRoomTaskLink>? roomTaskOpenObserver,
   HermesDesktopBotCreationGateway? botCreateGateway,
   HermesDesktopProfileAssetsGateway? profileAssetsGateway,
 }) => MaterialApp(
@@ -291,12 +288,10 @@ Widget _host({
     connManager: manager,
     dataSource: dataSource ?? _FakeSource(snapshot),
     organizationStore: store,
-    roomStore: roomStore,
     botChatStore: botChatStore,
     activeChats: activeChats,
     initialOpenTarget: initialOpenTarget,
     botChatOpenObserver: botChatOpenObserver,
-    roomTaskOpenObserver: roomTaskOpenObserver,
     botCreateGateway: botCreateGateway,
     profileAssetsGateway: profileAssetsGateway,
     modelOptionsLoader: botCreateGateway == null ? null : (_) async => const [],
@@ -378,6 +373,17 @@ Future<void> _pumpCreateUi(WidgetTester tester) async {
   }
 }
 
+/// El botón "+" de la cabecera de Bots ya no crea un bot directamente: abre
+/// un selector con "Nuevo bot"/"Nueva sala" (para que crear una sala siga
+/// siendo posible con el dock apagado). Los tests que solo cubren el flujo
+/// de bot pasan por ese selector primero.
+Future<void> _openCreateBot(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
+  await _pumpCreateUi(tester);
+  await tester.tap(find.byKey(const ValueKey('mission-create-chooser-bot')));
+  await _pumpCreateUi(tester);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final secureStore = <String, String>{};
@@ -451,7 +457,6 @@ void main() {
       expect(destination.initialPrompt, isNull);
       expect(destination.requestComposerFocus, isFalse);
       expect(destination.missionBotProfile, same(profile));
-      expect(destination.missionRoom, isNull);
     }
   });
 
@@ -755,6 +760,128 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('bot-detail-toggle-hidden')));
     await tester.pumpAndSettle();
     expect(gateway.metaHidden, isTrue);
+  });
+
+  testWidgets('bot sheet reads as identity, actions and one quiet usage line', (
+    tester,
+  ) async {
+    final manager = await _manager();
+    await tester.pumpWidget(
+      _host(
+        manager: manager,
+        snapshot: _snapshot(
+          profiles: const [
+            AgentProfile(name: 'infra', botModeUiMeta: {'title': 'Infra'}),
+          ],
+          sessions: [_session('s-infra', 'infra')],
+          board: const KanbanBoard(columns: []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openAgentDetail(tester, 'infra');
+
+    // Identidad: nombre visible + handle + estado como pill, no como filas
+    // "Profile"/"Modelo" de etiqueta y valor.
+    expect(find.text('Infra'), findsWidgets);
+    expect(find.text('@infra'), findsOneWidget);
+    expect(find.text('Profile'), findsNothing);
+    expect(find.text('Modelo'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('mission-agent-detail')),
+        matching: find.byType(HermesBadge),
+      ),
+      findsOneWidget,
+    );
+
+    // Las 8 acciones ya no son una parrilla de botones: van en dos grupos de
+    // filas (`HermesGroup`), y ninguna se perdió por el camino.
+    final sheetScroll = find.byType(Scrollable).last;
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('mission-agent-detail')),
+        matching: find.byType(HermesSecondaryButton),
+      ),
+      findsNothing,
+    );
+    for (final key in const [
+      'bot-detail-edit-profile',
+      'bot-detail-routines',
+      'bot-detail-tasks',
+      'bot-detail-memory',
+      'bot-detail-skills',
+      'bot-detail-soul',
+      'bot-detail-toggle-pinned',
+      'bot-detail-toggle-hidden',
+    ]) {
+      await tester.scrollUntilVisible(
+        find.byKey(ValueKey(key)),
+        240,
+        scrollable: sheetScroll,
+      );
+      expect(find.byKey(ValueKey(key)), findsOneWidget);
+    }
+
+    // El uso baja a una única línea tenue (input/output/caché ya no se pintan
+    // como cifras grandes que compiten con las acciones del bot).
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('bot-detail-usage')),
+      240,
+      scrollable: sheetScroll,
+    );
+    expect(
+      tester.widget<Text>(find.byKey(const ValueKey('bot-detail-usage'))).data,
+      '150 tokens',
+    );
+    expect(find.text('input'), findsNothing);
+    expect(find.text('output'), findsNothing);
+  });
+
+  testWidgets('rooms list and bots stay reachable with the dock switched off', (
+    tester,
+  ) async {
+    final manager = await _manager();
+    final dock = DockPreferencesController.instance;
+    await dock.setUseDock(false);
+    addTearDown(() => dock.setUseDock(true));
+    await tester.pumpWidget(
+      _host(
+        manager: manager,
+        snapshot: _snapshot(
+          profiles: const [
+            AgentProfile(name: 'infra'),
+            AgentProfile(name: 'qa'),
+          ],
+          board: const KanbanBoard(columns: []),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Sin dock no hay tiles de destino…
+    expect(find.byKey(const ValueKey('bot-mode-floating-dock')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('mission-destination-work')),
+      findsNothing,
+    );
+
+    // …y aun así la pantalla lleva a las salas y de vuelta a Bots: apagar el
+    // dock nunca puede quitar funcionalidad.
+    final toWork = find.byKey(const ValueKey('mission-goto-work'));
+    expect(toWork, findsOneWidget);
+    expect(find.byKey(const ValueKey('mission-goto-bots')), findsNothing);
+    await tester.tap(toWork);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('mission-work-feed')), findsOneWidget);
+
+    final toBots = find.byKey(const ValueKey('mission-goto-bots'));
+    expect(toBots, findsOneWidget);
+    expect(find.byKey(const ValueKey('mission-goto-work')), findsNothing);
+    await tester.tap(toBots);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('mission-bots')), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('bot row shows the pinned Bot Chat preview and time', (
@@ -1332,65 +1459,6 @@ void main() {
     expect(source.loadCount, 3);
   });
 
-  testWidgets('deleting an Organization durably unlinks its Rooms', (
-    tester,
-  ) async {
-    final manager = await _manager();
-    final organizationStore = MissionOrganizationStore(manager.prefs);
-    final roomStore = MissionRoomStore(manager.prefs, nowMs: () => 1000);
-    final organization = await organizationStore.save(
-      connectionId: _connection.id,
-      name: 'Homelab',
-      profileNames: const ['manager', 'infra'],
-      managerProfile: 'manager',
-    );
-    final room = await roomStore.save(
-      connectionId: _connection.id,
-      name: 'general',
-      managerProfile: 'manager',
-      memberProfiles: const ['manager', 'infra'],
-      organizationId: organization.id,
-    );
-
-    await tester.pumpWidget(
-      _host(
-        manager: manager,
-        store: organizationStore,
-        roomStore: roomStore,
-        snapshot: _snapshot(
-          profiles: const [
-            AgentProfile(name: 'manager'),
-            AgentProfile(name: 'infra'),
-          ],
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('mission-workspace-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Homelab').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('mission-workspace-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(ValueKey('mission-workspace-menu-${organization.id}')),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Eliminar').last);
-    await tester.pumpAndSettle();
-    expect(find.text('¿Eliminar espacio de trabajo?'), findsOneWidget);
-    await tester.tap(find.text('Eliminar').last);
-    await tester.pumpAndSettle();
-
-    expect(organizationStore.load(_connection.id), isEmpty);
-    final persistedRoom = roomStore.load(_connection.id).single;
-    expect(persistedRoom.id, room.id);
-    expect(persistedRoom.organizationId, isNull);
-    await _openDestination(tester, 'work');
-    expect(find.text('#general'), findsOneWidget);
-    expect(find.text('Todos los agentes'), findsOneWidget);
-  });
-
   testWidgets('observed Hermes approval appears in the attention rail', (
     tester,
   ) async {
@@ -1635,18 +1703,18 @@ void main() {
     expect(find.text('Coste no publicado'), findsNothing);
     expect(find.text(r'$0.0000'), findsNothing);
 
-    expect(find.text('Otros pendientes'), findsOneWidget);
+    // La cabecera de sección del área de Trabajo va en mayúsculas desde el
+    // rediseño (mismo lenguaje que las secciones de Conversaciones).
+    expect(find.text('OTROS PENDIENTES'), findsOneWidget);
   });
 
   testWidgets(
     'work is one feed with three exact actionable tasks and no bot duplicate',
     (tester) async {
       final manager = await _manager();
-      MissionRoomTaskLink? opened;
       await tester.pumpWidget(
         _host(
           manager: manager,
-          roomTaskOpenObserver: (link) => opened = link,
           snapshot: _snapshot(
             profiles: const [
               AgentProfile(name: 'infra'),
@@ -1756,10 +1824,7 @@ void main() {
       );
       await tester.ensureVisible(blockedTask);
       await tester.pumpAndSettle();
-      await tester.tap(blockedTask);
-      await tester.pump();
-      expect(opened?.boardId, 'operations');
-      expect(opened?.taskId, 'task-blocked');
+      expect(tester.takeException(), isNull);
     },
   );
 
@@ -1805,6 +1870,69 @@ void main() {
     );
     expect(find.byKey(const ValueKey('mission-work-activity')), findsNothing);
     expect(find.text('Uso'), findsNothing);
+  });
+
+  // El tablero era un `TextButton` suelto llamado "Tablero completo" colgado
+  // del final de "Otros pendientes": ni decía qué abría ni es un pendiente.
+  // Ahora es su propia sección explicada, fuera de la bandeja, con la misma
+  // clave y el mismo destino.
+  testWidgets('the task board is its own explained section outside the tray', (
+    tester,
+  ) async {
+    final manager = await _manager();
+    await tester.pumpWidget(
+      _host(
+        manager: manager,
+        snapshot: _snapshot(
+          profiles: const [AgentProfile(name: 'infra')],
+          sessions: [_session('session-infra', 'infra')],
+          board: const KanbanBoard(
+            columns: [
+              KanbanColumn(
+                name: 'ready',
+                tasks: [
+                  KanbanTask(
+                    id: 'task-ready',
+                    title: 'Audit services',
+                    body: '',
+                    status: 'ready',
+                    assignee: 'infra',
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await _openWork(tester);
+
+    final feed = find.descendant(
+      of: find.byKey(const ValueKey('mission-work-feed')),
+      matching: find.byType(Scrollable),
+    );
+    final board = find.byKey(const ValueKey('mission-open-global-kanban'));
+    await tester.scrollUntilVisible(board, 180, scrollable: feed);
+    expect(board, findsOneWidget);
+
+    // Ya no cuelga de la bandeja de pendientes.
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('mission-global-work-tray')),
+        matching: board,
+      ),
+      findsNothing,
+    );
+
+    // Y dice qué es y qué abre, en vez de solo "Tablero completo".
+    expect(find.text('TABLERO DE TAREAS'), findsOneWidget);
+    expect(find.text('Abrir el tablero compartido'), findsOneWidget);
+    expect(
+      find.text('Todas las tareas del equipo en un tablero, por columnas.'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('partial refresh retains last good source and marks it stale', (
@@ -1977,13 +2105,16 @@ void main() {
     );
     final manageLabel = find.text('Editar profile');
     expect(manageLabel, findsOneWidget);
-    final manageButton = tester.widget<HermesSecondaryButton>(
-      find.ancestor(
-        of: manageLabel,
-        matching: find.byType(HermesSecondaryButton),
+    // La ficha rediseñada agrupa las acciones en filas (`HermesGroup`), no en
+    // una parrilla de botones: en modo consulta la fila sigue visible pero sin
+    // `onTap`, igual que antes hacía el botón deshabilitado.
+    final manageRow = tester.widget<InkWell>(
+      find.descendant(
+        of: find.byKey(const ValueKey('bot-detail-edit-profile')),
+        matching: find.byType(InkWell),
       ),
     );
-    expect(manageButton.onTap, isNull);
+    expect(manageRow.onTap, isNull);
   });
 
   testWidgets('Kanban live updates debounce and pause with Android lifecycle', (
@@ -2151,7 +2282,9 @@ void main() {
 
       expect(find.byKey(const ValueKey('mission-bots')), findsOneWidget);
       await _openAgentDetail(tester, 'agent_00');
-      expect(find.text('Profile'), findsOneWidget);
+      // El nombre del profile ya no se pinta como fila "Profile · valor": vive
+      // en la cabecera de identidad como `@handle` (ficha rediseñada).
+      expect(find.text('@agent_00'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.binding.handlePopRoute();
       await tester.pumpAndSettle();
@@ -2339,8 +2472,7 @@ void main() {
         ),
         findsOneWidget,
       );
-      await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
-      await _pumpCreateUi(tester);
+      await _openCreateBot(tester);
       expect(find.byKey(const ValueKey('bot-create-form')), findsOneWidget);
 
       await _enterCreateName(tester, 'Research Bot');
@@ -2397,8 +2529,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
-    await _pumpCreateUi(tester);
+    await _openCreateBot(tester);
     await _enterCreateName(tester, 'Infra');
 
     expect(find.text('Ya existe un agente con este nombre.'), findsOneWidget);
@@ -2456,8 +2587,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
-      await _pumpCreateUi(tester);
+      await _openCreateBot(tester);
       // Skills es su propia fila colapsable en "Personalizar" (mockup de
       // Editar/Crear bot); ya no depende de expandir "Avanzado".
       await _scrollCreateFormTo(tester, 'bot-create-skills-row');
@@ -2490,8 +2620,7 @@ void main() {
       expect(gateway.disabledSkills, ['web']);
 
       // Sin catálogo (gateway antiguo), la sección degrada con aviso.
-      await tester.tap(find.byKey(const ValueKey('mission-create-agent')));
-      await _pumpCreateUi(tester);
+      await _openCreateBot(tester);
       gateway.skills = null;
       await _scrollCreateFormTo(tester, 'bot-create-skills-row');
       await tester.tap(find.byKey(const ValueKey('bot-create-skills-row')));
@@ -2552,32 +2681,35 @@ void main() {
     expect(find.byKey(const ValueKey('bot-create-form')), findsOneWidget);
   });
 
-  testWidgets('V13 Nueva sala action opens the existing authoritative editor', (
-    tester,
-  ) async {
-    final manager = await _manager();
-    await tester.pumpWidget(
-      _host(
-        manager: manager,
-        snapshot: _snapshot(
-          profiles: const [
-            AgentProfile(name: 'infra'),
-            AgentProfile(name: 'qa'),
-          ],
-          board: const KanbanBoard(columns: []),
+  // Antes, sin la capacidad `groups.create`, este mismo botón caía a crear
+  // una "sala local" (spec 061: un chat de 1 bot disfrazado de sala, sin
+  // interacción de equipo real). Ahora no hay sustituto: sin esa capacidad
+  // el botón se deshabilita, tal cual, en vez de fingir una sala que
+  // funciona distinto por debajo.
+  testWidgets(
+    'V13 Nueva sala action is disabled without the create capability',
+    (tester) async {
+      final manager = await _manager();
+      await tester.pumpWidget(
+        _host(
+          manager: manager,
+          snapshot: _snapshot(
+            profiles: const [
+              AgentProfile(name: 'infra'),
+              AgentProfile(name: 'qa'),
+            ],
+            board: const KanbanBoard(columns: []),
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('bot-mode-dock-create')));
-    await tester.pumpAndSettle();
-    final roomAction = find.byKey(const ValueKey('bot-mode-create-room'));
-    expect(find.text('Crear sala local'), findsOneWidget);
-    expect(tester.widget<InkWell>(roomAction).onTap, isNotNull);
-    await tester.tap(roomAction);
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('mission-room-editor')), findsOneWidget);
-  });
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('bot-mode-dock-create')));
+      await tester.pumpAndSettle();
+      final roomAction = find.byKey(const ValueKey('bot-mode-create-room'));
+      expect(find.text('Nueva sala'), findsOneWidget);
+      expect(tester.widget<InkWell>(roomAction).onTap, isNull);
+    },
+  );
 
   testWidgets(
     'V13 owning screen create orbs share the painted plus X and a vertical trajectory',
@@ -2701,37 +2833,22 @@ void main() {
     await _openAgentDetail(tester, 'infra');
     expect(find.byKey(const ValueKey('mission-agent-detail')), findsOneWidget);
     expect(find.byKey(const ValueKey('bot-mode-floating-dock')), findsNothing);
-    await tester.binding.handlePopRoute();
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('bot-mode-dock-create')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('bot-mode-create-room')));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('mission-room-editor')), findsOneWidget);
-    expect(find.byKey(const ValueKey('bot-mode-floating-dock')), findsNothing);
+    // La sala local (con su propio modal "mission-room-editor") ya no existe
+    // (spec 061). Reconstruir aquí la capacidad `groups.create` solo para
+    // repetir esta misma comprobación de "el dock no vive en el modal, vive
+    // en la pantalla que lo empuja" contra la sala real sería duplicar un
+    // fixture completo (ver `mission_control_hosted_groups_test.dart`) por
+    // una propiedad genérica del `Navigator`, ya probada arriba contra la
+    // ficha de agente.
   });
 
   testWidgets(
-    'V13 mechanical owning-screen slop audit has only allowed surfaces',
+      'V13 mechanical owning-screen slop audit has only allowed surfaces',
     (tester) async {
       final manager = await _manager();
-      final roomStore = MissionRoomStore(manager.prefs, nowMs: () => 1000);
-      final room = await roomStore.save(
-        connectionId: _connection.id,
-        name: 'operations',
-        managerProfile: 'infra',
-        memberProfiles: const ['infra', 'qa'],
-      );
-      await roomStore.linkTask(
-        _connection.id,
-        room.id,
-        'task-running',
-        boardId: 'ops',
-      );
       await tester.pumpWidget(
         _host(
           manager: manager,
-          roomStore: roomStore,
           snapshot: _snapshot(
             profiles: const [
               AgentProfile(name: 'infra'),
@@ -2781,17 +2898,14 @@ void main() {
       );
 
       await _openWork(tester);
-      for (final key in const ['mission-room-', 'room-task-ops-task-running']) {
-        final target = key == 'mission-room-'
-            ? find.text('#operations')
-            : find.byKey(ValueKey(key));
-        expect(target, findsOneWidget);
-        expect(
-          find.ancestor(of: target, matching: find.byType(HermesCard)),
-          findsNothing,
-          reason: 'accent-rail/unearthed-box/wrong-surface: $key',
-        );
-      }
+      const key = 'mission-global-task-ops-task-running';
+      final target = find.byKey(const ValueKey(key));
+      expect(target, findsOneWidget);
+      expect(
+        find.ancestor(of: target, matching: find.byType(HermesCard)),
+        findsNothing,
+        reason: 'accent-rail/unearthed-box/wrong-surface: $key',
+      );
     },
   );
 }

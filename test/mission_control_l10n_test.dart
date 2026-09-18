@@ -112,7 +112,7 @@ void main() {
           entry.key == 'en' ? '0 members' : '0 miembros',
         );
         expect(
-          Strings.of(tester.element(create)).missionRoomAvatarMembers(1),
+          Strings.of(tester.element(create)).roomAvatarMembers(1),
           entry.value[4],
         );
       },

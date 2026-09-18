@@ -42,6 +42,8 @@
   "drawerNeedInstance": "Set up an instance first",
   "drawerGroupRecent": "recent",
   "drawerGroupWorkspace": "main",
+  "drawerSectionWork": "work",
+  "drawerSectionAgents": "agents",
   "drawerHome": "Home",
   "drawerSessions": "Conversations",
   "drawerPersonalization": "Personalization",
@@ -3874,9 +3876,10 @@
   },
   "ieNewInstanceTitle": "New instance",
   "ieExternalLinkBanner": "Details pre-filled from an external link — verify that the server URL is yours before saving.",
-  "ieSectionGeneral": "general",
-  "ieSectionGateway": "gateway",
+  "ieSectionGeneral": "identity",
+  "ieSectionGateway": "connection",
   "ieSectionBridge": "mobile bridge",
+  "ieBridgeAdvancedSubtitle": "Manual token and URL — usually not needed",
   "ieBridgeQrHint": "The setup QR fills this token automatically. If you configured the Bridge manually, you can also paste it here.",
   "ieBridgeTokenEmpty": "Bridge token (empty = no change)",
   "ieBridgeUrlEmptyHint": "Leave it empty to automatically use the Gateway host on port 9131.",
@@ -4280,6 +4283,8 @@
   "chaQueueSendNext": "Send next",
   "chaQueueDelete": "Delete",
   "chaQueueEditFailed": "The queued message could not be updated.",
+  "chaQueueStuck": "A queued message kept failing to send. It's still in the queue — try sending it again.",
+  "chaTurnStillWorking": "Still working — I'll reply when it's done",
   "chaStopStopping": "Stopping…",
   "chaStopRetrying": "Retrying Stop…",
   "chaStopConfirmed": "Stopped",
@@ -5482,16 +5487,18 @@
       "item": {"type": "String"}
     }
   },
-  "missionSharedRooms": "Shared rooms",
-  "missionCreateSharedRoom": "Create shared room",
-  "missionNoSharedRooms": "No official shared rooms are available.",
-  "missionSharedRoomsUnavailable": "Official shared rooms are unavailable.",
+  "missionSharedRooms": "Rooms",
+  "missionCreateSharedRoom": "Create room",
+  "missionNoSharedRooms": "No official rooms are available.",
+  "missionSharedRoomsUnavailable": "Official rooms are unavailable.",
   "missionSendSharedMessage": "Send message",
-  "missionRenameSharedRoom": "Rename shared room",
-  "missionStopSharedRoom": "Stop shared room?",
-  "missionDisbandSharedRoom": "Disband shared room?",
+  "missionRenameSharedRoom": "Rename room",
+  "missionStopSharedRoom": "Stop room?",
+  "missionDisbandSharedRoom": "Disband room?",
+  "missionStopSharedRoomAction": "Stop room",
+  "missionDisbandSharedRoomAction": "Disband room",
   "missionConfirm": "Confirm",
-  "missionHostedActionFailed": "Hermes could not update the shared room.",
+  "missionHostedActionFailed": "Hermes could not update the room.",
   "missionHostedRetryAvailable": "A room task can be retried.",
   "missionHostedRetryAction": "Retry task",
   "missionHostedRetryConfirm": "Retry this room task?",
@@ -5505,12 +5512,12 @@
   "@missionHostedRoomCount": {
     "placeholders": {"count": {"type": "int"}}
   },
-  "missionSharedRoomSemantics": "Shared room {name}, {count, plural, one{1 member} other{{count} members}}",
+  "missionSharedRoomSemantics": "Room {name}, {count, plural, one{1 member} other{{count} members}}",
   "@missionSharedRoomSemantics": {
     "placeholders": {"name": {"type": "String"}, "count": {"type": "int"}}
   },
-  "missionRoomAvatarMembers": "{count, plural, one{1 member, incomplete team} other{{count} members}}",
-  "@missionRoomAvatarMembers": {
+  "roomAvatarMembers": "{count, plural, one{1 member, incomplete team} other{{count} members}}",
+  "@roomAvatarMembers": {
     "placeholders": {"count": {"type": "int"}}
   },
   "missionApprovalNoLongerAvailable": "The approval is no longer available. Refresh Work.",
@@ -5518,7 +5525,6 @@
   "missionApprovalPending": "Approval pending",
   "missionApprovalDecisionHint": "Decide whether to continue",
   "missionBotChatMetadataUnavailable": "Bot Chat metadata could not be verified. Refresh Bots and try again.",
-  "missionRoomRosterUnavailable": "The authoritative profile roster is unavailable or this coordinator no longer exists. Refresh or manage profiles first.",
   "missionOffline": "Hermes is unavailable. Existing team data remains visible.",
   "missionStaleData": "Some team data may be out of date.",
   "missionKanbanUnavailable": "The task board is not available on this Hermes installation."

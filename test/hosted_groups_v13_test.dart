@@ -271,6 +271,38 @@ void main() {
     }
   });
 
+  test('hosted member display_name is optional and bounded', () {
+    Map<String, dynamic> member({Object? displayName, bool include = true}) => {
+      'member_id': 'member-1',
+      'profile': 'research',
+      'handle': 'research-home',
+      if (include) 'display_name': displayName,
+      'target': {'kind': 'local', 'profile': 'research'},
+    };
+
+    expect(
+      HostedGroupMember.fromJson(
+        member(displayName: 'Research Lead'),
+        authorityGatewayId: 'gateway-private',
+      ).displayName,
+      'Research Lead',
+    );
+    expect(
+      HostedGroupMember.fromJson(
+        member(include: false),
+        authorityGatewayId: 'gateway-private',
+      ).displayName,
+      isNull,
+    );
+    expect(
+      () => HostedGroupMember.fromJson(
+        member(displayName: 'x' * 201),
+        authorityGatewayId: 'gateway-private',
+      ),
+      throwsFormatException,
+    );
+  });
+
   group('groups.state rejects foreign room identity', () {
     for (final operation in const ['state', 'rename', 'stop', 'disband']) {
       test('$operation read-back cannot return a different room', () async {
