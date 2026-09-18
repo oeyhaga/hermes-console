@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/accent_card.dart';
-import 'package:hermes_android/core/widgets/hermes_premium_ui.dart';
 import 'package:hermes_android/core/widgets/subagent_activity_card.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 
@@ -166,13 +165,20 @@ void main() {
         ),
       );
 
-      expect(find.text('Subagentes'), findsOneWidget);
       expect(find.textContaining('usando herramienta'), findsOneWidget);
       expect(find.textContaining('04:12'), findsOneWidget);
       expect(find.textContaining('terminal'), findsNothing);
       expect(find.textContaining('Revisar el proyecto'), findsNothing);
       expect(find.byType(LinearProgressIndicator), findsNothing);
       expect(find.textContaining('Tarea 7 de 10'), findsNothing);
+      expect(find.textContaining('PRIVATE_REASONING'), findsNothing);
+      expect(find.textContaining('PRIVATE_TOOL_INPUT'), findsNothing);
+      expect(find.textContaining('PRIVATE_RESULT'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Subagentes'), findsOneWidget);
       expect(find.textContaining('PRIVATE_REASONING'), findsNothing);
       expect(find.textContaining('PRIVATE_TOOL_INPUT'), findsNothing);
       expect(find.textContaining('PRIVATE_RESULT'), findsNothing);
@@ -195,13 +201,10 @@ void main() {
         ),
       );
 
-      expect(find.text('Subagentes'), findsOneWidget);
       expect(find.text('Verificar recuperación'), findsNothing);
       expect(find.textContaining('falló'), findsOneWidget);
       expect(find.textContaining('02:07'), findsOneWidget);
-      final icon = tester.widget<Icon>(
-        find.byIcon(Icons.account_tree_outlined),
-      );
+      final icon = tester.widget<Icon>(find.byIcon(Icons.error_outline));
       final colors = Theme.of(
         tester.element(find.byType(SubagentActivityCard)),
       ).hermes;
@@ -275,8 +278,9 @@ void main() {
       expect(find.textContaining(privateText), findsNothing);
     }
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     for (final privateText in [
       'PRIVATE_MODEL',
@@ -313,11 +317,12 @@ void main() {
       ),
     );
 
-    expect(find.text('Subagentes'), findsOneWidget);
     expect(find.textContaining('estado desconocido'), findsOneWidget);
     expect(find.textContaining('opaque-private-id'), findsNothing);
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Subagentes'), findsOneWidget);
     expect(find.textContaining('Subagente 1'), findsNWidgets(2));
     expect(find.text('Abrir conversación'), findsNothing);
   });
@@ -402,8 +407,9 @@ void main() {
     expect(find.text('1 en curso · 2 finalizados'), findsOneWidget);
     expect(find.text('Auditar Android'), findsNothing);
     expect(find.text('Revisar continuidad'), findsNothing);
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Subagente 1'), findsOneWidget);
     expect(find.text('Subagente 2'), findsOneWidget);
     expect(find.text('Subagente 3'), findsOneWidget);
@@ -427,14 +433,15 @@ void main() {
       ),
     );
 
-    expect(find.byType(HermesInlineActivity), findsOneWidget);
+    expect(find.byKey(const ValueKey('subagent-disclosure')), findsOneWidget);
     expect(find.byType(AccentCard), findsNothing);
     expect(
       find.byKey(const ValueKey('subagent-open-child-card')),
       findsNothing,
     );
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.byKey(const ValueKey('subagent-open-child-card')));
     await tester.tap(find.byKey(const ValueKey('subagent-stop-child-card')));
 
@@ -599,8 +606,9 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     final open = tester.widget<TextButton>(
       find.byKey(const ValueKey('subagent-open-child-card')),
     );
@@ -611,7 +619,13 @@ void main() {
     expect(stop.onPressed, isNull);
     expect(find.text('Abriendo…'), findsOneWidget);
     expect(find.text('Deteniendo…'), findsOneWidget);
-    expect(find.byType(CircularProgressIndicator), findsNWidgets(2));
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('subagent-panel')),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNWidgets(2),
+    );
   });
 
   testWidgets('solo lectura conserva abrir pero oculta detener', (
@@ -627,8 +641,9 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(
       find.byKey(const ValueKey('subagent-open-child-card')),
       findsOneWidget,
@@ -651,8 +666,9 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Abrir conversación'), findsNothing);
     expect(find.text('Detener'), findsNothing);
   });
@@ -676,17 +692,18 @@ void main() {
     );
     expect(scrollables, findsNothing);
     expect(find.text('Revisar el proyecto'), findsNothing);
-    expect(find.text('ver detalles'), findsOneWidget);
+    expect(find.byKey(const ValueKey('subagent-disclosure')), findsOneWidget);
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.textContaining('Subagente 1'), findsOneWidget);
     expect(find.textContaining('Subagente 2'), findsOneWidget);
     expect(find.text('Revisar el proyecto'), findsNothing);
     expect(
       find.descendant(
-        of: find.byType(SubagentActivityCard),
+        of: find.byKey(const ValueKey('subagent-panel')),
         matching: find.byType(Scrollable),
       ),
       findsOneWidget,
@@ -719,7 +736,7 @@ void main() {
       tester.getSize(find.byType(SubagentActivityCard)).height,
       lessThanOrEqualTo(148),
     );
-    expect(find.text('ver detalles'), findsOneWidget);
+    expect(find.byKey(const ValueKey('subagent-disclosure')), findsOneWidget);
     expect(
       find.descendant(
         of: find.byType(SubagentActivityCard),
@@ -728,13 +745,16 @@ void main() {
       findsNothing,
     );
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
+    // The pill itself no longer grows on open — the detail lives in its
+    // own floating surface route, not an inline expansion of this widget.
     expect(tester.takeException(), isNull);
     expect(
       tester.getSize(find.byType(SubagentActivityCard)).height,
-      lessThanOrEqualTo(208),
+      lessThanOrEqualTo(148),
     );
   });
 
@@ -743,8 +763,11 @@ void main() {
   ) async {
     await tester.pumpWidget(
       _app(
+        // The floating surface has far more vertical room than the old
+        // ~180px inline panel, so a handful of rows no longer forces a
+        // scroll — generate enough to overflow it regardless.
         activities: List.generate(
-          8,
+          30,
           (index) => _nativeActivity(
             subagentId: 'child-$index',
             childSessionId: 'child-session-$index',
@@ -756,12 +779,12 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('ocultar detalles'), findsOneWidget);
     final scroll = find.descendant(
-      of: find.byType(SubagentActivityCard),
+      of: find.byKey(const ValueKey('subagent-panel')),
       matching: find.byType(Scrollable),
     );
     expect(
@@ -791,8 +814,9 @@ void main() {
 
     expect(find.textContaining(privateGoal), findsNothing);
     expect(find.textContaining(privateResult), findsNothing);
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.textContaining('Subagente 1'), findsWidgets);
     expect(find.textContaining(privateGoal), findsNothing);
@@ -810,14 +834,15 @@ void main() {
       ),
     );
 
-    final disclosure = find.ancestor(
-      of: find.text('ver detalles'),
+    final disclosure = find.descendant(
+      of: find.byKey(const ValueKey('subagent-disclosure')),
       matching: find.byType(InkWell),
     );
     expect(tester.getSize(disclosure.first).height, greaterThanOrEqualTo(48));
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     final completed = tester.widget<Text>(find.text('completado').last);
     final colors = Theme.of(
@@ -841,8 +866,9 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
     expect(
       find.byKey(const ValueKey('subagent-open-child-card')),
@@ -885,30 +911,36 @@ void main() {
       ),
     );
 
-    expect(find.text('Subagentes'), findsOneWidget);
     expect(find.textContaining('2'), findsWidgets);
     expect(find.text('Verificar la interfaz móvil'), findsNothing);
     final header = find.byKey(const ValueKey('subagent-disclosure'));
     expect(tester.getSize(header).height, greaterThanOrEqualTo(48));
 
     await tester.tap(header);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Subagentes'), findsOneWidget);
     expect(find.byKey(const ValueKey('subagent-row-d-first')), findsOneWidget);
     expect(find.byKey(const ValueKey('subagent-row-d-second')), findsOneWidget);
     expect(find.text('Verificar la interfaz móvil'), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('subagent-row-d-first')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Verificar la interfaz móvil'), findsOneWidget);
     expect(find.text('Comprobar el panel acotado'), findsNothing);
+    // The floating surface sizes to its content, up to 88% of the 800px
+    // test viewport (~676px) — two rows plus one selected detail comfortably
+    // fits well under that ceiling without needing the full allowance.
     expect(
       tester.getSize(find.byKey(const ValueKey('subagent-panel'))).height,
-      lessThanOrEqualTo(360),
+      lessThanOrEqualTo(500),
     );
     expect(tester.takeException(), isNull);
 
-    await tester.tap(find.text('ocultar detalles'));
-    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Verificar la interfaz móvil'), findsNothing);
   });
 
@@ -927,8 +959,9 @@ void main() {
     );
 
     await tester.pumpWidget(build(live));
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     final stop = find.byKey(const ValueKey('subagent-stop-stop-waits'));
     await tester.tap(stop);
     await tester.pump();
@@ -962,13 +995,15 @@ void main() {
         onSteer: (_, text) async => disposition,
       ),
     );
-    await tester.tap(find.text('ver detalles'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     final input = find.byKey(const ValueKey('subagent-steer-input-steer-safe'));
     final send = find.byKey(const ValueKey('subagent-steer-steer-safe'));
     await tester.enterText(input, 'Conserva este borrador');
     await tester.ensureVisible(send);
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(send);
     await tester.pump();
     expect(find.text('Conserva este borrador'), findsOneWidget);
@@ -1001,6 +1036,12 @@ void main() {
       truncated: true,
     );
 
+    // Foreground toggles through a captured StateSetter rather than a
+    // tappable FAB: once the detail opens as a real floating surface, its
+    // modal barrier legitimately absorbs taps aimed at anything behind it —
+    // this simulates an app-lifecycle change, which doesn't arrive via an
+    // on-screen tap in the first place.
+    late StateSetter setForeground;
     Widget build() => MaterialApp(
       locale: const Locale('es'),
       localizationsDelegates: const [
@@ -1011,49 +1052,54 @@ void main() {
       ],
       supportedLocales: Strings.supportedLocales,
       home: StatefulBuilder(
-        builder: (context, setState) => Scaffold(
-          body: SubagentActivityCard(
-            activities: [activity],
-            canInterrupt: (_) => false,
-            appForeground: foreground,
-            scheduleTailPoll: (delay, callback) {
-              late final VoidCallback scheduledCallback;
-              scheduledCallback = () {
-                scheduled.remove(scheduledCallback);
-                callback();
-              };
-              scheduled.add(scheduledCallback);
-              return () => scheduled.remove(scheduledCallback);
-            },
-            onTail: (_) async {
-              tailCalls += 1;
-              return tailResult;
-            },
-          ),
-          floatingActionButton: FloatingActionButton(
-            onPressed: () => setState(() => foreground = !foreground),
-          ),
-        ),
+        builder: (context, setState) {
+          setForeground = setState;
+          return Scaffold(
+            body: SubagentActivityCard(
+              activities: [activity],
+              canInterrupt: (_) => false,
+              appForeground: foreground,
+              scheduleTailPoll: (delay, callback) {
+                late final VoidCallback scheduledCallback;
+                scheduledCallback = () {
+                  scheduled.remove(scheduledCallback);
+                  callback();
+                };
+                scheduled.add(scheduledCallback);
+                return () => scheduled.remove(scheduledCallback);
+              },
+              onTail: (_) async {
+                tailCalls += 1;
+                return tailResult;
+              },
+            ),
+          );
+        },
       ),
     );
 
     await tester.pumpWidget(build());
     expect(tailCalls, 0);
     await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.byKey(const ValueKey('subagent-row-tail-safe')));
     await tester.pump();
     expect(tailCalls, 1);
     expect(find.text('Salida pública acotada'), findsOneWidget);
     expect(find.textContaining('recortada'), findsOneWidget);
 
-    await tester.tap(find.byType(FloatingActionButton));
+    setForeground(() => foreground = false);
+    await tester.pump();
+    // The sheet's own setState is nudged from a post-frame callback (see
+    // didUpdateWidget) to avoid "setState during build" — that needs one
+    // more pump to actually flush into the tree.
     await tester.pump();
     expect(scheduled, isEmpty);
     expect(find.text('Salida pública acotada'), findsNothing);
     expect(find.text('La salida reciente no está disponible.'), findsNothing);
 
-    await tester.tap(find.byType(FloatingActionButton));
+    setForeground(() => foreground = true);
     await tester.pump();
     expect(tailCalls, 2);
     await tester.pump();
@@ -1104,7 +1150,8 @@ void main() {
         ),
       );
       await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
-      await tester.pumpAndSettle();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(
         find.byKey(const ValueKey('subagent-row-tail-transient')),
       );
@@ -1150,8 +1197,9 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.text('view details'));
-    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('Guide'), findsWidgets);
     expect(find.text('Orientar'), findsNothing);
     expect(find.textContaining('salida reciente'), findsNothing);
@@ -1187,15 +1235,11 @@ void main() {
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      final titleFinder = find.text('Subagentes');
       final summaryFinder = find.byWidgetPredicate(
         (widget) =>
             widget is Text &&
             (widget.data?.contains('usando herramienta') ?? false),
       );
-      final collapsedTitle = tester.widget<Text>(titleFinder);
-      expect(collapsedTitle.maxLines, 1);
-      expect(collapsedTitle.overflow, TextOverflow.ellipsis);
       final collapsedSummary = tester.widget<Text>(summaryFinder);
       expect(collapsedSummary.maxLines, 1);
       expect(collapsedSummary.overflow, TextOverflow.ellipsis);
@@ -1206,8 +1250,8 @@ void main() {
         tester
             .getSize(
               find
-                  .ancestor(
-                    of: find.text('ver detalles'),
+                  .descendant(
+                    of: find.byKey(const ValueKey('subagent-disclosure')),
                     matching: find.byType(InkWell),
                   )
                   .first,
@@ -1216,8 +1260,9 @@ void main() {
         greaterThanOrEqualTo(48),
       );
 
-      await tester.tap(find.text('ver detalles'));
-      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
 
       expect(tester.takeException(), isNull);
       expect(find.textContaining('safe failure detail'), findsNothing);
