@@ -162,7 +162,10 @@ class DockItemConfig {
     // como "visible" en vez de caer a un valor por defecto razonable (bug
     // confirmado: C5).
     final rawVisible = json['visible'];
-    return DockItemConfig(id: id, visible: rawVisible is bool ? rawVisible : true);
+    return DockItemConfig(
+      id: id,
+      visible: rawVisible is bool ? rawVisible : true,
+    );
   }
 }
 
@@ -366,20 +369,15 @@ class DockPreferences {
 /// perfil, en orden, con "Atrás" (representado como `null`) insertado en el
 /// primer hueco cuando [showBack] es true.
 ///
-/// El "destacado" (el elemento que nunca se retira para hacerle sitio a
-/// "Atrás") ya no es un campo persistido aparte (ver C6): es, por
-/// definición, el primer elemento de [visibleItems] — exactamente lo mismo
-/// que ya calculaba Ajustes › Dock (antes como `pinnedItemId` recalculado en
-/// cada edición) para decidir qué item "no se puede robar" a otro. Con una
-/// sola fuente de verdad, el orden ya IMPLICA qué item queda protegido.
-///
-/// Para no añadir un hueco extra a la barra se retira el último elemento
-/// visible que no sea el destacado. Si el único elemento visible YA ES el
-/// destacado (por ser el único, y por tanto también el primero), no hay
-/// nada que retirar sin romper esa garantía: la barra gana un hueco más en
-/// vez de perder el destacado (caso raro — la barra en sí no cambia de
-/// tamaño, cada item solo se estrecha un poco más; antes el código
-/// contradecía este mismo doc y lo retiraba igual, ver E).
+/// Ningún elemento visible se retira para hacerle sitio a "Atrás": la barra
+/// simplemente gana un hueco más (cada tile se estrecha un poco, la barra en
+/// sí no cambia de tamaño). Una versión anterior retiraba en silencio el
+/// último elemento no protegido para no crecer un hueco — pero eso hacía que
+/// un elemento que el usuario acababa de activar en Ajustes › Dock
+/// "desapareciera" según la pantalla, sin ninguna indicación de por qué
+/// (bug confirmado: un item activado no se veía en ninguna subpantalla,
+/// donde `showBack` es casi siempre true). Un elemento que el usuario activó
+/// se ve siempre, en toda pantalla.
 ///
 /// Si el perfil no tiene NINGÚN elemento visible (todos ocultos desde
 /// Ajustes › Dock) pero [showBack] es true, el resultado es `[null]`: nunca
@@ -392,10 +390,5 @@ List<DockItemId?> resolveDockSlots({
   required bool showBack,
 }) {
   if (!showBack) return List<DockItemId?>.from(visibleItems);
-  if (visibleItems.isEmpty) return const <DockItemId?>[null];
-  final result = List<DockItemId>.from(visibleItems);
-  final pinnedItemId = result.first;
-  final removeIndex = result.lastIndexWhere((id) => id != pinnedItemId);
-  if (removeIndex != -1) result.removeAt(removeIndex);
-  return <DockItemId?>[null, ...result];
+  return <DockItemId?>[null, ...visibleItems];
 }

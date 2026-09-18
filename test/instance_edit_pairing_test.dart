@@ -448,6 +448,12 @@ void main() {
 
     await pumpEditor(tester, manager, initial: manager.getConnections().single);
     await tester.pump();
+    // El bridge manual vive detrás de un disclosure colapsado por defecto en
+    // una instancia ya guardada (configuración excepcional, no de todos los
+    // días): hay que abrirlo antes de poder ver/tocar sus campos.
+    await tester.ensureVisible(find.text('mobile bridge'));
+    await tester.tap(find.text('mobile bridge'));
+    await tester.pump();
     await tester.ensureVisible(
       find.byKey(const ValueKey('instance-bridge-token')),
     );

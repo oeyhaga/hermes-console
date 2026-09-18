@@ -136,7 +136,11 @@ DockVisual resolveDockVisual(HermesThemeColors colors, DockStyle style) {
   final borderAlpha = lerpDouble(0.62, 0.95, transparency)!;
   final blurSigma = transparency > 0 ? lerpDouble(6, 26, transparency)! : 0.0;
 
-  var background = Color.lerp(colors.surface, Colors.white, transparency * 0.22)!;
+  var background = Color.lerp(
+    colors.surface,
+    Colors.white,
+    transparency * 0.22,
+  )!;
   var border = Color.lerp(colors.divider, Colors.white, transparency * 0.4)!;
   List<BoxShadow> shadows;
   var lift = 0.0;
@@ -145,9 +149,18 @@ DockVisual resolveDockVisual(HermesThemeColors colors, DockStyle style) {
     case DockDepth.flat:
       shadows = const [];
     case DockDepth.elevated:
+      // Un `BoxShadow` negro puro sobre el fondo ya casi negro de la app
+      // (`colors.background`, #0B0B0B) es imperceptible por sí solo —
+      // confirmado en dispositivo real ("no me da sensación de nada").
+      // Igual que "Flotante" más abajo, parte del contraste tiene que venir
+      // de aclarar la superficie/borde, aquí a la mitad de intensidad para
+      // que "Elevada" quede claramente entre "Plana" y "Flotante" en vez de
+      // fundirse con "Plana".
+      background = Color.lerp(background, Colors.white, 0.015)!;
+      border = Color.lerp(border, Colors.white, 0.03)!;
       shadows = [
         BoxShadow(
-          color: Colors.black.withValues(alpha: 0.28),
+          color: Colors.black.withValues(alpha: 0.5),
           blurRadius: 18,
           offset: const Offset(0, 6),
         ),

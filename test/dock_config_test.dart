@@ -175,42 +175,26 @@ void main() {
       expect(slots, items);
     });
 
-    test(
-      'inserts Back and drops the last item that is not the first (pinned) one',
-      () {
-        final slots = resolveDockSlots(visibleItems: items, showBack: true);
+    test('inserts Back without dropping any visible item', () {
+      final slots = resolveDockSlots(visibleItems: items, showBack: true);
 
-        // "work" is neither the first item nor the pinned one; it is the
-        // one dropped. "bots" (first/pinned) and "create" survive.
-        expect(slots, [null, DockItemId.bots, DockItemId.create]);
-      },
-    );
-
-    test(
-      'never removes the first (pinned) item even when it is the only alternative',
-      () {
-        // "create" is first here, so it is the one protected from removal —
-        // there is no separate "pinned" field to set anymore (ver C6): the
-        // first visible item in the profile's own order IS the pinned slot.
-        final slots = resolveDockSlots(
-          visibleItems: const [DockItemId.create, DockItemId.bots],
-          showBack: true,
-        );
-
-        // "bots" is the only non-pinned item, so it is the one dropped;
-        // "create" (first/pinned) survives.
-        expect(slots, [null, DockItemId.create]);
-      },
-    );
+      // A previous version silently dropped the last non-pinned item to
+      // avoid growing the bar by one slot — but that made an item the user
+      // just enabled in Ajustes › Dock "disappear" depending on the screen,
+      // with no indication why. Every visible item now always shows.
+      expect(slots, [
+        null,
+        DockItemId.bots,
+        DockItemId.create,
+        DockItemId.work,
+      ]);
+    });
 
     test(
-      'a single visible item (trivially the pinned one) survives Back by growing the bar by one slot',
+      'a single visible item survives Back by growing the bar by one slot',
       () {
-        // Regression for the doc/code contradiction fixed in E: the doc
-        // always said "the pinned item is never removed", but the old code
-        // removed it anyway when it was the only visible item. The bar
-        // itself does not change size in practice (each tile just narrows),
-        // so growing from 1 to 2 slots is the correct, doc-matching fix.
+        // The bar itself does not change size in practice (each tile just
+        // narrows), so growing from 1 to 2 slots is the correct behavior.
         final slots = resolveDockSlots(
           visibleItems: const [DockItemId.create],
           showBack: true,
@@ -227,10 +211,9 @@ void main() {
         // resolve to an empty slot list even with Back requested, leaving a
         // floating bar with no items and no way to navigate. The old test
         // here froze that bug as expected behavior; this asserts the fix.
-        expect(
-          resolveDockSlots(visibleItems: const [], showBack: true),
-          [null],
-        );
+        expect(resolveDockSlots(visibleItems: const [], showBack: true), [
+          null,
+        ]);
       },
     );
 

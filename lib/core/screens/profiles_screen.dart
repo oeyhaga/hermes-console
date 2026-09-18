@@ -18,14 +18,17 @@ import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
 import '../services/connection_manager.dart';
+import '../services/dock_preferences_store.dart';
 import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/api_error.dart';
+import '../widgets/general_dock_shell.dart';
+import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_ui.dart';
+import '../widgets/mission_profile_avatar.dart';
 import 'lock_screen.dart';
 import 'profile_editor_screen.dart';
-import '../widgets/hermes_app_bar.dart';
 
 /// Validación del nombre de perfil (debe coincidir con el servidor).
 final _profileNameRe = RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$');
@@ -46,6 +49,10 @@ class ProfilesScreen extends StatefulWidget {
 class _ProfilesScreenState extends State<ProfilesScreen> {
   late final DashboardClient _client;
   late final TuiGatewayClient _gateway;
+  // Mismo caché que usa Mission Control para las mismas caras de bot: cada
+  // perfil ya trae su propia identidad visual (foto subida o "Blobatar"
+  // procedural), así que la lista no necesita un icono genérico propio.
+  late final MissionProfileAvatarCache _avatarCache;
   List<AgentProfile> _profiles = [];
   bool _loading = true;
   String? _error;
@@ -58,6 +65,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
     super.initState();
     _client = DashboardClient.lazy(widget.connection);
     _gateway = TuiGatewayClient(widget.connection, dashboard: _client);
+    _avatarCache = MissionProfileAvatarCache(loader: _gateway.profileAvatar);
     // _load() lee Strings.of(context) (Localizations), que NO puede invocarse
     // durante initState: lanzaría dependOnInheritedWidgetOfExactType y, al estar
     // fuera del try, dejaría _loading=true para siempre (spinner eterno). Se
@@ -254,6 +262,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
 
   // ── UI ────────────────────────────────────────────────────────────────
 
+  Widget _wrapWithDock(Widget body) => GeneralDockShell(
+    connection: widget.connection,
+    connManager: widget.connManager,
+    onCreate: _openBuilder,
+    body: body,
+  );
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
@@ -269,43 +284,59 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openBuilder,
-        backgroundColor: colors.accent,
-        foregroundColor: colors.onAccent,
-        // El tema global fuerza CircleBorder a los FAB (correcto para los
-        // redondos), pero eso recortaba este FAB EXTENDIDO a un círculo dejando
-        // sólo el «+». StadiumBorder lo restaura a píldora con icono + etiqueta.
-        shape: const StadiumBorder(),
-        icon: const Icon(Icons.add),
-        label: Text(str.prfNewProfile),
+      // El dock ya expone "Crear" (ver `onCreate` en `_wrapWithDock`); este
+      // FAB solo reaparece cuando el interruptor global "Usar dock flotante"
+      // está apagado, para que crear un perfil nunca dependa únicamente del
+      // dock (mismo patrón que Cron/Tareas — bug ya confirmado antes).
+      floatingActionButton: ListenableBuilder(
+        listenable: DockPreferencesController.instance.listenable,
+        builder: (context, _) {
+          if (DockPreferencesController.instance.value.useDock) {
+            return const SizedBox.shrink();
+          }
+          return FloatingActionButton.extended(
+            onPressed: _openBuilder,
+            backgroundColor: colors.accent,
+            foregroundColor: colors.onAccent,
+            // El tema global fuerza CircleBorder a los FAB (correcto para los
+            // redondos), pero eso recortaba este FAB EXTENDIDO a un círculo
+            // dejando sólo el «+». StadiumBorder lo restaura a píldora con
+            // icono + etiqueta.
+            shape: const StadiumBorder(),
+            icon: const Icon(Icons.add),
+            label: Text(str.prfNewProfile),
+          );
+        },
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-          ? _ErrorState(message: _error!, onRetry: _load)
-          : RefreshIndicator(
-              color: colors.accent,
-              onRefresh: _load,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
-                children: [
-                  for (final p in _profiles)
-                    _ProfileCard(
-                      profile: p,
-                      active:
-                          _activeProfile == p.name ||
-                          (_activeProfile.isEmpty && p.isDefault),
-                      onUse: () => _useAsActive(p),
-                      onEdit: widget.connection.readOnly
-                          ? null
-                          : () => _editProfile(p),
-                      onRename: () => _rename(p),
-                      onDelete: p.isDefault ? null : () => _delete(p),
-                    ),
-                ],
+      body: _wrapWithDock(
+        _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _error != null
+            ? _ErrorState(message: _error!, onRetry: _load)
+            : RefreshIndicator(
+                color: colors.accent,
+                onRefresh: _load,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+                  children: [
+                    for (final p in _profiles)
+                      _ProfileCard(
+                        profile: p,
+                        active:
+                            _activeProfile == p.name ||
+                            (_activeProfile.isEmpty && p.isDefault),
+                        avatarCache: _avatarCache,
+                        onUse: () => _useAsActive(p),
+                        onEdit: widget.connection.readOnly
+                            ? null
+                            : () => _editProfile(p),
+                        onRename: () => _rename(p),
+                        onDelete: p.isDefault ? null : () => _delete(p),
+                      ),
+                  ],
+                ),
               ),
-            ),
+      ),
     );
   }
 }
@@ -332,6 +363,7 @@ class _ProfileTonalGroup extends StatelessWidget {
 class _ProfileCard extends StatelessWidget {
   final AgentProfile profile;
   final bool active;
+  final MissionProfileAvatarCache avatarCache;
   final VoidCallback onUse;
   final VoidCallback? onEdit;
   final VoidCallback onRename;
@@ -340,6 +372,7 @@ class _ProfileCard extends StatelessWidget {
   const _ProfileCard({
     required this.profile,
     required this.active,
+    required this.avatarCache,
     required this.onUse,
     required this.onEdit,
     required this.onRename,
@@ -366,12 +399,40 @@ class _ProfileCard extends StatelessWidget {
       showDividers: false,
       children: [
         HermesListRow(
-          icon: active
-              ? Icons.check_circle_outline_rounded
-              : profile.isDefault
-              ? Icons.home_outlined
-              : Icons.account_tree_outlined,
-          iconColor: active ? colors.accentHover : colors.textSecondary,
+          // Antes un icono genérico (account_tree_outlined) para todos los
+          // perfiles; ahora la cara/avatar real que cada uno tiene
+          // configurado, igual que en Bots — mismo caché, mismo widget.
+          leading: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              MissionProfileAvatar(
+                profileName: profile.name,
+                hasAvatar: profile.hasAvatar,
+                cache: avatarCache,
+                size: 34,
+                shape: profile.botShape,
+                colorHex: profile.botColorHex,
+                imageKind: profile.botImageKind,
+              ),
+              if (active)
+                PositionedDirectional(
+                  bottom: -2,
+                  end: -2,
+                  child: Container(
+                    padding: const EdgeInsets.all(1),
+                    decoration: BoxDecoration(
+                      color: colors.surface,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: colors.accentHover,
+                    ),
+                  ),
+                ),
+            ],
+          ),
           title: profile.name,
           subtitle: details.join(' · '),
           selected: active,
