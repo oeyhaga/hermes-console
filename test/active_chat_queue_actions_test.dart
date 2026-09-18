@@ -128,6 +128,46 @@ PreparedTurn _prepared(String id, String text) {
 }
 
 void main() {
+  group('agotar el reintento automático de una entrada es observable', () {
+    test('queuedRetriesExhausted publica la entrada atascada', () async {
+      final chat = _chat('queue-exhausted');
+      addTearDown(chat.dispose);
+      expect(chat.enqueue('atascado'), isTrue);
+      final dynamic subject = chat;
+      final String id = subject.queuedEntries.single.id as String;
+
+      expect(chat.queuedRetriesExhausted, isEmpty);
+
+      // Un `queueChanged` es lo único que la UI recibe; sin este conjunto la
+      // entrada agotada quedaba indistinguible de una simplemente encolada.
+      final emitted = <ActiveChatEvent>[];
+      final sub = chat.changes.listen(emitted.add);
+      addTearDown(sub.cancel);
+      chat.markQueuedRetryExhaustedForTesting(id);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(emitted, contains(ActiveChatEvent.queueChanged));
+      expect(chat.queuedRetriesExhausted, {id});
+    });
+
+    test('una entrada que sale de la cola deja de estar agotada', () async {
+      final chat = _chat('queue-exhausted-pruned');
+      addTearDown(chat.dispose);
+      expect(chat.enqueue('atascado'), isTrue);
+      final dynamic subject = chat;
+      final String id = subject.queuedEntries.single.id as String;
+      chat.markQueuedRetryExhaustedForTesting(id);
+      expect(chat.queuedRetriesExhausted, {id});
+
+      // Borrarla a mano resuelve el atasco: mantenerla en el conjunto haría
+      // que la UI siguiese creyendo que hay algo pendiente de reenviar.
+      expect(await subject.cancelQueuedByIdentity(id) as bool, isTrue);
+
+      expect(chat.queuedMessages, isEmpty);
+      expect(chat.queuedRetriesExhausted, isEmpty);
+    });
+  });
+
   test('queuedEntries expone identidad estable en el orden de drenaje', () {
     final chat = _chat('queue-order');
     addTearDown(chat.dispose);

@@ -9222,21 +9222,29 @@ void main() {
 
       discardPages = true;
       final accepted = await chat.send(
-        fullText: 'turno que debe seguir bloqueado',
+        fullText: 'turno posterior al Stop',
         model: 'hermes-agent',
         history: chat.buildHistory(),
       );
 
-      expect(accepted, isFalse);
+      // La reparación sigue intentándose y consume su página, pero ya no puede
+      // secuestrar la sesión: un Stop correcto no deja el chat inservible.
+      expect(accepted, isTrue);
       expect(chat.coreReadLineageComplete, isFalse);
       expect(chat.hasEarlierMessages, isTrue);
       expect(
         chat.messages.any(
-          (message) => message['content'] == 'turno que debe seguir bloqueado',
+          (message) => message['content'] == 'turno posterior al Stop',
         ),
-        isFalse,
+        isTrue,
       );
       expect(requests.where((uri) => uri.path.endsWith('/messages')).length, 2);
+
+      // La ambigüedad que esto protegía sigue cerrada donde toca: el tombstone
+      // del turno nuevo no se puede anclar cruzando la fila detenida sin
+      // identidad, así que Stop falla de forma visible y reintentable.
+      await expectLater(chat.cancel(), throwsA(isA<StateError>()));
+      expect(chat.stopConfirmationState, StopConfirmationState.failed);
     });
   });
 }

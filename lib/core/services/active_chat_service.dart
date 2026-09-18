@@ -5234,8 +5234,56 @@ class ActiveChat {
   int? _reusableQueueStopGeneration;
   String? _blockedPreparedTurnId;
   Timer? _queuedRetryTimer;
+  Timer? _queuedTextRetryTimer;
   final Map<String, int> _queuedRetryAttempts = {};
+  // Entradas cuyo reintento automático se agotó: siguen en el panel esperando
+  // un envío manual. Desktop avisa con un toast (`queueStuckTitle`) al llegar
+  // aquí; este conjunto es lo que la UI observa para hacer lo mismo una única
+  // vez por entrada. Ver `_scheduleQueuedTextRetry` / `_scheduleQueuedRetry`.
+  final Set<String> _queuedRetriesExhausted = <String>{};
+  // Mismo techo que `MAX_AUTO_DRAIN_ATTEMPTS` gobierna en Desktop.
+  static const int _maxQueuedRetryAttempts = 3;
   String? _desktopAcceptedQueuedPrompt;
+
+  /// Ids de entradas en cola que agotaron su reintento automático.
+  ///
+  /// Réplica de `MAX_AUTO_DRAIN_ATTEMPTS` en `composer-queue.ts`: la entrada no
+  /// se pierde (sigue encolada para un envío manual), pero deja de reintentarse
+  /// sola, así que alguien tiene que decírselo al usuario.
+  /// Las claves son el id de la entrada de texto o el `clientTurnId` del turno
+  /// preparado, no el `QueuedEntryView.id` (que prefija `prepared:`): son las
+  /// mismas con las que se contaron los intentos.
+  ///
+  /// Una entrada que ya salió de la cola (enviada a mano, borrada, purgada por
+  /// un cambio de generación) deja de estar agotada por definición, así que se
+  /// poda contra la cola viva en lugar de acumularse durante toda la sesión.
+  Set<String> get queuedRetriesExhausted {
+    if (_queuedRetriesExhausted.isEmpty) return const <String>{};
+    final live = <String>{
+      ..._messageQueue.map((item) => item.id),
+      ..._preparedTurnQueue.map((item) => item.turn.clientTurnId),
+    };
+    _queuedRetriesExhausted.retainWhere(live.contains);
+    return Set<String>.unmodifiable(_queuedRetriesExhausted);
+  }
+
+  /// Lleva una entrada al estado «agotada» sin tener que provocar los tres
+  /// rechazos reales de transporte, que dependen de la admisión de ownership y
+  /// del park de Stop. El aviso al usuario se dispara desde
+  /// [ActiveChatEvent.queueChanged], así que esto reproduce exactamente lo que
+  /// la UI observa al final de la escalera.
+  @visibleForTesting
+  void markQueuedRetryExhaustedForTesting(String id) {
+    _queuedRetryAttempts[id] = _maxQueuedRetryAttempts + 1;
+    _queuedRetriesExhausted.add(id);
+    _emit(ActiveChatEvent.queueChanged);
+  }
+
+  /// Olvida el estado de reintento de una entrada que ya avanzó o desapareció.
+  void _clearQueuedRetryState(String id) {
+    _queuedRetryAttempts.remove(id);
+    _queuedRetriesExhausted.remove(id);
+  }
 
   List<String> get queuedTextMessages => List<String>.unmodifiable([
     ?_desktopAcceptedQueuedPrompt,
@@ -10314,9 +10362,20 @@ class ActiveChat {
           return false;
         }
       }
+      // Intento de reparación, nunca una valla de admisión. Si el servidor aún
+      // no publica la fila durable del turno detenido, Desktop sigue enviando:
+      // el park y el tombstone son asunto de Stop, no del composer. Bloquear
+      // aquí convertía un Stop correcto en una sesión inutilizable para
+      // siempre — el mismo envío, la cola y la edición quedaban rechazados en
+      // silencio. La ambigüedad que esto protegía sigue cerrada donde
+      // corresponde: `_latestUserCancellationCandidate` se niega a cruzar una
+      // fila de usuario sin identidad, así que un Stop posterior falla de forma
+      // visible y reintentable en vez de secuestrar la sesión entera.
       if (!await _hydrateCancelledUserAnchorsBeforeSend()) {
-        await delivery?.markUnaccepted();
-        return false;
+        debugPrint(
+          '[active-chat] stopped turn still lacks a durable transcript row; '
+          'sending anyway (a later Stop stays fail-closed)',
+        );
       }
       if (desktopCompressionInFlight) {
         throw const TuiGatewayRpcError(
@@ -10733,7 +10792,16 @@ class ActiveChat {
             : null;
         _desktopInterruptDrain = interruptDrain;
         _discardLateInterruptTerminal = interruptDrain != null;
-        _cancelCurrent(requestServerStop: false, deferConfirmation: true);
+        // Editar NO es un Stop del usuario: la interrupción sólo hace sitio al
+        // turno reescrito, que sustituye a esta misma fila. Marcarla como
+        // `_cancelledUser` inventaba un turno detenido sin ancla durable —
+        // ensuciaba el historial que se manda al modelo y dejaba la fila
+        // ambigua que después rompía la propia edición y los envíos siguientes.
+        _cancelCurrent(
+          requestServerStop: false,
+          deferConfirmation: true,
+          markUserCancelled: false,
+        );
         reservation.transcriptRevision = _transcriptRevision;
         reservation.turnEpoch = _turnEpoch;
         if (runtimeId != null && gateway != null) {
@@ -10808,8 +10876,14 @@ class ActiveChat {
             _rewindRollbackMessages = null;
             _rewindRollbackState = null;
             _rewind4018FallbackOrdinal = null;
-            _rewindRestoredOnError = true;
           }
+          // La reserva seguía siendo nuestra, así que esto no es una carrera
+          // con otra edición: el transporte rechazó este turno. El reenvío
+          // plano no recorta nada, pero también fracasó — y sin esta marca la
+          // pantalla se quedaba sin aviso alguno después de haber interrumpido
+          // ya el turno vivo: el usuario perdía la respuesta y la edición sin
+          // ver nada.
+          _rewindRestoredOnError = true;
           return;
         }
       } catch (_) {
@@ -17305,7 +17379,7 @@ class ActiveChat {
     if (preparedId != null && _blockedPreparedTurnId == preparedId) {
       _queuedRetryTimer?.cancel();
       _queuedRetryTimer = null;
-      _queuedRetryAttempts.remove(preparedId);
+      _clearQueuedRetryState(preparedId);
       _blockedPreparedTurnId = null;
       _emit(ActiveChatEvent.queueChanged);
     }
@@ -17708,27 +17782,79 @@ class ActiveChat {
     }
     if (_messageQueue.isEmpty) return;
     final next = _messageQueue.first;
-    final accepted = await send(
-      fullText: next.text,
-      model: _lastModel,
-      history: _buildHistoryFromMessages(),
-      profile: _turnProfile,
-      allowTransportFallbackOverride: next.allowTransportFallback,
-    );
-    if (accepted &&
-        _messageQueue.isNotEmpty &&
-        identical(_messageQueue.first, next)) {
+    // La rama prepared ya se serializa con esta misma bandera. La de texto no
+    // lo hacía: `send()` tarda varios `await` en publicar `connecting`, así que
+    // dos drenajes solapados (terminal, retry, park levantado, inventario
+    // pasivo) podían leer la misma cabeza y enviarla dos veces.
+    _preparedTurnDrainInFlight = true;
+    final bool accepted;
+    try {
+      accepted = await send(
+        fullText: next.text,
+        model: _lastModel,
+        history: _buildHistoryFromMessages(),
+        profile: _turnProfile,
+        allowTransportFallbackOverride: next.allowTransportFallback,
+      );
+    } finally {
+      _preparedTurnDrainInFlight = false;
+    }
+    if (_messageQueue.isEmpty || !identical(_messageQueue.first, next)) {
+      return;
+    }
+    if (accepted) {
       _messageQueue.removeFirst();
+      _clearQueuedRetryState(next.id);
       _unparkQueueLeaseIfEmpty();
       _emit(ActiveChatEvent.queueChanged);
+      return;
     }
+    // Un rechazo dejaba la entrada muda en la cabeza para siempre: nada más
+    // volvía a pedir el drenaje y el panel la mostraba encolada sin avanzar.
+    // Desktop reintenta de forma acotada (`MAX_AUTO_DRAIN_ATTEMPTS`) y deja la
+    // entrada para un envío manual al agotarse.
+    _scheduleQueuedTextRetry(next.id);
+  }
+
+  /// Reintento acotado de la cabeza de texto rechazada. Réplica de
+  /// `MAX_AUTO_DRAIN_ATTEMPTS` (`composer-queue.ts`): agotados los intentos la
+  /// entrada sigue en el panel para un envío manual, pero nunca se queda ahí
+  /// sin que nadie vuelva a intentarlo.
+  void _scheduleQueuedTextRetry(String id) {
+    final attempt = (_queuedRetryAttempts[id] ?? 0) + 1;
+    _queuedRetryAttempts[id] = attempt;
+    _queuedTextRetryTimer?.cancel();
+    _queuedTextRetryTimer = null;
+    if (attempt > _maxQueuedRetryAttempts) {
+      _queuedRetriesExhausted.add(id);
+    }
+    _emit(ActiveChatEvent.queueChanged);
+    if (attempt > _maxQueuedRetryAttempts) return;
+    _queuedTextRetryTimer = Timer(
+      Duration(milliseconds: 400 * (1 << (attempt - 1))),
+      () {
+        _queuedTextRetryTimer = null;
+        if (_disposed ||
+            _messageQueue.isEmpty ||
+            _messageQueue.first.id != id) {
+          return;
+        }
+        unawaited(_drainQueue());
+      },
+    );
   }
 
   void _scheduleQueuedRetry(String clientTurnId) {
     final attempt = (_queuedRetryAttempts[clientTurnId] ?? 0) + 1;
     _queuedRetryAttempts[clientTurnId] = attempt;
     _queuedRetryTimer?.cancel();
-    if (attempt > 3) return;
+    if (attempt > _maxQueuedRetryAttempts) {
+      // La rama de texto emite arriba; ésta salía sin avisar a nadie, así que
+      // el agotamiento quedaba invisible incluso para el panel.
+      _queuedRetriesExhausted.add(clientTurnId);
+      _emit(ActiveChatEvent.queueChanged);
+      return;
+    }
     _queuedRetryTimer = Timer(
       Duration(milliseconds: 400 * (1 << (attempt - 1))),
       () {
@@ -21214,6 +21340,8 @@ class ActiveChat {
     _voiceBargeHandoffPending = false;
     _queuedRetryTimer?.cancel();
     _queuedRetryTimer = null;
+    _queuedTextRetryTimer?.cancel();
+    _queuedTextRetryTimer = null;
     _tokenFlushTimer?.cancel();
     _terminalTimer?.cancel();
     _desktopEventSubscription?.cancel();
