@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../app_header_title.dart';
 import '../config/flavor.dart';
 import '../models/home_widget_snapshot.dart';
+import '../models/session_category.dart';
 import '../navigation/chat_route.dart';
 import '../services/agent_runtime/agent_runtime.dart';
 import '../services/agent_runtime/local_termux_agent_provider.dart';
@@ -720,9 +721,20 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final visibleSessions = merged.values.toList()
       ..sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
     final recentSessions = visibleSessions
-        // Los informes generados por cron tienen su apartado propio en
-        // Conversaciones > Resultados cron. No desplazan chats reales en Inicio.
-        .where((s) => !s.isJob && !archive.isHidden(s.id))
+        // Los informes de cron y demás fuentes de automatización (kanban,
+        // subagent, tool, acp, hermes_flow, vulcan_delegate, webhook) tienen
+        // su propio apartado en Conversaciones > Automatización/Todo. Antes
+        // solo se excluía `isJob` (cron), así que una tarea de Kanban o una
+        // sesión de herramienta/subagente sí aparecía aquí pero no en la
+        // pestaña "Chats" de Conversaciones (la que abre "Ver todas" por
+        // defecto) — el "aparece en Inicio y luego no está" reportado en
+        // dispositivo real. Mismo criterio que `SessionCategory.chats`.
+        .where(
+          (s) =>
+              !s.isJob &&
+              !archive.isHidden(s.id) &&
+              SessionCategory.chats.includesSource(s.source),
+        )
         .toList();
     final recentLimit = _homeRecentLimit();
     if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;

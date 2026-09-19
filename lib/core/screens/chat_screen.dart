@@ -1,3 +1,5 @@
+import '../models/bot_mention.dart';
+import '../widgets/chat_mention_palette.dart';
 // Chat screen with real-time streaming via REST API.
 // Uses REST endpoints: POST /api/sessions/{id}/chat and
 // GET /api/sessions/{id}/messages.
@@ -1094,14 +1096,26 @@ class _ChatScreenState extends State<ChatScreen>
   List<ChatTraceEvent> get _trace => _chat.trace;
   String get _lastPrompt => _chat.lastPrompt;
 
-  bool _loading = true;
   String? _error;
   bool _loadingEarlierMessages = false;
   int _messageRefreshEpoch = 0;
-  int? _messageRefreshInFlightEpoch;
-  int? _passiveMessageRefreshEpoch;
+  ({int epoch, bool passiveOnly, bool published})? _messageRefreshInFlight;
+  int? get _messageRefreshInFlightEpoch => _messageRefreshInFlight?.epoch;
+  int? get _messageRefreshPublishedEpoch =>
+      _messageRefreshInFlight?.published == true
+      ? _messageRefreshInFlight?.epoch
+      : null;
+
+  // Only the current interactive read awaiting transcript publication fences
+  // editing. REST can publish before runtime resume finishes; passive polling
+  // and superseded futures must never keep a usable transcript's composer shut.
+  // Identity, kind and publication travel together, with no separate busy flag
+  // to inherit from a predecessor or forget to clear on an early return.
+  bool get _interactiveMessageRefreshPending =>
+      _messageRefreshInFlight != null &&
+      !_messageRefreshInFlight!.passiveOnly &&
+      !_messageRefreshInFlight!.published;
   int? _messageRefreshAnchorEpoch;
-  int? _messageRefreshPublishedEpoch;
   bool _messageRefreshReanchorScheduled = false;
   ForegroundConversationReader? _passiveConversationReader;
   bool _chatRouteVisible = false;
@@ -1139,6 +1153,12 @@ class _ChatScreenState extends State<ChatScreen>
       _lastNonEmptySubagentActivities = live;
       if (live.any((a) => !a.isTerminal)) _subagentPillDismissed = false;
     }
+    // A momentarily empty `live` (a poll gap, a cover/pause/reconnect cycle)
+    // is not proof of retirement — this getter runs on every build, so
+    // clearing the cache here on a single empty read reintroduces the exact
+    // flicker it exists to prevent. Genuine retirement is instead confirmed
+    // event-driven, at a new turn's `ActiveChatEvent.started` (see
+    // `_onChatEvent`), which is the actual authoritative "this is over" signal.
     return _subagentPillDismissed
         ? const <SubagentActivity>[]
         : _lastNonEmptySubagentActivities;
@@ -1213,6 +1233,7 @@ class _ChatScreenState extends State<ChatScreen>
   late final ValueChanged<List<AttachmentDraft>> _attachmentListener;
   Timer? _draftTimer;
   bool _restoringDraft = false;
+  bool _draftLoaded = false;
   // Un composer vacío NO prueba que nadie lo haya tocado: también es el estado
   // exacto en el que queda cuando el usuario borra el texto a mano. La
   // recuperación de un turno puede reconciliar mucho después de abrir el chat
@@ -1785,9 +1806,9 @@ class _ChatScreenState extends State<ChatScreen>
     final outbox = TurnOutboxStore(lifecycle: _localConversationLifecycle);
     // El borrador pinta primero: la reconciliación adicional de outbox no debe
     // retrasar el composer ni introducir una carrera visible al navegar rápido.
+    _draftStore = store;
     var draft = await _loadDraftWithRecoveryMigration(store);
     if (!mounted) return;
-    _draftStore = store;
     _turnOutbox = outbox;
     final linkedDiscard = draft.preparedTurnClientTurnId;
     if (linkedDiscard != null &&
@@ -1806,6 +1827,8 @@ class _ChatScreenState extends State<ChatScreen>
       );
       draft = const ChatDraft(text: '', attachments: []);
     }
+    if (!mounted || _disposed) return;
+    _draftLoaded = true;
     final liveDeliveryAtRestore = _chatBound ? _chat.activeTurnDelivery : null;
     final liveOwnsRestoredDraft =
         liveDeliveryAtRestore != null &&
@@ -1996,11 +2019,11 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<void> _discardRecoveredTurn(PreparedTurn prepared) async {
     final composerStillMatches = prepared.matchesBatch(
-          text: _textController.text,
-          attachments: List<AttachmentDraft>.of(_pendingAttachments),
-          model: prepared.model,
-          profile: prepared.profile,
-        );
+      text: _textController.text,
+      attachments: List<AttachmentDraft>.of(_pendingAttachments),
+      model: prepared.model,
+      profile: prepared.profile,
+    );
     try {
       await (await _outboxStore()).delete(prepared);
     } catch (error) {
@@ -2176,6 +2199,13 @@ class _ChatScreenState extends State<ChatScreen>
     bool finalDisposeSnapshot = false,
   }) async {
     if (_disposed && !finalDisposeSnapshot) return false;
+    // Leaving during secure restore must not replace unread content with empty UI.
+    if (!_draftLoaded &&
+        text.isEmpty &&
+        attachments.isEmpty &&
+        !_composerEmptiedByUser) {
+      return false;
+    }
     final previous = _draftSnapshotTail;
     final completed = Completer<void>();
     _draftSnapshotTail = completed.future;
@@ -2315,9 +2345,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   void _applyAttachmentProjection(List<AttachmentDraft> projected) {
-    if (_disposed ||
-        !mounted ||
-        _pendingAttachments.isEmpty) {
+    if (_disposed || !mounted || _pendingAttachments.isEmpty) {
       return;
     }
     final byId = <String, AttachmentDraft>{
@@ -2507,7 +2535,10 @@ class _ChatScreenState extends State<ChatScreen>
       isLatestAssistant: _isLatestAssistant(sourceMessage),
       isTerminal: sourceMessage['_cancelled'] != true,
       chatBusy:
-          _loading || _sending || _attachmentSubmitting || _compressingSession,
+          _interactiveMessageRefreshPending ||
+          _sending ||
+          _attachmentSubmitting ||
+          _compressingSession,
       writable: !widget.connection.readOnly,
       composerEmpty: _textController.text.trim().isEmpty,
       attachmentsEmpty: _pendingAttachments.isEmpty,
@@ -3560,6 +3591,7 @@ class _ChatScreenState extends State<ChatScreen>
         unawaited(_refreshPublishedSessionUsage());
       }
       unawaited(_loadDesktopCommandCatalog());
+      unawaited(_chat.loadMentionRoster());
       // Observa el modo voz global: re-renderiza el overlay al cambiar de fase,
       // y muestra el diálogo de "dictado no disponible" cuando el servicio lo
       // pida (necesita un BuildContext, que el servicio no tiene).
@@ -3573,7 +3605,6 @@ class _ChatScreenState extends State<ChatScreen>
       if (_chat.isStreaming || _chat.messagesLoaded) {
         // Reengancha a un chat ya vivo o ya cargado: no recargues (clobbearía
         // el parcial en curso).
-        _loading = false;
         // Al volver a una sesión viva materializa el subtree aislado con todo lo
         // que el servicio ya publicó. No espera otro token ni reconstruye el
         // Scaffold para continuar el stream.
@@ -3594,7 +3625,6 @@ class _ChatScreenState extends State<ChatScreen>
         // session.resume + REST aquí solo enseña un loader hasta recibir el
         // 4007 esperado; el borrador local está listo para escribir al instante.
         _chat.messagesLoaded = true;
-        _loading = false;
       } else {
         // A screen created while the app is already backgrounded may perform
         // its one durable read, but it must not connect to or acquire a live
@@ -3830,25 +3860,25 @@ class _ChatScreenState extends State<ChatScreen>
     if (!_canProbePassiveRemoteActivity) return true;
     // Another surface's assistant is not in REST until the turn ends. The
     // busy poll therefore never sees the reply; fetch once more on idle.
-    final remoteTurnSettled =
-        ownedLiveTurn && !_chat.remoteSurfaceOwnsLiveTurn;
+    final remoteTurnSettled = ownedLiveTurn && !_chat.remoteSurfaceOwnsLiveTurn;
     if (!_canPassivelyRefreshTranscript && !remoteTurnSettled) {
+      return true;
+    }
+    if (!_composerEmpty &&
+        !_chat.remoteSurfaceOwnsLiveTurn &&
+        !remoteTurnSettled) {
       return true;
     }
     return _fetchMessages(passiveOnly: true);
   }
 
   void _invalidatePassiveMessageRefresh() {
-    final passiveEpoch = _passiveMessageRefreshEpoch;
-    if (!_chatBound || passiveEpoch == null) return;
+    if (!_chatBound || _messageRefreshInFlight?.passiveOnly != true) return;
     _chat.invalidatePassiveRead();
-    _passiveMessageRefreshEpoch = null;
-    if (_messageRefreshInFlightEpoch == passiveEpoch) {
-      _messageRefreshEpoch += 1;
-      _messageRefreshInFlightEpoch = null;
-      _messageRefreshPublishedEpoch = null;
-      _cancelMessageRefreshViewportAnchor();
-    }
+    _messageRefreshEpoch += 1;
+    _messageRefreshInFlight = null;
+    _cancelMessageRefreshViewportAnchor();
+    if (!_disposed && mounted) setState(() {});
   }
 
   void _invalidateOwnedNativeVoicePreparation() {
@@ -3942,7 +3972,7 @@ class _ChatScreenState extends State<ChatScreen>
       mounted &&
       !_disposed &&
       ModalRoute.of(context)?.isCurrent == true &&
-      !_loading &&
+      !_interactiveMessageRefreshPending &&
       !widget.connection.readOnly &&
       !_attachmentSubmitting &&
       !_compressingSession &&
@@ -3975,6 +4005,12 @@ class _ChatScreenState extends State<ChatScreen>
   /// La pastilla de subagentes ya narra su propia espera con su duración. Dos
   /// pastillas contando lo mismo es la doble narración que Desktop evita con
   /// `toolNarratesWait`; gana la más específica.
+  ///
+  /// Esta pastilla sigue viva pase lo que pase con el scroll: su razón de
+  /// ser —avisar que el turno «parado» (sin texto aún) sigue trabajando de
+  /// verdad, con un cronómetro que lo demuestra— no depende de si el lector
+  /// está mirando el fondo o el historial. Lo que sí depende del scroll es
+  /// si repite la palabra de estado: ver `_turnActivityPillLabel`.
   bool get _showTurnActivityPill =>
       _turnWorkingWithoutOutput &&
       _turnActivityStartedAt != null &&
@@ -3982,6 +4018,32 @@ class _ChatScreenState extends State<ChatScreen>
       _displaySubagentActivities.isEmpty &&
       !_chat.hasRecentPassiveRemoteActivity &&
       _chat.safeActiveSubagentCount <= 0;
+
+  /// Palabra de estado que muestra la pastilla, o `null` para omitirla y dejar
+  /// solo el spinner + cronómetro. Mientras el transcript sigue el fondo
+  /// (`_autoFollowStreaming`), la `ThinkingTraceCard` en vivo —mascota grande
+  /// + la misma palabra, animada— ya está a la vista en el sitio exacto donde
+  /// va a salir la respuesta; repetirla en la pastilla es la doble narración
+  /// reportada en dispositivo real. El cronómetro no es redundante en ningún
+  /// caso (la tarjeta no cuenta tiempo), así que la pastilla se queda —solo se
+  /// calla la palabra— hasta que el lector se aparta del fondo y la tarjeta
+  /// deja de ser la señal más específica.
+  String? get _turnActivityPillLabel =>
+      _autoFollowStreaming ? null : _traceHeadline();
+
+  /// Mismo principio que `_showTurnActivityPill` de arriba, aplicado a la
+  /// cabecera del Bot Chat: su subtítulo («@nombre · Pensando») y esta
+  /// pastilla narraban el mismo estado a la vez una vez el turno pasaba de
+  /// unos 3 s (reportado en dispositivo real: "la píldora y la burbuja
+  /// general... hacen lo mismo"). Antes de esos 3 s la pastilla de
+  /// `TurnActivityPill` (`revealAfter`) todavía no se ha revelado, así que la
+  /// cabecera sigue siendo la única señal de un turno recién empezado; solo
+  /// se calla la palabra de estado justo cuando la pastilla ya se ve.
+  bool get _turnActivityPillRevealed {
+    final startedAt = _turnActivityStartedAt;
+    if (!_showTurnActivityPill || startedAt == null) return false;
+    return DateTime.now().difference(startedAt) >= const Duration(seconds: 3);
+  }
 
   void _syncTurnActivityClock() {
     if (_chat.isStreaming) {
@@ -4001,6 +4063,10 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _onChatEvent(ActiveChatEvent event) {
     if (_disposed || !mounted) return;
+    if (event == ActiveChatEvent.started) {
+      _lastNonEmptySubagentActivities = const <SubagentActivity>[];
+      _subagentPillDismissed = false;
+    }
     _syncTurnActivityClock();
     _syncSubagentPolling();
     if (_chat.hasDesktopRuntime) {
@@ -4055,7 +4121,6 @@ class _ChatScreenState extends State<ChatScreen>
       // y su ancla visual. El evento del servicio solo fuerza el rebuild; no
       // puede cerrar el overlay ni programar otro scroll por fuera de ese vuelo.
       if (_messageRefreshInFlightEpoch == null) {
-        _loading = false;
         _error = null;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           // La hidratación diferida del historial (0.20) o una compactación
@@ -4637,9 +4702,9 @@ class _ChatScreenState extends State<ChatScreen>
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'No se pudo guardar Stop de forma segura. Reinténtalo.',
+            Strings.of(context).chatStopSaveFailed,
           ),
         ),
       );
@@ -5358,7 +5423,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<bool> _fetchMessages({bool passiveOnly = false}) async {
     await _profileReady;
-    if (!mounted) return false;
+    if (_disposed || !mounted) return false;
     // No recargues sobre un stream en curso: clobbearía el parcial que llega.
     if (_chat.isStreaming) {
       if (!passiveOnly && mounted) {
@@ -5373,7 +5438,6 @@ class _ChatScreenState extends State<ChatScreen>
       _chat.messagesLoaded = true;
       if (mounted) {
         setState(() {
-          _loading = false;
           _error = null;
         });
       }
@@ -5388,49 +5452,48 @@ class _ChatScreenState extends State<ChatScreen>
         _appInForeground &&
         viewerGeneration == _viewerAttachGeneration;
     final hadTranscript = _messages.isNotEmpty;
-    _messageRefreshInFlightEpoch = refreshEpoch;
-    if (passiveOnly) _passiveMessageRefreshEpoch = refreshEpoch;
-    _messageRefreshPublishedEpoch = null;
-    if (hadTranscript) {
-      _beginMessageRefreshViewportAnchor(refreshEpoch);
-    }
-    if (!passiveOnly) {
-      setState(() {
-        _loading = true;
-        _error = null;
-      });
-    }
-
+    setState(() {
+      _messageRefreshInFlight = (
+        epoch: refreshEpoch,
+        passiveOnly: passiveOnly,
+        published: false,
+      );
+      if (!passiveOnly) _error = null;
+    });
     try {
+      if (hadTranscript) {
+        _beginMessageRefreshViewportAnchor(refreshEpoch);
+      }
       await _chat.loadMessages(
         expectedMessageCount: widget.session.messageCount,
         profile: _effectiveSessionProfile,
         passiveOnly: passiveOnly,
         stillOwningVisible: passiveOnly ? null : stillOwningVisible,
         onMessagesPublished: () {
-          if (!mounted ||
+          if (_disposed ||
+              !mounted ||
               refreshEpoch != _messageRefreshEpoch ||
               _messageRefreshInFlightEpoch != refreshEpoch) {
             return;
           }
-          _messageRefreshPublishedEpoch = refreshEpoch;
+          setState(() {
+            _messageRefreshInFlight = (
+              epoch: refreshEpoch,
+              passiveOnly: passiveOnly,
+              published: true,
+            );
+          });
         },
       );
-      if (!mounted || refreshEpoch != _messageRefreshEpoch) return false;
+      if (_disposed || !mounted || refreshEpoch != _messageRefreshEpoch) {
+        return false;
+      }
       if (!passiveOnly) {
         // Una carga interactiva puede enlazar una sesión durable anterior. El
         // observador pasivo nunca intenta enlazar, reanudar ni adquirir runtime.
         unawaited(_ensureDesktopRuntimeAndBootstrapContext());
         _syncDesktopSessionConfig();
       }
-      _messageRefreshInFlightEpoch = null;
-      if (_passiveMessageRefreshEpoch == refreshEpoch) {
-        _passiveMessageRefreshEpoch = null;
-      }
-      _messageRefreshPublishedEpoch = null;
-      setState(() {
-        _loading = false;
-      });
       if (!hadTranscript) {
         _scrollToBottom();
       } else {
@@ -5438,12 +5501,9 @@ class _ChatScreenState extends State<ChatScreen>
       }
       return true;
     } catch (e) {
-      if (!mounted || refreshEpoch != _messageRefreshEpoch) return false;
-      _messageRefreshInFlightEpoch = null;
-      if (_passiveMessageRefreshEpoch == refreshEpoch) {
-        _passiveMessageRefreshEpoch = null;
+      if (_disposed || !mounted || refreshEpoch != _messageRefreshEpoch) {
+        return false;
       }
-      _messageRefreshPublishedEpoch = null;
       _cancelMessageRefreshViewportAnchor();
       if (passiveOnly) return false;
       final errStr = e.toString();
@@ -5463,7 +5523,6 @@ class _ChatScreenState extends State<ChatScreen>
           if (!isUnpersistedMobileChat) {
             _error = errStr;
           }
-          _loading = false;
         });
         if (!isUnpersistedMobileChat) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -5474,9 +5533,16 @@ class _ChatScreenState extends State<ChatScreen>
       }
       setState(() {
         _error = errStr;
-        _loading = false;
       });
       return false;
+    } finally {
+      // Success, failure and early returns all retire the same owner. An
+      // obsolete completion cannot retire (or re-lock) any newer request,
+      // irrespective of how many requests have superseded it.
+      if (_messageRefreshInFlightEpoch == refreshEpoch) {
+        _messageRefreshInFlight = null;
+        if (!_disposed && mounted) setState(() {});
+      }
     }
   }
 
@@ -5787,6 +5853,11 @@ class _ChatScreenState extends State<ChatScreen>
       fullText = text;
     }
 
+    if (RegExp(r'(^|\s)@[a-z0-9]', caseSensitive: false).hasMatch(text)) {
+      await _chat.loadMentionRoster();
+    }
+    final mentions = List<BotMention>.unmodifiable(_chat.mentionResolver.resolve(text));
+    final mentionAnnotation = buildBotMentionAnnotation(mentions);
     final waitsForExternalOwner = _chat.hasAuthoritativePassiveRemoteActivity;
     // Every queued composer turn is written to the encrypted outbox before the
     // composer is cleared. This preserves FIFO across process death and keeps a
@@ -5802,6 +5873,8 @@ class _ChatScreenState extends State<ChatScreen>
         text: text,
         fullText: fullText,
         desktopText: desktopText,
+        mentions: mentions,
+        mentionAnnotation: mentionAnnotation,
         attachments: attachments,
         model: selectedModel,
         profile: _effectiveSessionProfile,
@@ -5884,8 +5957,10 @@ class _ChatScreenState extends State<ChatScreen>
       createdAtMs: sameRecoveredBatch ? existing!.createdAtMs : now,
       updatedAtMs: now,
       text: text,
-      fullText: fullText,
-      desktopText: desktopText,
+      fullText: sameRecoveredBatch ? existing!.fullText : fullText,
+      desktopText: sameRecoveredBatch ? existing!.desktopText : desktopText,
+      mentions: sameRecoveredBatch ? existing!.mentions : mentions,
+      mentionAnnotation: sameRecoveredBatch ? existing!.mentionAnnotation : mentionAnnotation,
       attachments: attachments,
       model: selectedModel,
       profile: profile,
@@ -5920,7 +5995,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     if (replacesProvenRejectedProjection) {
-      _removeLatestFailedPromptProjection(fullText);
+      _removeLatestFailedPromptProjection(prepared.fullText);
     }
 
     // Historial conversacional para el run (formato OpenAI, orden cronológico).
@@ -5940,13 +6015,13 @@ class _ChatScreenState extends State<ChatScreen>
     final delivery = ActiveTurnDelivery(prepared: prepared, store: outbox);
     _observeAttachmentDelivery(delivery);
     final acceptedFuture = _chat.send(
-      fullText: fullText,
+      fullText: prepared.fullText,
       model: selectedModel,
       history: history,
       profile: _effectiveSessionProfile,
       slowModel: (_activeModel?.provider ?? '').toLowerCase().startsWith('moa'),
       nativeAttachments: attachments,
-      desktopText: desktopText,
+      desktopText: prepared.desktopText,
       delivery: delivery,
       sessionConfig: firstSubmitConfig,
       beforeDesktopPromptSubmit: _usesLocalBotChatPin
@@ -8338,7 +8413,9 @@ class _ChatScreenState extends State<ChatScreen>
                   key: const ValueKey('bot-chat-header'),
                   profile: widget.missionBotProfile,
                   fallbackName: Session.profileOwner(widget.session.profile),
-                  activity: _chatBound ? _chat.activityKind : null,
+                  activity: _chatBound && !_turnActivityPillRevealed
+                      ? _chat.activityKind
+                      : null,
                   avatarCache: widget.missionAvatarCache,
                 )
               : Semantics(
@@ -8633,7 +8710,7 @@ class _ChatScreenState extends State<ChatScreen>
                                           ),
                                           active: _showTurnActivityPill,
                                           startedAt: _turnActivityStartedAt,
-                                          statusLabel: _traceHeadline(),
+                                          statusLabel: _turnActivityPillLabel,
                                         ),
                                         KeyedSubtree(
                                           key: const ValueKey(
@@ -8784,9 +8861,9 @@ class _ChatScreenState extends State<ChatScreen>
                             Semantics(
                               container: true,
                               label:
-                                  'Continúa esta solicitud en Hermes Desktop',
-                              child: const Card(
-                                key: ValueKey('desktop-continuation-required'),
+                                  Strings.of(context).chatContinueOnDesktop,
+                              child: Card(
+                                key: const ValueKey('desktop-continuation-required'),
                                 child: Padding(
                                   padding: EdgeInsets.all(16),
                                   child: Row(
@@ -8795,7 +8872,7 @@ class _ChatScreenState extends State<ChatScreen>
                                       SizedBox(width: 12),
                                       Expanded(
                                         child: Text(
-                                          'Continúa esta solicitud en Hermes Desktop',
+                                          Strings.of(context).chatContinueOnDesktop,
                                         ),
                                       ),
                                     ],
@@ -10695,10 +10772,7 @@ class _ChatScreenState extends State<ChatScreen>
             'paused' => s.chaGoalPaused,
             'waiting' => s.chaGoalWaiting,
             'done' => s.chaGoalDoneTurns(goal.turnsUsed),
-            _ =>
-              goal.title.isEmpty
-                  ? s.chaGoalTurnLabel(goal.turnsUsed, goal.maxTurns)
-                  : '${s.chaGoalTurnLabel(goal.turnsUsed, goal.maxTurns)} · ${goal.title}',
+            _ => s.chaGoalTurnLabel(goal.turnsUsed, goal.maxTurns),
           };
     final icon = blocked
         ? Icons.flag_circle_outlined
@@ -10720,7 +10794,11 @@ class _ChatScreenState extends State<ChatScreen>
       padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
       child: Semantics(
         liveRegion: true,
-        label: reason.isEmpty ? label : '$label. $reason',
+        label: [
+          label,
+          goal.title,
+          reason,
+        ].where((part) => part.isNotEmpty).join('. '),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: () => unawaited(_showGoalSheet(goal)),
@@ -10737,6 +10815,8 @@ class _ChatScreenState extends State<ChatScreen>
                     children: [
                       Text(
                         label,
+                        key: const ValueKey('chat-goal-primary-label'),
+                        maxLines: 1,
                         style: Theme.of(
                           context,
                         ).textTheme.bodySmall?.copyWith(color: color),
@@ -10913,10 +10993,10 @@ class _ChatScreenState extends State<ChatScreen>
     final outcome = outcomes[taskId]!;
     final extra = outcomes.length - 1;
     final label = extra > 0
-        ? '${outcome.isError ? s.chaBackgroundTaskError : s.chaBackgroundTaskDone} (+$extra)'
+        ? '${outcome.isError ? s.chaBackgroundTaskErrorShort : s.chaBackgroundTaskDoneShort} (+$extra)'
         : (outcome.isError
-              ? s.chaBackgroundTaskError
-              : s.chaBackgroundTaskDone);
+              ? s.chaBackgroundTaskErrorShort
+              : s.chaBackgroundTaskDoneShort);
     final color = outcome.isError ? colors.error : colors.accent;
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
@@ -10942,6 +11022,8 @@ class _ChatScreenState extends State<ChatScreen>
                       unawaited(_showBackgroundTaskResult(taskId, outcome)),
                   child: Text(
                     label,
+                    key: const ValueKey('chat-background-primary-label'),
+                    maxLines: 1,
                     style: Theme.of(
                       context,
                     ).textTheme.bodySmall?.copyWith(color: color),
@@ -11408,7 +11490,7 @@ class _ChatScreenState extends State<ChatScreen>
     // posible mientras Hermes responde. Solo se cierra el `+` durante estados
     // locales que podrían mezclar el lote que se está enviando o subiendo.
     final attachmentInteractive =
-        !_loading &&
+        !_interactiveMessageRefreshPending &&
         !_composerSubmissionInFlight &&
         !_attachmentSubmitting &&
         !_compressingSession;
@@ -11416,14 +11498,20 @@ class _ChatScreenState extends State<ChatScreen>
     // disponible mientras Hermes piensa o ejecuta herramientas; al enviarlo se
     // aplica la misma cola de siguiente turno que al texto escrito.
     final dictationInteractive =
-        !_loading &&
+        !_interactiveMessageRefreshPending &&
         !_attachmentSubmitting &&
         !_compressingSession;
     final slashPalette =
         _isRecording || _transcribing || _slashSuggestions.isEmpty
         ? null
         : _SlashPalette(commands: _slashSuggestions, onPick: _pickSlash);
-    final floatingPalette = slashPalette;
+    final floatingPalette = slashPalette ?? (_isRecording || _transcribing
+        ? null : ChatMentionPalette(
+            controller: _textController,
+            focusNode: _textFocusNode,
+            connectionId: widget.connection.id,
+            profile: _effectiveSessionProfile,
+          ));
     // Composer premium (referencia live-chat): contenedor con borde sutil,
     // campo sin marco y fila inferior de acciones con send cuadrado ámbar.
     //
@@ -11614,7 +11702,7 @@ class _ChatScreenState extends State<ChatScreen>
                                         // authorizing edits or a second submission.
                                         readOnly: _compressingSession,
                                         enabled:
-                                            !_loading &&
+                                            !_interactiveMessageRefreshPending &&
                                             !_attachmentSubmitting &&
                                             (!_compressingSession ||
                                                 _compressionDraftFocusRetained),
@@ -11746,7 +11834,7 @@ class _ChatScreenState extends State<ChatScreen>
   Widget _buildBodyContent() {
     final colors = Theme.of(context).hermes;
     if (_messages.isEmpty &&
-        (_loading || !_chat.messagesLoaded) &&
+        (_interactiveMessageRefreshPending || !_chat.messagesLoaded) &&
         _error == null) {
       // Estado de carga con la mascota (006): si la presencia está activa, el
       // Companion "piensa" mientras carga; si está apagada, cae al spinner.
@@ -11861,10 +11949,7 @@ class _ChatScreenState extends State<ChatScreen>
     if (_messages.isEmpty) {
       return KeyedSubtree(
         key: const ValueKey('chat-empty-state'),
-        child: _EmptyChatState(
-          model: _activeModelLabel,
-          agentName: _agentName,
-        ),
+        child: _EmptyChatState(model: _activeModelLabel, agentName: _agentName),
       );
     }
 
@@ -12018,7 +12103,7 @@ class _ChatScreenState extends State<ChatScreen>
       ),
     );
     return ChatRefreshStatusOverlay(
-      loading: _loading,
+      loading: _interactiveMessageRefreshPending,
       errorMessage: _error == null
           ? null
           : Strings.of(context).chaMessagesError,
@@ -12313,7 +12398,7 @@ class _ChatScreenState extends State<ChatScreen>
           isLatestAssistant: _isLatestAssistant(msg),
           isTerminal: !isStreaming && !isCancelled,
           chatBusy:
-              _loading ||
+              _interactiveMessageRefreshPending ||
               _sending ||
               _attachmentSubmitting ||
               _compressingSession,
@@ -12732,7 +12817,7 @@ class _CoreReadPartialCoverageNotice extends StatelessWidget {
               ),
               IconButton(
                 key: const ValueKey('core-read-partial-coverage-dismiss'),
-                tooltip: 'Cerrar',
+                tooltip: Strings.of(context).commonClose,
                 onPressed: onDismiss,
                 icon: const Icon(Icons.close),
                 iconSize: 18,
@@ -13407,10 +13492,7 @@ class _EmptyChatState extends StatelessWidget {
   final String model;
   final String agentName;
 
-  const _EmptyChatState({
-    required this.model,
-    this.agentName = 'hermes',
-  });
+  const _EmptyChatState({required this.model, this.agentName = 'hermes'});
 
   @override
   Widget build(BuildContext context) {
@@ -14434,6 +14516,7 @@ AssistantOperationalProjection _projectOperationalArtifacts(
 ({List<_ParsedAttachment> attachments, String text}) _parseUserContent(
   String raw,
 ) {
+  raw = stripBotMentionNote(raw);
   // Quita los blobs de SISTEMA que no son del usuario: preámbulo de cron/skill y
   // el resumen de compactación de contexto. Si tras ellos hay un mensaje real,
   // se muestra ese; si no, el llamador ya lo habrá pintado como chip.
@@ -15232,11 +15315,13 @@ class _GatedChatImageState extends State<_GatedChatImage> {
       );
     }
     // A-115 (spec 028): anuncia imagen + acción de ampliar para TalkBack.
-    final imgHost = widget.uri.host.isNotEmpty ? ' de ${widget.uri.host}' : '';
+    final imgLabel = widget.uri.host.isNotEmpty
+        ? Strings.of(context).chatImageFromHostTapToEnlarge(widget.uri.host)
+        : Strings.of(context).chatImageTapToEnlarge;
     return Semantics(
       image: true,
       button: true,
-      label: 'Imagen$imgHost, toca para ampliar',
+      label: imgLabel,
       child: GestureDetector(
         onTap: () => Navigator.push(
           context,
@@ -16792,7 +16877,7 @@ class _QueuedRow extends StatelessWidget {
                   ),
                 if (entry.blocked)
                   Text(
-                    'Envío pendiente. Reintenta.',
+                    Strings.of(context).chatQueueBlockedRetry,
                     key: ValueKey('chat-queue-blocked-${entry.id}'),
                     style: TextStyle(fontSize: 10.5, color: colors.warning),
                   ),

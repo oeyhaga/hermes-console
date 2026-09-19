@@ -107,6 +107,7 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
   late final TextEditingController _dashTokenCtrl;
   late final TextEditingController _dashUserCtrl;
   late final TextEditingController _dashPassCtrl;
+  bool _dashUserEdited = false;
 
   // Diagnóstico
   ConnectionDiagnostics? _diag;
@@ -188,12 +189,20 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
       _detectedMatrix = widget.connManager.loadCapabilities(init.id);
       _bridgeConfigLoad = _loadBridgeConfig(init.id);
       // Los secretos existentes no se muestran; campo vacío = no cambiar.
-      widget.connManager.getDashboardSecrets(init.id).then((s) {
-        if (!mounted) return;
-        if ((s.username?.isNotEmpty ?? false) && _dashUserCtrl.text.isEmpty) {
-          _dashUserCtrl.text = s.username!;
-        }
-      });
+      widget.connManager
+          .getDashboardSecrets(init.id)
+          .then((s) {
+            if (!mounted) return;
+            if ((s.username?.isNotEmpty ?? false) &&
+                _dashUserCtrl.text.isEmpty) {
+              _dashUserCtrl.text = s.username!;
+            }
+          })
+          .catchError((Object error) {
+            debugPrint(
+              '[instance-edit] dashboard secrets unavailable (${error.runtimeType})',
+            );
+          });
     }
     // Alta precargada (draft sin identidad): rellena el formulario pero el
     // guardado sigue siendo un alta (id UUID nuevo, token obligatorio).
@@ -608,6 +617,16 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
           return false;
         }
         final finalUser = (res['username'] ?? user).toString();
+        // The remote rotation has already happened. Persist even if the
+        // editor was closed while that request was in flight.
+        final existingId = widget.initial?.id;
+        if (existingId != null) {
+          await widget.connManager.setDashboardSecrets(
+            existingId,
+            username: finalUser,
+            password: pass,
+          );
+        }
         if (!mounted) return false;
         setState(() {
           _dashAuthMode = AuthMode.basicAuth;
@@ -627,27 +646,6 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
                 : (host.isEmpty ? '' : '$scheme://$host:9119');
           }
         });
-        // Esto ya rotó la contraseña en el SERVIDOR. Antes solo quedaba en
-        // el formulario a la espera de que el usuario pulsara "Guardar" —
-        // si salía de la pantalla sin guardar (o la app se cerraba antes),
-        // la instancia guardada se quedaba con la contraseña VIEJA mientras
-        // el servidor ya tenía la nueva, y el próximo login fallaba sin
-        // motivo aparente (bug real reportado: "el dashboard suele fallar,
-        // me fuerza a cambiar la password" — cada intento de arreglarlo con
-        // este mismo botón generaba OTRA contraseña nueva, perpetuando el
-        // desajuste). En una instancia ya existente persistimos de inmediato
-        // para que el servidor y lo guardado nunca diverjan; en un alta
-        // nueva (`widget.initial == null`) todavía no hay `id` con el que
-        // persistir aparte, así que sigue esperando al "Guardar" normal.
-        final existingId = widget.initial?.id;
-        if (existingId != null) {
-          await widget.connManager.setDashboardSecrets(
-            existingId,
-            username: finalUser,
-            password: pass,
-          );
-        }
-        if (!mounted) return true;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(Strings.of(context).ieDashConfigured(finalUser)),
@@ -755,11 +753,18 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
     );
     var apiKey = _gatewayTokenCtrl.text.trim();
     if (apiKey.isEmpty && widget.initial != null) {
-      apiKey = widget.initial!.apiKey;
+      apiKey =
+          widget.connManager
+              .getConnections()
+              .where((connection) => connection.id == id)
+              .firstOrNull
+              ?.apiKey ??
+          '';
     }
     final stored = widget.initial == null
         ? const DashboardSecrets()
         : await widget.connManager.getDashboardSecrets(id);
+    if (!mounted) throw StateError('Instance editor closed');
     final secrets = DashboardSecrets(
       sessionToken: _dashTokenCtrl.text.trim().isNotEmpty
           ? _dashTokenCtrl.text.trim()
@@ -804,7 +809,7 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
   /// español (sin volcar "SocketException: … (OS Error: …)" al banner). El
   /// detalle técnico queda en el log de debug y en "copiar diagnóstico".
   String _friendlyError(Object e) {
-    debugPrint('[instance-edit] detalle técnico del error: $e');
+    debugPrint('[instance-edit] error (${e.runtimeType})');
     final str = Strings.of(context);
     if (e is TimeoutException) {
       return str.ieErrTimeout;
@@ -1056,7 +1061,17 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
       await _pairingAutomationFuture;
       if (!mounted) return;
       await _bridgeConfigLoad;
+      if (!mounted) return;
       final (conn, _) = await _draftConnection();
+      if (!mounted) return;
+      // Capture the intended edits before the first persistence await. Blank
+      // secrets mean preserve the CURRENT stored value, not the initial model.
+      final gatewayKey = _gatewayTokenCtrl.text.trim();
+      final dashboardToken = _dashTokenCtrl.text.trim();
+      final dashboardUser = _dashUserCtrl.text.trim();
+      final dashboardPassword = _dashPassCtrl.text;
+      final bridgeUrl = _bridgeUrlCtrl.text;
+      final bridgeToken = _bridgeTokenCtrl.text;
       final withCheck = _detectedMatrix?.checkedAtMs == null
           ? conn
           : SavedConnection(
@@ -1075,21 +1090,23 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
               localChatMode: conn.localChatMode,
               kind: conn.kind,
             );
-      await widget.connManager.upsertConnection(withCheck);
+      await widget.connManager.upsertConnection(
+        withCheck.copyWith(apiKey: gatewayKey),
+      );
       await widget.connManager.setDashboardSecrets(
         conn.id,
-        sessionToken: _dashTokenCtrl.text.trim().isNotEmpty
-            ? _dashTokenCtrl.text.trim()
+        sessionToken: dashboardToken.isNotEmpty ? dashboardToken : null,
+        username:
+            (_isNew || _dashUserEdited || dashboardPassword.isNotEmpty) &&
+                dashboardUser.isNotEmpty
+            ? dashboardUser
             : null,
-        username: _dashUserCtrl.text.trim().isNotEmpty
-            ? _dashUserCtrl.text.trim()
-            : null,
-        password: _dashPassCtrl.text.isNotEmpty ? _dashPassCtrl.text : null,
+        password: dashboardPassword.isNotEmpty ? dashboardPassword : null,
       );
       await widget.connManager.setBridgeConfig(
         conn.id,
-        url: _bridgeUrlCtrl.text,
-        token: _bridgeTokenCtrl.text,
+        url: _isNew || _bridgeUrlEdited ? bridgeUrl : null,
+        token: bridgeToken,
       );
       final matrix = _detectedMatrix;
       if (matrix != null && matrix.checkedAtMs != null) {
@@ -1409,6 +1426,7 @@ class _InstanceEditScreenState extends State<InstanceEditScreen> {
                   children: [
                     _field(
                       controller: _dashUserCtrl,
+                      onChanged: (_) => _dashUserEdited = true,
                       label: s.commonUser,
                       autocorrect: false,
                     ),

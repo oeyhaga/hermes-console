@@ -85,6 +85,13 @@ String dockItemLabel(Strings strings, DockItemId id) => switch (id) {
   DockItemId.tools => strings.drawerTools,
 };
 
+String dockItemCompactLabel(Strings strings, DockItemId id) => switch (id) {
+  DockItemId.cron => strings.dockCronLabel,
+  DockItemId.sessions => strings.dockSessionsLabel,
+  DockItemId.tools => strings.dockToolsLabel,
+  _ => dockItemLabel(strings, id),
+};
+
 /// Valores resueltos de un [DockStyle] listos para pintar: colores,
 /// radios, sombras y desenfoque. Centraliza la traducción "ajuste →
 /// píxeles" para que el dock de Bots y el de General (y la vista previa de
@@ -275,6 +282,7 @@ class DockItemTile extends StatelessWidget {
   final IconData icon;
   final IconData? selectedIcon;
   final String label;
+  final String? compactLabel;
   final bool selected;
   final bool accent;
   final double innerRadius;
@@ -286,6 +294,7 @@ class DockItemTile extends StatelessWidget {
   const DockItemTile({
     required this.icon,
     required this.label,
+    this.compactLabel,
     required this.innerRadius,
     this.controlKey,
     this.semanticsKey,
@@ -370,7 +379,7 @@ class DockItemTile extends StatelessWidget {
                             // La etiqueta sigue siendo accesible sin
                             // recorte propio vía Tooltip/Semantics.
                             Text(
-                              label,
+                              compactLabel ?? label,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               textScaler: TextScaler.noScaling,

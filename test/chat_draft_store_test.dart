@@ -71,6 +71,29 @@ void main() {
         );
   });
 
+  test('load waits for a save admitted before its persistence dependency', () async {
+    final store = ChatDraftStore(await SharedPreferences.getInstance());
+    final gate = Completer<bool>();
+    final saved = store.save('connection', 'session', 'Last keystroke', const [], afterSave: gate.future);
+    var loaded = false;
+    final read = store.load('connection', 'session').then((draft) { loaded = true; return draft; });
+    await Future<void>.delayed(Duration.zero);
+    expect(loaded, isFalse);
+    gate.complete(true);
+    expect(await saved, isTrue);
+    expect((await read).text, 'Last keystroke');
+  });
+
+  test('room reply draft preserves its thread and remains out of recovery lists', () async {
+    final store = ChatDraftStore(await SharedPreferences.getInstance());
+    await store.save('connection', 'mob-room-fixture', 'Reply\ntext', const [], profile: 'builder', replyThreadId: 'thread-one');
+    final draft = await store.load('connection', 'mob-room-fixture', profile: 'builder');
+    expect(draft.text, 'Reply\ntext');
+    expect(draft.replyThreadId, 'thread-one');
+    expect(await store.listForConnection('connection'), isEmpty);
+    expect((await store.load('connection', 'mob-room-fixture', profile: 'other')).text, isEmpty);
+  });
+
   test(
     'canonical draft scope: promotion keeps connection and profile fences',
     () async {

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../models/agent_profile.dart';
 import '../theme/app_theme.dart';
 import 'hermes_bot_face.dart';
+import 'bot_avatar_motion.dart';
 
 typedef MissionAvatarLoader =
     Future<AgentProfileAvatar?> Function(String profileName);
@@ -17,6 +18,7 @@ typedef MissionAvatarLoader =
 /// payload cuando un avatar aparece en Rooms, Team y Work.
 final class MissionProfileAvatarCache {
   final MissionAvatarLoader _loader;
+  final String? connectionId;
   final int maxEntries;
   final int maxConcurrent;
   final LinkedHashMap<String, Future<AgentProfileAvatar?>> _entries =
@@ -29,12 +31,22 @@ final class MissionProfileAvatarCache {
 
   factory MissionProfileAvatarCache({
     required MissionAvatarLoader loader,
+    String? connectionId,
     int maxEntries = 64,
     int maxConcurrent = 4,
-  }) => MissionProfileAvatarCache._(loader, maxEntries, maxConcurrent);
+  }) => MissionProfileAvatarCache._(
+    loader,
+    maxEntries,
+    maxConcurrent,
+    connectionId,
+  );
 
-  MissionProfileAvatarCache._(this._loader, this.maxEntries, this.maxConcurrent)
-    : assert(maxEntries > 0),
+  MissionProfileAvatarCache._(
+    this._loader,
+    this.maxEntries,
+    this.maxConcurrent,
+    this.connectionId,
+  ) : assert(maxEntries > 0),
       assert(maxConcurrent > 0),
       super();
 
@@ -127,6 +139,7 @@ class MissionProfileAvatar extends StatelessWidget {
   final String? colorHex;
   final String? imageKind;
   final bool privacySafeElementKeys;
+  final bool working;
 
   const MissionProfileAvatar({
     super.key,
@@ -139,6 +152,7 @@ class MissionProfileAvatar extends StatelessWidget {
     this.colorHex,
     this.imageKind,
     this.privacySafeElementKeys = false,
+    this.working = false,
   });
 
   @override
@@ -159,6 +173,7 @@ class MissionProfileAvatar extends StatelessWidget {
         shape: shape,
         colorHex: colorHex,
         privacySafeElementKeys: privacySafeElementKeys,
+        working: working,
       );
     } else if (avatarCache.hasResolved(profileName)) {
       // Ya en caché: se pinta en este mismo frame. Con `FutureBuilder` hasta
@@ -173,6 +188,7 @@ class MissionProfileAvatar extends StatelessWidget {
         shape: shape,
         colorHex: colorHex,
         privacySafeElementKeys: privacySafeElementKeys,
+        working: working,
       );
     } else {
       content = FutureBuilder<AgentProfileAvatar?>(
@@ -184,6 +200,7 @@ class MissionProfileAvatar extends StatelessWidget {
           shape: shape,
           colorHex: colorHex,
           privacySafeElementKeys: privacySafeElementKeys,
+          working: working,
         ),
       );
     }
@@ -201,7 +218,10 @@ class MissionProfileAvatar extends StatelessWidget {
                 ),
               )
             : null,
-        child: content,
+        child: BotAvatarMotion(
+          enabled: working && shouldLoadAvatar,
+          child: content,
+        ),
       ),
     );
   }
@@ -214,6 +234,7 @@ class _AvatarFace extends StatelessWidget {
   final String? shape;
   final String? colorHex;
   final bool privacySafeElementKeys;
+  final bool working;
 
   const _AvatarFace({
     required this.profileName,
@@ -222,6 +243,7 @@ class _AvatarFace extends StatelessWidget {
     this.shape,
     this.colorHex,
     this.privacySafeElementKeys = false,
+    this.working = false,
   });
 
   @override
@@ -235,6 +257,8 @@ class _AvatarFace extends StatelessWidget {
                   ? 'mission-avatar-geometry'
                   : 'mission-avatar-geometry-$profileName',
             ),
+            animate: working,
+            motionState: HermesBotFaceMotionState.thinking,
             visual: visual,
             size: size,
           )

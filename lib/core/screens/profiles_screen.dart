@@ -17,6 +17,7 @@ import 'package:flutter/services.dart';
 import '../../l10n/app_localizations.dart';
 import '../../main.dart';
 import '../models/agent_profile.dart';
+import '../models/dock_config.dart';
 import '../services/connection_manager.dart';
 import '../services/dock_preferences_store.dart';
 import '../services/tui_gateway_client.dart';
@@ -36,9 +37,11 @@ final _profileNameRe = RegExp(r'^[a-z0-9][a-z0-9_-]{0,63}$');
 class ProfilesScreen extends StatefulWidget {
   final SavedConnection connection;
   final ConnectionManager connManager;
+  final String? initialDeleteProfile;
   const ProfilesScreen({
     required this.connection,
     required this.connManager,
+    this.initialDeleteProfile,
     super.key,
   });
 
@@ -55,6 +58,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   late final MissionProfileAvatarCache _avatarCache;
   List<AgentProfile> _profiles = [];
   bool _loading = true;
+  bool _initialDeleteShown = false;
   String? _error;
 
   String get _activeProfile =>
@@ -101,6 +105,13 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
         _profiles = list;
         _loading = false;
       });
+      if (!_initialDeleteShown && widget.initialDeleteProfile != null) {
+        _initialDeleteShown = true;
+        final profile = list.where((p) => p.name == widget.initialDeleteProfile).firstOrNull;
+        if (profile != null && !profile.isDefault && profile.name != 'default') {
+          await _delete(profile);
+        }
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -190,6 +201,7 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
   }
 
   Future<void> _delete(AgentProfile p) async {
+    if (widget.connection.readOnly || p.isDefault || p.name == 'default') return;
     final colors = Theme.of(context).hermes;
     final str = Strings.of(context);
     // Acción destructiva en el servidor: App Lock si está activo.
@@ -291,7 +303,12 @@ class _ProfilesScreenState extends State<ProfilesScreen> {
       floatingActionButton: ListenableBuilder(
         listenable: DockPreferencesController.instance.listenable,
         builder: (context, _) {
-          if (DockPreferencesController.instance.value.useDock) {
+          final dock = DockPreferencesController.instance.value;
+          if (dock.useDock &&
+              dock
+                  .profile(DockProfileId.general)
+                  .visibleItemIds
+                  .contains(DockItemId.create)) {
             return const SizedBox.shrink();
           }
           return FloatingActionButton.extended(

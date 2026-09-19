@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../theme/component_profile.dart';
+import '../theme/motion.dart';
 
 /// Abre una superficie modal centrada sin depender de `showDialog`.
 ///
@@ -1447,10 +1448,8 @@ class _HermesEditorialBlock extends StatelessWidget {
             if (detail != null && flexibleDetail)
               Expanded(
                 child: AnimatedSize(
-                  duration: reduceMotion
-                      ? Duration.zero
-                      : const Duration(milliseconds: 200),
-                  curve: Curves.easeOutCubic,
+                  duration: reduceMotion ? Duration.zero : Motion.base,
+                  curve: Motion.enter,
                   alignment: AlignmentDirectional.topStart,
                   child: showDetail
                       ? Padding(
@@ -1470,10 +1469,8 @@ class _HermesEditorialBlock extends StatelessWidget {
               )
             else if (detail != null)
               AnimatedSize(
-                duration: reduceMotion
-                    ? Duration.zero
-                    : const Duration(milliseconds: 200),
-                curve: Curves.easeOutCubic,
+                duration: reduceMotion ? Duration.zero : Motion.base,
+                curve: Motion.enter,
                 alignment: AlignmentDirectional.topStart,
                 child: showDetail
                     ? Padding(
@@ -1698,26 +1695,28 @@ class _HermesShimmerTextState extends State<HermesShimmerText>
       excludeSemantics: true,
       child: !widget.enabled || _reduceMotion
           ? staticText
-          : AnimatedBuilder(
-              animation: _controller,
-              child: staticText,
-              builder: (context, child) {
-                final position = (_controller.value * 2.4) - 1.2;
-                return ShaderMask(
-                  blendMode: BlendMode.srcIn,
-                  shaderCallback: (bounds) => LinearGradient(
-                    begin: Alignment(position - 0.75, 0),
-                    end: Alignment(position + 0.75, 0),
-                    colors: [
-                      colors.textSecondary.withValues(alpha: 0.58),
-                      colors.textPrimary,
-                      colors.textSecondary.withValues(alpha: 0.58),
-                    ],
-                    stops: const [0.22, 0.5, 0.78],
-                  ).createShader(bounds),
-                  child: child,
-                );
-              },
+          : RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: _controller,
+                child: staticText,
+                builder: (context, child) {
+                  final position = (_controller.value * 2.4) - 1.2;
+                  return ShaderMask(
+                    blendMode: BlendMode.srcIn,
+                    shaderCallback: (bounds) => LinearGradient(
+                      begin: Alignment(position - 0.75, 0),
+                      end: Alignment(position + 0.75, 0),
+                      colors: [
+                        colors.textSecondary.withValues(alpha: 0.58),
+                        colors.textPrimary,
+                        colors.textSecondary.withValues(alpha: 0.58),
+                      ],
+                      stops: const [0.22, 0.5, 0.78],
+                    ).createShader(bounds),
+                    child: child,
+                  );
+                },
+              ),
             ),
     );
   }

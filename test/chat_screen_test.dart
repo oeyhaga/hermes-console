@@ -1,3 +1,5 @@
+import 'package:hermes_android/core/models/bot_mention.dart';
+import 'package:hermes_android/core/services/bot_mention_roster.dart';
 // Widget tests de ChatScreen.
 //
 // ChatScreen depende de un ancestro `HermesAppState` (lo busca con
@@ -23,6 +25,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'pill_copy_fit_test.dart' show expectPillLabelsFit;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -93,6 +96,7 @@ import 'package:hermes_android/core/widgets/motion_entrance.dart';
 import 'package:hermes_android/core/widgets/session_context_usage.dart';
 import 'package:hermes_android/core/widgets/subagent_activity_card.dart';
 import 'package:hermes_android/core/widgets/turn_activity_pill.dart';
+import 'support/inter_font.dart';
 
 AgentProfileAvatar _testProfileAvatar() => AgentProfileAvatar.fromDataUri(
   'data:image/png;base64,'
@@ -1066,6 +1070,19 @@ DesktopSessionSnapshot _uiCompressedSnapshot() =>
       method: 'session.resume',
     );
 
+class _MentionSlashGateway extends _UiRewindGateway {
+  @override
+  Future<DesktopCommandCatalog> commandsCatalog() async => DesktopCommandCatalog.fromJson(const {
+    'pairs': [['/handoff', 'Fixture command']],
+  });
+  @override
+  Future<DesktopCommandRpcResult> slashExec(String runtimeSessionId, String command) async {
+    slashCalls.add((runtimeId: runtimeSessionId, command: command));
+    return const DesktopCommandRpcResult(kind: DesktopCommandDispatchKind.send,
+      accepted: DesktopCommandAcceptance.accepted, message: 'directed @ops');
+  }
+}
+
 class _SubmissionGateway
     implements
         HermesDesktopGateway,
@@ -1462,6 +1479,13 @@ ApiClient _safeApi() => ApiClient(
   httpClient: MockClient((_) async => http.Response('not found', 404)),
 );
 
+/// Pill labels fall back to a shorter text when the fixed-width test font does
+/// not fit; the full copy stays in `semanticsLabel`.
+Finder _pillLabel(String full) => find.byWidgetPredicate(
+  (widget) =>
+      widget is Text && (widget.data == full || widget.semanticsLabel == full),
+);
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   var secureStore = <String, String>{};
@@ -1667,6 +1691,7 @@ void main() {
   }
 
   setUp(() {
+    BotMentionRoster.shared.clear();
     secureStore = <String, String>{};
     failOutboxWrites = false;
     outboxWriteCalls = 0;
@@ -1951,6 +1976,158 @@ void main() {
     });
     return chat;
   }
+
+  void mentionRoster(String id, {String title = 'Research Buddy'}) {
+    BotMentionRoster.shared.replace(id, 'Local', [
+      const AgentProfile(name: 'default'),
+      AgentProfile(name: 'ops', botModeUiMeta: {'title': title}),
+    ]);
+  }
+
+  testWidgets('mentions: autocomplete floats above composer and keyboard; draft remains typed', (tester) async {
+    final connection = _remoteConn('mention-ui');
+    final chat = await pumpChat(tester, connection: connection);
+    mentionRoster(connection.id);
+    await tester.enterText(find.byType(TextField), '@res');
+    await tester.pump(const Duration(milliseconds: 600));
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+    addTearDown(tester.view.resetViewInsets);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final palette = find.byKey(const ValueKey('chat-mention-palette'));
+    expect(palette, findsOneWidget);
+    expect(tester.getBottomLeft(palette).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.byKey(const ValueKey('chat-composer-host'))).dy + 4));
+    await tester.tap(find.text('@ops · Research Buddy'));
+    await tester.pump(const Duration(milliseconds: 600));
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller!.text, '@ops ');
+    expect(field.focusNode!.hasFocus, isTrue);
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    expect((await screen.draftStoreOverride!.load(connection.id, screen.session.id, profile: 'default')).text, '@ops ');
+    expect(chat.messages, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: immediate and queued payload freeze while bubbles stay typed', (tester) async {
+    final connection = _remoteConn('mention-queue');
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway, messagesLoaded: false);
+    mentionRoster(connection.id);
+    await tester.enterText(find.byType(TextField), 'ask @ops');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(gateway.submissions.single, startsWith('ask @ops\n\n[@mentions'));
+    expect(chat.messages.where((m) => m['role'] == 'user').single['content'], 'ask @ops');
+    expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
+    await tester.enterText(find.byType(TextField), 'next @ops');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 400));
+    final queued = chat.queuedTurns.single.turn;
+    expect(queued.text, 'next @ops');
+    expect(queued.mentions.single.title, 'Research Buddy');
+    expect(queued.mentionAnnotation, isNotEmpty);
+    mentionRoster(connection.id, title: 'Renamed');
+    gateway.emit('message.complete', {'text': 'done'});
+    await tester.pump(const Duration(milliseconds: 1200));
+    expect(gateway.submissions.last, 'next @ops${queued.mentionAnnotation}');
+    expect('@mentions resolved'.allMatches(gateway.submissions.last).length, 1);
+    gateway.emit('message.complete', {'text': 'done'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: rejected retry preserves ID and annotation after roster rename', (tester) async {
+    final connection = _remoteConn('mention-retry');
+    final gateway = _SubmissionGateway()..submitError = const _ReasonedPromptRejection(reason: 'SESSION_NOT_OWNED');
+    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway);
+    mentionRoster(connection.id);
+    await tester.enterText(find.byType(TextField), 'ask @ops');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 800));
+    final before = (await TurnOutboxStore().loadAllForChat(connection.id, 'sess-test', profile: 'default')).single;
+    expect(before.state, PreparedTurnState.failedBeforeAcceptance);
+    final payload = gateway.submissions.last;
+    mentionRoster(connection.id, title: 'Changed while offline');
+    gateway.submitError = null;
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(gateway.submissions.last, payload);
+    expect(chat.activeTurnDelivery!.current.clientTurnId, before.clientTurnId);
+    expect(chat.activeTurnDelivery!.current.mentionAnnotation, before.mentionAnnotation);
+    gateway.emitComplete();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: initial Share prompt takes the prepared route', (tester) async {
+    final connection = _remoteConn('mention-initial');
+    final gateway = _SubmissionGateway();
+    await pumpChat(tester, connection: connection, desktopGateway: gateway,
+      initialPrompt: 'initial @ops', beforeChatPush: () => mentionRoster(connection.id));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(gateway.submissions.single, startsWith('initial @ops\n\n[@mentions'));
+    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    gateway.emitComplete();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: dictation takes the prepared route', (tester) async {
+    final connection = _remoteConn('mention-dictation');
+    final gateway = _SubmissionGateway();
+    final stt = _PartialSttEngine(finalOnStop: 'ask @ops');
+    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway, stt: stt);
+    mentionRoster(connection.id);
+    await tester.tap(find.byKey(const ValueKey('mic')));
+    await tester.pump();
+    stt.results.add(const SttResult('ask @ops', false));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('dictation-send')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(gateway.submissions.single, startsWith('ask @ops\n\n[@mentions'));
+    expect(chat.messages.where((m) => m['role'] == 'user').first['content'], 'ask @ops');
+    gateway.emitComplete();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: slash directed prompt uses prepared handoff once', (tester) async {
+    final connection = _remoteConn('mention-slash');
+    final gateway = _MentionSlashGateway();
+    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway);
+    mentionRoster(connection.id);
+    await tester.enterText(find.byType(TextField), '/hel');
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const ValueKey('chat-slash-palette')), findsOneWidget);
+    expect(find.byKey(const ValueKey('chat-mention-palette')), findsNothing);
+    await tester.enterText(find.byType(TextField), '/handoff @ops');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(gateway.slashCalls.single.command, 'handoff @ops');
+    expect(gateway.submissions.single, startsWith('directed @ops\n\n[@mentions'));
+    expect(chat.activeTurnDelivery!.current.text, 'directed @ops');
+    gateway.emit('message.complete', {'text': 'done'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mentions: Desktop history bubble and copy hide annotation after reload', (tester) async {
+    const typed = 'ask @ops';
+    final note = buildBotMentionAnnotation(const [BotMention(connectionId: 'local', profile: 'ops', handle: 'ops')]);
+    await pumpChat(tester, messages: [{'role': 'user', 'content': '$typed$note'}]);
+    expect(find.text(typed), findsOneWidget);
+    expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
+    await tester.tap(find.byTooltip('Copiar mensaje').first);
+    await tester.pump();
+    expect(clipboardText, typed);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'la burbuja conserva texto humano y elimina el carrier background completo',
@@ -3732,7 +3909,7 @@ void main() {
       // agregado de actividad pasiva observada — "Trabajo en segundo plano"
       // ahora solo vive en el `semanticLabel` de accesibilidad del pill, no
       // como texto visible (ver subagent_activity_card.dart, `build()`).
-      expect(find.text('1 en curso · 0 finalizados'), findsOneWidget);
+      expect(_pillLabel('1 activo · 0 cerrados'), findsOneWidget);
       expect(gateway.resumeExistingCalls, 0);
       expect(gateway.createCalls, 0);
       expect(tester.takeException(), isNull);
@@ -3773,7 +3950,7 @@ void main() {
       // Sin conteo agregado (ningún tool-call durable observado todavía), el
       // pill genérico cae al rótulo de "trabajando" — "Trabajo en segundo
       // plano" solo vive en el `semanticLabel` de accesibilidad del pill.
-      expect(find.text('trabajando'), findsOneWidget);
+      expect(_pillLabel('trabajando'), findsOneWidget);
       expect(
         find.descendant(
           of: find.byKey(const ValueKey('chat-session-activity')),
@@ -3872,6 +4049,49 @@ void main() {
       expect(find.text('Turno durable'), findsOneWidget);
       expect(find.text('Respuesta durable'), findsOneWidget);
       expect(find.text('Trabajo en segundo plano'), findsNothing);
+      expect(gateway.resumeExistingCalls, 0);
+      expect(gateway.createCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'un borrador en el composer no recarga REST cada 3s sin runtime',
+    (tester) async {
+      var loads = 0;
+      final gateway = _UiRewindGateway();
+      await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-draft-skips-rest'),
+        messagesLoaded: false,
+        initialStoredSessionId: 'sess-test',
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) async {
+          loads += 1;
+          return const [
+            {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+          ];
+        },
+      );
+
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+      final loadsAfterIdle = loads;
+      expect(loadsAfterIdle, greaterThan(0));
+      expect(find.text('Turno durable'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField).last, 'borrador lento');
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+
+      expect(loads, loadsAfterIdle);
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).controller?.text,
+        'borrador lento',
+      );
       expect(gateway.resumeExistingCalls, 0);
       expect(gateway.createCalls, 0);
       expect(tester.takeException(), isNull);
@@ -4084,7 +4304,7 @@ void main() {
       // refrescó la lista de sesiones activas, no el tail de mensajes), el
       // pill genérico cae al rótulo de "trabajando" — "Trabajo en segundo
       // plano" solo vive en el `semanticLabel` de accesibilidad del pill.
-      expect(find.text('trabajando'), findsOneWidget);
+      expect(_pillLabel('trabajando'), findsOneWidget);
       expect(find.text('PRIVATE_TOOL_LABEL_CANARY'), findsNothing);
       expect(
         find.descendant(of: surface, matching: find.byType(Wrap)),
@@ -4939,7 +5159,19 @@ void main() {
   );
 
   Future<void> triggerChatRefresh(WidgetTester tester) async {
-    await tester.tap(find.byKey(const ValueKey('chat-control-trigger')));
+    // Bot Chat's AppBar nests the same control sheet one level deeper, behind
+    // its own overflow menu (`bot-chat-overflow-appbar` → `bot-chat-control-
+    // action`), instead of the general chat's direct `chat-control-trigger`
+    // icon button.
+    final botOverflow = find.byKey(const ValueKey('bot-chat-overflow-appbar'));
+    if (botOverflow.evaluate().isNotEmpty) {
+      await tester.tap(botOverflow);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('bot-chat-control-action')));
+    } else {
+      await tester.tap(find.byKey(const ValueKey('chat-control-trigger')));
+    }
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     final dialog = find.byKey(const ValueKey('chat-control-dialog'));
@@ -5127,22 +5359,18 @@ void main() {
     });
   }
 
-  attachmentValidationFenceTest(
-    'de fichero ausente',
-    (temp) async {
-      final file = File('${temp.path}/ausente.pdf');
-      await file.writeAsBytes([0x25, 0x50, 0x44, 0x46]);
-      return AttachmentDraft(
-        localId: 'missing',
-        type: AttachmentType.document,
-        name: 'ausente.pdf',
-        mimeType: 'application/pdf',
-        sizeBytes: await file.length(),
-        localPath: file.path,
-      );
-    },
-    invalidateBeforeSend: (attachment) => File(attachment.localPath).delete(),
-  );
+  attachmentValidationFenceTest('de fichero ausente', (temp) async {
+    final file = File('${temp.path}/ausente.pdf');
+    await file.writeAsBytes([0x25, 0x50, 0x44, 0x46]);
+    return AttachmentDraft(
+      localId: 'missing',
+      type: AttachmentType.document,
+      name: 'ausente.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: await file.length(),
+      localPath: file.path,
+    );
+  }, invalidateBeforeSend: (attachment) => File(attachment.localPath).delete());
 
   attachmentValidationFenceTest('de imagen corrupta', (temp) async {
     final image = File('${temp.path}/corrupta.gif');
@@ -5666,6 +5894,341 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   });
 
+  testWidgets('Bot Chat recupera foco y texto tras fallar y reintentar', (
+    tester,
+  ) async {
+    final retry = Completer<List<Map<String, dynamic>>>();
+    var loads = 0;
+    await pumpChat(
+      tester,
+      connection: _remoteConn('conn-bot-composer-retry'),
+      session: _session().copyWith(source: 'bot-mode'),
+      missionBotProfile: const AgentProfile(name: 'Sol'),
+      messagesLoaded: false,
+      storedMessageLoader: (_, _) {
+        if (++loads == 1) throw StateError('initial load failed');
+        return retry.future;
+      },
+    );
+    await tester.pump();
+    expect(find.text('No se pudieron cargar los mensajes'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.refresh_rounded));
+    await tester.pump();
+    expect(loads, 2);
+    final composer = find.byType(TextField);
+    expect(tester.widget<TextField>(composer).enabled, isFalse);
+    retry.complete(const [
+      {'role': 'user', 'content': 'Pregunta recuperada'},
+      {'role': 'assistant', 'content': 'Respuesta recuperada'},
+    ]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('Respuesta recuperada'), findsOneWidget);
+    expect(tester.widget<TextField>(composer).enabled, isTrue);
+    await tester.tap(composer);
+    await tester.pump();
+    expect(tester.widget<TextField>(composer).focusNode!.hasFocus, isTrue);
+    expect(tester.testTextInput.isVisible, isTrue);
+    tester.testTextInput.enterText('Borrador tras reintentar');
+    await tester.pump();
+    expect(
+      tester.widget<TextField>(composer).controller!.text,
+      'Borrador tras reintentar',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'Bot Chat desbloquea composer al publicar tras dos fallos aunque resume siga pendiente',
+    (tester) async {
+      final retry = Completer<List<Map<String, dynamic>>>();
+      final resume = Completer<DesktopSessionSnapshot>();
+      final gateway = _UiRewindGateway()
+        ..resumeExistingError = StateError('HTTP 401');
+      var loads = 0;
+      await pumpChat(
+        tester,
+        connection: _remoteConn('conn-bot-composer-published'),
+        session: _session().copyWith(source: 'bot-mode'),
+        missionBotProfile: const AgentProfile(name: 'Sol'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+        storedMessageLoader: (_, _) {
+          if (++loads <= 2) throw StateError('HTTP 401');
+          return retry.future;
+        },
+      );
+      await tester.pump();
+      expect(find.text('No se pudieron cargar los mensajes'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.refresh_rounded));
+      await tester.pump();
+      expect(loads, 2);
+      expect(find.text('No se pudieron cargar los mensajes'), findsOneWidget);
+
+      gateway
+        ..resumeExistingError = null
+        ..resumeExistingGate = resume;
+      await tester.tap(find.byIcon(Icons.refresh_rounded));
+      await tester.pump();
+      expect(loads, 3);
+      final composer = find.byType(TextField);
+      expect(tester.widget<TextField>(composer).enabled, isFalse);
+      retry.complete(const [
+        {'role': 'user', 'content': 'Pregunta tras recuperar backend'},
+        {'role': 'assistant', 'content': 'Historial REST recuperado'},
+      ]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(gateway.resumeExistingCalls, 3);
+      expect(resume.isCompleted, isFalse);
+      expect(find.text('Historial REST recuperado'), findsOneWidget);
+      expect(find.text('No se pudieron cargar los mensajes'), findsNothing);
+      expect(tester.widget<TextField>(composer).enabled, isTrue);
+      expect(find.byKey(const ValueKey('chat-refresh-progress')), findsNothing);
+      await tester.tap(composer);
+      await tester.pump();
+      expect(tester.widget<TextField>(composer).focusNode!.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+      tester.testTextInput.enterText('Borrador con resume pendiente');
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(composer).controller!.text,
+        'Borrador con resume pendiente',
+      );
+      resume.completeError(StateError('runtime sigue indisponible'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(tester.widget<TextField>(composer).enabled, isTrue);
+      expect(find.text('Historial REST recuperado'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final newestFinishesFirst in [false, true]) {
+    testWidgets(
+      'cinco refresh interactivos solapados mantienen el composer correcto con ultimo primero=$newestFinishesFirst',
+      (tester) async {
+        final requests = List.generate(
+          5,
+          (_) => Completer<List<Map<String, dynamic>>>(),
+        );
+        var loads = 0;
+        await pumpChat(
+          tester,
+          connection: _remoteConn('conn-overlap-$newestFinishesFirst'),
+          session: _session().copyWith(source: 'bot-mode'),
+          missionBotProfile: const AgentProfile(name: 'Sol'),
+          messagesLoaded: false,
+          storedMessageLoader: (_, _) => requests[loads++].future,
+        );
+        for (var attempt = 1; attempt < requests.length; attempt++) {
+          await triggerChatRefresh(tester);
+          expect(loads, attempt + 1);
+        }
+        final composer = find.byType(TextField);
+        expect(tester.widget<TextField>(composer).enabled, isFalse);
+
+        Future<void> completeNewest() async {
+          requests.last.complete(const [
+            {'role': 'user', 'content': 'Pregunta vigente'},
+            {'role': 'assistant', 'content': 'Respuesta de quinta carga'},
+          ]);
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 50));
+          expect(find.text('Respuesta de quinta carga'), findsOneWidget);
+          expect(tester.widget<TextField>(composer).enabled, isTrue);
+          expect(
+            find.byKey(const ValueKey('chat-refresh-progress')),
+            findsNothing,
+          );
+        }
+
+        if (newestFinishesFirst) await completeNewest();
+        for (final index in [2, 0, 3, 1]) {
+          if (index.isEven) {
+            requests[index].completeError(StateError('fallo obsoleto $index'));
+          } else {
+            requests[index].complete([
+              {'role': 'assistant', 'content': 'Respuesta obsoleta $index'},
+            ]);
+          }
+          await tester.pump();
+          expect(
+            tester.widget<TextField>(composer).enabled,
+            newestFinishesFirst,
+          );
+          expect(find.textContaining('Respuesta obsoleta'), findsNothing);
+          expect(find.text('No se pudieron cargar los mensajes'), findsNothing);
+        }
+        if (!newestFinishesFirst) await completeNewest();
+        await tester.tap(composer);
+        await tester.pump();
+        expect(tester.testTextInput.isVisible, isTrue);
+        tester.testTextInput.enterText('Borrador tras cinco cargas');
+        await tester.pump();
+        expect(
+          tester.widget<TextField>(composer).controller!.text,
+          'Borrador tras cinco cargas',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'polling pasivo pendiente conserva foco y borrador del composer',
+    (tester) async {
+      final requests = List.generate(
+        3,
+        (_) => Completer<List<Map<String, dynamic>>>(),
+      );
+      var loads = 0;
+      const history = <Map<String, dynamic>>[
+        {'role': 'assistant', 'content': 'Historial durante polling'},
+        {'role': 'user', 'content': 'Pregunta durante polling'},
+      ];
+      await pumpChat(
+        tester,
+        connection: _remoteConn('conn-composer-passive-focus'),
+        session: _session().copyWith(source: 'bot-mode'),
+        missionBotProfile: const AgentProfile(name: 'Sol'),
+        messages: history,
+        storedMessageLoader: (_, _) => requests[loads++].future,
+      );
+      final composer = find.byType(TextField);
+      await tester.tap(composer);
+      await tester.pump();
+      for (var poll = 0; poll < requests.length; poll++) {
+        tester.testTextInput.enterText('');
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 4));
+        await tester.pump();
+        expect(loads, poll + 1);
+        expect(tester.widget<TextField>(composer).enabled, isTrue);
+        expect(tester.widget<TextField>(composer).focusNode!.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+        expect(
+          find.byKey(const ValueKey('chat-refresh-progress')),
+          findsNothing,
+        );
+        tester.testTextInput.enterText('Borrador durante poll $poll');
+        await tester.pump();
+        requests[poll].complete(history.reversed.toList());
+        await tester.pump();
+        expect(tester.widget<TextField>(composer).enabled, isTrue);
+        expect(tester.widget<TextField>(composer).focusNode!.hasFocus, isTrue);
+        expect(
+          tester.widget<TextField>(composer).controller!.text,
+          'Borrador durante poll $poll',
+        );
+      }
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final invalidatePassive in [false, true]) {
+    testWidgets(
+      'composer se desbloquea tras refresh pasivo ${invalidatePassive ? 'invalidado' : 'fallido'} que sustituye al interactivo',
+      (tester) async {
+        final interactive = Completer<List<Map<String, dynamic>>>();
+        final passive = Completer<List<Map<String, dynamic>>>();
+        final gateway = _UiRewindGateway()
+          ..activeSessionList = const DesktopActiveSessionList(
+            sessions: [
+              DesktopActiveSession(
+                runtimeSessionId: 'runtime-other-surface',
+                storedSessionId: 'sess-test',
+                status: 'working',
+              ),
+            ],
+          );
+        var loads = 0;
+        final chat = await pumpChat(
+          tester,
+          connection: _remoteConn('conn-composer-passive-$invalidatePassive'),
+          session: _session().copyWith(source: 'bot-mode'),
+          missionBotProfile: const AgentProfile(name: 'Sol'),
+          desktopGateway: gateway,
+          messages: const [
+            {'role': 'assistant', 'content': 'Historial visible'},
+            {'role': 'user', 'content': 'Pregunta visible'},
+          ],
+          messagesLoaded: false,
+          initialStoredSessionId: 'sess-test',
+          attachDesktopRuntimeOnLoad: false,
+          allowUnownedDesktopSnapshotForTesting: false,
+          storedMessageLoader: (_, _) =>
+              ++loads == 1 ? interactive.future : passive.future,
+        );
+        expect(loads, 1);
+        final composer = find.byType(TextField);
+        expect(tester.widget<TextField>(composer).enabled, isFalse);
+        await chat.refreshPassiveRemoteActivity();
+        expect(chat.remoteSurfaceOwnsLiveTurn, isTrue);
+        gateway.activeSessionList = const DesktopActiveSessionList();
+        // The remote turn settling bypasses the normal single-flight guard.
+        await tester.pump(const Duration(seconds: 4));
+        await tester.pump();
+        expect(loads, 2);
+        expect(chat.remoteSurfaceOwnsLiveTurn, isFalse);
+        // Taking over with a passive request releases the interactive fence
+        // immediately, even while both futures are still unresolved.
+        expect(tester.widget<TextField>(composer).enabled, isTrue);
+        expect(
+          find.byKey(const ValueKey('chat-refresh-progress')),
+          findsNothing,
+        );
+
+        // `tester.binding.handleAppLifecycleStateChanged` broadcasts to an
+        // unrelated framework `AppLifecycleListener` that asserts a strict
+        // previous-state chain (paused must come from inactive/detached) and
+        // throws regardless of this screen's own transition — call the
+        // screen's own observer directly instead, same fix already applied
+        // to the hosted-room lifecycle tests tonight.
+        final observer =
+            tester.state<State<ChatScreen>>(
+                  find.byType(ChatScreen, skipOffstage: false),
+                )
+                as WidgetsBindingObserver;
+        if (invalidatePassive) {
+          observer.didChangeAppLifecycleState(AppLifecycleState.paused);
+          await tester.pump();
+        } else {
+          passive.completeError(StateError('passive load failed'));
+          await tester.pump();
+        }
+        interactive.complete(const [
+          {'role': 'assistant', 'content': 'Respuesta obsoleta'},
+        ]);
+        await tester.pump();
+        if (invalidatePassive) {
+          passive.complete(const []);
+          observer.didChangeAppLifecycleState(AppLifecycleState.resumed);
+          await tester.pump();
+        }
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.text('Historial visible'), findsOneWidget);
+        expect(find.text('Respuesta obsoleta'), findsNothing);
+        expect(tester.widget<TextField>(composer).enabled, isTrue);
+        expect(
+          find.byKey(const ValueKey('chat-refresh-progress')),
+          findsNothing,
+        );
+        await tester.tap(composer);
+        await tester.pump();
+        expect(tester.widget<TextField>(composer).focusNode!.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+        tester.testTextInput.enterText('Borrador recuperado');
+        await tester.pump();
+        expect(
+          tester.widget<TextField>(composer).controller!.text,
+          'Borrador recuperado',
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   testWidgets(
     'refresh pendiente conserva las burbujas existentes sin un frame vacío',
     (tester) async {
@@ -5781,6 +6344,7 @@ void main() {
 
       await triggerChatRefresh(tester);
       expect(loadCalls, 2);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
 
       second.complete(const [
         {'role': 'user', 'content': 'Pregunta vigente'},
@@ -5790,6 +6354,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
       expect(find.text('Respuesta vigente'), findsOneWidget);
       expect(find.byKey(const ValueKey('chat-refresh-progress')), findsNothing);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
 
       first.completeError(StateError('refresh obsoleto'));
       await tester.pump();
@@ -5798,6 +6363,7 @@ void main() {
       expect(find.text('Respuesta vigente'), findsOneWidget);
       expect(find.byKey(const ValueKey('chat-refresh-error')), findsNothing);
       expect(find.textContaining('refresh obsoleto'), findsNothing);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
     },
   );
 
@@ -6424,6 +6990,161 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('release early exit cannot erase a draft still being restored', (
+    tester,
+  ) async {
+    final connection = _remoteConn('draft-unread-exit');
+    final key = ChatDraftStore.keyForTesting(connection.id, _session().id);
+    secureStore[key] = jsonEncode({
+      'savedAt': DateTime.now().millisecondsSinceEpoch,
+      'text': 'Unread draft',
+      'attachments': [],
+    });
+    final gate = Completer<void>();
+    var delayed = false;
+    final storage = _MemoryDraftSecureStorage(
+      secureStore,
+      beforeRead: (readKey) async {
+        if (readKey == key && !delayed) {
+          delayed = true;
+          await gate.future;
+        }
+      },
+    );
+    await pumpChat(tester, connection: connection, draftSecureStorage: storage);
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    gate.complete();
+    await tester.pump();
+    expect(
+      (await screen.draftStoreOverride!.load(
+        connection.id,
+        screen.session.id,
+      )).text,
+      'Unread draft',
+    );
+  });
+
+  for (final kind in ['normal', 'new', 'bot']) {
+    testWidgets('release draft: $kind back and reopen before debounce', (
+      tester,
+    ) async {
+      final connection = _remoteConn('draft-release-$kind');
+      final session = _session().copyWith(
+        id: kind == 'normal'
+            ? 'saved-release'
+            : kind == 'bot'
+            ? 'mob-bot-release'
+            : 'mob-release-new',
+        source: kind == 'bot' ? 'mobile-bot' : 'mobile',
+        messageCount: kind == 'new' ? 0 : 2,
+        profile: 'default',
+      );
+      await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+      );
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      final store = screen.draftStoreOverride!;
+      await tester.enterText(
+        find.byType(TextField).last,
+        'First line\nSecond line',
+      );
+      Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(
+        (await store.load(connection.id, session.id)).text,
+        'First line\nSecond line',
+      );
+      await pumpChat(
+        tester,
+        connection: connection,
+        session: session,
+        desktopGateway: _UiRewindGateway(),
+      );
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+        'First line\nSecond line',
+      );
+      expect(
+        (await store.load('another-connection', session.id)).text,
+        isEmpty,
+      );
+      expect(
+        (await store.load(
+          connection.id,
+          session.id,
+          profile: 'another-profile',
+        )).text,
+        isEmpty,
+      );
+    });
+  }
+  testWidgets('release drafts survive direct conversation replacement', (
+    tester,
+  ) async {
+    final connection = _remoteConn('draft-direct-switch');
+    final first = _session().copyWith(id: 'first-conversation');
+    final second = _session().copyWith(id: 'second-conversation');
+    await pumpChat(tester, connection: connection, session: first);
+    await tester.enterText(
+      find.byType(TextField).last,
+      'First draft\nline two',
+    );
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    await pumpChat(tester, connection: connection, session: second);
+    expect(
+      tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+      isEmpty,
+    );
+    await tester.enterText(find.byType(TextField).last, 'Second draft');
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+    await pumpChat(tester, connection: connection, session: first);
+    expect(
+      tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+      'First draft\nline two',
+    );
+  });
+
+  for (final state in [AppLifecycleState.paused, AppLifecycleState.detached]) {
+    testWidgets('release draft flushes on $state before debounce', (
+      tester,
+    ) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await pumpChat(tester);
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      await tester.enterText(find.byType(TextField).last, 'Background\ndraft');
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      if (state == AppLifecycleState.detached) {
+        tester.binding.handleAppLifecycleStateChanged(state);
+      }
+      await tester.pump();
+      expect(
+        (await screen.draftStoreOverride!.load(
+          screen.connection.id,
+          screen.session.id,
+        )).text,
+        'Background\ndraft',
+      );
+      if (state == AppLifecycleState.paused) {
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+      }
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    });
+  }
 
   testWidgets('draft identity: new chat saves under canonical id and reopens', (
     tester,
@@ -7133,7 +7854,47 @@ void main() {
       ),
       isTrue,
     );
+    // Mientras el transcript sigue el fondo la ThinkingTraceCard en vivo ya
+    // enseña esta misma palabra justo donde va a salir la respuesta — la
+    // pastilla se calla la palabra (no el cronómetro) para no repetirla.
+    expect(pill.statusLabel, isNull);
   });
+
+  testWidgets(
+    'al leer historial durante el turno la pastilla recupera la palabra',
+    (tester) async {
+      // Apartado el lector del fondo, la ThinkingTraceCard ya no está a la
+      // vista: la pastilla es la única señal que queda y tiene que volver a
+      // decir qué está haciendo, no solo cuánto lleva.
+      final history = List.generate(24, (index) {
+        return {
+          'id': 'turn-label-history-$index',
+          'role': index.isEven ? 'assistant' : 'user',
+          'content':
+              'historial antes del turno activo $index. '
+              '${List.filled(18, 'Contenido de relleno.').join(' ')}',
+        };
+      });
+      await pumpChat(
+        tester,
+        chatState: ChatPipelineState.executing,
+        messages: history,
+      );
+
+      var pill = tester.widget<TurnActivityPill>(
+        find.byKey(const ValueKey('chat-turn-activity')),
+      );
+      expect(pill.statusLabel, isNull);
+
+      await dragChatAwayFromBottom(tester);
+
+      pill = tester.widget<TurnActivityPill>(
+        find.byKey(const ValueKey('chat-turn-activity')),
+      );
+      expect(pill.statusLabel, isNotNull);
+      expect(pill.active, isTrue);
+    },
+  );
 
   testWidgets('mientras llega texto el propio texto cuenta la vida del turno', (
     tester,
@@ -7666,7 +8427,8 @@ void main() {
       expect(
         rowAfter,
         same(rowBefore),
-        reason: 'la Row del campo de texto no debe remontarse al aparecer '
+        reason:
+            'la Row del campo de texto no debe remontarse al aparecer '
             'el adjunto',
       );
       expect(
@@ -17430,4 +18192,98 @@ void main() {
   ) async {
     await exerciseRestoredApproval(tester, label: 'Denegar', choice: 'deny');
   });
+
+  for (final surface in ['goal', 'background', 'queue']) {
+    testWidgets('release $surface primary label fits at 360dp', (tester) async {
+      await loadInterFont();
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      for (final locale in ['es', 'en']) {
+        for (final scale in [1.0, 1.3]) {
+          tester.platformDispatcher.textScaleFactorTestValue = scale;
+          addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+          final gateway = _UiRewindGateway();
+          final chat = await pumpChat(
+            tester,
+            desktopGateway: gateway,
+            acquireDesktopRuntimeBeforeMount: true,
+          );
+          tester.platformDispatcher.localesTestValue = [Locale(locale)];
+          await tester.pump();
+          if (surface == 'goal') {
+            gateway.emit('session.control.update', {
+              'control': {
+                'goal': {
+                  'status': 'active',
+                  'title': 'A very long goal title that belongs in its details',
+                  'turns_used': 12,
+                  'max_turns': 99,
+                },
+              },
+            });
+            await tester.pump();
+            expect(
+              find.byKey(const ValueKey('chat-goal-primary-label')),
+              findsOneWidget,
+            );
+            expectPillLabelsFit(
+              tester,
+              find
+                  .ancestor(
+                    of: find.byKey(const ValueKey('chat-goal-primary-label')),
+                    matching: find.byType(Row),
+                  )
+                  .first,
+            );
+          } else if (surface == 'background') {
+            gateway.emit('background.complete', {
+              'task_id': 'task',
+              'text': 'error: task failed',
+            });
+            await tester.pump();
+            expect(
+              find.byKey(const ValueKey('chat-background-primary-label')),
+              findsOneWidget,
+            );
+            expectPillLabelsFit(
+              tester,
+              find
+                  .ancestor(
+                    of: find.byKey(
+                      const ValueKey('chat-background-primary-label'),
+                    ),
+                    matching: find.byType(Row),
+                  )
+                  .first,
+            );
+          } else {
+            await tester.enterText(find.byType(TextField).last, 'First turn');
+            await tester.pump();
+            await tester.tap(find.byKey(const ValueKey('send')));
+            await tester.pump();
+            await tester.enterText(find.byType(TextField).last, 'Next turn');
+            await tester.pump();
+            await tester.tap(find.byKey(const ValueKey('send')));
+            await tester.pump();
+            expect(
+              find.byKey(const ValueKey('chat-queue-toggle')),
+              findsOneWidget,
+            );
+            final text = find.descendant(
+              of: find.byKey(const ValueKey('chat-queue-toggle')),
+              matching: find.textContaining(
+                locale == 'es' ? 'EN COLA' : 'QUEUED',
+              ),
+            );
+            expect(text, findsOneWidget);
+            expectPillLabelsFit(tester, text);
+          }
+          chat.dispose();
+          await tester.pumpWidget(const SizedBox());
+        }
+      }
+    });
+  }
 }

@@ -6,6 +6,7 @@ import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/accent_card.dart';
 import 'package:hermes_android/core/widgets/subagent_activity_card.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
+import 'support/inter_font.dart';
 
 final SubagentActivityScope _scope = SubagentActivityScope(
   connectionId: 'connection-card',
@@ -145,6 +146,68 @@ Widget _chatLikeApp({
 );
 
 void main() {
+  setUpAll(loadInterFont);
+
+  testWidgets(
+    'removing the pill closes its live detail without disposing an attached input',
+    (tester) async {
+      final visible = ValueNotifier(true);
+      addTearDown(visible.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          theme: AppTheme.hermesRedDark,
+          home: Scaffold(
+            body: ValueListenableBuilder<bool>(
+              valueListenable: visible,
+              builder: (_, show, _) => show
+                  ? SubagentActivityCard(
+                      activities: [_nativeActivity()],
+                      canSteer: (_) => true,
+                      onSteer: (_, _) async =>
+                          const SubagentSteerView(status: 'queued'),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.enterText(find.byType(TextField), 'pending instruction');
+      visible.value = false;
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(tester.takeException(), isNull);
+      expect(find.byKey(const ValueKey('subagent-panel')), findsNothing);
+    },
+  );
+
+  testWidgets('cancelled and mixed unknown batches never claim success', (
+    tester,
+  ) async {
+    for (final phases in [
+      [SubagentActivityPhase.cancelled],
+      [SubagentActivityPhase.completed, SubagentActivityPhase.unknown],
+      [SubagentActivityPhase.running, SubagentActivityPhase.cancelled],
+    ]) {
+      await tester.pumpWidget(
+        _app(
+          activities: [
+            for (var i = 0; i < phases.length; i++)
+              _nativeActivity(subagentId: 'child-$i', phase: phases[i]),
+          ],
+          canInterrupt: (_) => false,
+        ),
+      );
+      expect(find.byIcon(Icons.check_circle), findsNothing);
+      expect(tester.takeException(), isNull);
+    }
+  });
+
   testWidgets(
     'calm status exposes generic identity and authoritative safe facts only',
     (tester) async {
@@ -376,10 +439,18 @@ void main() {
       ),
     );
 
-    expect(find.textContaining('1 en curso'), findsOneWidget);
-    expect(find.textContaining('1 finalizado'), findsOneWidget);
-    expect(find.textContaining('estado desconocido'), findsOneWidget);
-    expect(find.textContaining('2 en curso'), findsNothing);
+    final primary = tester.widget<Text>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('subagent-disclosure')),
+            matching: find.byType(Text),
+          )
+          .first,
+    );
+    expect(primary.semanticsLabel, contains('1 activo'));
+    expect(primary.semanticsLabel, contains('1 cerrado'));
+    expect(primary.semanticsLabel, contains('estado desconocido'));
+    expect(primary.semanticsLabel, isNot(contains('2 activos')));
   });
 
   testWidgets('batch stays calm and keeps goals private when expanded', (
@@ -404,7 +475,7 @@ void main() {
       ),
     );
 
-    expect(find.text('1 en curso · 2 finalizados'), findsOneWidget);
+    expect(find.text('1 activo · 2 cerrados'), findsOneWidget);
     expect(find.text('Auditar Android'), findsNothing);
     expect(find.text('Revisar continuidad'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
@@ -1238,7 +1309,7 @@ void main() {
       final summaryFinder = find.byWidgetPredicate(
         (widget) =>
             widget is Text &&
-            (widget.data?.contains('usando herramienta') ?? false),
+            (widget.semanticsLabel?.contains('usando herramienta') ?? false),
       );
       final collapsedSummary = tester.widget<Text>(summaryFinder);
       expect(collapsedSummary.maxLines, 1);

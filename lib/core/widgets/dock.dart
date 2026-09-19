@@ -389,6 +389,15 @@ class _DockState extends State<Dock>
       ],
     );
 
+    // 20dp, no 16: el margen lateral del dock flotante tiene que calzar con
+    // el de Inicio y Bots (`EdgeInsets.fromLTRB(20, ...)` en
+    // `home_dashboard_screen.dart` / `mission_control_screen.dart`), que es
+    // el contenido con el que comparte pantalla en la práctica. Con 16 el
+    // dock se veía 4dp más ancho que el composer/la lista de arriba —
+    // suficiente para que las dos superficies flotantes del mismo lenguaje
+    // visual (mismo fondo, misma forma de píldora) no calzaran en el mismo
+    // borde y se leyeran como dos sistemas sueltos en vez de una sola rejilla.
+    const dockSideMargin = 20.0;
     Widget dock = LayoutBuilder(
       builder: (context, constraints) {
         final dockBottom =
@@ -397,7 +406,7 @@ class _DockState extends State<Dock>
         // Solo hace falta medir el "+" cuando hay órbitas en pantalla; un
         // dock sin bandeja no toca las `GlobalKey` en cada build.
         Offset plusCenter() {
-          final barWidth = (constraints.maxWidth - 32).clamp(
+          final barWidth = (constraints.maxWidth - dockSideMargin * 2).clamp(
             0.0,
             constraints.maxWidth,
           );
@@ -413,7 +422,7 @@ class _DockState extends State<Dock>
             Offset(
               createIndex == -1
                   ? constraints.maxWidth / 2
-                  : 16 + itemWidth * (createIndex + 0.5),
+                  : dockSideMargin + itemWidth * (createIndex + 0.5),
               constraints.maxHeight - dockBottom - 24,
             ),
           );
@@ -424,7 +433,12 @@ class _DockState extends State<Dock>
           fit: StackFit.expand,
           children: [
             if (_actionsMounted) ..._orbitLayers(plusCenter()),
-            Positioned(left: 16, right: 16, bottom: dockBottom, child: bar),
+            Positioned(
+              left: dockSideMargin,
+              right: dockSideMargin,
+              bottom: dockBottom,
+              child: bar,
+            ),
           ],
         );
       },
@@ -439,7 +453,39 @@ class _DockState extends State<Dock>
         child: dock,
       );
     }
-    return dock;
+    // The dock's own bottom offset only accounts for the system safe area
+    // (see `dockBottom` above), not the keyboard — Flutter's default
+    // keyboard-avoidance instead shrinks the whole body (this widget's
+    // parent Stack included), so a focused composer leaves the dock
+    // floating just above the IME, detached from both the input above it
+    // and the screen edge below it (confirmed live: Inicio's composer).
+    // Hiding it while the keyboard is open is the native pattern (most
+    // bottom navigation bars do the same) and avoids that orphaned bar
+    // rather than trying to keep it pinned somewhere that never looks right.
+    //
+    // `MediaQuery.viewInsetsOf` reads whatever the nearest `MediaQuery`
+    // publishes, and `Scaffold` (with the default `resizeToAvoidBottomInset:
+    // true`) republishes a copy with the bottom inset already zeroed for its
+    // own `body` — exactly the subtree the dock lives in, since it's a
+    // sibling-in-a-Stack of the screen's content rather than outside the
+    // Scaffold. Reading straight from the platform view sidesteps that
+    // Scaffold-local override and sees the real keyboard height regardless
+    // of where in the tree the dock is mounted (confirmed live: the
+    // `MediaQuery`-based check never fired on Inicio).
+    final keyboardOpen = View.of(context).viewInsets.bottom > 0;
+    return IgnorePointer(
+      ignoring: keyboardOpen,
+      child: AnimatedSlide(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        offset: keyboardOpen ? const Offset(0, 1.2) : Offset.zero,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 140),
+          opacity: keyboardOpen ? 0 : 1,
+          child: dock,
+        ),
+      ),
+    );
   }
 
   /// Scrim + órbitas. Solo se montan mientras la bandeja está abierta o
@@ -523,6 +569,7 @@ class _DockState extends State<Dock>
       icon: meta.icon,
       selectedIcon: meta.selectedIcon,
       label: dockItemLabel(strings, slot),
+      compactLabel: dockItemCompactLabel(strings, slot),
       selected: action.selected,
       accent: dockItemIsAccent(slot),
       toggled: ownsCreateTray ? _expanded : null,

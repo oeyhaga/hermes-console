@@ -24,6 +24,7 @@ import '../theme/motion.dart';
 import '../theme/theme_profile_adapter.dart';
 import '../theme/theme_profile_store.dart';
 import '../utils/api_error.dart';
+import '../utils/transport_privacy.dart';
 
 import '../services/bridge_update_service.dart';
 import '../../main.dart';
@@ -2191,13 +2192,13 @@ class _MaintenanceSectionState extends State<_MaintenanceSection> {
         '',
       );
       final res = await http
-          .get(Uri.parse('$base/api/status'))
+          .get(Uri.parse(TransportPrivacy.requireAllowed('$base/api/status')))
           .timeout(const Duration(seconds: 8));
       if (res.statusCode != 200) return null;
       final data = jsonDecode(res.body);
       return data is Map<String, dynamic> ? data : null;
     } catch (e) {
-      debugPrint('[settings] no se pudo leer /api/status público: $e');
+      debugPrint('[settings] status unavailable (${e.runtimeType})');
       return null;
     }
   }
@@ -2354,7 +2355,8 @@ class _MaintenanceSectionState extends State<_MaintenanceSection> {
         if (!versionChanged) {
           try {
             final check = await _client.checkUpdate(force: true);
-            updateStillAvailable = check['update_available'] == true;
+            final available = check['update_available'];
+            updateStillAvailable = available is bool ? available : null;
           } catch (_) {
             // El Dashboard puede estar rotando su sesión durante el reinicio:
             // sin dato, se sigue esperando en vez de afirmar nada.

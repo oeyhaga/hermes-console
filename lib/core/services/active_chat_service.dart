@@ -1,3 +1,5 @@
+import '../models/bot_mention.dart';
+import 'bot_mention_roster.dart';
 // Servicio singleton que posee el streaming SSE de los chats. Vive por encima
 // del Navigator (en HermesAppState), así que la respuesta/ejecución del agente
 // CONTINÚA aunque el usuario salga de la pantalla del chat. La pantalla del chat
@@ -457,6 +459,7 @@ bool _messageMayContainArtifact(DesktopSessionMessage message) =>
 Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   Map<String, dynamic> message, {
   bool retainMediaEvidence = false,
+  bool retainUserMentionNote = false,
   bool retainProjectionState = false,
   bool retainAssistantToolCalls = false,
   bool retainEmptyAssistant = false,
@@ -481,6 +484,10 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
       desktopSessionDisplayText(message['text']) ??
       '';
   if (role == 'assistant') content = finalizedPublicAssistantText(content);
+  // Internal Stop/recovery evidence must retain the exact submitted prompt.
+  if (role == 'user' && !retainUserMentionNote) {
+    content = stripBotMentionNote(content);
+  }
   final normalized = <String, dynamic>{'role': role, 'content': content};
   for (final key in const ['id', 'message_id', 'row_id']) {
     final value = message[key];
@@ -755,6 +762,7 @@ List<Map<String, dynamic>> _projectTranscriptForInternalState(
         final public = normalizeTranscriptMessageForDisplay(
           message,
           retainMediaEvidence: true,
+          retainUserMentionNote: true,
           retainProjectionState: true,
           retainAssistantToolCalls: true,
         );
@@ -792,6 +800,7 @@ List<Map<String, dynamic>> _normalizedNewestFirst(
         (message) => normalizeTranscriptMessageForDisplay(
           message,
           retainMediaEvidence: true,
+          retainUserMentionNote: true,
         ),
       )
       .whereType<Map<String, dynamic>>()
@@ -2250,8 +2259,11 @@ class ActiveTurnDelivery {
     String updateProjection(String source) => source.startsWith(_current.text)
         ? '$normalized${source.substring(_current.text.length)}'
         : normalized;
+    final mentions = BotMentionRoster.shared.resolver(_current.connectionId, _current.profile).resolve(normalized);
     final next = _current.copyWith(
       updatedAtMs: _nowMs(),
+      mentions: List.unmodifiable(mentions),
+      mentionAnnotation: buildBotMentionAnnotation(mentions),
       text: normalized,
       fullText: updateProjection(_current.fullText),
       desktopText: _current.desktopText == null
@@ -3610,8 +3622,7 @@ class ActiveChat {
   /// endpoint del gateway para reconstruirlos tras un reinicio del proceso,
   /// así que un relanzamiento de la app los pierde (limitación conocida,
   /// igual que la actividad cross-surface de [GlobalActivityAggregate]).
-  final Map<String, ({String text, bool isError})> _backgroundTaskOutcomes =
-      {};
+  final Map<String, ({String text, bool isError})> _backgroundTaskOutcomes = {};
   Map<String, ({String text, bool isError})> get backgroundTaskOutcomes =>
       Map.unmodifiable(_backgroundTaskOutcomes);
 
@@ -5090,6 +5101,11 @@ class ActiveChat {
   bool _desktopHistoryHydrating = false;
   bool _desktopHistoryNeedsHydration = false;
   int? _desktopHydrationExpectedMessageCount;
+
+  /// From [loadMessages] `expectedMessageCount`. Snapshot hydration may
+  /// null `_desktopHydrationExpectedMessageCount`; this must survive until
+  /// a complete transcript replaces coverage.
+  int? _hardExpectedStoredMessageCount;
   Future<void>? _desktopHistoryHydrationFlight;
   int? _desktopHistoryHydrationFlightEpoch;
   bool? _desktopHydrationOutcome;
@@ -5258,12 +5274,12 @@ class ActiveChat {
   /// un cambio de generación) deja de estar agotada por definición, así que se
   /// poda contra la cola viva en lugar de acumularse durante toda la sesión.
   Set<String> get queuedRetriesExhausted {
-    if (_queuedRetriesExhausted.isEmpty) return const <String>{};
     final live = <String>{
       ..._messageQueue.map((item) => item.id),
       ..._preparedTurnQueue.map((item) => item.turn.clientTurnId),
     };
     _queuedRetriesExhausted.retainWhere(live.contains);
+    _queuedRetryAttempts.removeWhere((id, _) => !live.contains(id));
     return Set<String>.unmodifiable(_queuedRetriesExhausted);
   }
 
@@ -5286,19 +5302,19 @@ class ActiveChat {
   }
 
   List<String> get queuedTextMessages => List<String>.unmodifiable([
-    ?_desktopAcceptedQueuedPrompt,
-    ..._messageQueue.map((item) => item.text),
+    if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
+    ..._messageQueue.map((item) => stripBotMentionNote(item.text)),
   ]);
 
   List<String> get queuedMessages {
     final local = <({int order, String text})>[
-      ..._messageQueue.map((item) => (order: item.queueOrder, text: item.text)),
+      ..._messageQueue.map((item) => (order: item.queueOrder, text: stripBotMentionNote(item.text))),
       ..._preparedTurnQueue.map(
         (item) => (order: item.queueOrder, text: item.turn.text),
       ),
     ]..sort((left, right) => left.order.compareTo(right.order));
     return List<String>.unmodifiable([
-      ?_desktopAcceptedQueuedPrompt,
+      if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
       ...local.map((item) => item.text),
     ]);
   }
@@ -5310,7 +5326,7 @@ class ActiveChat {
           id: item.id,
           kind: QueuedEntryKind.text,
           queueOrder: item.queueOrder,
-          text: item.text,
+          text: stripBotMentionNote(item.text),
         ),
       ),
       ..._preparedTurnQueue.map(
@@ -5335,7 +5351,7 @@ class ActiveChat {
           id: 'desktop-accepted',
           kind: QueuedEntryKind.desktopAccepted,
           queueOrder: firstOrder,
-          text: accepted,
+          text: stripBotMentionNote(accepted),
         ),
       );
     }
@@ -6632,6 +6648,9 @@ class ActiveChat {
     bool Function()? stillOwningVisible,
   }) async {
     final loadEpoch = ++_messageLoadEpoch;
+    if (expectedMessageCount != null && expectedMessageCount > 0) {
+      _hardExpectedStoredMessageCount = expectedMessageCount;
+    }
     bool viewerAuthorized() =>
         passiveOnly || (stillOwningVisible?.call() ?? true);
     bool loadStillAuthorized() =>
@@ -6757,11 +6776,8 @@ class ActiveChat {
       _listenToDesktopGateway(gateway);
       final dashboardAuthAttempt = ++_dashboardAuthAttemptEpoch;
 
-      // Hermes Desktop no serializa estas dos lecturas. El transcript REST y
-      // session.resume son independientes: REST puede pintar el historial
-      // mientras el RPC termina de enlazar el runtime (MCP/prompt incluidos).
-      // Capturamos los errores dentro de cada Future para que una rama que
-      // falle pronto nunca se publique como error asíncrono no gestionado.
+      // REST-only transports may prefetch concurrently. Native history must
+      // wait for the existing resume/activate to resolve its runtime identity.
       ({Object? error, SessionMessagesPage? value})?
       prefetchCompletedBeforeResume;
       final prefetchContext = _captureSessionMessagesPageRead(
@@ -6770,13 +6786,8 @@ class ActiveChat {
         profile: _storedSessionProfile,
         hardExpectedMessageCount: expectedMessageCount,
       );
-      final prefetchFuture =
-          _captureAsync<SessionMessagesPage>(
-            () => _fetchStoredMessagesPage(prefetchContext),
-          ).then((result) {
-            prefetchCompletedBeforeResume = result;
-            return result;
-          });
+      late final Future<({Object? error, SessionMessagesPage? value})>
+      prefetchFuture;
       final resumeFuture = _captureAsync<DesktopSessionSnapshot?>(() async {
         if (!loadStillAuthorized()) {
           throw StateError('Viewer ownership revoked');
@@ -6801,7 +6812,8 @@ class ActiveChat {
         if (!loadStillAuthorized()) {
           throw StateError('Viewer ownership revoked');
         }
-        if (prefetchCompletedBeforeResume == null) {
+        if (gateway is! HermesDesktopSessionHistoryGateway &&
+            prefetchCompletedBeforeResume == null) {
           // Damos una vuelta de event loop al REST que ya terminó en memoria o
           // caché. Una lectura de red todavía pendiente no bloquea el binding.
           await Future.any<void>([
@@ -6812,9 +6824,8 @@ class ActiveChat {
             throw StateError('Viewer ownership revoked');
           }
         }
-        // REST remains transcript authority. A live runtime advertised by this
-        // exact gateway is joined with session.activate; only a dormant durable
-        // session falls back to session.resume.
+        // Join the advertised runtime; only dormant durable sessions resume.
+        // Native history below reads that resolved runtime after this reply.
         final activityGateway = gateway is HermesDesktopSessionActivityGateway
             ? gateway as HermesDesktopSessionActivityGateway
             : null;
@@ -6842,6 +6853,38 @@ class ActiveChat {
         }
         return snapshot;
       });
+
+      prefetchFuture =
+          _captureAsync<SessionMessagesPage>(() async {
+            String? runtimeId;
+            if (gateway is HermesDesktopSessionHistoryGateway &&
+                _storedMessageLoader == null) {
+              final resumed = await resumeFuture;
+              if (!loadStillAuthorized()) {
+                throw StateError('Viewer ownership revoked');
+              }
+              final snapshot = resumed.value;
+              if (snapshot != null &&
+                  !snapshot.created &&
+                  snapshot.identityAliasesConsistent &&
+                  snapshot.storedSessionIdentityExplicit &&
+                  snapshot.storedSessionId == requestedStoredSessionId &&
+                  (snapshot.lineageRootId == null ||
+                      snapshot.lineageRootId == requestedLogicalSessionId ||
+                      snapshot.lineageRootId == requestedStoredSessionId) &&
+                  _storedSessionProfile == requestedProfile &&
+                  serverSessionId == requestedStoredSessionId) {
+                runtimeId = snapshot.runtimeSessionId;
+              }
+            }
+            return _fetchStoredMessagesPage(
+              prefetchContext,
+              runtimeSessionId: runtimeId,
+            );
+          }).then((result) {
+            prefetchCompletedBeforeResume = result;
+            return result;
+          });
 
       List<Map<String, dynamic>>? prefetchedNewestFirst;
       var prefetchedTranscriptAccepted = false;
@@ -7046,10 +7089,12 @@ class ActiveChat {
           final durableFallbackCount = _durableTranscriptCoverageCount(
             rawFallback,
           );
-          final fallbackCoverageIsInsufficient =
-              announcedCount == null ||
-              durableFallbackCount == null ||
-              announcedCount != durableFallbackCount;
+          // An omitted count cannot invalidate complete history fetched in
+          // this load. Older fallback rows still need snapshot evidence.
+          final fallbackCoverageIsInsufficient = announcedCount == null
+              ? !completeRestCoversHydration
+              : durableFallbackCount == null ||
+                    announcedCount != durableFallbackCount;
           if (!preferFallback ||
               fallbackCoverageIsInsufficient ||
               _desktopHistoryNeedsHydration) {
@@ -7564,12 +7609,14 @@ class ActiveChat {
   /// committed later by [_consumeSessionMessagesPageEvidence], after freshness
   /// has been checked against the exact request context.
   Future<SessionMessagesPage> _fetchStoredMessagesPage(
-    _SessionMessagesPageReadContext context,
-  ) => _requestStoredMessagesPage(
+    _SessionMessagesPageReadContext context, {
+    String? runtimeSessionId,
+  }) => _requestStoredMessagesPage(
     storedSessionId: context.requestedStoredSessionId,
     profile: context.profile,
     limit: context.requestedLimit,
     offset: context.requestedOffset,
+    runtimeSessionId: runtimeSessionId,
   );
 
   Future<SessionMessagesPage> _requestStoredMessagesPage({
@@ -7577,6 +7624,7 @@ class ActiveChat {
     required String profile,
     int? limit,
     int offset = 0,
+    String? runtimeSessionId,
   }) async {
     final injected = _storedMessageLoader;
     if (injected != null) {
@@ -7584,6 +7632,29 @@ class ActiveChat {
         messages: await injected(storedSessionId, profile),
         pagination: null,
       );
+    }
+    final gateway = _desktopGateway;
+    final runtime =
+        runtimeSessionId ??
+        (storedSessionId == serverSessionId &&
+                profile.trim() == _storedSessionProfile
+            ? _desktopRuntimeSessionId
+            : null);
+    // Keep the same automatic gateway opt-in as loadMessages: a runtime bound
+    // by an explicit action does not authorize RPCs from a REST-only load.
+    if ((_attachDesktopRuntimeOnLoad ||
+            _allowUnownedDesktopSnapshotForTesting) &&
+        gateway != null &&
+        gateway.isConnected &&
+        gateway is HermesDesktopSessionHistoryGateway &&
+        runtime != null) {
+      try {
+        return await (gateway as HermesDesktopSessionHistoryGateway)
+            .sessionHistory(sessionId: runtime, profile: profile);
+      } catch (_) {
+        // Older gateways and transient RPC failures retain the REST path.
+        // Do not log remote payloads or profile credentials.
+      }
     }
     return _api.getMessagesPage(
       storedSessionId,
@@ -7942,6 +8013,10 @@ class ActiveChat {
     _earlierMessagesNextOffset = visibleCount;
     _needsTranscriptTailHydration = false;
     _desktopHydrationExpectedMessageCount = null;
+    if (_hardExpectedStoredMessageCount != null &&
+        visibleCount >= _hardExpectedStoredMessageCount!) {
+      _hardExpectedStoredMessageCount = null;
+    }
     _unconfirmedRetainedTranscriptIdentities.clear();
   }
 
@@ -7993,8 +8068,11 @@ class ActiveChat {
     final visibleCount = snapshot.messages.length;
     if (_desktopSnapshotTranscriptIsComplete(snapshot) &&
         !preserveVisibleFallback) {
-      _markTranscriptComplete(visibleCount: visibleCount);
-      return;
+      final hard = _hardExpectedStoredMessageCount;
+      if (hard == null || visibleCount >= hard) {
+        _markTranscriptComplete(visibleCount: visibleCount);
+        return;
+      }
     }
     _transcriptCoverageRevision += 1;
 
@@ -9408,6 +9486,12 @@ class ActiveChat {
     );
     try {
       final page = await _fetchStoredMessagesPage(context);
+      // A native history read is the whole transcript even when the caller
+      // requested an older REST offset. Reconcile it as a fresh complete
+      // transcript, not as an older prefix to append to a potentially stale
+      // tail. Its absent pagination also retires the earlier-page cursor.
+      final replacesTranscript =
+          requestedTailHydration || !page.paginationProvided;
       var normalized = const <Map<String, dynamic>>[];
       var inflight = const <Map<String, dynamic>>[];
       var durableFallback = const <Map<String, dynamic>>[];
@@ -9418,7 +9502,7 @@ class ActiveChat {
         context,
         projector: (pageProvesComplete) {
           normalized = _normalizedNewestFirst(page.messages);
-          if (!requestedTailHydration) {
+          if (!replacesTranscript) {
             mergedWithPage = _mergeOlderPageBeforeUnconfirmedPrefix(
               _messages,
               normalized,
@@ -9457,7 +9541,7 @@ class ActiveChat {
         return false;
       }
 
-      if (requestedTailHydration) {
+      if (replacesTranscript) {
         // Un snapshot omitido no aportó transcript. Esta lectura de offset 0
         // es la cola actual, no una página más antigua: reconcíliala con el
         // fallback conservado y solo después habilita el backfill normal.
@@ -10101,6 +10185,7 @@ class ActiveChat {
   /// Lanza el envío con streaming. Inserta los mensajes optimistas y arranca el
   /// SSE en este servicio (no en el widget), de modo que continúa al navegar.
   Future<bool> send({
+    bool mentionsFrozen = false,
     required String fullText,
     required String model,
     required List<Map<String, dynamic>> history,
@@ -10117,6 +10202,22 @@ class ActiveChat {
     bool? allowTransportFallbackOverride,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
   }) {
+    if (delivery != null) {
+      final turn = delivery.current;
+      // Unannotated legacy callers retain their separate prompt contract.
+      if (turn.mentionAnnotation.isNotEmpty) {
+        model = turn.model;
+        profile = turn.profile;
+        nativeAttachments = turn.activeAttachments;
+        fullText = appendBotMentionNote(turn.fullText, turn.mentionAnnotation);
+        desktopText = turn.desktopText == null ? null
+            : appendBotMentionNote(turn.desktopText!, turn.mentionAnnotation);
+      }
+    } else if (!mentionsFrozen) {
+      final annotation = buildBotMentionAnnotation(mentionResolver.resolve(fullText));
+      fullText = appendBotMentionNote(fullText, annotation);
+      if (desktopText != null) desktopText = appendBotMentionNote(desktopText, annotation);
+    }
     final pendingManualProbeClientTurnId =
         _pendingManualOwnershipProbeClientTurnId;
     final manualOwnershipProbe =
@@ -10245,6 +10346,7 @@ class ActiveChat {
     await _admitThroughParkedQueue();
     if (_disposed) return false;
     return send(
+      mentionsFrozen: true,
       fullText: fullText,
       model: model,
       history: history,
@@ -10417,7 +10519,7 @@ class ActiveChat {
       _storedSessionProfile = sessionProfile;
       _expireInteractivePromptsForRuntime(_desktopRuntimeSessionId);
       _activeTurnDelivery = delivery;
-      lastPrompt = fullText;
+      lastPrompt = stripBotMentionNote(fullText);
       _lastModel = model;
       _turnProfile = sessionProfile;
       _turnSessionConfig = capturedSessionConfig;
@@ -10693,6 +10795,8 @@ class ActiveChat {
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.rewind');
     }
+    final mentionPayload = appendBotMentionNote(text,
+        buildBotMentionAnnotation(mentionResolver.resolve(text)));
     final capturedLifecycle = _localConversationLifecycle;
     if (_activeRewrite != null) {
       throw StateError('Another conversation rewrite is already active');
@@ -10860,7 +10964,7 @@ class ActiveChat {
       final history = _buildHistoryFromMessages();
       try {
         final accepted = await _send(
-          fullText: text,
+          fullText: mentionPayload,
           model: model,
           history: history,
           profile: profile,
@@ -11614,6 +11718,30 @@ class ActiveChat {
     } on TuiGatewayRpcError catch (error) {
       if (error.code == 4007 || error.code == -32601) return null;
       rethrow;
+    }
+  }
+
+  BotMentionResolver get mentionResolver => BotMentionRoster.shared.resolver(
+    connection.id, sessionProfile.isEmpty ? 'default' : sessionProfile,
+  );
+
+  Future<void>? _mentionRosterLoad;
+  Future<void> loadMentionRoster() {
+    if (BotMentionRoster.shared.contains(connection.id)) return Future.value();
+    return _mentionRosterLoad ??= _loadMentionRoster();
+  }
+
+  Future<void> _loadMentionRoster() async {
+    final rosterGeneration = BotMentionRoster.shared.generation(connection.id);
+    try {
+      final gateway = _desktopGateway;
+      if (gateway is! BotMentionRosterGateway) return;
+      final profiles = await (gateway as BotMentionRosterGateway).loadMentionProfiles();
+      if (!_disposed) BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+    } catch (_) {
+      // A cold/unavailable roster must never block ordinary chat admission.
+    } finally {
+      _mentionRosterLoad = null;
     }
   }
 
@@ -13277,7 +13405,9 @@ class ActiveChat {
       await _onForegroundKeepAlive?.call();
       _emit(ActiveChatEvent.connected);
       _armFirstTokenTimer();
-      var promptText = desktopText ?? fullText;
+      final annotatedText = desktopText ?? fullText;
+      final mentionAnnotation = botMentionNote(annotatedText);
+      var promptText = stripBotMentionNote(annotatedText);
       final attachedImagePaths = <String>[];
       final legacyFileRefs = <String>[];
       final delivery = _activeTurnDelivery;
@@ -13466,6 +13596,7 @@ class ActiveChat {
           }
         }
       }
+      promptText = appendBotMentionNote(promptText, mentionAnnotation);
       final HermesDesktopRewindGateway? rewindGateway =
           gateway is HermesDesktopRewindGateway
           ? gateway as HermesDesktopRewindGateway
@@ -14445,6 +14576,7 @@ class ActiveChat {
   ) async {
     final epochInvalidated = _turnEpochInvalidated.future;
     var attempt = 0;
+    var transcriptAttempted = false;
     Object lastError = originalError;
     while (_canRecoverTurn(turnEpoch)) {
       final delay = _desktopRecoveryDelayForAttempt(attempt);
@@ -14455,6 +14587,13 @@ class ActiveChat {
           epochInvalidated,
         );
         if (!elapsed || !_canRecoverTurn(turnEpoch)) return;
+      }
+      if (!transcriptAttempted) {
+        transcriptAttempted = true;
+        if (await _tryAdoptDurableTranscriptForRecoveringTurn(turnEpoch)) {
+          return;
+        }
+        if (!_canRecoverTurn(turnEpoch)) return;
       }
       try {
         final connected = await _desktopRecoveryOperationBeforeDeadline(
@@ -14803,6 +14942,117 @@ class ActiveChat {
     _emit(ActiveChatEvent.error);
   }
 
+  Future<List<Map<String, dynamic>>> _loadRecoveryTranscript(
+    String storedId,
+    String profile,
+  ) async {
+    final gateway = _desktopGateway;
+    if (_storedMessageLoader != null ||
+        !(_attachDesktopRuntimeOnLoad ||
+            _allowUnownedDesktopSnapshotForTesting) ||
+        gateway == null ||
+        !gateway.isConnected ||
+        gateway is! HermesDesktopSessionHistoryGateway ||
+        _desktopRuntimeSessionId == null) {
+      return _loadStoredMessages(profile);
+    }
+    final pages = <List<Map<String, dynamic>>>[];
+    final signatures = <String>{};
+    List<Map<String, dynamic>> withContent(
+      List<Map<String, dynamic>> messages,
+    ) => [
+      for (final message in messages)
+        if (message['content'] == null && message['text'] is String)
+          // Native history uses text; retain every authority/private flag.
+          {...message, 'content': message['text']}
+        else
+          message,
+    ];
+    var offset = 0;
+    while (true) {
+      final page = await _requestStoredMessagesPage(
+        storedSessionId: storedId,
+        profile: profile,
+        limit: 500,
+        offset: offset,
+      );
+      if (!page.messagesFullyParsed || !page.paginationFullyParsed) {
+        throw StateError('Incomplete recovery transcript');
+      }
+      if (!page.paginationProvided) return withContent(page.messages);
+      if (page.limit != 500 || page.offset != offset) {
+        throw StateError('Invalid recovery pagination');
+      }
+      pages.add(page.messages);
+      if (page.returned < 500) break;
+      if (!signatures.add(jsonEncode(page.messages))) {
+        throw StateError('Recovery pagination stalled');
+      }
+      offset += page.returned;
+    }
+    return withContent([for (final page in pages.reversed) ...page]);
+  }
+
+  // A disconnected turn needs complete durable evidence before it can settle.
+  Future<bool> _tryAdoptDurableTranscriptForRecoveringTurn(
+    int turnEpoch,
+  ) async {
+    if (!_canRecoverTurn(turnEpoch)) return false;
+    final loadEpoch = _messageLoadEpoch;
+    final storedId = serverSessionId;
+    final profile = _storedSessionProfile;
+    final expectedUsers = _messages.where(isRealUserTurn).length;
+    if (expectedUsers <= 0) return false;
+    try {
+      final transcript = await _desktopRecoveryOperationBeforeDeadline(
+        _loadRecoveryTranscript(storedId, profile),
+        _turnEpochInvalidated.future,
+      );
+      if (transcript == null ||
+          !_canRecoverTurn(turnEpoch) ||
+          loadEpoch != _messageLoadEpoch ||
+          storedId != serverSessionId ||
+          profile != _storedSessionProfile) {
+        return false;
+      }
+      if (!_restTranscriptCoversAnnouncedCount(transcript)) return false;
+      final authority = _terminalAuthority(transcript, expectedUsers);
+      if (authority.reason != TerminalAuthorityReason.finalAssistant) {
+        return false;
+      }
+      if (!_terminalTranscriptCanReplaceVisibleProjection(
+        transcript,
+        expectedUsers,
+      )) {
+        return false;
+      }
+      await _completeRun(
+        finalOutput: authority.assistantText,
+        authoritativeTranscript: transcript,
+      );
+      return state == ChatPipelineState.completed;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Production [ApiClient.getMessages] already walks pages to the end.
+  /// Injected test loaders have no pagination metadata, so an announced
+  /// count still larger than the list means the GET is a tail, not coverage.
+  bool _restTranscriptCoversAnnouncedCount(
+    List<Map<String, dynamic>> transcript,
+  ) {
+    final hydration = _desktopHydrationExpectedMessageCount;
+    final hard = _hardExpectedStoredMessageCount;
+    final announced = hydration == null
+        ? hard
+        : hard == null
+        ? hydration
+        : math.max(hydration, hard);
+    if (announced == null || announced <= 0) return true;
+    return transcript.length >= announced;
+  }
+
   Future<void> _recoverRestTurnFromTranscript(
     int turnEpoch,
     Object originalError,
@@ -15067,7 +15317,8 @@ class ActiveChat {
     int turnEpoch,
     List<AttachmentDraft> attachments,
   ) async {
-    var fallbackText = sanitizeRemoteChatText(fullText);
+    final mentionAnnotation = botMentionNote(fullText);
+    var fallbackText = sanitizeRemoteChatText(stripBotMentionNote(fullText));
     final refs = <String>[];
     final delivery = _activeTurnDelivery;
     final binaryAttachments =
@@ -15183,7 +15434,7 @@ class ActiveChat {
           : '\n⟦adjunto⟧\n';
       fallbackText = '$fallbackText$separator${refs.join('\n')}';
     }
-    return _startRemoteRun(fallbackText, model, history, turnEpoch);
+    return _startRemoteRun(appendBotMentionNote(fallbackText, mentionAnnotation), model, history, turnEpoch);
   }
 
   void _onDesktopEvent(TuiGatewayEvent event) {
@@ -17049,7 +17300,7 @@ class ActiveChat {
     final queueOrder = _nextQueueOrder++;
     _messageQueue.add(
       _QueuedTextTurn(
-        trimmed,
+        appendBotMentionNote(trimmed, buildBotMentionAnnotation(mentionResolver.resolve(trimmed))),
         queueOrder,
         id: 'text:$queueOrder',
         // Solo un turno vivo o en admisión puede transferir su policy. Una cola
@@ -17344,7 +17595,7 @@ class ActiveChat {
     if (textIndex >= 0) {
       final target = textItems[textIndex];
       final replacement = _QueuedTextTurn(
-        text.trim(),
+        appendBotMentionNote(text.trim(), buildBotMentionAnnotation(mentionResolver.resolve(text.trim()))),
         target.queueOrder,
         id: target.id,
         allowTransportFallback: target.allowTransportFallback,
@@ -17376,11 +17627,16 @@ class ActiveChat {
     final preparedId = id.startsWith('prepared:')
         ? id.substring('prepared:'.length)
         : null;
-    if (preparedId != null && _blockedPreparedTurnId == preparedId) {
+    if (preparedId == null) {
+      _queuedTextRetryTimer?.cancel();
+      _queuedTextRetryTimer = null;
+      _clearQueuedRetryState(id);
+      _emit(ActiveChatEvent.queueChanged);
+    } else {
       _queuedRetryTimer?.cancel();
       _queuedRetryTimer = null;
       _clearQueuedRetryState(preparedId);
-      _blockedPreparedTurnId = null;
+      if (_blockedPreparedTurnId == preparedId) _blockedPreparedTurnId = null;
       _emit(ActiveChatEvent.queueChanged);
     }
     promoteQueuedTurn(id);
@@ -17408,7 +17664,12 @@ class ActiveChat {
     final entry = matches.first;
     _unparkQueueLease();
     try {
-      await steer(entry.text);
+      final prepared = _preparedTurnQueue.where((item) => 'prepared:${item.turn.clientTurnId}' == id);
+      final legacy = _messageQueue.where((item) => item.id == id);
+      final payload = prepared.isNotEmpty
+          ? appendBotMentionNote(prepared.first.turn.fullText, prepared.first.turn.mentionAnnotation)
+          : legacy.isNotEmpty ? legacy.first.text : entry.text;
+      await steer(payload, mentionsFrozen: true);
     } catch (_) {
       return false;
     }
@@ -17487,14 +17748,14 @@ class ActiveChat {
           id: 'desktop-accepted',
           kind: QueuedEntryKind.desktopAccepted,
           queueOrder: -1,
-          text: _desktopAcceptedQueuedPrompt!,
+          text: stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
         ),
       ..._messageQueue.map(
         (item) => QueuedEntryView(
           id: item.id,
           kind: QueuedEntryKind.text,
           queueOrder: item.queueOrder,
-          text: item.text,
+          text: stripBotMentionNote(item.text),
         ),
       ),
     ];
@@ -17698,8 +17959,10 @@ class ActiveChat {
     if (!await _desktopQueueDrainIsAuthorized()) return;
     if (_disposed ||
         mutationsBlockedByOwnershipConflict ||
+        _queueLease == QueueLease.parked ||
         _queueDrainSuspended ||
-        isStreaming) {
+        isStreaming ||
+        _preparedTurnDrainInFlight) {
       return;
     }
     if (_pendingPreparedQueueOrders.isNotEmpty) {
@@ -17726,6 +17989,7 @@ class ActiveChat {
                 _messageQueue.first.queueOrder);
     if (preparedComesFirst) {
       final next = _preparedTurnQueue.first;
+      if (_queuedRetriesExhausted.contains(next.turn.clientTurnId)) return;
       final owner = _preparedTurnOwners[next.turn.clientTurnId];
       if (owner?.state == _PreparedTurnOwnershipState.cancelling ||
           _blockedPreparedTurnId == next.turn.clientTurnId ||
@@ -17763,6 +18027,7 @@ class ActiveChat {
             _preparedTurnQueue.isNotEmpty &&
             identical(_preparedTurnQueue.first, next)) {
           _preparedTurnQueue.removeFirst();
+          _clearQueuedRetryState(next.turn.clientTurnId);
           final owner = _preparedTurnOwners[next.turn.clientTurnId];
           if (owner?.delivery == next.delivery) {
             _preparedTurnOwners.remove(next.turn.clientTurnId);
@@ -17782,6 +18047,7 @@ class ActiveChat {
     }
     if (_messageQueue.isEmpty) return;
     final next = _messageQueue.first;
+    if (_queuedRetriesExhausted.contains(next.id)) return;
     // La rama prepared ya se serializa con esta misma bandera. La de texto no
     // lo hacía: `send()` tarda varios `await` en publicar `connecting`, así que
     // dos drenajes solapados (terminal, retry, park levantado, inventario
@@ -17790,6 +18056,7 @@ class ActiveChat {
     final bool accepted;
     try {
       accepted = await send(
+        mentionsFrozen: true,
         fullText: next.text,
         model: _lastModel,
         history: _buildHistoryFromMessages(),
@@ -18787,7 +19054,7 @@ class ActiveChat {
     }
     _beginObservedResponseTiming();
     final prompt = snapshot.inflight?.user?.trim() ?? '';
-    if (prompt.isNotEmpty) lastPrompt = prompt;
+    if (prompt.isNotEmpty) lastPrompt = stripBotMentionNote(prompt);
     trace.clear();
     _activeVoiceTools.clear();
     traceActive = true;
@@ -18866,7 +19133,7 @@ class ActiveChat {
     );
     _desktopAcceptedQueuedPrompt = null;
     _beginObservedResponseTiming();
-    lastPrompt = queuedPrompt;
+    lastPrompt = stripBotMentionNote(queuedPrompt);
     state = ChatPipelineState.waiting;
     trace.clear();
     _activeVoiceTools.clear();
@@ -20840,7 +21107,11 @@ class ActiveChat {
   /// Desktop. No llama a `/stop`, no abre otro run y conserva herramientas,
   /// estado y trabajo ya completado. Gateways antiguos degradan a
   /// `session.steer` únicamente cuando no publican el RPC moderno.
-  Future<void> steer(String fullText) async {
+  Future<void> steer(String fullText, {bool mentionsFrozen = false}) async {
+    if (!mentionsFrozen) {
+      fullText = appendBotMentionNote(fullText,
+          buildBotMentionAnnotation(mentionResolver.resolve(fullText)));
+    }
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.redirect');
     }

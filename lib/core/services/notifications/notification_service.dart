@@ -1,3 +1,4 @@
+import '../../utils/bot_mention_text.dart';
 // Notificaciones locales del agente — 100% on-device, sin FCM/Google/push.
 //
 // Las dispara la propia app para avisar de eventos importantes mientras está
@@ -1287,7 +1288,7 @@ class NotificationService
     String? raw, {
     required String fallback,
   }) {
-    final source = (raw ?? '')
+    final source = stripBotMentionNote(raw ?? '')
         .replaceAll(RegExp(r'[\u0000-\u001F\u007F-\u009F]'), ' ')
         .replaceAll(RegExp(r'[\u202A-\u202E\u2066-\u2069]'), ' ');
     final compact = markdownToCompactText(source).trim();
@@ -1596,7 +1597,7 @@ class NotificationService
   /// Los títulos proceden del servidor y pueden contener Markdown, controles o
   /// varias líneas. La bandeja solo necesita una etiqueta breve y legible.
   static String compactSessionLabel(String? raw) {
-    final source = (raw ?? '')
+    final source = stripBotMentionNote(raw ?? '')
         .replaceAll(RegExp(r'[\u0000-\u001F\u007F-\u009F]'), ' ')
         .replaceAll(RegExp(r'[\u202A-\u202E\u2066-\u2069]'), ' ');
     final compact = markdownToCompactText(

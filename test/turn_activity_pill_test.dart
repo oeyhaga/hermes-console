@@ -21,7 +21,7 @@ Future<void> _pumpPill(
   required bool active,
   required DateTime? startedAt,
   required _FakeClock clock,
-  String statusLabel = 'Ejecutando…',
+  String? statusLabel = 'Ejecutando…',
   Locale locale = const Locale('es'),
 }) async {
   await tester.pumpWidget(
@@ -52,6 +52,26 @@ String _elapsedText(WidgetTester tester) =>
     tester.widget<Text>(_elapsed).data ?? '';
 
 void main() {
+  testWidgets('elapsed timer pauses in background and catches up on resume', (
+    tester,
+  ) async {
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    final clock = _FakeClock(DateTime(2026, 9, 17, 3));
+    await _pumpPill(tester, active: true, startedAt: clock.now, clock: clock);
+    clock.advance(const Duration(seconds: 4));
+    await tester.pump(const Duration(seconds: 4));
+    expect(_elapsedText(tester), '0:04');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    clock.advance(const Duration(seconds: 5));
+    await tester.pump(const Duration(seconds: 5));
+    expect(_elapsedText(tester), '0:04');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    expect(_elapsedText(tester), '0:09');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets('un turno corto no llega a pintar la pastilla', (tester) async {
     // El antiparpadeo es el punto: la mayoría de los turnos responden en un par
     // de segundos y no deben hacer aparecer y desaparecer una pastilla.
@@ -93,6 +113,31 @@ void main() {
     expect(_elapsedText(tester), '0:12');
   });
 
+  testWidgets(
+    'sin statusLabel se ve el cronómetro solo, sin hueco de la palabra',
+    (tester) async {
+      // El llamador pasa null cuando la misma palabra ya está a la vista en
+      // la ThinkingTraceCard del transcript — la pastilla no debe repetirla,
+      // pero el cronómetro (la señal que no existe en ningún otro sitio)
+      // tiene que seguir ahí.
+      final clock = _FakeClock(DateTime(2026, 9, 17, 3));
+      await _pumpPill(
+        tester,
+        active: true,
+        startedAt: clock.now,
+        clock: clock,
+        statusLabel: null,
+      );
+
+      clock.advance(const Duration(seconds: 4));
+      await tester.pump(const Duration(seconds: 4));
+
+      expect(_pill, findsOne);
+      expect(_elapsedText(tester), '0:04');
+      expect(find.text('Ejecutando…'), findsNothing);
+    },
+  );
+
   testWidgets('una espera larga cambia a la frase de tranquilidad', (
     tester,
   ) async {
@@ -114,9 +159,32 @@ void main() {
     await tester.pump(const Duration(seconds: 20));
 
     expect(find.text('Ejecutando…'), findsNothing);
-    expect(find.text("Still working — I'll reply when it's done"), findsOne);
+    expect(find.text("Still working"), findsOne);
     expect(_elapsedText(tester), '0:25');
   });
+
+  testWidgets(
+    'la frase de tranquilidad aparece aunque el llamador pida silencio',
+    (tester) async {
+      // Pasado `reassureAfter` la espera ya se hizo larga y merece su propio
+      // aviso — eso no es la misma narración que la palabra que se calló.
+      final clock = _FakeClock(DateTime(2026, 9, 17, 3));
+      await _pumpPill(
+        tester,
+        active: true,
+        startedAt: clock.now,
+        clock: clock,
+        statusLabel: null,
+        locale: const Locale('en'),
+      );
+
+      clock.advance(const Duration(seconds: 25));
+      await tester.pump(const Duration(seconds: 25));
+
+      expect(find.text("Still working"), findsOne);
+      expect(_elapsedText(tester), '0:25');
+    },
+  );
 
   testWidgets('el turno termina y la pastilla se va con su cronómetro', (
     tester,

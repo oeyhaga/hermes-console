@@ -6,6 +6,7 @@ import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/agent_profile.dart';
+import 'package:hermes_android/core/widgets/room_member_status.dart';
 import 'package:hermes_android/core/models/bot_visual_identity.dart';
 import 'package:hermes_android/core/models/kanban.dart';
 import 'package:hermes_android/core/models/mission_control.dart';
@@ -258,7 +259,8 @@ Widget _host({
   ActiveChatService? activeChats,
   MissionControlDataSource? dataSource,
   double textScale = 1,
-  bool disableAnimations = false,
+  // These are interaction/layout tests; live avatar motion is tested separately.
+  bool disableAnimations = true,
   EdgeInsets viewInsets = EdgeInsets.zero,
   EdgeInsets viewPadding = EdgeInsets.zero,
   SavedConnection? connection,
@@ -313,7 +315,16 @@ Future<void> _openAgentDetail(WidgetTester tester, String profile) async {
   await tester.tap(find.byKey(ValueKey('mission-bot-details-$profile')));
   await tester.pumpAndSettle();
   final detailsItem = find.byKey(const ValueKey('bot-quick-details'));
-  await tester.ensureVisible(detailsItem);
+  await tester.scrollUntilVisible(
+    detailsItem,
+    80,
+    scrollable: find
+        .descendant(
+          of: find.byKey(const ValueKey('mission-bot-quick-actions')),
+          matching: find.byType(Scrollable),
+        )
+        .first,
+  );
   await tester.pumpAndSettle();
   await tester.tap(detailsItem);
   await tester.pumpAndSettle();
@@ -781,7 +792,8 @@ void main() {
     await tester.pumpAndSettle();
     await _openAgentDetail(tester, 'infra');
 
-    // Identidad: nombre visible + handle + estado como pill, no como filas
+    // Addendum 2: nombre + handle + una línea de estado sin badge ni caja.
+    // No como filas
     // "Profile"/"Modelo" de etiqueta y valor.
     expect(find.text('Infra'), findsWidgets);
     expect(find.text('@infra'), findsOneWidget);
@@ -790,7 +802,7 @@ void main() {
     expect(
       find.descendant(
         of: find.byKey(const ValueKey('mission-agent-detail')),
-        matching: find.byType(HermesBadge),
+        matching: find.byType(BotStatusLine),
       ),
       findsOneWidget,
     );
@@ -919,7 +931,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Última respuesta del bot'), findsOneWidget);
+    expect(find.text('Inactivo · Última respuesta del bot'), findsOneWidget);
     expect(find.text('Bot Chat'), findsNothing);
   });
 
@@ -1017,8 +1029,8 @@ void main() {
 
     expect(find.text('Bots'), findsWidgets);
     expect(find.text('default'), findsWidgets);
-    expect(find.text('Bot Chat'), findsWidgets);
-    expect(find.text('Inactivo'), findsNothing);
+    // Even without Kanban, a known profile now has an explicit idle status.
+    expect(find.text('Inactivo'), findsWidgets);
 
     await _openWork(tester);
     expect(
@@ -2720,6 +2732,7 @@ void main() {
       await tester.pumpWidget(
         _host(
           manager: manager,
+          disableAnimations: false,
           snapshot: _snapshot(
             profiles: const [
               AgentProfile(name: 'infra'),
@@ -2843,7 +2856,7 @@ void main() {
   });
 
   testWidgets(
-      'V13 mechanical owning-screen slop audit has only allowed surfaces',
+    'V13 mechanical owning-screen slop audit has only allowed surfaces',
     (tester) async {
       final manager = await _manager();
       await tester.pumpWidget(

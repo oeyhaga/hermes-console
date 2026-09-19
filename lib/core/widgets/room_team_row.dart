@@ -4,9 +4,13 @@ import '../../l10n/app_localizations.dart';
 import '../models/agent_profile.dart';
 import '../theme/app_theme.dart';
 import 'mission_profile_avatar.dart';
+import 'bot_avatar_motion.dart';
 
 /// A single member in a room team, shared by local and hosted room surfaces.
 class RoomTeamRow extends StatelessWidget {
+  final Widget? avatar;
+  final Widget? activityLine;
+  final String? activityLabel;
   final String profileName;
   final String handle;
   final String displayName;
@@ -24,6 +28,9 @@ class RoomTeamRow extends StatelessWidget {
   final IconData? secondaryActionIcon;
 
   const RoomTeamRow({
+    this.avatar,
+    this.activityLine,
+    this.activityLabel,
     required this.profileName,
     required this.handle,
     required this.displayName,
@@ -51,6 +58,7 @@ class RoomTeamRow extends StatelessWidget {
       handleLabel,
       ?roleLabel,
       ?statusLabel,
+      ?activityLabel,
     ].join(', ');
     final row = ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 48),
@@ -60,7 +68,14 @@ class RoomTeamRow extends StatelessWidget {
           children: [
             KeyedSubtree(
               key: ValueKey('room-team-avatar-$profileName'),
-              child: _avatar(),
+              child:
+                  avatar ??
+                  RoomMemberAvatar(
+                    profileName: profileName,
+                    profile: profile,
+                    avatarCache: avatarCache,
+                    manager: manager,
+                  ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -101,15 +116,20 @@ class RoomTeamRow extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 2),
-                  Text(
-                    subtitle == null ? handleLabel : '$handleLabel · $subtitle',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: colors.textSecondary,
-                      fontSize: 12.5,
+                  if (activityLine != null)
+                    activityLine!
+                  else
+                    Text(
+                      subtitle == null
+                          ? handleLabel
+                          : '$handleLabel · $subtitle',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: colors.textSecondary,
+                        fontSize: 12.5,
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -172,22 +192,51 @@ class RoomTeamRow extends StatelessWidget {
       child: actionableRow,
     );
   }
+}
 
-  Widget _avatar() {
+/// Shared identity for a room's team rows and message headers.
+class RoomMemberAvatar extends StatelessWidget {
+  final String profileName;
+  final AgentProfile? profile;
+  final MissionProfileAvatarCache? avatarCache;
+  final bool manager;
+  final double size;
+  final bool working;
+
+  const RoomMemberAvatar({
+    super.key,
+    required this.profileName,
+    required this.profile,
+    required this.avatarCache,
+    this.manager = false,
+    this.size = 42,
+    this.working = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final resolvedProfile = profile;
     if (resolvedProfile == null) {
-      return _NeutralRoomTeamAvatar(profileName: profileName, manager: manager);
+      return BotAvatarMotion(
+        enabled: working,
+        child: _NeutralRoomTeamAvatar(
+          profileName: profileName,
+          manager: manager,
+          size: size,
+        ),
+      );
     }
     return MissionProfileAvatar(
-      profileName: profileName,
+      profileName: resolvedProfile.name,
       hasAvatar: resolvedProfile.hasAvatar,
       cache: avatarCache,
-      size: 42,
+      size: size,
       manager: manager,
       shape: resolvedProfile.botShape,
       colorHex: resolvedProfile.botColorHex,
       imageKind: resolvedProfile.botImageKind,
       privacySafeElementKeys: true,
+      working: working,
     );
   }
 }
@@ -222,10 +271,12 @@ class _RoomTeamPill extends StatelessWidget {
 class _NeutralRoomTeamAvatar extends StatelessWidget {
   final String profileName;
   final bool manager;
+  final double size;
 
   const _NeutralRoomTeamAvatar({
     required this.profileName,
     required this.manager,
+    required this.size,
   });
 
   @override
@@ -239,8 +290,8 @@ class _NeutralRoomTeamAvatar extends StatelessWidget {
     final color = HSLColor.fromAHSL(1, hue.toDouble(), 0.38, 0.54).toColor();
     return ExcludeSemantics(
       child: Container(
-        width: 42,
-        height: 42,
+        width: size,
+        height: size,
         padding: manager ? const EdgeInsets.all(2) : EdgeInsets.zero,
         decoration: manager
             ? BoxDecoration(
@@ -256,8 +307,12 @@ class _NeutralRoomTeamAvatar extends StatelessWidget {
             color: color.withValues(alpha: 0.84),
             shape: BoxShape.circle,
           ),
-          child: const Center(
-            child: Icon(Icons.circle_outlined, size: 16, color: Colors.white70),
+          child: Center(
+            child: Icon(
+              Icons.circle_outlined,
+              size: size * 16 / 42,
+              color: Colors.white70,
+            ),
           ),
         ),
       ),

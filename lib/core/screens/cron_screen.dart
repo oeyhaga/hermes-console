@@ -51,6 +51,7 @@ class CronScreen extends StatefulWidget {
   final Stream<TuiGatewayEvent>? eventStreamOverride;
   final String? initialJobId;
   final String? profileOverride;
+  final bool botRoutines;
 
   /// Cuando no es null, esta pantalla se envuelve con [GeneralDockShell]
   /// (mismo dock flotante que ya usan Ajustes y la lista de sesiones), con
@@ -67,6 +68,7 @@ class CronScreen extends StatefulWidget {
     @visibleForTesting this.eventStreamOverride,
     this.initialJobId,
     this.profileOverride,
+    this.botRoutines = false,
     super.key,
   });
 
@@ -159,7 +161,7 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
     if (!_started || profile != _profile) {
       _started = true;
       _profile = profile;
-      _repository = CronRepository(_client, profile: profile);
+      _repository = CronRepository(_client, profile: profile, botRoutines: widget.botRoutines);
       unawaited(_loadJobs(showLoader: true));
     }
   }
@@ -1416,7 +1418,7 @@ class _CronEditorDialogState extends State<_CronEditorDialog> {
           : '0 9 * * *',
     );
     _preset = _presetFor(_scheduleController.text);
-    _deliver = job?.deliver.isNotEmpty == true ? job!.deliver : 'local';
+    _deliver = job?.deliver.isNotEmpty == true ? job!.deliver : widget.repository.botRoutines ? 'bot-chat' : 'local';
     _modelChoice = job?.model.isNotEmpty == true
         ? '${job!.provider}:${job.model}'
         : _defaultModel;

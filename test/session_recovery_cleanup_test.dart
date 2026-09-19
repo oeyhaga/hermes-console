@@ -72,6 +72,30 @@ void main() {
     ),
   );
 
+  test(
+    'missing or mistyped delete evidence preserves local recovery',
+    () async {
+      await seedRecovery();
+      for (final body in ['{}', '{"deleted":null}', '{"deleted":"true"}']) {
+        final client = ApiClient(
+          baseUrl: 'https://example.invalid',
+          apiKey: 'test-only',
+          connectionId: 'conn-cleanup',
+          httpClient: MockClient((_) async => http.Response(body, 200)),
+        );
+        expect(await client.deleteSession('session-cleanup'), isFalse);
+        client.close();
+      }
+      final prefs = await SharedPreferences.getInstance();
+      expect(
+        (await ChatDraftStore(
+          prefs,
+        ).load('conn-cleanup', 'session-cleanup')).text,
+        'privado',
+      );
+    },
+  );
+
   test('confirmación remota limpia draft y outbox locales', () async {
     await seedRecovery();
     final client = clientWithDeleted(true);

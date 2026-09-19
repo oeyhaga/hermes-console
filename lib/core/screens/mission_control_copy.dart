@@ -65,10 +65,32 @@ final class MissionControlCopy {
   String get noRoomMessages => _english
       ? 'No messages have been published yet.'
       : 'Todavía no se han publicado mensajes.';
+
+  /// Estado del composer cuando hay un hilo elegido con "Responder en hilo".
+  /// Antes el único indicio era que el texto de sugerencia del campo cambiaba,
+  /// y no había forma de salir del hilo salvo enviar el mensaje.
+  String get replyingInThread =>
+      _english ? 'Replying in thread' : 'Respondiendo en el hilo';
+  String get stopReplyingInThread =>
+      _english ? 'Leave the thread' : 'Salir del hilo';
+
+  /// El protocolo real de una sala compartida (`groups.send`) solo acepta
+  /// `text` y `thread_id`: no hay campo de adjunto ni de imagen en ninguna
+  /// versión del evento. En vez de poner un botón que no puede funcionar, la
+  /// sala vacía lo dice una vez, en voz baja.
+  String get roomTextOnly => _english
+      ? 'Rooms are text-only for now.'
+      : 'Las salas son solo de texto por ahora.';
   String get sharedRooms => _strings.missionSharedRooms;
   String get createSharedRoom => _strings.missionCreateSharedRoom;
   String get noSharedRooms => _strings.missionNoSharedRooms;
   String get sharedRoomsUnavailable => _strings.missionSharedRoomsUnavailable;
+  String get roomDriverUnavailable => _english
+      ? 'The server room driver is unavailable. Refresh to check again.'
+      : 'El motor de salas del servidor no está disponible. Actualiza para comprobarlo.';
+  String get roomRefreshFailed => _english
+      ? 'Could not refresh this room. Reopen it to reconnect.'
+      : 'No se pudo actualizar esta sala. Vuelve a abrirla para reconectar.';
   String get sendSharedMessage => _strings.missionSendSharedMessage;
   String get renameSharedRoom => _strings.missionRenameSharedRoom;
   // "¿Detener/Disolver la sala compartida?" es el título del diálogo de

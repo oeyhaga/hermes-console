@@ -4272,8 +4272,8 @@
   "chaVoiceNeedsServerTitle": "Set up the voice server",
   "chaVoiceNeedsServerBody": "Server-side speech recognition needs your Hermes-STT server URL (and token), or the server isn't responding. Check it in Settings › Voice.",
   "chaVoiceAllowMic": "Allow microphone",
-  "chaQueuedCount": "{count, plural, one{QUEUED · 1 MESSAGE} other{QUEUED · {count} MESSAGES}}",
-  "chaQueuedPausedCount": "{count, plural, one{PAUSED · 1 MESSAGE} other{PAUSED · {count} MESSAGES}}",
+  "chaQueuedCount": "QUEUED · {count}",
+  "chaQueuedPausedCount": "PAUSED · {count}",
   "chaQueuedNote": "they'll be sent when the turn ends",
   "chaQueueParkedNote": "paused after Stop",
   "chaQueueResume": "Resume queue",
@@ -4284,7 +4284,7 @@
   "chaQueueDelete": "Delete",
   "chaQueueEditFailed": "The queued message could not be updated.",
   "chaQueueStuck": "A queued message kept failing to send. It's still in the queue — try sending it again.",
-  "chaTurnStillWorking": "Still working — I'll reply when it's done",
+  "chaTurnStillWorking": "Still working",
   "chaStopStopping": "Stopping…",
   "chaStopRetrying": "Retrying Stop…",
   "chaStopConfirmed": "Stopped",
@@ -4949,7 +4949,7 @@
   "interactiveBatchConfirm": "Confirm and continue",
   "interactiveRecommended": "Recommended",
   "subagentActivityTitle": "Subagents",
-  "subagentActivitySummary": "{active} active · {completed} finished",
+  "subagentActivitySummary": "{active} active · {completed} ended",
   "@subagentActivitySummary": {
     "placeholders": {
       "active": {"type": "int"},
@@ -5527,5 +5527,258 @@
   "missionBotChatMetadataUnavailable": "Bot Chat metadata could not be verified. Refresh Bots and try again.",
   "missionOffline": "Hermes is unavailable. Existing team data remains visible.",
   "missionStaleData": "Some team data may be out of date.",
-  "missionKanbanUnavailable": "The task board is not available on this Hermes installation."
+  "missionKanbanUnavailable": "The task board is not available on this Hermes installation.",
+  "roomEveryone": "Everyone",
+  "roomRecipientsAll": "Everyone ({count})",
+  "@roomRecipientsAll": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomRecipientsSome": "To {count} of {total}",
+  "@roomRecipientsSome": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "roomRecipientsShort": "{count} of {total}",
+  "@roomRecipientsShort": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "roomPresenceWorking": "Working",
+  "roomPresenceActive": "Active",
+  "roomPresenceIdle": "Inactive",
+  "roomPresenceUnknown": "No data",
+  "roomPresenceNeedsYou": "Needs your response",
+  "roomResponsePending": "Waiting",
+  "roomResponseResponded": "Answered",
+  "roomResponsePassed": "Passed",
+  "roomResponseNone": "No response",
+  "roomActivityCount": "Activity ({count})",
+  "@roomActivityCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomActivityStarted": "started working",
+  "roomActivityReplied": "answered",
+  "roomActivityPassed": "passed",
+  "roomActivityFailed": "could not answer",
+  "roomActivityCancelled": "turn cancelled",
+  "roomActivityDeferred": "waiting for availability",
+  "roomActivitySettled": "turn finished",
+  "roomActivityStopped": "room stopped",
+  "roomActivityBounded": "conversation limit reached",
+  "roomMemberNoResponse": "{name} did not reply",
+  "roomMemberPassed": "{name} passed",
+  "roomMembersWorking": "{names} working",
+  "@roomMemberNoResponse": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "@roomMemberPassed": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "@roomMembersWorking": {
+    "placeholders": {
+      "names": {
+        "type": "String"
+      }
+    }
+  },
+  "roomSummaryNow": "Now",
+  "roomSummaryDone": "Done",
+  "roomSummaryPending": "Pending",
+  "roomSummaryRecent": "Recent",
+  "roomSummaryUpToDate": "All up to date",
+  "roomSummaryUnavailable": "unavailable",
+  "roomSummarySuperseded": "a newer request replaced this",
+  "roomSummaryTaskDone": "completed a task",
+  "roomSummaryTopic": "Current topic: {topic}",
+  "@roomSummaryTopic": {
+    "placeholders": {
+      "topic": {
+        "type": "String"
+      }
+    }
+  },
+  "roomSummaryWaitingForYou": "{member} is waiting for you",
+  "@roomSummaryWaitingForYou": {
+    "placeholders": {
+      "member": {
+        "type": "String"
+      }
+    }
+  },
+  "roomSummaryWorkingCount": "{count} working",
+  "@roomSummaryWorkingCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomSummaryDoneCount": "{count} done",
+  "@roomSummaryDoneCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomSummaryPendingCount": "{count} pending",
+  "@roomSummaryPendingCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomSummaryNeedsCount": "{count, plural, =1{1 needs you} other{{count} need you}}",
+  "@roomSummaryNeedsCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "roomSummaryMore": "see more ({count})",
+  "@roomSummaryMore": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "subagentPillCount": "{count} agents",
+  "roomSummaryCompact": "Room summary",
+  "chaBackgroundTaskDoneShort": "Task finished",
+  "chaBackgroundTaskErrorShort": "Task failed",
+  "dockSessionsLabel": "Chats",
+  "dockToolsLabel": "Tools",
+  "dockCronLabel": "Jobs",
+  "missionBotsUnassigned": "Unassigned",
+  "chaMentionSuggestions": "Mention a bot",
+  "botSectionMove": "Move to section…",
+  "botSectionNew": "New section…",
+  "botSectionRename": "Rename section",
+  "botSectionDelete": "Delete section",
+  "botSectionRemove": "Remove from section",
+  "botSectionName": "Section name",
+  "botSectionOrderHint": "Alphabetical order. Empty sections do not sync.",
+  "botSectionChooseMembers": "Choose the section’s bots",
+  "botSectionDeleted": "Section deleted. The bots are still available.",
+  "botUndo": "Undo",
+  "botRetry": "Retry",
+  "botSave": "Save",
+  "botCancel": "Cancel",
+  "botSectionPartial": "Could not update: {names}.",
+  "@botSectionPartial": {"placeholders": {"names": {"type": "String"}}},
+  "botProfileFailed": "Could not save. Check your connection and try again.",
+  "botRecentSession": "Recent session",
+  "botDuplicate": "Duplicate bot",
+  "botDuplicated": "Copy created: {name}",
+  "@botDuplicated": {"placeholders": {"name": {"type": "String"}}},
+  "botAdvanced": "Advanced settings",
+  "botDescription": "Description",
+  "botSkills": "Skills",
+  "botTools": "Tools",
+  "botMcp": "MCP servers",
+  "botProvider": "Provider",
+  "botModel": "Model",
+  "botConfigUnavailable": "This server does not offer profile settings.",
+  "botCreateOn": "Create on",
+  "botClassicFace": "Geometric face",
+  "botGenerateAvatar": "Generate portrait",
+  "botAvatarPrompt": "Describe the portrait",
+  "botGenerate": "Generate",
+  "botGenerateFailed": "Could not generate the portrait. Check your image provider.",
+  "botOtherConnections": "Other connections",
+  "chatStopSaveFailed": "Couldn't save Stop safely. Try again.",
+  "chatContinueOnDesktop": "Continue this request in Hermes Desktop",
+  "chatImageTapToEnlarge": "Image, tap to enlarge",
+  "chatImageFromHostTapToEnlarge": "Image from {host}, tap to enlarge",
+  "chatQueueBlockedRetry": "Send pending. Try again.",
+  "splashLoadingProgress": "Loading progress",
+  "memoryBackupSaved": "Backup saved: {path}",
+  "memoryConfiguredCount": "{configured} / {total} configured",
+  "memoryFilterHint": "Filter providers and files…",
+  "memoryNoMatches": "No matches for \"{filter}\"",
+  "memoryProviderNotConfigured": "Not configured",
+  "bridgeLogTitle": "Bridge log",
+  "bridgeViewLog": "View bridge log",
+  "sshSetupTitle": "Set up SSH",
+  "sftpFilesTitle": "Files · SFTP",
+  "mascotChange": "Change mascot",
+  "mascotTurnOff": "Turn off mascot",
+  "mascotOpenPets": "Open Mascots",
+  "companionAnimatedLabel": "Animated companion",
+  "voiceProfileLabel": "Profile · {profile}",
+  "uninstallOpenTermux": "Open Termux to enable it",
+  "botFaceRandom": "Randomize",
+  "botFaceLock": "Lock face",
+  "botFaceUnlock": "Unlock face",
+  "botFaceColor": "Color",
+  "botShowHidden": "Show hidden bots",
+  "botRoomLinkFailed": "Room created. These bots could not be linked: {names}. Retry their links before sending.",
+  "@botRoomLinkFailed": {"placeholders": {"names": {"type": "String"}}},
+  "botRoomLinkUnavailable": "No saved bots currently advertise a reachable RoomLink.",
+  "botDuplicateIncomplete": "{name} was copied, but its chat and title could not be reset. Retry to finish this copy.",
+  "@botDuplicateIncomplete": {"placeholders": {"name": {"type": "String"}}},
+  "botToolsetsInherit": "With no toolsets selected, Hermes inherits its default toolsets.",
+  "botManageRooms": "Manage rooms",
+  "botRoomMembersUnavailable": "Open a room to manage it. This server cannot change the members of an existing room.",
+  "botReconnectRoom": "Reconnect room bots",
+  "botSectionsManage": "Manage sections",
+  "botCloneCredentialsHint": "Cloning retains the source’s API keys. This switch controls additional keys copied from the gateway.",
+  "ollamaDiagRunning": "Diagnosing the local agent…\nIf the bridge is out of date I will restart it.\nThis can take up to ~1 min.",
+  "ollamaGpuBenchRunning": "Testing the GPU with llama.cpp…\nI install llama.cpp if it is missing and measure GPU vs CPU.\nThis can take SEVERAL minutes. Do not close the app.",
+  "ollamaGpuProbeRunning": "Probing the system GPU…\nI install clinfo/vulkan-tools and check whether OpenCL or Vulkan can see your Mali. This can take a couple of minutes.",
+  "ollamaGpuBenchTitle": "GPU benchmark (llama.cpp)",
+  "ollamaGpuProbeTitle": "GPU probe (OpenCL/Vulkan)",
+  "ollamaDiagTooltip": "Local diagnostics",
+  "ollamaGpuAvailableTooltip": "GPU available? (OpenCL/Vulkan)",
+  "ollamaGpuTestTooltip": "Test GPU (llama.cpp)",
+  "ollamaCheck": "Check",
+  "ollamaOlliteModels": "Models on OlliteRT",
+  "ollamaGpuStore": "GPU model store",
+  "installLocalNoKeyPrivacy": "No API key · Full privacy",
+  "installRamCompatible": "RAM: {ram} · {count, plural, =1{1 compatible model} other{{count} compatible models}}",
+  "installUseAiApi": "Use an AI API (OpenAI, Anthropic, Mistral…)",
+  "installUseAiApiHint": "Needs your own API key · ideal if the local model will not start",
+  "installPickCompatibleModel": "Pick a compatible model",
+  "installNoCompatibleModels": "No models are compatible with this device's RAM. You need at least 1 GB of free RAM to run a local model.",
+  "installCustomModel": "Custom model",
+  "installUseCloudApi": "Use a cloud API",
+  "installStartWithoutLocalModel": "Start without a local model",
+  "skillsRefreshInstalled": "Refresh installed",
+  "skillsNoneFound": "no skills found",
+  "skillsNoneInstalled": "no skills are installed on this gateway",
+  "skillsSearchInstalledHint": "search installed skills…",
+  "skillsNoMatch": "no match",
+  "skillsNoMatchBody": "no skills match your search",
+  "skillsSearchHubHint": "search skills.sh…"
 }

@@ -1,4 +1,7 @@
 import 'dart:async';
+import '../../l10n/app_localizations.dart';
+import '../services/bot_profile_client.dart';
+import 'bot_profile_settings_screen.dart';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -19,6 +22,8 @@ import '../companion/render/spritesheet_renderer.dart';
 import '../widgets/bot_settings_group.dart';
 import '../widgets/hermes_app_bar.dart';
 import '../widgets/hermes_bot_face.dart';
+import '../widgets/bot_face_options.dart';
+import '../widgets/bot_avatar_generate_button.dart';
 import '../widgets/hermes_ui.dart';
 import 'mission_control_copy.dart';
 
@@ -92,6 +97,7 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
   late _IdentityMode _mode;
   late String _dormantColorHex;
   late BlobatarShapeWire _blobatar;
+  ClassicFaceIdentity? _classic;
   late bool _needsLegacyFaceMigration;
   String? _selectedSlug;
   String? _baselinePetSlug;
@@ -125,7 +131,7 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
         _pickedAvatarDataUri == null
             ? 'image:remote'
             : 'image:picked:${_pickedAvatarDataUri.hashCode}',
-      _IdentityMode.face => 'face:${_blobatar.wire}',
+      _IdentityMode.face => _classic == null ? 'face:${_blobatar.wire}' : 'classic:${_classic!.shape}:${_classic!.colorHex}',
     };
   }
 
@@ -180,7 +186,11 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
 
     final blobatar = BlobatarShapeWire.tryParse(widget.profile.botShape);
     _blobatar = blobatar ?? BlobatarShapeWire.parse('blobatar');
-    _needsLegacyFaceMigration = blobatar == null;
+    if (ClassicFaceIdentity.shapes.contains(widget.profile.botShape) &&
+        ClassicFaceIdentity.colors.contains(widget.profile.botColorHex)) {
+      _classic = ClassicFaceIdentity(shape: widget.profile.botShape!, colorHex: widget.profile.botColorHex!);
+    }
+    _needsLegacyFaceMigration = blobatar == null && _classic == null;
     _dormantColorHex =
         ClassicFaceIdentity.colors.contains(widget.profile.botColorHex)
         ? widget.profile.botColorHex!
@@ -355,7 +365,7 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
     }
   }
 
-  BotVisualIdentity _faceIdentity() => ProceduralFaceIdentity(
+  BotVisualIdentity _faceIdentity() => _classic ?? ProceduralFaceIdentity(
     shapeWire: _blobatar.wire,
     dormantColorHex: _dormantColorHex,
   );
@@ -595,6 +605,13 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
                           ],
                         ),
                       ),
+                      if (_gateway is BotProfileGateway)
+                        ListTile(contentPadding: EdgeInsets.zero,
+                          title: Text(Strings.of(context).botAdvanced),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: _saving ? null : () => Navigator.of(context).push<bool>(
+                            MaterialPageRoute(builder: (_) => BotProfileSettingsScreen(
+                              profile: _profileName, gateway: _gateway as BotProfileGateway)))),
                       _infoRow(
                         colors,
                         label: _text('Descripción', 'Description'),
@@ -922,7 +939,8 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
   );
 
   Widget _facePreview({required double size}) {
-    final visual = HermesBlobatarFaceVisual.tryParse(
+    final visual = _classic != null ? HermesClassicFaceVisual.tryParse(
+      shape: _classic!.shape, colorHex: _classic!.colorHex)! : HermesBlobatarFaceVisual.tryParse(
       shapeWire: _blobatar.wire,
       profileName: _profileName,
     )!;
@@ -937,6 +955,12 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
   Widget _buildImageSection(HermesThemeColors colors) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      if (_gateway is BotAvatarGenerationGateway)
+        BotAvatarGenerateButton(gateway: _gateway as BotAvatarGenerationGateway,
+          enabled: !_saving, onSelected: (avatar) => _changeIdentity(() {
+            _pickedAvatar = avatar;
+            _pickedAvatarDataUri = avatar.toDataUri();
+          })),
       Text(
         _text(
           'PNG, JPEG, WebP o GIF. Se recorta al centro y se guarda cuadrada.',
@@ -961,6 +985,10 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
   Widget _buildFaceSection(HermesThemeColors colors) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      BotFaceOptions(name: _profileName, blob: _blobatar,
+        classic: _classic, enabled: !_saving,
+        onBlob: (value) => _changeIdentity(() { _classic = null; _blobatar = value; }),
+        onClassic: (value) => _changeIdentity(() => _classic = value)),
       HermesSectionHeader(_text('Silueta', 'Silhouette')),
       Wrap(
         spacing: 8,
@@ -990,7 +1018,8 @@ class _ProfileEditorScreenState extends State<ProfileEditorScreen> {
           key: ValueKey('profile-editor-blobatar-${kind ?? 'auto'}'),
           borderRadius: BorderRadius.circular(12),
           onTap: () => _changeIdentity(() {
-            _blobatar = _blobatar.withKind(kind);
+            _classic = null;
+                  _blobatar = _blobatar.withKind(kind);
           }),
           child: Container(
             width: 52,

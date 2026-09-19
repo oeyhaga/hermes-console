@@ -169,7 +169,7 @@ class _LocalInstanceControlScreenState
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: colors.surface,
-        title: const Text('Log del bridge'),
+        title: Text(Strings.of(context).bridgeLogTitle),
         content: SizedBox(
           width: double.maxFinite,
           child: SingleChildScrollView(
@@ -188,7 +188,7 @@ class _LocalInstanceControlScreenState
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cerrar'),
+            child: Text(Strings.of(context).commonClose),
           ),
         ],
       ),
@@ -833,7 +833,7 @@ class _LocalInstanceControlScreenState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Diagnóstico',
+                      Text(Strings.of(context).setDiagnostics,
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
@@ -857,7 +857,7 @@ class _LocalInstanceControlScreenState
                           onPressed: _bridgeBusy ? null : _showBridgeLog,
                           icon: Icon(Icons.article_outlined,
                               size: 16, color: colors.accent),
-                          label: Text('Ver log del bridge',
+                          label: Text(Strings.of(context).bridgeViewLog,
                               style: TextStyle(color: colors.accent)),
                           style: TextButton.styleFrom(
                             padding: const EdgeInsets.symmetric(horizontal: 4),

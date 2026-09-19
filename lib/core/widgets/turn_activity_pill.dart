@@ -39,8 +39,15 @@ class TurnActivityPill extends StatefulWidget {
   /// Origen del cronómetro: el momento en que arrancó el turno.
   final DateTime? startedAt;
 
-  /// Palabra de estado del pipeline (conectando / pensando / ejecutando).
-  final String statusLabel;
+  /// Palabra de estado del pipeline (conectando / pensando / ejecutando), o
+  /// `null` para omitirla y dejar solo el spinner + cronómetro — el llamador
+  /// la calla cuando esa misma palabra ya está a la vista en otro sitio más
+  /// específico (la `ThinkingTraceCard` en vivo), para no repetirla. El
+  /// cronómetro nunca se omite: es la única señal de este widget que no
+  /// existe en ningún otro sitio. Pasado [reassureAfter] esto se ignora y
+  /// siempre se muestra la frase de tranquilidad, aunque el llamador haya
+  /// pedido silencio — una espera ya larga merece su propio aviso.
+  final String? statusLabel;
 
   /// Nada antes de esto: un turno rápido no debe hacer parpadear la pastilla.
   /// Desktop usa `TURN_QUIET_S = 2` para el mismo antiparpadeo; aquí se sube un
@@ -67,15 +74,35 @@ class TurnActivityPill extends StatefulWidget {
   State<TurnActivityPill> createState() => _TurnActivityPillState();
 }
 
-class _TurnActivityPillState extends State<TurnActivityPill> {
+class _TurnActivityPillState extends State<TurnActivityPill>
+    with WidgetsBindingObserver {
   Timer? _ticker;
+  bool _viewEnabled = false;
+  bool _foreground = true;
 
   DateTime get _now => (widget.clock ?? DateTime.now)();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _foreground = lifecycle == null || lifecycle == AppLifecycleState.resumed;
     _syncTicker();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _viewEnabled = TickerMode.valuesOf(context).enabled;
+    _syncTicker();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    _syncTicker();
+    if (_foreground && mounted) setState(() {});
   }
 
   @override
@@ -86,6 +113,7 @@ class _TurnActivityPillState extends State<TurnActivityPill> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
     _ticker = null;
     super.dispose();
@@ -94,7 +122,11 @@ class _TurnActivityPillState extends State<TurnActivityPill> {
   /// El cronómetro solo late mientras hay turno: un `Timer.periodic` corriendo
   /// en reposo repintaría la pantalla de chat una vez por segundo para siempre.
   void _syncTicker() {
-    final shouldTick = widget.active && widget.startedAt != null;
+    final shouldTick =
+        widget.active &&
+        widget.startedAt != null &&
+        _foreground &&
+        _viewEnabled;
     if (shouldTick == (_ticker != null)) return;
     if (!shouldTick) {
       _ticker?.cancel();
@@ -128,7 +160,7 @@ class _TurnActivityPillState extends State<TurnActivityPill> {
 
     return Semantics(
       liveRegion: true,
-      label: '$label · $timer',
+      label: label == null ? timer : '$label · $timer',
       child: Material(
         key: const ValueKey('turn-activity-pill'),
         color: colors.surface,
@@ -150,20 +182,22 @@ class _TurnActivityPillState extends State<TurnActivityPill> {
                 ),
               ),
               const SizedBox(width: 8),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 220),
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: colors.textPrimary,
+              if (label != null) ...[
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.textPrimary,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
+                const SizedBox(width: 8),
+              ],
               // `tabular-nums` en Desktop: sin anchura fija de dígito el
               // contador baila de ancho en cada tic y arrastra la etiqueta.
               Text(

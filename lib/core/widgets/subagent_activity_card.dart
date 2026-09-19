@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import 'compact_pill_text.dart';
 import '../models/subagent_activity.dart';
 import '../theme/app_theme.dart';
 import 'hermes_premium_ui.dart';
@@ -102,8 +103,11 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   // _rebuild so the open sheet (tail output, steer status, selection)
   // stays live instead of freezing at whatever it showed when it opened.
   void Function(VoidCallback fn)? _sheetRefresh;
+  ModalRoute<void>? _detailRoute;
+  bool _sheetMounted = false;
 
   void _rebuild(VoidCallback fn) {
+    if (!mounted) return;
     setState(fn);
     _sheetRefresh?.call(() {});
   }
@@ -143,8 +147,22 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   @override
   void dispose() {
     _stopTail();
-    _steerController.dispose();
+    _sheetRefresh = null;
+    final route = _detailRoute;
+    if (route != null) _closeDetailRoute(route);
+    // The overlay's EditableText may outlive this pill. Its unmount callback
+    // releases the controller after it has stopped using it.
+    if (!_sheetMounted) _steerController.dispose();
     super.dispose();
+  }
+
+  void _closeDetailRoute(ModalRoute<void> route) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final navigator = route.navigator;
+      if (navigator != null && navigator.mounted && route.isActive) {
+        navigator.removeRoute(route);
+      }
+    });
   }
 
   SubagentActivity? get _selectedActivity {
@@ -169,6 +187,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   }
 
   void _select(SubagentActivity activity) {
+    if (!mounted) return;
     if (_selectedKey == activity.key) return;
     _stopTail();
     _rebuild(() {
@@ -189,7 +208,8 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
 
   void _startTail() {
     final activity = _selectedActivity;
-    if (!_expanded ||
+    if (!mounted ||
+        !_expanded ||
         !widget.appForeground ||
         activity == null ||
         activity.isTerminal ||
@@ -262,6 +282,11 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
     final hasFailure = activities.any(
       (a) => a.phase == SubagentActivityPhase.failed,
     );
+    final hasUnconfirmedSuccess = activities.any(
+      (a) =>
+          a.phase == SubagentActivityPhase.cancelled ||
+          a.phase == SubagentActivityPhase.unknown,
+    );
     final single = activities.length == 1 ? activities.single : null;
     final detailedSummary = single == null
         ? activities.isNotEmpty && unknown == activities.length
@@ -280,9 +305,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
               ? strings.subagentActivitySummary(displayCount, 0)
               : strings.subagentActivityRunning
         : detailedSummary;
-    final pillLabel = widget.background && !genericOnly
-        ? '$displayCount · $summary'
-        : summary;
+    final pillLabel = summary;
     final semanticLabel = widget.background
         ? strings.chaBackgroundWorkTitle
         : '${strings.subagentActivityTitle}, $displayCount';
@@ -299,7 +322,8 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
     // it vanish the moment `activities` empties out — see chat_screen.dart's
     // `_displaySubagentActivities`) is to leave the "what did it do" review
     // available until the person is done with it, not to auto-hide it.
-    final showDismiss = !genericOnly && live <= 0 && widget.onDismiss != null;
+    final showDismiss =
+        !genericOnly && unknown == 0 && live <= 0 && widget.onDismiss != null;
 
     return Semantics(
       button: !genericOnly,
@@ -314,44 +338,55 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            InkWell(
-              onTap: genericOnly ? null : () => _openDetailSheet(context),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 48),
-                child: Padding(
-                  padding: EdgeInsets.fromLTRB(12, 9, showDismiss ? 8 : 16, 9),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildLeadingIndicator(
-                        colors: colors,
-                        hasFailure: hasFailure,
-                        live: genericOnly ? (displayCount > 0 ? 1 : 0) : live,
-                        completed: genericOnly ? 0 : completed,
-                      ),
-                      const SizedBox(width: 8),
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 220),
-                        child: Text(
-                          pillLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: colors.textPrimary,
+            Flexible(
+              child: InkWell(
+                onTap: genericOnly ? null : () => _openDetailSheet(context),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                      12,
+                      9,
+                      showDismiss ? 8 : 16,
+                      9,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildLeadingIndicator(
+                          colors: colors,
+                          hasFailure: hasFailure,
+                          hasUnconfirmedSuccess: hasUnconfirmedSuccess,
+                          live: genericOnly ? (displayCount > 0 ? 1 : 0) : live,
+                          completed: genericOnly ? 0 : completed,
+                        ),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 220),
+                            child: CompactPillText(
+                              label: pillLabel,
+                              compactLabel: strings.subagentPillCount(
+                                displayCount,
+                              ),
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: colors.textPrimary,
+                              ),
+                            ),
                           ),
                         ),
-                      ),
-                      if (!genericOnly) ...[
-                        const SizedBox(width: 2),
-                        Icon(
-                          Icons.keyboard_arrow_down_rounded,
-                          size: 18,
-                          color: colors.textSecondary,
-                        ),
+                        if (!genericOnly) ...[
+                          const SizedBox(width: 2),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 18,
+                            color: colors.textSecondary,
+                          ),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -385,56 +420,68 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   }
 
   Future<void> _openDetailSheet(BuildContext context) async {
+    if (_expanded || _sheetMounted || !mounted) return;
     final strings = Strings.of(context);
     _setExpanded(true);
     await showHermesFloatingSurface<void>(
       context: context,
       surfaceKey: const ValueKey('subagent-panel'),
-      builder: (context) => _CallOnDispose(
-        // The awaited push below only clears `_sheetRefresh` once its
-        // Future resolves, which can lag behind the sheet's own element
-        // actually leaving the tree (e.g. an ancestor route being replaced
-        // out from under it) — that gap is enough for a deferred nudge
-        // (see didUpdateWidget) to fire `setState` on an already-disposed
-        // StatefulBuilder. Clearing it here, exactly on unmount, closes
-        // that gap regardless of why the sheet went away.
-        onDispose: () => _sheetRefresh = null,
-        child: StatefulBuilder(
-          builder: (context, setSheetState) {
-            final colors = Theme.of(context).hermes;
-            _sheetRefresh = setSheetState;
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-              shrinkWrap: true,
-              children: [
-                Text(
-                  strings.subagentActivityTitle,
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: colors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                for (
-                  var index = 0;
-                  index < widget.activities.length;
-                  index++
-                )
-                  _SubagentRow(
-                    key: ValueKey(widget.activities[index].key),
-                    activity: widget.activities[index],
-                    index: index + 1,
-                    selected: widget.activities[index].key == _selectedKey,
-                    onSelect: () => _select(widget.activities[index]),
-                  ),
-                if (_selectedActivity case final selected?)
-                  _buildSelectedDetail(selected, colors, strings),
-              ],
-            );
+      builder: (context) {
+        final route = ModalRoute.of<void>(context)!;
+        if (!mounted) {
+          _closeDetailRoute(route);
+          return const SizedBox.shrink();
+        }
+        _detailRoute = route;
+        _sheetMounted = true;
+        return _CallOnDispose(
+          // The awaited push below only clears `_sheetRefresh` once its
+          // Future resolves, which can lag behind the sheet's own element
+          // actually leaving the tree (e.g. an ancestor route being replaced
+          // out from under it) — that gap is enough for a deferred nudge
+          // (see didUpdateWidget) to fire `setState` on an already-disposed
+          // StatefulBuilder. Clearing it here, exactly on unmount, closes
+          // that gap regardless of why the sheet went away.
+          onDispose: () {
+            _sheetRefresh = null;
+            _detailRoute = null;
+            _sheetMounted = false;
+            if (!mounted) _steerController.dispose();
           },
-        ),
-      ),
+          child: StatefulBuilder(
+            builder: (context, setSheetState) {
+              if (!mounted) return const SizedBox.shrink();
+              final colors = Theme.of(context).hermes;
+              _sheetRefresh = setSheetState;
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                shrinkWrap: true,
+                children: [
+                  Text(
+                    strings.subagentActivityTitle,
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  for (var index = 0; index < widget.activities.length; index++)
+                    _SubagentRow(
+                      key: ValueKey(widget.activities[index].key),
+                      activity: widget.activities[index],
+                      index: index + 1,
+                      selected: widget.activities[index].key == _selectedKey,
+                      onSelect: () => _select(widget.activities[index]),
+                    ),
+                  if (_selectedActivity case final selected?)
+                    _buildSelectedDetail(selected, colors, strings),
+                ],
+              );
+            },
+          ),
+        );
+      },
     );
     _sheetRefresh = null;
     if (mounted) _setExpanded(false);
@@ -447,6 +494,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   Widget _buildLeadingIndicator({
     required HermesThemeColors colors,
     required bool hasFailure,
+    required bool hasUnconfirmedSuccess,
     required int live,
     required int completed,
   }) {
@@ -456,7 +504,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
     // Nothing live and nothing authoritatively completed (e.g. a batch
     // that is entirely `unknown`) is not the same as "done" — a green
     // check here would invent a success signal the data doesn't support.
-    if (live <= 0 && completed <= 0) {
+    if (live <= 0 && (completed <= 0 || hasUnconfirmedSuccess)) {
       return Icon(
         Icons.account_tree_outlined,
         size: 18,
@@ -471,7 +519,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
       height: 16,
       child: CircularProgressIndicator(strokeWidth: 2.2, color: colors.accent),
     );
-    if (completed <= 0) return spinner;
+    if (completed <= 0 || hasUnconfirmedSuccess) return spinner;
     return SizedBox(
       width: 18,
       height: 18,
@@ -650,7 +698,9 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
                       key: ValueKey('subagent-open-${activity.key.stableId}'),
                       onPressed: widget.isOpenPending?.call(activity) == true
                           ? null
-                          : () => widget.onOpenConversation!(activity),
+                          : () {
+                              if (mounted) widget.onOpenConversation!(activity);
+                            },
                       style: TextButton.styleFrom(
                         minimumSize: const Size(48, 48),
                       ),
@@ -718,6 +768,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   }
 
   Future<void> _sendSteer(SubagentActivity activity) async {
+    if (!mounted) return;
     final text = _steerController.text.trim();
     if (text.isEmpty || _steerPending || widget.onSteer == null) return;
     _rebuild(() {
@@ -746,6 +797,7 @@ class _SubagentActivityCardState extends State<SubagentActivityCard> {
   }
 
   Future<void> _requestStop(SubagentActivity activity) async {
+    if (!mounted) return;
     if (!_stopAwaitingTerminal.add(activity.key)) return;
     _rebuild(() {});
     final requester = widget.onStopRequested;
