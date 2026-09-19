@@ -6440,7 +6440,7 @@ void main() {
           'role': index.isEven ? 'assistant' : 'user',
           'content':
               'lector durante refresh histórico $index. '
-              '${List.filled(18, 'Contenido estable.').join(' ')}',
+              '${List.filled(6, 'Contenido estable.').join(' ')}',
         };
       });
       final chat = await pumpChat(
