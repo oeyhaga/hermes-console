@@ -3,8 +3,46 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## Unreleased
+## 1.2.11 (9009) — 2026-09-19
 
+- Bot Mode reaches parity with Hermes Desktop's bundled plugin, using only the
+  server APIs that exist today: bot sections (create, rename, delete, file a
+  bot, undo), create a bot from a clone, a fresh profile or an empty one with
+  skills, toolsets, MCP servers, model and SOUL, create on another saved
+  connection, an advanced editor for existing bots, full duplicate (memory
+  and look included), geometric and blob faces, AI-generated avatars, a
+  cross-connection roster with a bounded offline cache, `[bot:<name>]`
+  attribution on routines, and native rooms that span machines through
+  RoomLink. What Desktop keeps in local plugin storage (empty-section order,
+  room pin/order, courier DMs, warm backends) has no server equivalent and is
+  documented as such rather than faked.
+- `@mention` handoff between bots, with an autocomplete palette that resolves
+  friendly names and aliases, plus room recipients, per-member presence and a
+  compact room summary pill.
+- Bot and chat history now loads over the already-authenticated gateway
+  WebSocket (`session.history`), the same channel Desktop uses, instead of the
+  per-profile REST key. Profiles without their own `API_SERVER_KEY` no longer
+  show "Could not load messages" (HTTP 401). REST stays as the fallback.
+- Shared rooms: `groups.send` is enabled again, the room driver is re-checked
+  instead of caching a negative answer while the server worker starts, the open
+  room refreshes on its own, `@all` and `@everyone` are offered by the
+  autocomplete, and send/refresh failures are shown inside the room.
+- A dropped socket no longer hides a finished reply. Console reads the durable
+  transcript first and only falls back to reconnecting, and it stops polling
+  the whole conversation while you are typing a draft. Thanks to
+  @josephsellers for #38 and #40, including the field-tested analysis behind
+  them.
+- Dock v2 (per-profile items, contextual Back, style customization) extended to
+  Cron, Tasks and Tools; drawer grouped into header, navigation and footer
+  zones; Tasks gets a List/Board toggle; flatter floating Cron, subagent and
+  preview surfaces; Bot Chat is writable like any other chat; per-item
+  notification mute for cron jobs and Kanban tasks; 44 dp minimum tap targets
+  on two dismiss/refresh buttons.
+- About 50 previously hard-coded strings (chat, memory, bridge, SSH/SFTP,
+  mascots, local install, Ollama, Skills) now live in the English and Spanish
+  resources.
+- Screen changes no longer fade the whole page in; the slide and parallax stay,
+  and the per-frame full-screen offscreen layer is gone.
 - Rendered automatic standing-goal continuations as compact resumed-turn
   events when reopening an active Desktop session, including legacy history
   persisted before display metadata was available.
