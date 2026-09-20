@@ -229,7 +229,7 @@ final class GlobalActivityAggregate extends ChangeNotifier {
       }
       final prior = _byDurable[scope.durableKey];
       final sameIncarnation = prior?.scope.exactKey == scope.exactKey;
-      final busy = _rosterStatusIsBusy(row.status);
+      final busy = rosterStatusIsBusy(row.status);
       if (!busy) {
         _byDurable.remove(scope.durableKey);
         continue;
@@ -626,7 +626,7 @@ GlobalActivityPhase? _phaseFromToken(Object? raw) => switch (raw) {
   _ => null,
 };
 
-bool _rosterStatusIsBusy(String? raw) => switch (raw?.trim().toLowerCase()) {
+bool rosterStatusIsBusy(String? raw) => switch (raw?.trim().toLowerCase()) {
   'working' ||
   'running' ||
   'active' ||

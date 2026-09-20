@@ -401,6 +401,8 @@ class _LifecycleRecoverableGateway extends _RecoverableDesktopGateway
   int createForFirstSubmitCalls = 0;
   final List<String> resumeExistingStoredIds = [];
   final List<String> committedRecoveryRuntimeIds = [];
+  int turnRecoveryCommits = 0;
+  int viewerAttachmentCommits = 0;
   bool recoveryCommitSucceeds = true;
   Object? createForFirstSubmitError;
   Completer<DesktopSessionSnapshot>? recoveryExistingGate;
@@ -518,17 +520,25 @@ class _LifecycleRecoverableGateway extends _RecoverableDesktopGateway
     return DesktopRosterBoundRecovery.forTesting(snapshot, this);
   }
 
-  @override
-  bool consumeRosterBoundRecovery(DesktopRosterBoundRecovery recovery) {
+  bool _consumeRosterBoundRecovery(DesktopRosterBoundRecovery recovery) {
     if (!recoveryCommitSucceeds) return false;
     committedRecoveryRuntimeIds.add(recovery.snapshot.runtimeSessionId);
     return true;
   }
 
   @override
+  bool consumeRosterBoundRecovery(DesktopRosterBoundRecovery recovery) {
+    turnRecoveryCommits += 1;
+    return _consumeRosterBoundRecovery(recovery);
+  }
+
+  @override
   bool consumeRosterBoundViewerAttachment(
     DesktopRosterBoundRecovery recovery,
-  ) => consumeRosterBoundRecovery(recovery);
+  ) {
+    viewerAttachmentCommits += 1;
+    return _consumeRosterBoundRecovery(recovery);
+  }
 
   @override
   void commitRecoveryRuntime(String runtimeSessionId) {}
@@ -563,6 +573,8 @@ class _ActivityLifecycleRecoverableGateway extends _LifecycleRecoverableGateway
   String? initialAdvertisedRuntimeSessionId;
   String? recoveryAdvertisedStoredSessionId;
   String? recoveryAdvertisedRuntimeSessionId;
+  DesktopActiveSessionList? activeListOverride;
+  Object? activeListError;
 
   @override
   DesktopGatewayCapabilityState capabilityState(
@@ -619,6 +631,10 @@ class _ActivityLifecycleRecoverableGateway extends _LifecycleRecoverableGateway
     String currentRuntimeSessionId = '',
   }) async {
     listActiveSessionsCalls += 1;
+    final error = activeListError;
+    if (error != null) throw error;
+    final override = activeListOverride;
+    if (override != null) return override;
     final storedId = initialAdvertisedStoredSessionId;
     if (storedId == null) return const DesktopActiveSessionList();
     final runtimeId = initialAdvertisedRuntimeSessionId;
@@ -1200,6 +1216,7 @@ ActiveChat _recoverableChat(
   void Function(ActiveChatEvent)? onEvent,
   StoredSessionMessageLoader? storedMessageLoader,
   bool turnIdempotencySupported = true,
+  bool attachDesktopRuntimeOnLoad = false,
 }) => ActiveChat(
   compressionFenceStore: testCompressionFenceStore(),
   connection: _connection(id),
@@ -1216,6 +1233,7 @@ ActiveChat _recoverableChat(
       ),
   desktopGateway: gateway,
   allowUnownedDesktopSnapshotForTesting: true,
+  attachDesktopRuntimeOnLoad: attachDesktopRuntimeOnLoad,
   turnIdempotencyCapability: () async => turnIdempotencySupported,
   terminalReconcileBudget: terminalReconcileBudget,
   desktopRecoveryAttemptTimeout: desktopRecoveryAttemptTimeout,
@@ -3099,7 +3117,7 @@ void main() {
     },
   );
 
-  test('turno reanudado sin outbox reconecta tras socket drop', () async {
+  test('V1 viewer turn reattaches after event-stream loss', () async {
     final recoveryGate = Completer<DesktopSessionSnapshot>();
     final gateway = _LifecycleRecoverableGateway()
       ..initialSnapshot = DesktopSessionSnapshot(
@@ -3120,7 +3138,11 @@ void main() {
         running: true,
       )
       ..recoveryExistingGate = recoveryGate;
-    final chat = _recoverableChat('desktop-owned', gateway);
+    final chat = _recoverableChat(
+      'desktop-owned',
+      gateway,
+      attachDesktopRuntimeOnLoad: true,
+    );
     addTearDown(chat.dispose);
 
     await chat.loadMessages();
@@ -3162,6 +3184,8 @@ void main() {
     await steer.timeout(const Duration(seconds: 1));
     expect(gateway.connectCalls, 2);
     expect(gateway.committedRecoveryRuntimeIds, ['runtime-desktop-2']);
+    expect(gateway.viewerAttachmentCommits, 1);
+    expect(gateway.turnRecoveryCommits, 0);
     expect(gateway.steers, [
       (runtimeId: 'runtime-desktop-2', text: 'ajuste durante recovery'),
     ]);
@@ -3182,6 +3206,244 @@ void main() {
       chat.messages.any(
         (message) => message['content'].toString().contains('StateError'),
       ),
+      isFalse,
+    );
+  });
+
+  test(
+    'V2 viewer loss converges after two terminal stored-session rosters',
+    () async {
+      var durableFinalReady = false;
+      var transcriptCalls = 0;
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..initialSnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-viewer-v2-1',
+          storedSessionId: 'session-viewer-v2',
+          created: false,
+          messagesProvided: true,
+          messages: [
+            DesktopSessionMessage.tryParse(const {
+              'message_id': 'viewer-v2-user',
+              'role': 'user',
+              'content': 'viewer v2 prompt',
+            })!,
+          ],
+          inflight: DesktopInflightTurn(
+            user: 'viewer v2 prompt',
+            streaming: true,
+          ),
+          running: true,
+        )
+        ..recoveryExistingGate = Completer<DesktopSessionSnapshot>();
+      final chat = _productionAttachChat(
+        'viewer-v2',
+        gateway,
+        storedMessageLoader: (_, _) async {
+          transcriptCalls += 1;
+          if (!durableFinalReady) {
+            return const [
+              {
+                'message_id': 'viewer-v2-user',
+                'role': 'user',
+                'content': 'viewer v2 prompt',
+              },
+            ];
+          }
+          return const [
+            {
+              'message_id': 'viewer-v2-user',
+              'role': 'user',
+              'content': 'viewer v2 prompt',
+            },
+            {
+              'message_id': 'viewer-v2-answer',
+              'role': 'assistant',
+              'content': 'viewer v2 durable answer',
+            },
+          ];
+        },
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(profile: 'owner-profile');
+      expect(transcriptCalls, 1);
+      gateway.drop();
+      await _waitUntil(() => gateway.resumeExistingCalls == 1);
+      durableFinalReady = true;
+      gateway.activeListOverride = const DesktopActiveSessionList();
+
+      await chat.refreshPassiveRemoteActivity();
+      expect(chat.isStreaming, isTrue);
+      gateway.activeListOverride = const DesktopActiveSessionList(
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-viewer-v2-idle',
+            storedSessionId: 'session-viewer-v2',
+            status: 'completed',
+          ),
+        ],
+      );
+      await chat.refreshPassiveRemoteActivity();
+
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.assistantContent, 'viewer v2 durable answer');
+      expect(transcriptCalls, 2);
+      expect(gateway.viewerAttachmentCommits, 0);
+      expect(gateway.turnRecoveryCommits, 0);
+      expect(
+        chat.messages.where(
+          (message) => message['content'] == 'viewer v2 durable answer',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.any((message) => message['role'] == 'assistant_error'),
+        isFalse,
+      );
+    },
+  );
+
+  test('V3 busy roster keeps disconnected viewer working', () async {
+    var transcriptCalls = 0;
+    final gateway = _ActivityLifecycleRecoverableGateway()
+      ..initialSnapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-viewer-v3-1',
+        storedSessionId: 'session-viewer-v3',
+        created: false,
+        messagesProvided: true,
+        messages: [
+          DesktopSessionMessage.tryParse(const {
+            'message_id': 'viewer-v3-user',
+            'role': 'user',
+            'content': 'viewer v3 prompt',
+          })!,
+        ],
+        inflight: DesktopInflightTurn(
+          user: 'viewer v3 prompt',
+          streaming: true,
+        ),
+        running: true,
+      )
+      ..recoveryExistingGate = Completer<DesktopSessionSnapshot>();
+    final chat = _productionAttachChat(
+      'viewer-v3',
+      gateway,
+      storedMessageLoader: (_, _) async {
+        transcriptCalls += 1;
+        return const [
+          {
+            'message_id': 'viewer-v3-user',
+            'role': 'user',
+            'content': 'viewer v3 prompt',
+          },
+        ];
+      },
+    );
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(profile: 'owner-profile');
+    gateway.drop();
+    await _waitUntil(() => gateway.resumeExistingCalls == 1);
+    gateway.activeListOverride = const DesktopActiveSessionList(
+      sessions: [
+        DesktopActiveSession(
+          runtimeSessionId: 'runtime-viewer-v3-live',
+          storedSessionId: 'session-viewer-v3',
+          status: 'waiting',
+        ),
+      ],
+    );
+    await chat.refreshPassiveRemoteActivity();
+    await chat.refreshPassiveRemoteActivity();
+
+    expect(chat.state, ChatPipelineState.connecting);
+    expect(chat.isStreaming, isTrue);
+    expect(transcriptCalls, 1);
+    expect(gateway.turnRecoveryCommits, 0);
+    expect(
+      chat.messages.any((message) => message['role'] == 'assistant_error'),
+      isFalse,
+    );
+  });
+
+  test('V4 failed or malformed roster does not advance convergence', () async {
+    var durableFinalReady = false;
+    var transcriptCalls = 0;
+    final gateway = _ActivityLifecycleRecoverableGateway()
+      ..initialSnapshot = DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-viewer-v4-1',
+        storedSessionId: 'session-viewer-v4',
+        created: false,
+        messagesProvided: true,
+        messages: [
+          DesktopSessionMessage.tryParse(const {
+            'message_id': 'viewer-v4-user',
+            'role': 'user',
+            'content': 'viewer v4 prompt',
+          })!,
+        ],
+        inflight: DesktopInflightTurn(
+          user: 'viewer v4 prompt',
+          streaming: true,
+        ),
+        running: true,
+      )
+      ..recoveryExistingGate = Completer<DesktopSessionSnapshot>();
+    final chat = _productionAttachChat(
+      'viewer-v4',
+      gateway,
+      storedMessageLoader: (_, _) async {
+        transcriptCalls += 1;
+        if (!durableFinalReady) {
+          return const [
+            {
+              'message_id': 'viewer-v4-user',
+              'role': 'user',
+              'content': 'viewer v4 prompt',
+            },
+          ];
+        }
+        return const [
+          {
+            'message_id': 'viewer-v4-user',
+            'role': 'user',
+            'content': 'viewer v4 prompt',
+          },
+          {
+            'message_id': 'viewer-v4-answer',
+            'role': 'assistant',
+            'content': 'viewer v4 durable answer',
+          },
+        ];
+      },
+    );
+    addTearDown(chat.dispose);
+
+    await chat.loadMessages(profile: 'owner-profile');
+    gateway.drop();
+    await _waitUntil(() => gateway.resumeExistingCalls == 1);
+    gateway.activeListError = StateError('roster unavailable');
+    await chat.refreshPassiveRemoteActivity();
+    gateway
+      ..activeListError = null
+      ..activeListOverride = const DesktopActiveSessionList(
+        hasMalformedRows: true,
+      );
+    await chat.refreshPassiveRemoteActivity();
+    durableFinalReady = true;
+    gateway.activeListOverride = const DesktopActiveSessionList();
+
+    await chat.refreshPassiveRemoteActivity();
+    expect(chat.isStreaming, isTrue);
+    expect(transcriptCalls, 1);
+    await chat.refreshPassiveRemoteActivity();
+
+    expect(chat.state, ChatPipelineState.completed);
+    expect(chat.assistantContent, 'viewer v4 durable answer');
+    expect(transcriptCalls, 2);
+    expect(gateway.turnRecoveryCommits, 0);
+    expect(
+      chat.messages.any((message) => message['role'] == 'assistant_error'),
       isFalse,
     );
   });
@@ -3349,7 +3611,7 @@ void main() {
   );
 
   test(
-    'sin turn_idempotency_v1 el corte reanuda la sesión viva en vez de fallar',
+    'V5 client-owned turn keeps submitted-turn recovery after stream loss',
     () async {
       // The official gateway never publishes `turn_idempotency_v1`. A socket
       // drop mid-turn must still resume the live session and adopt its
@@ -3598,7 +3860,7 @@ void main() {
   );
 
   test(
-    'snapshot terminal parcial sin cobertura degrada y conserva el parcial',
+    'viewer terminal parcial sin cobertura espera autoridad de roster',
     () async {
       var transcriptCalls = 0;
       final gateway = _LifecycleRecoverableGateway()
@@ -3661,10 +3923,16 @@ void main() {
       expect(chat.assistantContent, 'respuesta local incompleta');
 
       gateway.drop();
-      await _waitUntil(() => chat.state == ChatPipelineState.failed);
+      await _waitUntil(
+        () => gateway.committedRecoveryRuntimeIds.contains(
+          'runtime-terminal-partial-2',
+        ),
+      );
 
-      expect(chat.awaitingDurableTurnRecovery, isTrue);
-      expect(transcriptCalls, 2);
+      expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.awaitingDurableTurnRecovery, isFalse);
+      expect(transcriptCalls, 1);
       expect(
         chat.messages.any(
           (message) => message['content'] == 'respuesta local incompleta',
@@ -3677,12 +3945,15 @@ void main() {
         ),
         isFalse,
       );
-      expect(chat.hasEarlierMessages, isTrue);
+      expect(
+        chat.messages.any((message) => message['role'] == 'assistant_error'),
+        isFalse,
+      );
     },
   );
 
   test(
-    'snapshot terminal parcial sin user queda history-pending sin GET tardío',
+    'viewer terminal parcial sin user conserva el prompt y espera roster',
     () async {
       var transcriptCalls = 0;
       final gateway = _LifecycleRecoverableGateway()
@@ -3733,21 +4004,25 @@ void main() {
         ),
       );
 
-      expect(chat.state, isNot(ChatPipelineState.completed));
+      expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.isStreaming, isTrue);
       expect(
         chat.messages.any(
           (message) => message['content'] == 'prompt que no puede desaparecer',
         ),
         isTrue,
       );
-      await _waitUntil(() => chat.state == ChatPipelineState.failed);
-      expect(chat.awaitingDurableTurnRecovery, isTrue);
-      expect(transcriptCalls, 2);
+      expect(chat.awaitingDurableTurnRecovery, isFalse);
+      expect(transcriptCalls, 1);
+      expect(
+        chat.messages.any((message) => message['role'] == 'assistant_error'),
+        isFalse,
+      );
     },
   );
 
   test(
-    'snapshot terminal parcial con tool queda pending sin promover transcript',
+    'viewer terminal parcial con tool espera roster sin promover transcript',
     () async {
       var transcriptCalls = 0;
       final gateway = _LifecycleRecoverableGateway()
@@ -3814,14 +4089,18 @@ void main() {
         ),
       );
 
-      expect(chat.state, isNot(ChatPipelineState.completed));
-      await _waitUntil(() => chat.state == ChatPipelineState.failed);
-      expect(chat.awaitingDurableTurnRecovery, isTrue);
-      expect(transcriptCalls, 2);
+      expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.awaitingDurableTurnRecovery, isFalse);
+      expect(transcriptCalls, 1);
       expect(
         chat.messages.any(
           (message) => message['content'] == 'assistant final ya durable',
         ),
+        isFalse,
+      );
+      expect(
+        chat.messages.any((message) => message['role'] == 'assistant_error'),
         isFalse,
       );
     },
