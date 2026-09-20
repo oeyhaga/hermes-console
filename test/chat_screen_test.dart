@@ -18286,4 +18286,228 @@ void main() {
       }
     });
   }
+
+  // ---------------------------------------------------------------------
+  // Geometría del overlay inferior del transcript.
+  //
+  // La flecha «bajar al final» y las pastillas flotantes de actividad
+  // (`chat-turn-activity` / `chat-subagent-status`) viven ancladas abajo y al
+  // centro del mismo Stack. Las pastillas se pintan después, así que se
+  // quedaban justo encima de la flecha: invisible y, cuando la pastilla se
+  // queda con el gesto, sin poder pulsarla (reportado en dispositivo real).
+  // El contrato es que nunca se solapen y que la flecha siga bajando el
+  // transcript, con pastilla o sin ella.
+  // ---------------------------------------------------------------------
+
+  /// Hace que una pulsación que no aterrice en el widget buscado sea un fallo
+  /// duro y no un aviso por consola: es exactamente el síntoma que se prueba.
+  void failOnMissedTaps() {
+    final previous = WidgetController.hitTestWarningShouldBeFatal;
+    WidgetController.hitTestWarningShouldBeFatal = true;
+    addTearDown(() => WidgetController.hitTestWarningShouldBeFatal = previous);
+  }
+
+  Finder scrollToBottomFinder() =>
+      find.byKey(const ValueKey('chat-scroll-to-bottom'));
+
+  /// Aparta el transcript del fondo y suelta el dedo, para que aparezca la
+  /// flecha. Se mueve en DOS tramos a propósito: el reconocedor de arrastre
+  /// del `ListView` usa `DragStartBehavior.start`, que descarta el tramo que
+  /// cruza el slop, así que un único `moveBy` deja el scroll en el sitio
+  /// cuando no hay turno vivo empujando la vista.
+  Future<ScrollController> holdTranscriptAwayFromBottom(
+    WidgetTester tester, {
+    double distance = 240,
+  }) async {
+    final list = chatListFinder();
+    expect(list, findsOneWidget);
+    final controller = tester.widget<ListView>(list).controller!;
+    final gesture = await tester.startGesture(tester.getCenter(list));
+    await gesture.moveBy(const Offset(0, kDragSlopDefault));
+    await tester.pump();
+    await gesture.moveBy(Offset(0, distance));
+    await tester.pump();
+    await gesture.up();
+    await tester.pump();
+    expect(
+      controller.position.pixels,
+      greaterThan(controller.position.minScrollExtent),
+    );
+    return controller;
+  }
+
+  void expectScrollToBottomVisible() {
+    expect(scrollToBottomFinder(), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-visible')),
+      findsOneWidget,
+    );
+  }
+
+  /// La flecha tiene que quedar entera por encima de la pastilla: no vale
+  /// que asomen, ni que se toquen a medias.
+  void expectArrowClearOf(WidgetTester tester, Finder overlay) {
+    final arrow = tester.getRect(scrollToBottomFinder());
+    final pill = tester.getRect(overlay);
+    expect(
+      pill.height,
+      greaterThan(0),
+      reason: 'la pastilla tiene que estar realmente a la vista',
+    );
+    expect(
+      arrow.overlaps(pill),
+      isFalse,
+      reason: 'la flecha $arrow se solapa con la pastilla $pill',
+    );
+    expect(arrow.bottom, lessThanOrEqualTo(pill.top));
+    // La pastilla no se mueve de su sitio de siempre: 20 px por encima del
+    // borde inferior del transcript, pegada al composer como en el mockup.
+    final body = tester.getRect(find.byKey(const ValueKey('chat-stable-body')));
+    expect(pill.bottom, closeTo(body.bottom - 20, 0.01));
+    // Regla de diseño: las pastillas flotantes nunca tapan el composer.
+    final composer = tester.getRect(find.byType(TextField).first);
+    expect(pill.bottom, lessThanOrEqualTo(composer.top));
+  }
+
+  /// Pulsa la flecha y comprueba que el transcript vuelve de verdad al final.
+  Future<void> expectArrowScrollsToBottom(
+    WidgetTester tester,
+    ScrollController controller,
+  ) async {
+    expect(
+      controller.position.pixels,
+      greaterThan(controller.position.minScrollExtent),
+    );
+    await tester.tap(scrollToBottomFinder());
+    await tester.pump();
+    for (
+      var frame = 0;
+      frame < 60 &&
+          controller.position.pixels > controller.position.minScrollExtent;
+      frame++
+    ) {
+      await tester.pump(const Duration(milliseconds: 40));
+    }
+    expect(controller.position.pixels, controller.position.minScrollExtent);
+  }
+
+  testWidgets('la pastilla del turno no tapa la flecha de bajar al final', (
+    tester,
+  ) async {
+    failOnMissedTaps();
+    // Revelar la pastilla exige tiempo real (ver abajo), y con el reloj real
+    // corriendo el Companion llega a pedir su carpeta de soporte: sin este
+    // mock el canal nativo lanza y tumba el test por un motivo ajeno.
+    final temp = Directory.systemTemp.createTempSync('chat-arrow-turn-pill-');
+    addTearDown(() {
+      if (temp.existsSync()) temp.deleteSync(recursive: true);
+    });
+    const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+    TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProvider, (call) async => temp.path);
+    addTearDown(
+      () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProvider, null),
+    );
+    await pumpChat(
+      tester,
+      chatState: ChatPipelineState.executing,
+      messages: scrollableChatHistory('turno sin texto'),
+    );
+
+    final controller = await holdTranscriptAwayFromBottom(tester);
+    expectScrollToBottomVisible();
+
+    // El cronómetro de la pastilla corre sobre el reloj de pared (ChatScreen no
+    // le inyecta reloj), así que su `revealAfter` de 3 s solo se cruza con
+    // tiempo real; el tic que la repinta sí es un timer del reloj falso.
+    final revealed = find.byKey(const ValueKey('turn-activity-pill'));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 3200)),
+    );
+    for (var frame = 0; frame < 8 && revealed.evaluate().isEmpty; frame++) {
+      await tester.pump(const Duration(seconds: 1));
+    }
+    expect(revealed, findsOneWidget);
+
+    expectArrowClearOf(tester, find.byKey(const ValueKey('chat-turn-activity')));
+    await expectArrowScrollsToBottom(tester, controller);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('la tarjeta de subagentes no tapa la flecha de bajar al final', (
+    tester,
+  ) async {
+    failOnMissedTaps();
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('conn-arrow-vs-subagent-card'),
+      desktopGateway: gateway,
+      messages: scrollableChatHistory('flecha vs subagentes'),
+    );
+    expect(
+      await chat.send(
+        fullText: 'delega el trabajo',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('subagent.start', const {
+      'subagent_id': 'arrow-overlap-child',
+      'delegation_id': 'arrow-overlap-delegation',
+      'goal': 'TRABAJO DELEGADO',
+      'status': 'running',
+    });
+    await tester.pump();
+
+    final card = find.byKey(const ValueKey('chat-subagent-status'));
+    expect(card, findsOneWidget);
+
+    final controller = await holdTranscriptAwayFromBottom(tester);
+    expectScrollToBottomVisible();
+
+    expectArrowClearOf(tester, card);
+    await expectArrowScrollsToBottom(tester, controller);
+    expect(tester.takeException(), isNull);
+
+    // Cierra el turno y el hijo para que no queden timers vivos del servicio.
+    gateway.emit('subagent.complete', const {
+      'subagent_id': 'arrow-overlap-child',
+      'status': 'completed',
+    });
+    gateway.emit('message.complete', const {'text': 'TRABAJO ENTREGADO'});
+    await tester.pump();
+    await tester.pump(const Duration(minutes: 2));
+  });
+
+  testWidgets('sin pastillas la flecha conserva su sitio de reposo', (
+    tester,
+  ) async {
+    // Control: el arreglo no puede mover la flecha cuando no hay nada que
+    // esquivar. Sigue a 8 px del borde inferior del transcript.
+    failOnMissedTaps();
+    await pumpChat(tester, messages: scrollableChatHistory('flecha en reposo'));
+
+    final controller = await holdTranscriptAwayFromBottom(tester);
+    expectScrollToBottomVisible();
+
+    final arrow = tester.getRect(scrollToBottomFinder());
+    final body = tester.getRect(find.byKey(const ValueKey('chat-stable-body')));
+    expect(arrow.height, 48);
+    expect(arrow.bottom, closeTo(body.bottom - 8, 0.01));
+    expect(
+      tester.getRect(find.byKey(const ValueKey('chat-turn-activity'))).height,
+      0,
+    );
+    expect(
+      tester.getRect(find.byKey(const ValueKey('chat-subagent-status'))).height,
+      0,
+    );
+
+    await expectArrowScrollsToBottom(tester, controller);
+    expect(tester.takeException(), isNull);
+  });
 }

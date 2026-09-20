@@ -18,11 +18,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart'
     show
         BoxParentData,
+        ChildLayoutHelper,
+        ChildLayouter,
         MatrixUtils,
         RenderAbstractViewport,
         RenderBox,
         RenderObject,
         RenderProxyBox,
+        RenderShiftedBox,
         RenderSliverMultiBoxAdaptor,
         ScrollCacheExtent,
         ScrollDirection;
@@ -8626,163 +8629,176 @@ class _ChatScreenState extends State<ChatScreen>
                                       ),
                                     ),
                                   ),
+                                // Bottom overlay of the transcript. The
+                                // scroll-to-bottom arrow and the floating
+                                // activity pills share one bottom-centre
+                                // anchor, so they are STACKED in a single
+                                // bottom-anchored Column instead of two
+                                // Positioned children layered on top of each
+                                // other: the pills paint last, so the arrow
+                                // used to end up underneath them — invisible
+                                // and, once a pill owns the gesture, impossible
+                                // to tap. Stacking makes the arrow ride just
+                                // above whichever pill is showing and drop back
+                                // to its resting spot (8 dp) when none is, with
+                                // no measure-then-reposition frame in between.
+                                //
+                                // The pills stay glued near the composer like
+                                // the design mockup, but always INSIDE this
+                                // transcript Stack, never over the input.
+                                // Reply text keeps its clearance because
+                                // `_subagentActivityPillReservedSpace` pads the
+                                // transcript's bottom by the same amount.
                                 Positioned(
                                   left: 0,
                                   right: 0,
                                   bottom: 8,
-                                  height: 48,
-                                  child: ValueListenableBuilder<bool>(
-                                    valueListenable: _scrollToBottomVisibility,
-                                    builder: (context, showScrollToBottom, _) {
-                                      return ExcludeSemantics(
-                                        excluding: !showScrollToBottom,
-                                        child: IgnorePointer(
-                                          ignoring: !showScrollToBottom,
-                                          child: Center(
-                                            child: AnimatedOpacity(
-                                              key: ValueKey(
-                                                showScrollToBottom
-                                                    ? 'scroll-to-bottom-visible'
-                                                    : 'scroll-to-bottom-hidden',
-                                              ),
-                                              opacity: showScrollToBottom
-                                                  ? 1
-                                                  : 0,
-                                              duration: _reduceMotion
-                                                  ? Duration.zero
-                                                  : const Duration(
-                                                      milliseconds: 160,
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SizedBox(
+                                        width: double.infinity,
+                                        height: 48,
+                                        child: ValueListenableBuilder<bool>(
+                                          valueListenable: _scrollToBottomVisibility,
+                                          builder: (context, showScrollToBottom, _) {
+                                            return ExcludeSemantics(
+                                              excluding: !showScrollToBottom,
+                                              child: IgnorePointer(
+                                                ignoring: !showScrollToBottom,
+                                                child: Center(
+                                                  child: AnimatedOpacity(
+                                                    key: ValueKey(
+                                                      showScrollToBottom
+                                                          ? 'scroll-to-bottom-visible'
+                                                          : 'scroll-to-bottom-hidden',
                                                     ),
-                                              curve: Curves.easeOutCubic,
-                                              child: AnimatedScale(
-                                                scale: showScrollToBottom
-                                                    ? 1
-                                                    : 0.94,
-                                                duration: _reduceMotion
-                                                    ? Duration.zero
-                                                    : const Duration(
-                                                        milliseconds: 160,
+                                                    opacity: showScrollToBottom
+                                                        ? 1
+                                                        : 0,
+                                                    duration: _reduceMotion
+                                                        ? Duration.zero
+                                                        : const Duration(
+                                                            milliseconds: 160,
+                                                          ),
+                                                    curve: Curves.easeOutCubic,
+                                                    child: AnimatedScale(
+                                                      scale: showScrollToBottom
+                                                          ? 1
+                                                          : 0.94,
+                                                      duration: _reduceMotion
+                                                          ? Duration.zero
+                                                          : const Duration(
+                                                              milliseconds: 160,
+                                                            ),
+                                                      curve: Curves.easeOutCubic,
+                                                      child: _ScrollToBottomButton(
+                                                        key: const ValueKey(
+                                                          'chat-scroll-to-bottom',
+                                                        ),
+                                                        onTap: _scrollToBottom,
                                                       ),
-                                                curve: Curves.easeOutCubic,
-                                                child: _ScrollToBottomButton(
-                                                  key: const ValueKey(
-                                                    'chat-scroll-to-bottom',
+                                                    ),
                                                   ),
-                                                  onTap: _scrollToBottom,
                                                 ),
                                               ),
-                                            ),
-                                          ),
+                                            );
+                                          },
                                         ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                                // Floating subagent-activity pill: anchored
-                                // near the BOTTOM of this transcript Stack,
-                                // right above the composer (matches the
-                                // design mockup — a small pill glued close to
-                                // the input, not floating in the middle of the
-                                // transcript). Reply text always stays above
-                                // it because `_subagentActivityPillReservedSpace`
-                                // pads the transcript's bottom by the same
-                                // amount whenever this pill is showing. This
-                                // sits close enough to the scroll-to-bottom
-                                // button (`bottom: 8, height: 48`) that the two
-                                // can visually overlap in the rare case both
-                                // show at once (mid-scroll while work is also
-                                // active) — accepted tradeoff for keeping the
-                                // pill glued to the composer like the mockup.
-                                Positioned(
-                                  bottom: 20,
-                                  left: 0,
-                                  right: 0,
-                                  child: Center(
-                                    // Se excluyen entre sí (ver
-                                    // `_showTurnActivityPill`), así que la que no
-                                    // toca colapsa a cero y la columna no crece.
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        TurnActivityPill(
-                                          key: const ValueKey(
-                                            'chat-turn-activity',
-                                          ),
-                                          active: _showTurnActivityPill,
-                                          startedAt: _turnActivityStartedAt,
-                                          statusLabel: _turnActivityPillLabel,
-                                        ),
-                                        KeyedSubtree(
-                                          key: const ValueKey(
-                                            'chat-session-activity',
-                                          ),
-                                          child: SubagentActivityCard(
-                                            key: const ValueKey(
-                                              'chat-subagent-status',
+                                      ),
+                                      // The pill area collapses to zero when
+                                      // nothing is running, and the gap below
+                                      // it collapses with it so the arrow lands
+                                      // back on its resting offset.
+                                      _BottomGapWhenVisible(
+                                        gap: 12,
+                                        // Se excluyen entre sí (ver
+                                        // `_showTurnActivityPill`), así que la que no
+                                        // toca colapsa a cero y la columna no crece.
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            TurnActivityPill(
+                                              key: const ValueKey(
+                                                'chat-turn-activity',
+                                              ),
+                                              active: _showTurnActivityPill,
+                                              startedAt: _turnActivityStartedAt,
+                                              statusLabel: _turnActivityPillLabel,
                                             ),
-                                            activities:
-                                                _displaySubagentActivities,
-                                            onDismiss: _dismissSubagentPill,
-                                            safeChildCount:
-                                                _chat.safeActiveSubagentCount >
-                                                    (_chat.hasRecentPassiveRemoteActivity
-                                                        ? _chat
-                                                              .passiveActivityAggregate
-                                                              .total
-                                                        : 0)
-                                                ? _chat.safeActiveSubagentCount
-                                                : (_chat.hasRecentPassiveRemoteActivity
-                                                      ? _chat
-                                                            .passiveActivityAggregate
-                                                            .total
-                                                      : 0),
-                                            background:
-                                                _chat
-                                                    .hasRecentPassiveRemoteActivity ||
-                                                _chat.safeActiveSubagentCount >
-                                                    0,
-                                            canInterrupt:
-                                                _chat.canInterruptSubagent,
-                                            canSteer: _chat.canSteerSubagent,
-                                            isInterruptPending: _chat
-                                                .isSubagentInterruptPending,
-                                            appForeground:
-                                                _appInForeground &&
-                                                _chatRouteVisible,
-                                            onTail: (activity) async {
-                                              final result = await _chat
-                                                  .tailSubagent(activity);
-                                              return SubagentTailView(
-                                                available: result.available,
-                                                content: result.content,
-                                                truncated: result.truncated,
-                                              );
-                                            },
-                                            onSteer: (activity, text) async {
-                                              final result = await _chat
-                                                  .steerSubagent(
-                                                    activity,
-                                                    text,
-                                                  );
-                                              return SubagentSteerView(
-                                                status: result.status,
-                                              );
-                                            },
-                                            isOpenPending:
-                                                _isSubagentOpenPending,
-                                            onOpenConversation: (activity) {
-                                              unawaited(
-                                                _openSubagentConversation(
-                                                  activity,
+                                            KeyedSubtree(
+                                              key: const ValueKey(
+                                                'chat-session-activity',
+                                              ),
+                                              child: SubagentActivityCard(
+                                                key: const ValueKey(
+                                                  'chat-subagent-status',
                                                 ),
-                                              );
-                                            },
-                                            onStopRequested:
-                                                _confirmInterruptSubagent,
-                                          ),
+                                                activities:
+                                                    _displaySubagentActivities,
+                                                onDismiss: _dismissSubagentPill,
+                                                safeChildCount:
+                                                    _chat.safeActiveSubagentCount >
+                                                        (_chat.hasRecentPassiveRemoteActivity
+                                                            ? _chat
+                                                                  .passiveActivityAggregate
+                                                                  .total
+                                                            : 0)
+                                                    ? _chat.safeActiveSubagentCount
+                                                    : (_chat.hasRecentPassiveRemoteActivity
+                                                          ? _chat
+                                                                .passiveActivityAggregate
+                                                                .total
+                                                          : 0),
+                                                background:
+                                                    _chat
+                                                        .hasRecentPassiveRemoteActivity ||
+                                                    _chat.safeActiveSubagentCount >
+                                                        0,
+                                                canInterrupt:
+                                                    _chat.canInterruptSubagent,
+                                                canSteer: _chat.canSteerSubagent,
+                                                isInterruptPending: _chat
+                                                    .isSubagentInterruptPending,
+                                                appForeground:
+                                                    _appInForeground &&
+                                                    _chatRouteVisible,
+                                                onTail: (activity) async {
+                                                  final result = await _chat
+                                                      .tailSubagent(activity);
+                                                  return SubagentTailView(
+                                                    available: result.available,
+                                                    content: result.content,
+                                                    truncated: result.truncated,
+                                                  );
+                                                },
+                                                onSteer: (activity, text) async {
+                                                  final result = await _chat
+                                                      .steerSubagent(
+                                                        activity,
+                                                        text,
+                                                      );
+                                                  return SubagentSteerView(
+                                                    status: result.status,
+                                                  );
+                                                },
+                                                isOpenPending:
+                                                    _isSubagentOpenPending,
+                                                onOpenConversation: (activity) {
+                                                  unawaited(
+                                                    _openSubagentConversation(
+                                                      activity,
+                                                    ),
+                                                  );
+                                                },
+                                                onStopRequested:
+                                                    _confirmInterruptSubagent,
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                      ],
-                                    ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                                 if (_chat.pendingInteractivePrompt != null)
@@ -16930,6 +16946,85 @@ class _QueuedRow extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Reserves [gap] pixels BELOW its child, but only while the child actually
+/// occupies height.
+///
+/// The floating activity pills (`TurnActivityPill`, `SubagentActivityCard`)
+/// collapse to `SizedBox.shrink` when there is nothing to report, so a plain
+/// `Padding` would keep their breathing room reserved forever and leave the
+/// scroll-to-bottom arrow stranded [gap] pixels above its resting offset.
+/// Resolving it during layout (instead of measuring in one frame and
+/// repositioning in the next) means the arrow never jumps and never spends a
+/// frame sitting under a pill.
+class _BottomGapWhenVisible extends SingleChildRenderObjectWidget {
+  const _BottomGapWhenVisible({required this.gap, required Widget super.child});
+
+  final double gap;
+
+  @override
+  _RenderBottomGapWhenVisible createRenderObject(BuildContext context) =>
+      _RenderBottomGapWhenVisible(gap);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderBottomGapWhenVisible renderObject,
+  ) {
+    renderObject.gap = gap;
+  }
+}
+
+class _RenderBottomGapWhenVisible extends RenderShiftedBox {
+  _RenderBottomGapWhenVisible(this._gap) : super(null);
+
+  double _gap;
+
+  set gap(double value) {
+    if (_gap == value) return;
+    _gap = value;
+    markNeedsLayout();
+  }
+
+  Size _measure(BoxConstraints constraints, ChildLayouter layoutChild) {
+    final child = this.child;
+    if (child == null) return constraints.smallest;
+    final childSize = layoutChild(child, constraints);
+    if (childSize.height <= 0) return constraints.constrain(childSize);
+    return constraints.constrain(
+      Size(childSize.width, childSize.height + _gap),
+    );
+  }
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) =>
+      _measure(constraints, ChildLayoutHelper.dryLayoutChild);
+
+  @override
+  void performLayout() {
+    size = _measure(constraints, ChildLayoutHelper.layoutChild);
+    final child = this.child;
+    if (child != null) {
+      (child.parentData! as BoxParentData).offset = Offset.zero;
+    }
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) {
+    final child = this.child;
+    if (child == null) return 0;
+    final height = child.getMinIntrinsicHeight(width);
+    return height <= 0 ? height : height + _gap;
+  }
+
+  @override
+  double computeMaxIntrinsicHeight(double width) {
+    final child = this.child;
+    if (child == null) return 0;
+    final height = child.getMaxIntrinsicHeight(width);
+    return height <= 0 ? height : height + _gap;
   }
 }
 
