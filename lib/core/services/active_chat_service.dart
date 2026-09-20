@@ -19496,11 +19496,6 @@ class ActiveChat {
       _subagentTranscriptTurnAnchor = null;
       _pendingSubagentInterrupts.clear();
     }
-    _messages.insert(0, {
-      'role': 'assistant',
-      'content': '',
-      '_pipeline': true,
-    });
   }
 
   /// Cierra la proyección visible del turno anterior y prepara el siguiente que
