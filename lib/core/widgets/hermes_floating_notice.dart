@@ -7,6 +7,9 @@ import '../theme/app_theme.dart';
 /// Se usa para eventos que llegan desde otra parte de la app (respuesta lista,
 /// run terminado o aprobacion pendiente). El gesto horizontal solo descarta el
 /// aviso visible; nunca resuelve ni modifica la accion remota que lo origino.
+///
+/// Estilo: superficie neutra del tema con filete y sombra suave. [tint] solo
+/// colorea el glifo de estado; no hay barra lateral ni relleno de color.
 class HermesFloatingNotice extends StatelessWidget {
   const HermesFloatingNotice({
     required this.noticeKey,
@@ -63,10 +66,13 @@ class HermesFloatingNotice extends StatelessWidget {
         label: body.trim().isEmpty ? title : '$title. $body',
         hint: actionLabel,
         child: Material(
+          // Misma familia que las pastillas de actividad del chat: superficie
+          // neutra, sombra suave y un filete del token `divider`. El estado
+          // lo lleva solo el glifo; sin barra lateral ni relleno de color.
           color: colors.surface,
           surfaceTintColor: Colors.transparent,
-          elevation: 14,
-          shadowColor: Colors.black.withValues(alpha: 0.42),
+          elevation: 10,
+          shadowColor: Colors.black.withValues(alpha: 0.45),
           borderRadius: BorderRadius.circular(radius),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
@@ -78,105 +84,88 @@ class HermesFloatingNotice extends StatelessWidget {
                 ),
                 borderRadius: BorderRadius.circular(radius),
               ),
-              child: IntrinsicHeight(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    ColoredBox(color: tint, child: const SizedBox(width: 4)),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
-                      child: Container(
-                        width: 38,
-                        height: 38,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: tint.withValues(alpha: 0.13),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(icon, color: tint, size: 20),
-                      ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Glifo desnudo, como el icono de estado del toast de
+                  // Desktop: el único color del aviso es el de este glifo.
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 13, 0, 0),
+                    child: Icon(
+                      icon,
+                      key: const ValueKey('floating-notice-icon'),
+                      color: tint,
+                      size: 20,
                     ),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(0, 11, 12, 11),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                color: colors.textPrimary,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0,
-                              ),
+                  ),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 11, 4, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              color: colors.textPrimary,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0,
                             ),
-                            if (body.trim().isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              Text(
-                                body,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: colors.textSecondary,
-                                  height: 1.3,
-                                ),
+                          ),
+                          if (body.trim().isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              body,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.textSecondary,
+                                height: 1.3,
                               ),
-                            ],
-                            const SizedBox(height: 7),
-                            Row(
-                              key: const ValueKey('floating-notice-action'),
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  actionLabel,
-                                  style: theme.textTheme.labelMedium?.copyWith(
-                                    color: tint,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(width: 2),
-                                Icon(
-                                  Icons.arrow_forward_rounded,
-                                  color: tint,
-                                  size: 16,
-                                ),
-                              ],
                             ),
                           ],
-                        ),
-                      ),
-                    ),
-                    Container(
-                      width: 52,
-                      alignment: Alignment.topCenter,
-                      decoration: BoxDecoration(
-                        border: BorderDirectional(
-                          start: BorderSide(
-                            color: colors.divider.withValues(alpha: 0.55),
+                          const SizedBox(height: 6),
+                          Row(
+                            key: const ValueKey('floating-notice-action'),
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                actionLabel,
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  color: colors.textPrimary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(
+                                Icons.arrow_forward_rounded,
+                                color: colors.textPrimary,
+                                size: 16,
+                              ),
+                            ],
                           ),
-                        ),
-                      ),
-                      child: IconButton(
-                        key: const ValueKey('floating-notice-dismiss'),
-                        onPressed: onDismissed,
-                        tooltip: dismissLabel,
-                        constraints: const BoxConstraints.tightFor(
-                          width: 48,
-                          height: 48,
-                        ),
-                        icon: Icon(
-                          Icons.close_rounded,
-                          color: colors.textSecondary,
-                          size: 20,
-                        ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                  IconButton(
+                    key: const ValueKey('floating-notice-dismiss'),
+                    onPressed: onDismissed,
+                    tooltip: dismissLabel,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 48,
+                      height: 48,
+                    ),
+                    icon: Icon(
+                      Icons.close_rounded,
+                      color: colors.textSecondary,
+                      size: 18,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

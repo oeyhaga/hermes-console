@@ -1338,6 +1338,20 @@ class _ChatScreenState extends State<ChatScreen>
   final ValueNotifier<bool> _scrollToBottomVisibility = ValueNotifier(false);
   set _showScrollToBottom(bool value) =>
       _scrollToBottomVisibility.value = value;
+  // Alturas medidas de la zona inferior para que los SnackBars floten POR
+  // ENCIMA del composer y de la pila de estado (ver `_ChatSnackBarClearance`).
+  // Son notifiers aparte por la misma razón que la flecha: cambiar no
+  // reconstruye la pantalla.
+  final ValueNotifier<double> _bottomBarsExtent = ValueNotifier(0);
+  final ValueNotifier<double> _activityPillExtent = ValueNotifier(0);
+  void _setBottomBarsExtent(double value) {
+    if (!_disposed) _bottomBarsExtent.value = value;
+  }
+
+  void _setActivityPillExtent(double value) {
+    if (!_disposed) _activityPillExtent.value = value;
+  }
+
   bool _autoFollowStreaming = true;
   int? _streamingScrollPointer;
   Offset? _streamingScrollOrigin;
@@ -4873,6 +4887,8 @@ class _ChatScreenState extends State<ChatScreen>
     _scrollController.dispose();
     _liveAssistantFrame.dispose();
     _scrollToBottomVisibility.dispose();
+    _bottomBarsExtent.dispose();
+    _activityPillExtent.dispose();
     _sessionContextMetrics.dispose();
     super.dispose();
   }
@@ -8419,6 +8435,11 @@ class _ChatScreenState extends State<ChatScreen>
     // —misma instancia de widget— no se vuelve a construir por ello.
     return _KeyboardInsetWatcher(
       onBottomInset: _onKeyboardBottomInset,
+      snackBarClearance: _ChatSnackBarClearanceSources(
+        bottomBarsExtent: _bottomBarsExtent,
+        activityPillExtent: _activityPillExtent,
+        scrollToBottomVisible: _scrollToBottomVisibility,
+      ),
       child: Scaffold(
         drawerEnableOpenDragGesture: true,
         drawerEdgeDragWidth: HermesDrawer.edgeDragWidth(context),
@@ -8648,6 +8669,17 @@ class _ChatScreenState extends State<ChatScreen>
                             _LocalTranscriptTruncationNotice(
                               message: str.chaLocalTranscriptTruncated,
                             ),
+                          // En flujo bajo la cabecera, como los avisos de
+                          // arriba: ya no flota sobre el botón «cargar
+                          // anteriores» ni sobre los primeros mensajes.
+                          if (_chat.earlierMessagesLoadFailed &&
+                              !_coreReadCoverageNoticeDismissed)
+                            _CoreReadPartialCoverageNotice(
+                              message: str.chaEarlierMessagesError,
+                              onDismiss: () => setState(
+                                () => _coreReadCoverageNoticeDismissed = true,
+                              ),
+                            ),
                           Expanded(
                             child: Stack(
                               children: [
@@ -8665,20 +8697,6 @@ class _ChatScreenState extends State<ChatScreen>
                                         ),
                                         loading: _loadingEarlierMessages,
                                         onTap: _loadEarlierMessages,
-                                      ),
-                                    ),
-                                  ),
-                                if (_chat.earlierMessagesLoadFailed &&
-                                    !_coreReadCoverageNoticeDismissed)
-                                  Positioned(
-                                    top: 64,
-                                    left: 12,
-                                    right: 12,
-                                    child: _CoreReadPartialCoverageNotice(
-                                      message: str.chaEarlierMessagesError,
-                                      onDismiss: () => setState(
-                                        () => _coreReadCoverageNoticeDismissed =
-                                            true,
                                       ),
                                     ),
                                   ),
@@ -8765,6 +8783,7 @@ class _ChatScreenState extends State<ChatScreen>
                                       // back on its resting offset.
                                       _BottomGapWhenVisible(
                                         gap: 12,
+                                        onExtent: _setActivityPillExtent,
                                         // Se excluyen entre sí (ver
                                         // `_showTurnActivityPill`), así que la que no
                                         // toca colapsa a cero y la columna no crece.
@@ -8914,59 +8933,69 @@ class _ChatScreenState extends State<ChatScreen>
                               ],
                             ),
                           ),
-                          // Ownership conflicts keep the transcript and composer
-                          // mounted while fencing every mutation.
-                          if (_chat.conflictReadOnly)
-                            _buildRuntimeOwnershipBanner(),
-                          // Aprobación inline: aparece justo encima del composer cuando el
-                          // agente pide permiso (motor /v1/runs).
-                          if (_chat.pendingApproval != null)
-                            ChatApprovalCard(
-                              approval: _chat.pendingApproval!,
-                              busy: _resolvingApproval,
-                              onChoice: _resolveChatApproval,
-                              companion: context
-                                  .findAncestorStateOfType<HermesAppState>()
-                                  ?.companion,
-                            ),
-                          if (_chat.desktopContinuationRequired)
-                            Semantics(
-                              container: true,
-                              label:
-                                  Strings.of(context).chatContinueOnDesktop,
-                              child: Card(
-                                key: const ValueKey('desktop-continuation-required'),
-                                child: Padding(
-                                  padding: EdgeInsets.all(16),
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.desktop_windows_outlined),
-                                      SizedBox(width: 12),
-                                      Expanded(
-                                        child: Text(
-                                          Strings.of(context).chatContinueOnDesktop,
+                          // Lo que vive bajo el transcript se mide junto (ver
+                          // `_ChatSnackBarClearance`).
+                          _ExtentReporter(
+                            onExtent: _setBottomBarsExtent,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                // Ownership conflicts keep the transcript and composer
+                                // mounted while fencing every mutation.
+                                if (_chat.conflictReadOnly)
+                                  _buildRuntimeOwnershipBanner(),
+                                // Aprobación inline: aparece justo encima del composer cuando el
+                                // agente pide permiso (motor /v1/runs).
+                                if (_chat.pendingApproval != null)
+                                  ChatApprovalCard(
+                                    approval: _chat.pendingApproval!,
+                                    busy: _resolvingApproval,
+                                    onChoice: _resolveChatApproval,
+                                    companion: context
+                                        .findAncestorStateOfType<HermesAppState>()
+                                        ?.companion,
+                                  ),
+                                if (_chat.desktopContinuationRequired)
+                                  Semantics(
+                                    container: true,
+                                    label:
+                                        Strings.of(context).chatContinueOnDesktop,
+                                    child: Card(
+                                      key: const ValueKey('desktop-continuation-required'),
+                                      child: Padding(
+                                        padding: EdgeInsets.all(16),
+                                        child: Row(
+                                          children: [
+                                            Icon(Icons.desktop_windows_outlined),
+                                            SizedBox(width: 12),
+                                            Expanded(
+                                              child: Text(
+                                                Strings.of(context).chatContinueOnDesktop,
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
-                                    ],
+                                    ),
                                   ),
-                                ),
-                              ),
+                                // The subagent activity indicator now floats as an
+                                // overlay anchored above the transcript (see the
+                                // inner Stack below) instead of living here, so its
+                                // live/completed count changes never resize this
+                                // Column or shift the composer.
+                                _buildStopStatusStrip(colors),
+                                _buildGoalStrip(colors),
+                                _buildBackgroundTaskStrip(colors),
+                                _buildQueueStrip(colors),
+                                if ((_vc?.active ?? false) && !showVoiceSurface)
+                                  _buildVoiceReturnBar(
+                                    colors,
+                                    ownsCurrentChat: voiceSessionActive,
+                                  ),
+                                if (!showVoiceSurface) _buildInputBar(),
+                              ],
                             ),
-                          // The subagent activity indicator now floats as an
-                          // overlay anchored above the transcript (see the
-                          // inner Stack below) instead of living here, so its
-                          // live/completed count changes never resize this
-                          // Column or shift the composer.
-                          _buildStopStatusStrip(colors),
-                          _buildGoalStrip(colors),
-                          _buildBackgroundTaskStrip(colors),
-                          _buildQueueStrip(colors),
-                          if ((_vc?.active ?? false) && !showVoiceSurface)
-                            _buildVoiceReturnBar(
-                              colors,
-                              ownsCurrentChat: voiceSessionActive,
-                            ),
-                          if (!showVoiceSurface) _buildInputBar(),
+                          ),
                         ],
                       ),
                     ),
@@ -12179,6 +12208,8 @@ class _ChatScreenState extends State<ChatScreen>
       errorMessage: _error == null
           ? null
           : Strings.of(context).chaMessagesError,
+      // Bajo el botón «cargar anteriores» (8 + 48 + 8) cuando está a la vista.
+      errorTopInset: _chat.hasEarlierMessages ? 64 : 8,
       child: transcript,
     );
   }
@@ -12768,11 +12799,17 @@ class _ChatScreenState extends State<ChatScreen>
 /// la animación del teclado en un build completo de la pantalla de chat.
 class _KeyboardInsetWatcher extends StatefulWidget {
   final ValueChanged<double> onBottomInset;
+
+  /// Alturas medidas de la zona inferior del chat. Si se pasan, los SnackBars
+  /// del Scaffold de [child] se elevan por encima del composer y de la pila de
+  /// estado (ver [_ChatSnackBarClearance]).
+  final _ChatSnackBarClearanceSources? snackBarClearance;
   final Widget child;
 
   const _KeyboardInsetWatcher({
     required this.onBottomInset,
     required this.child,
+    this.snackBarClearance,
   });
 
   @override
@@ -12787,7 +12824,197 @@ class _KeyboardInsetWatcherState extends State<_KeyboardInsetWatcher> {
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) {
+    final clearance = widget.snackBarClearance;
+    if (clearance == null) return widget.child;
+    return _ChatSnackBarClearance(sources: clearance, child: widget.child);
+  }
+}
+
+/// Fuentes reactivas del hueco que los SnackBars deben dejar libre abajo.
+class _ChatSnackBarClearanceSources {
+  const _ChatSnackBarClearanceSources({
+    required this.bottomBarsExtent,
+    required this.activityPillExtent,
+    required this.scrollToBottomVisible,
+  });
+
+  /// Alto de todo lo que hay bajo el transcript (avisos en flujo, tiras y
+  /// composer, con su SafeArea inferior).
+  final ValueListenable<double> bottomBarsExtent;
+
+  /// Alto del hueco de las pastillas de actividad, 0 si no hay ninguna.
+  final ValueListenable<double> activityPillExtent;
+
+  /// Si la flecha «bajar al final» está a la vista.
+  final ValueListenable<bool> scrollToBottomVisible;
+}
+
+/// Distancia, medida desde el borde inferior seguro del Scaffold, a la que un
+/// SnackBar flotante debe posarse para no tapar el composer, la pila de estado
+/// (pastillas + flecha) ni las tiras en flujo.
+///
+/// El Scaffold ancla el SnackBar a `max(teclado, viewPadding.bottom)`; el
+/// composer ya incluye su propio SafeArea inferior cuando no hay teclado, de
+/// ahí que se reste. Nunca baja de [resting] (el margen normal del tema) ni
+/// sube de un 40 % del alto libre, para no dejar el aviso fuera de pantalla con
+/// el teclado abierto en horizontal.
+@visibleForTesting
+double chatSnackBarBottomInset({
+  required double bottomBarsExtent,
+  required double activityPillExtent,
+  required bool scrollToBottomVisible,
+  required double viewPaddingBottom,
+  required double viewInsetsBottom,
+  required double screenHeight,
+  required double resting,
+}) {
+  final safeOverlap = (viewPaddingBottom - viewInsetsBottom).clamp(
+    0.0,
+    double.infinity,
+  );
+  // 8 dp de reposo de la pila sobre el composer + la pila + 8 dp de respiro.
+  final lift =
+      bottomBarsExtent -
+      safeOverlap +
+      8 +
+      activityPillExtent +
+      (scrollToBottomVisible ? 48 : 0) +
+      8;
+  final ceiling = (screenHeight - viewInsetsBottom) * 0.4;
+  return lift.clamp(resting, ceiling < resting ? resting : ceiling);
+}
+
+/// Aplica [chatSnackBarBottomInset] al `SnackBarTheme` del Scaffold del chat.
+///
+/// Usa `SnackBarTheme` (un InheritedTheme propio) y no `Theme`: solo el
+/// Scaffold y el SnackBar dependen de él, así que un cambio de hueco no
+/// reconstruye el transcript. [child] se pasa tal cual (misma instancia).
+class _ChatSnackBarClearance extends StatelessWidget {
+  const _ChatSnackBarClearance({required this.sources, required this.child});
+
+  final _ChatSnackBarClearanceSources sources;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final base = SnackBarTheme.of(context);
+    final resting =
+        base.insetPadding ?? const EdgeInsets.fromLTRB(16, 0, 16, 18);
+    final viewPaddingBottom = MediaQuery.viewPaddingOf(context).bottom;
+    final viewInsetsBottom = MediaQuery.viewInsetsOf(context).bottom;
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        sources.bottomBarsExtent,
+        sources.activityPillExtent,
+        sources.scrollToBottomVisible,
+      ]),
+      child: child,
+      builder: (context, child) => SnackBarTheme(
+        data: base.copyWith(
+          insetPadding: resting.copyWith(
+            bottom: chatSnackBarBottomInset(
+              bottomBarsExtent: sources.bottomBarsExtent.value,
+              activityPillExtent: sources.activityPillExtent.value,
+              scrollToBottomVisible: sources.scrollToBottomVisible.value,
+              viewPaddingBottom: viewPaddingBottom,
+              viewInsetsBottom: viewInsetsBottom,
+              screenHeight: screenHeight,
+              resting: resting.bottom,
+            ),
+          ),
+        ),
+        child: child!,
+      ),
+    );
+  }
+}
+
+/// Publica el alto que ocupa su hijo tras cada layout (fuera del frame en
+/// curso). No cambia el layout: se comporta como un `RenderProxyBox`.
+class _ExtentReporter extends SingleChildRenderObjectWidget {
+  const _ExtentReporter({required this.onExtent, required Widget super.child});
+
+  final ValueChanged<double> onExtent;
+
+  @override
+  _RenderExtentReporter createRenderObject(BuildContext context) =>
+      _RenderExtentReporter(onExtent);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderExtentReporter renderObject,
+  ) {
+    renderObject.onExtent = onExtent;
+  }
+}
+
+class _RenderExtentReporter extends RenderProxyBox {
+  _RenderExtentReporter(this.onExtent);
+
+  ValueChanged<double> onExtent;
+  double? _reported;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    final height = size.height;
+    if (height == _reported) return;
+    _reported = height;
+    WidgetsBinding.instance.addPostFrameCallback((_) => onExtent(height));
+  }
+}
+
+/// Superficie común de los avisos en flujo bajo la cabecera del chat: tarjeta
+/// neutra con filete (mismos tokens que el aviso flotante y las pastillas), el
+/// estado lo lleva solo el glifo. Sin relleno ni borde de color.
+class _ChatNoticeSurface extends StatelessWidget {
+  const _ChatNoticeSurface({
+    required this.icon,
+    required this.iconColor,
+    required this.message,
+    this.trailing,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String message;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: EdgeInsets.fromLTRB(14, 9, trailing == null ? 14 : 4, 9),
+      decoration: BoxDecoration(
+        color: colors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: colors.divider.withValues(alpha: 0.78)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: iconColor),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontSize: 12.5,
+                height: 1.3,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
+  }
 }
 
 class _DesktopAuthRequiredBanner extends StatelessWidget {
@@ -12804,32 +13031,10 @@ class _DesktopAuthRequiredBanner extends StatelessWidget {
       liveRegion: true,
       label: message,
       child: ExcludeSemantics(
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-          decoration: BoxDecoration(
-            color: colors.warning.withValues(alpha: 0.1),
-            border: Border(
-              bottom: BorderSide(color: colors.warning.withValues(alpha: 0.28)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.lock_outline_rounded, size: 18, color: colors.warning),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 12.5,
-                    height: 1.3,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
+        child: _ChatNoticeSurface(
+          icon: Icons.lock_outline_rounded,
+          iconColor: colors.warning,
+          message: message,
         ),
       ),
     );
@@ -12854,49 +13059,17 @@ class _CoreReadPartialCoverageNotice extends StatelessWidget {
       liveRegion: true,
       label: message,
       child: ExcludeSemantics(
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.fromLTRB(14, 8, 4, 8),
-          decoration: BoxDecoration(
-            color: colors.warning.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: colors.warning.withValues(alpha: 0.32)),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.12),
-                blurRadius: 10,
-                offset: const Offset(0, 3),
-              ),
-            ],
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.account_tree_outlined,
-                size: 18,
-                color: colors.warning,
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 12.5,
-                    height: 1.3,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              IconButton(
-                key: const ValueKey('core-read-partial-coverage-dismiss'),
-                tooltip: Strings.of(context).commonClose,
-                onPressed: onDismiss,
-                icon: const Icon(Icons.close),
-                iconSize: 18,
-                color: colors.textSecondary,
-              ),
-            ],
+        child: _ChatNoticeSurface(
+          icon: Icons.account_tree_outlined,
+          iconColor: colors.warning,
+          message: message,
+          trailing: IconButton(
+            key: const ValueKey('core-read-partial-coverage-dismiss'),
+            tooltip: Strings.of(context).commonClose,
+            onPressed: onDismiss,
+            icon: const Icon(Icons.close),
+            iconSize: 18,
+            color: colors.textSecondary,
           ),
         ),
       ),
@@ -12918,36 +13091,10 @@ class _LocalTranscriptTruncationNotice extends StatelessWidget {
       liveRegion: true,
       label: message,
       child: ExcludeSemantics(
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-          decoration: BoxDecoration(
-            color: colors.warning.withValues(alpha: 0.1),
-            border: Border(
-              bottom: BorderSide(color: colors.warning.withValues(alpha: 0.28)),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.history_toggle_off_rounded,
-                size: 18,
-                color: colors.warning,
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  message,
-                  style: TextStyle(
-                    color: colors.textPrimary,
-                    fontSize: 12.5,
-                    height: 1.3,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
+        child: _ChatNoticeSurface(
+          icon: Icons.history_toggle_off_rounded,
+          iconColor: colors.warning,
+          message: message,
         ),
       ),
     );
@@ -17035,27 +17182,38 @@ class _QueuedRow extends StatelessWidget {
 /// repositioning in the next) means the arrow never jumps and never spends a
 /// frame sitting under a pill.
 class _BottomGapWhenVisible extends SingleChildRenderObjectWidget {
-  const _BottomGapWhenVisible({required this.gap, required Widget super.child});
+  const _BottomGapWhenVisible({
+    required this.gap,
+    required Widget super.child,
+    this.onExtent,
+  });
 
   final double gap;
 
+  /// Recibe el alto total (pastilla + hueco) tras cada layout; 0 si colapsa.
+  final ValueChanged<double>? onExtent;
+
   @override
   _RenderBottomGapWhenVisible createRenderObject(BuildContext context) =>
-      _RenderBottomGapWhenVisible(gap);
+      _RenderBottomGapWhenVisible(gap, onExtent);
 
   @override
   void updateRenderObject(
     BuildContext context,
     _RenderBottomGapWhenVisible renderObject,
   ) {
-    renderObject.gap = gap;
+    renderObject
+      ..gap = gap
+      ..onExtent = onExtent;
   }
 }
 
 class _RenderBottomGapWhenVisible extends RenderShiftedBox {
-  _RenderBottomGapWhenVisible(this._gap) : super(null);
+  _RenderBottomGapWhenVisible(this._gap, this.onExtent) : super(null);
 
   double _gap;
+  ValueChanged<double>? onExtent;
+  double? _reportedExtent;
 
   set gap(double value) {
     if (_gap == value) return;
@@ -17083,6 +17241,13 @@ class _RenderBottomGapWhenVisible extends RenderShiftedBox {
     final child = this.child;
     if (child != null) {
       (child.parentData! as BoxParentData).offset = Offset.zero;
+    }
+    final height = size.height;
+    if (height != _reportedExtent) {
+      _reportedExtent = height;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => onExtent?.call(height),
+      );
     }
   }
 
@@ -18194,12 +18359,17 @@ class ChatRefreshStatusOverlay extends StatelessWidget {
     required this.loading,
     required this.errorMessage,
     required this.child,
+    this.errorTopInset = 8,
     super.key,
   });
 
   final bool loading;
   final String? errorMessage;
   final Widget child;
+
+  /// Distancia del aviso de error al borde superior del transcript. El chat la
+  /// sube para dejar libre el botón «cargar anteriores» cuando está a la vista.
+  final double errorTopInset;
 
   @override
   Widget build(BuildContext context) {
@@ -18229,7 +18399,7 @@ class ChatRefreshStatusOverlay extends StatelessWidget {
           ),
         if (errorMessage != null)
           Positioned(
-            top: 8,
+            top: errorTopInset,
             left: 12,
             right: 12,
             child: Center(
@@ -18238,17 +18408,43 @@ class ChatRefreshStatusOverlay extends StatelessWidget {
                 liveRegion: true,
                 label: errorMessage,
                 child: ExcludeSemantics(
+                  // Misma superficie neutra que el resto de avisos: el error
+                  // lo lleva el glifo, no un relleno rojo con texto blanco.
                   child: Material(
-                    color: colors.error,
-                    borderRadius: BorderRadius.circular(10),
+                    color: colors.surface,
+                    elevation: 10,
+                    shadowColor: Colors.black.withValues(alpha: 0.45),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      side: BorderSide(
+                        color: colors.divider.withValues(alpha: 0.78),
+                      ),
+                    ),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
                         vertical: 8,
                       ),
-                      child: Text(
-                        errorMessage!,
-                        style: const TextStyle(color: Colors.white),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.error_outline_rounded,
+                            size: 16,
+                            color: colors.error,
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              errorMessage!,
+                              style: TextStyle(
+                                color: colors.textPrimary,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
