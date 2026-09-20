@@ -207,11 +207,14 @@ class DesktopSessionReconciler {
     return role == 'tool' || !_isDurableTerminalAssistant(message);
   }
 
+  /// Structural recognition of the open turn when no exact previous anchor can
+  /// be proven. It deliberately does NOT depend on the client's previous
+  /// projection being empty: reopening mid-turn hydrates several times, and from
+  /// the second pass the client already holds its own projection of the same
+  /// durable rows, which used to bring the inflight user twin back.
   static _LiveUserProjectionPlan _firstOpenTurnPlan(
     List<Map<String, dynamic>> chronological,
-    List<Map<String, dynamic>> previousNewestFirst,
   ) {
-    if (previousNewestFirst.isNotEmpty) return _LiveUserProjectionPlan.none;
     var terminalBoundary = -1;
     for (var index = 0; index < chronological.length; index++) {
       if (_isDurableTerminalAssistant(chronological[index])) {
@@ -262,7 +265,7 @@ class DesktopSessionReconciler {
       bridgeOwnedLiveUser,
     );
     if (anchorIndex == null) {
-      return _firstOpenTurnPlan(chronological, previousNewestFirst);
+      return _firstOpenTurnPlan(chronological);
     }
 
     var terminalBoundary = anchorIndex;
