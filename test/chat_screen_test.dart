@@ -47,6 +47,7 @@ import 'package:hermes_android/core/models/desktop_compression_result.dart';
 import 'support/projected_compression_reply.dart';
 
 import 'package:hermes_android/core/models/desktop_context_breakdown.dart';
+import 'package:hermes_android/core/models/desktop_control_center.dart';
 import 'package:hermes_android/core/models/desktop_model_catalog.dart';
 import 'package:hermes_android/core/models/desktop_session_config.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
@@ -63,6 +64,7 @@ import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
 import 'package:hermes_android/core/navigation/chat_route.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
+import 'package:hermes_android/core/services/desktop_control_gateway.dart';
 import 'package:hermes_android/core/services/subagent_transcript_projection.dart';
 import 'package:hermes_android/core/services/app_lock.dart';
 import 'package:hermes_android/core/services/approval_policy.dart';
@@ -659,7 +661,7 @@ class _UiRewindGateway
 }
 
 class _StableRefreshGateway extends _UiRewindGateway
-    implements HermesDesktopSubagentGateway {
+    implements HermesDesktopSubagentGateway, HermesDesktopControlGateway {
   _StableRefreshGateway({
     this.subagents = const [
       DesktopSubagentSnapshot(
@@ -672,6 +674,12 @@ class _StableRefreshGateway extends _UiRewindGateway
 
   List<DesktopSubagentSnapshot> subagents;
   Completer<List<DesktopSubagentSnapshot>>? listGate;
+  AgentCenterSnapshot processSnapshot = const AgentCenterSnapshot(
+    snapshots: [],
+    processes: [],
+  );
+  Object? processListError;
+  int processListCalls = 0;
   int listCalls = 0;
   int inFlightSubagentListCalls = 0;
   int maxActiveListCalls = 0;
@@ -699,6 +707,19 @@ class _StableRefreshGateway extends _UiRewindGateway
       inFlightSubagentListCalls -= 1;
     }
   }
+
+  @override
+  Future<AgentCenterSnapshot> agentCenterSnapshot({
+    String runtimeSessionId = '',
+  }) async {
+    processListCalls += 1;
+    final error = processListError;
+    if (error != null) throw error;
+    return processSnapshot;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 
   @override
   Future<DesktopSubagentTailResult> tailSubagent(
@@ -14102,6 +14123,170 @@ void main() {
     expect(find.textContaining('PRIVATE_GOAL'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'proceso en segundo plano sigue visible tras acabar el turno y se retira al salir',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const []);
+      gateway.processSnapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-visible',
+            status: AgentCenterStatus.running,
+            uptimeSeconds: 12,
+            command: 'dart run worker.dart',
+            notifyOnComplete: true,
+          ),
+        ],
+      );
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-process-status'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('message.complete', const {'text': 'PUBLIC_PARENT_DONE'});
+      final callsBeforeProcessStatus = gateway.processListCalls;
+      gateway.emit('status.update', const {
+        'kind': 'process',
+        'text': 'PUBLIC_PROCESS_STATUS',
+      });
+      await tester.pump();
+
+      expect(chat.isStreaming, isFalse);
+      expect(gateway.processListCalls, callsBeforeProcessStatus + 1);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('dart run worker.dart'), findsOneWidget);
+      expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
+
+      gateway.processSnapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-visible',
+            status: AgentCenterStatus.completed,
+            uptimeSeconds: 15,
+          ),
+        ],
+      );
+      final callsBeforeProcessFinished = gateway.processListCalls;
+      gateway.emit('status.update', const {
+        'kind': 'process',
+        'text': 'PUBLIC_PROCESS_FINISHED',
+      });
+      await tester.pump();
+
+      expect(gateway.processListCalls, callsBeforeProcessFinished + 1);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'fallo o ausencia aislada de process.list conserva el proceso visible',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const [])
+        ..processSnapshot = const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [
+            BackgroundProcessEntry(
+              opaqueId: 'process-stable',
+              status: AgentCenterStatus.running,
+              uptimeSeconds: 4,
+              command: 'python worker.py',
+            ),
+          ],
+        );
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-process-hysteresis'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('message.complete', const {'text': 'PUBLIC_PARENT_DONE'});
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+
+      gateway.processListError = StateError('synthetic process.list failure');
+      gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+
+      gateway
+        ..processListError = null
+        ..processSnapshot = const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [],
+        );
+      gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+
+      gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'chat sin proceso activo no monta indicador de segundo plano',
+    (tester) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_IDLE_REQUEST'},
+        ],
+      );
+
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'subagente vivo tras terminal se muestra como trabajo en segundo plano',

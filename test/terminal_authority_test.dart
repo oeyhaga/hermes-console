@@ -188,9 +188,22 @@ class _TerminalAuthorityGateway
     String? requestId,
   }) async {}
 
-  void emit(String type, [Map<String, dynamic> payload = const {}]) {
+  void emit(
+    String type, [
+    Map<String, dynamic> payload = const {},
+    int? sequence,
+    int? transportGeneration,
+    Object? producerChannel,
+  ]) {
     _events.add(
-      TuiGatewayEvent(type: type, sessionId: _runtimeId, payload: payload),
+      TuiGatewayEvent(
+        type: type,
+        sessionId: _runtimeId,
+        sequence: sequence,
+        transportGeneration: transportGeneration,
+        producerChannel: producerChannel,
+        payload: payload,
+      ),
     );
   }
 
@@ -536,4 +549,85 @@ void main() {
     expect(probeCalls.where((call) => call.startsWith('activate:')), isEmpty);
     expect(probeCalls.where((call) => call == 'create'), isEmpty);
   });
+
+  test(
+    'a causally later backend turn reopens without hiding process completion',
+    () async {
+      final gateway = _TerminalAuthorityGateway();
+      addTearDown(gateway.close);
+      final chat = await _liveTurn(gateway, id: 'backend-successor');
+      final producerChannel = Object();
+
+      final parentDone = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit(
+        'message.complete',
+        const {'text': 'parent complete'},
+        40,
+        7,
+        producerChannel,
+      );
+      await parentDone.timeout(const Duration(seconds: 2));
+
+      const processComplete = <String, dynamic>{
+        'message_id': 'process-complete-1',
+        'role': 'user',
+        'content': 'Background process finished',
+        'display_kind': 'process_complete',
+        'display_metadata': {
+          'display_text': 'Background Process Finished: verify.mjs',
+        },
+      };
+      chat.replaceInternalMessagesForTesting([processComplete]);
+
+      gateway.emit('message.start');
+      await _settle();
+      expect(chat.sessionActivity.foregroundTurn, isFalse);
+      expect(chat.messages.single['display_kind'], 'process_complete');
+
+      gateway.emit('message.start', const {}, 41, 7, producerChannel);
+      await _waitUntil(() => chat.sessionActivity.foregroundTurn);
+      expect(
+        chat.messages.any(
+          (message) => message['display_kind'] == 'process_complete',
+        ),
+        isTrue,
+      );
+
+      gateway.emit(
+        'message.delta',
+        const {'text': 'successor output'},
+        42,
+        7,
+        producerChannel,
+      );
+      await _waitUntil(() => chat.assistantContent.contains('successor output'));
+      expect(
+        chat.messages.any(
+          (message) => message['display_kind'] == 'process_complete',
+        ),
+        isTrue,
+      );
+
+      final successorDone = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit(
+        'message.complete',
+        const {'text': 'successor output'},
+        43,
+        7,
+        producerChannel,
+      );
+      await successorDone.timeout(const Duration(seconds: 2));
+      expect(chat.sessionActivity.foregroundTurn, isFalse);
+      expect(
+        chat.messages.any(
+          (message) => message['display_kind'] == 'process_complete',
+        ),
+        isTrue,
+      );
+    },
+  );
 }

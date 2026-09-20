@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../app_header_title.dart';
 import '../config/flavor.dart';
 import '../models/home_widget_snapshot.dart';
+import '../models/session_activity.dart';
 import '../models/session_category.dart';
 import '../navigation/chat_route.dart';
 import '../services/agent_runtime/agent_runtime.dart';
@@ -66,12 +67,14 @@ class HomeDashboardScreen extends StatefulWidget {
   final ApiClient Function(SavedConnection connection)? clientFactory;
   final ValueChanged<double>? onInitialLoadProgress;
   final VoidCallback? onInitialLoadComplete;
+  final ActiveChatService? activeChatsOverride;
 
   const HomeDashboardScreen({
     required this.connManager,
     this.clientFactory,
     this.onInitialLoadProgress,
     this.onInitialLoadComplete,
+    @visibleForTesting this.activeChatsOverride,
     super.key,
   });
 
@@ -98,6 +101,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   double _initialLoadProgress = 0;
   int _reloadEpoch = 0;
   int _refreshStatusEpoch = 0;
+  ActiveChatService? _listenedActiveChats;
+  bool _activeChatsRebuildScheduled = false;
+
+  ActiveChatService? get _activeChats =>
+      widget.activeChatsOverride ??
+      context.findAncestorStateOfType<HermesAppState>()?.activeChats;
 
   // Banner de operación local en curso (visible si el usuario salió durante install/uninstall).
   bool _installInProgress = false;
@@ -117,6 +126,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     unawaited(_historyCleanupSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(this);
     widget.connManager.activeConnectionId.removeListener(_onActiveConnChanged);
+    _listenedActiveChats?.activeIds.removeListener(_onActiveChatsChanged);
     _localStartPoll?.cancel();
     super.dispose();
   }
@@ -124,6 +134,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final activeChats = _activeChats;
+    if (!identical(_listenedActiveChats, activeChats)) {
+      _listenedActiveChats?.activeIds.removeListener(_onActiveChatsChanged);
+      _listenedActiveChats = activeChats;
+      activeChats?.activeIds.addListener(_onActiveChatsChanged);
+    }
     final route = ModalRoute.of(context);
     if (route is PageRoute<dynamic> && !identical(route, _route)) {
       hermesRouteObserver.unsubscribe(this);
@@ -175,6 +191,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
 
   void _onActiveConnChanged() {
     if (mounted) _reload();
+  }
+
+  void _onActiveChatsChanged() {
+    if (!mounted || _activeChatsRebuildScheduled) return;
+    _activeChatsRebuildScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _activeChatsRebuildScheduled = false;
+      if (mounted) setState(() {});
+    });
   }
 
   void _onHistoryCleanupInvalidation(HistoryCleanupInvalidation event) {
@@ -399,10 +424,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       if (!removed) return;
     }
     if (!mounted || !removed) return;
-    final aggregate = context
-        .findAncestorStateOfType<HermesAppState>()
-        ?.activeChats
-        .globalActivity;
+    final aggregate = _activeChats?.globalActivity;
     aggregate?.clearSession(conn.id, ownerProfile, session.id);
     await aggregate?.flushJournal();
     if (!mounted) return;
@@ -792,9 +814,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     List<Session> sessions,
   ) async {
     final epoch = ++_previewHydrationEpoch;
-    final activeChats = context
-        .findAncestorStateOfType<HermesAppState>()
-        ?.activeChats;
+    final activeChats = _activeChats;
     var changed = false;
 
     for (final session in sessions) {
@@ -842,9 +862,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     final rows = <Widget>[];
     final now = DateTime.now();
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    final activeChats = context
-        .findAncestorStateOfType<HermesAppState>()
-        ?.activeChats;
+    final activeChats = _activeChats;
     HomeRecentDateGroup? previousGroup;
     final visible = _recentSessions.take(limit).toList(growable: false);
 
@@ -880,7 +898,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         profile: session.profile,
       );
 
-      Widget recentTile(ChatActivityKind? activity) => _RecentSessionTile(
+      Widget recentTile(SessionActivityKind activity) => _RecentSessionTile(
         session: session,
         title: title,
         summary: summary,
@@ -900,10 +918,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               ? Duration.zero
               : const Duration(milliseconds: 220),
           child: activeChat == null
-              ? recentTile(null)
+              ? recentTile(SessionActivityKind.idle)
               : StreamBuilder<ActiveChatEvent>(
                   stream: activeChat.changes,
-                  builder: (_, _) => recentTile(activeChat.activityKind),
+                  builder: (_, _) => recentTile(activeChat.sessionActivity.kind),
                 ),
         ),
       );
@@ -911,14 +929,20 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     return rows;
   }
 
-  String? _activityLabel(ChatActivityKind? activity) => switch (activity) {
-    ChatActivityKind.thinking => Strings.of(context).chaPipelineThinking,
-    ChatActivityKind.usingTools => Strings.of(context).chaPipelineExecuting,
-    ChatActivityKind.responding => Strings.of(context).chaPipelineStreaming,
-    ChatActivityKind.awaitingApproval => Strings.of(
-      context,
-    ).homeActivityAwaitingApproval,
-    null => null,
+  String? _activityLabel(SessionActivityKind activity) => switch (activity) {
+    SessionActivityKind.preparing || SessionActivityKind.generating =>
+      Strings.of(context).chaPipelineThinking,
+    SessionActivityKind.usingTools =>
+      Strings.of(context).chaPipelineExecuting,
+    SessionActivityKind.responding =>
+      Strings.of(context).chaPipelineStreaming,
+    SessionActivityKind.waitingForUser =>
+      Strings.of(context).homeActivityAwaitingApproval,
+    SessionActivityKind.compacting => Strings.of(context).slActivityCompacting,
+    SessionActivityKind.delegated => Strings.of(context).slActivityDelegated,
+    SessionActivityKind.backgroundProcess =>
+      Strings.of(context).slActivityBackground,
+    SessionActivityKind.idle => null,
   };
 
   void _openChat(

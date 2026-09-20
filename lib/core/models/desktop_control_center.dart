@@ -16,6 +16,45 @@ String _cleanText(Object? raw, {int max = _maxPreviewText}) {
   return value.length <= max ? value : value.substring(0, max);
 }
 
+String _safeProcessCommand(Object? raw) {
+  final command = _cleanText(raw, max: 240);
+  if (command.isEmpty) return '';
+  final parts = command.split(RegExp(r'\s+'));
+  String safePart(String value) {
+    if (value.isEmpty || value.startsWith('-') || value.contains('=')) return '';
+    return value.split(RegExp(r'[/\\]')).last;
+  }
+
+  final executable = safePart(parts.first);
+  if (executable.isEmpty) return '';
+  final lower = executable.toLowerCase();
+  final display = <String>[executable];
+  if (lower == 'dart' && parts.length > 1 && parts[1] == 'run') {
+    display.add('run');
+    if (parts.length > 2) {
+      final script = safePart(parts[2]);
+      if (script.isNotEmpty) display.add(script);
+    }
+  } else if (const {'python', 'python3', 'node', 'bash', 'sh'}.contains(lower) &&
+      parts.length > 1) {
+    final script = safePart(parts[1]);
+    if (script.isNotEmpty) display.add(script);
+  } else if (const {
+    'npm',
+    'pnpm',
+    'yarn',
+    'flutter',
+    'cargo',
+    'gradle',
+  }.contains(lower)) {
+    for (final part in parts.skip(1).take(2)) {
+      final projection = safePart(part);
+      if (projection.isNotEmpty) display.add(projection);
+    }
+  }
+  return _cleanText(display.join(' '), max: 80);
+}
+
 int _safeInt(Object? raw, {int fallback = 0}) {
   if (raw is int) return raw;
   if (raw is num) return raw.toInt();
@@ -495,11 +534,21 @@ final class BackgroundProcessEntry {
   final String opaqueId;
   final AgentCenterStatus status;
   final int uptimeSeconds;
+  final String command;
+  final bool notifyOnComplete;
+  final List<String> watchPatterns;
+  final bool watchHit;
+  final DateTime? startedAt;
 
   const BackgroundProcessEntry({
     required this.opaqueId,
     required this.status,
     required this.uptimeSeconds,
+    this.command = '',
+    this.notifyOnComplete = false,
+    this.watchPatterns = const [],
+    this.watchHit = false,
+    this.startedAt,
   });
 
   static BackgroundProcessEntry? tryParse(Map<String, dynamic> json) {
@@ -508,12 +557,29 @@ final class BackgroundProcessEntry {
       max: 512,
     );
     if (id.isEmpty) return null;
+    final startedAtSeconds = _safeDouble(json['started_at']);
     return BackgroundProcessEntry(
       opaqueId: id,
       status: _parseAgentCenterStatus(json['status'] ?? json['phase']),
       uptimeSeconds: _safeInt(
         json['uptime_seconds'] ?? json['uptime'],
       ).clamp(0, 315360000),
+      command: _safeProcessCommand(json['command']),
+      notifyOnComplete: json['notify_on_complete'] == true,
+      watchPatterns: json['watch_patterns'] is List
+          ? (json['watch_patterns'] as List)
+                .map((value) => _cleanText(value, max: 120))
+                .where((value) => value.isNotEmpty)
+                .take(8)
+                .toList(growable: false)
+          : const [],
+      watchHit: json['watch_hit'] == true,
+      startedAt: startedAtSeconds > 0
+          ? DateTime.fromMillisecondsSinceEpoch(
+              (startedAtSeconds * 1000).round(),
+              isUtc: true,
+            )
+          : null,
     );
   }
 }

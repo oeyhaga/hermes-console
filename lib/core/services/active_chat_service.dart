@@ -31,12 +31,14 @@ import '../models/desktop_active_session.dart';
 import '../models/desktop_compression_result.dart';
 import '../models/desktop_compression_outcome.dart';
 import '../models/desktop_context_breakdown.dart';
+import '../models/desktop_control_center.dart';
 import '../models/desktop_model_catalog.dart';
 import '../models/desktop_session_config.dart';
 import '../models/desktop_session_snapshot.dart';
 import '../models/home_widget_snapshot.dart';
 import '../models/interactive_prompt.dart';
 import '../models/prepared_turn.dart';
+import '../models/session_activity.dart';
 import '../models/session_artifact.dart';
 import '../models/subagent_activity.dart';
 import '../models/transcript_privacy_state.dart';
@@ -3814,6 +3816,14 @@ class ActiveChat {
   final Set<SubagentActivityKey> _subagentPublicEligibleKeys = {};
   Future<void>? _subagentRefreshFlight;
   _SubagentRefreshAuthority? _subagentRefreshAuthority;
+  List<SessionActivityProcess> _backgroundProcesses = const [];
+  final Map<String, int> _backgroundProcessAbsenceStreaks = {};
+  int _backgroundProcessListRequestGeneration = 0;
+  int _backgroundProcessMutationGeneration = 0;
+  bool _backgroundProcessesStale = false;
+  DateTime? _backgroundProcessesObservedAt;
+  Future<void>? _backgroundProcessRefreshFlight;
+  bool _backgroundProcessRefreshRequested = false;
   ArtifactIndexSnapshot? _artifactIndex;
   ArtifactIndexScope? _artifactScope;
   List<ArtifactTranscriptEntry> _pendingArtifactTranscript = const [];
@@ -4617,6 +4627,216 @@ class ActiveChat {
             activity.phase != SubagentActivityPhase.unknown,
       )
       .length;
+
+  List<SessionActivityProcess> get backgroundProcesses => _backgroundProcesses;
+  bool get hasActiveBackgroundProcesses => _backgroundProcesses.isNotEmpty;
+
+  SessionActivity get sessionActivity {
+    final foregroundKind = _desktopAutoCompacting
+        ? SessionActivityKind.compacting
+        : switch (activityKind) {
+            ChatActivityKind.thinking => SessionActivityKind.generating,
+            ChatActivityKind.usingTools => SessionActivityKind.usingTools,
+            ChatActivityKind.responding => SessionActivityKind.responding,
+            ChatActivityKind.awaitingApproval =>
+              SessionActivityKind.waitingForUser,
+            null => SessionActivityKind.idle,
+          };
+    return SessionActivity(
+      foregroundTurn: isStreaming,
+      rosterTurn: remoteSurfaceOwnsLiveTurn,
+      subagentCount: safeActiveSubagentCount,
+      processes: _backgroundProcesses,
+      foregroundKind: foregroundKind,
+      observedAt: _backgroundProcessesObservedAt ?? _desktopTurnStartedAt,
+      stale: _backgroundProcessesStale,
+    );
+  }
+
+  bool _backgroundProcessRequestStillCurrent({
+    required Object gateway,
+    required String connectionId,
+    required String profile,
+    required String durableSessionId,
+    required String runtimeSessionId,
+    required int bindEpoch,
+    required int sessionEpoch,
+    required int turnEpoch,
+    required int requestGeneration,
+    required int mutationGeneration,
+  }) =>
+      !_disposed &&
+      identical(_desktopGateway, gateway) &&
+      connection.id == connectionId &&
+      _storedSessionProfile == profile &&
+      serverSessionId == durableSessionId &&
+      _desktopRuntimeSessionId == runtimeSessionId &&
+      _desktopBindEpoch == bindEpoch &&
+      _desktopSessionEpoch == sessionEpoch &&
+      _turnEpoch == turnEpoch &&
+      _backgroundProcessListRequestGeneration == requestGeneration &&
+      _backgroundProcessMutationGeneration == mutationGeneration;
+
+  static bool _sameBackgroundProcess(
+    SessionActivityProcess left,
+    SessionActivityProcess right,
+  ) =>
+      left.id == right.id &&
+      left.command == right.command &&
+      left.notifyOnComplete == right.notifyOnComplete &&
+      left.startedAt == right.startedAt;
+
+  bool get hasPendingBackgroundProcessRefresh =>
+      _backgroundProcessRefreshFlight != null;
+
+  Future<void> refreshBackgroundProcesses() {
+    _backgroundProcessRefreshRequested = true;
+    final current = _backgroundProcessRefreshFlight;
+    if (current != null) return current;
+
+    late final Future<void> flight;
+    flight = _drainBackgroundProcessRefreshes().whenComplete(() {
+      if (!identical(_backgroundProcessRefreshFlight, flight)) return;
+      _backgroundProcessRefreshFlight = null;
+      if (!_disposed) _onUnused?.call();
+    });
+    _backgroundProcessRefreshFlight = flight;
+    return flight;
+  }
+
+  Future<void> _drainBackgroundProcessRefreshes() async {
+    while (_backgroundProcessRefreshRequested && !_disposed) {
+      _backgroundProcessRefreshRequested = false;
+      await _performBackgroundProcessRefresh();
+    }
+  }
+
+  Future<void> _performBackgroundProcessRefresh() async {
+    final desktopGateway = _desktopGateway;
+    final processGateway = desktopGateway is HermesDesktopControlGateway
+        ? desktopGateway as HermesDesktopControlGateway
+        : null;
+    final runtimeId = _desktopRuntimeSessionId;
+    if (processGateway == null || runtimeId == null) return;
+
+    final requestGeneration = ++_backgroundProcessListRequestGeneration;
+    final connectionId = connection.id;
+    final profile = _storedSessionProfile;
+    final durableId = serverSessionId;
+    final bindEpoch = _desktopBindEpoch;
+    final sessionEpoch = _desktopSessionEpoch;
+    final turnEpoch = _turnEpoch;
+    final mutationGeneration = _backgroundProcessMutationGeneration;
+    late final AgentCenterSnapshot snapshot;
+    try {
+      snapshot = await processGateway.agentCenterSnapshot(
+        runtimeSessionId: runtimeId,
+      );
+    } catch (_) {
+      if (_backgroundProcessRequestStillCurrent(
+        gateway: processGateway,
+        connectionId: connectionId,
+        profile: profile,
+        durableSessionId: durableId,
+        runtimeSessionId: runtimeId,
+        bindEpoch: bindEpoch,
+        sessionEpoch: sessionEpoch,
+        turnEpoch: turnEpoch,
+        requestGeneration: requestGeneration,
+        mutationGeneration: mutationGeneration,
+      )) {
+        _backgroundProcessesStale = _backgroundProcesses.isNotEmpty;
+      }
+      return;
+    }
+    if (!_backgroundProcessRequestStillCurrent(
+          gateway: processGateway,
+          connectionId: connectionId,
+          profile: profile,
+          durableSessionId: durableId,
+          runtimeSessionId: runtimeId,
+          bindEpoch: bindEpoch,
+          sessionEpoch: sessionEpoch,
+          turnEpoch: turnEpoch,
+          requestGeneration: requestGeneration,
+          mutationGeneration: mutationGeneration,
+        ) ||
+        !snapshot.processesFullyParsed) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final currentById = {
+      for (final process in _backgroundProcesses) process.id: process,
+    };
+    final activeRows = <String, BackgroundProcessEntry>{};
+    final terminalIds = <String>{};
+    for (final row in snapshot.processes) {
+      switch (row.status) {
+        case AgentCenterStatus.requested:
+        case AgentCenterStatus.running:
+        case AgentCenterStatus.thinking:
+        case AgentCenterStatus.tool:
+          activeRows[row.opaqueId] = row;
+        case AgentCenterStatus.completed:
+        case AgentCenterStatus.failed:
+        case AgentCenterStatus.cancelled:
+        case AgentCenterStatus.stopped:
+          terminalIds.add(row.opaqueId);
+        case AgentCenterStatus.unknown:
+          break;
+      }
+    }
+
+    final next = <SessionActivityProcess>[];
+    for (final row in activeRows.values) {
+      final current = currentById[row.opaqueId];
+      _backgroundProcessAbsenceStreaks.remove(row.opaqueId);
+      next.add(
+        SessionActivityProcess(
+          id: row.opaqueId,
+          command: row.command.isEmpty
+              ? current?.command ?? ''
+              : row.command,
+          notifyOnComplete: row.notifyOnComplete,
+          startedAt:
+              row.startedAt ??
+              current?.startedAt ??
+              now.subtract(Duration(seconds: row.uptimeSeconds)),
+        ),
+      );
+    }
+    for (final current in _backgroundProcesses) {
+      if (activeRows.containsKey(current.id) || terminalIds.contains(current.id)) {
+        _backgroundProcessAbsenceStreaks.remove(current.id);
+        continue;
+      }
+      final absenceStreak =
+          (_backgroundProcessAbsenceStreaks[current.id] ?? 0) + 1;
+      if (absenceStreak < 2) {
+        _backgroundProcessAbsenceStreaks[current.id] = absenceStreak;
+        next.add(current);
+      } else {
+        _backgroundProcessAbsenceStreaks.remove(current.id);
+      }
+    }
+    next.sort((left, right) => left.id.compareTo(right.id));
+    final changed = next.length != _backgroundProcesses.length ||
+        List.generate(
+          next.length,
+          (index) => !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
+        ).any((different) => different);
+    _backgroundProcessesObservedAt = now;
+    _backgroundProcessesStale = false;
+    if (!changed) return;
+    _backgroundProcesses = List.unmodifiable(next);
+    _backgroundProcessMutationGeneration += 1;
+    _emit(ActiveChatEvent.subagentActivity);
+  }
+
+  @visibleForTesting
+  Future<void> refreshBackgroundProcessesForTesting() =>
+      refreshBackgroundProcesses();
 
   _SubagentRefreshAuthority _currentSubagentRefreshAuthority() =>
       _SubagentRefreshAuthority(
@@ -6508,6 +6728,12 @@ class ActiveChat {
     _pendingSubagentInterrupts.clear();
     _subagentControlAuthority.clear();
     _subagentPublicEligibleKeys.clear();
+    _backgroundProcessListRequestGeneration += 1;
+    _backgroundProcessMutationGeneration += 1;
+    _backgroundProcesses = const [];
+    _backgroundProcessAbsenceStreaks.clear();
+    _backgroundProcessesStale = false;
+    _backgroundProcessesObservedAt = null;
     if (_subagentForegroundPresentationLeased) {
       _subagentForegroundPresentationGeneration += 1;
       _subagentPresentationState =
@@ -15981,6 +16207,10 @@ class ActiveChat {
         .toString()
         .trim()
         .toLowerCase();
+    if (kind == 'process') {
+      unawaited(refreshBackgroundProcesses());
+      return;
+    }
     if (kind == 'compacted') {
       final pending = _pendingDesktopCompression;
       final evidence = pending == null
@@ -19244,6 +19474,11 @@ class ActiveChat {
       _subagentTranscriptTurnAnchor = null;
       _pendingSubagentInterrupts.clear();
     }
+    _messages.insert(0, {
+      'role': 'assistant',
+      'content': '',
+      '_pipeline': true,
+    });
   }
 
   /// Cierra la proyección visible del turno anterior y prepara el siguiente que
@@ -21939,6 +22174,7 @@ class ActiveChatService {
   HermesHomeWidgetPublisher? _homeWidgetPublisher;
   String? _homeWidgetActiveConnectionId;
   HermesHomeWidgetSnapshot? _lastHomeWidgetSemantic;
+  bool _disposed = false;
 
   static String chatKey(String connectionId, String sessionId) =>
       '$connectionId::$sessionId';
@@ -22245,14 +22481,14 @@ class ActiveChatService {
             chat.connection.id == connectionId &&
             (chat.sessionId == sessionId ||
                 chat.storedSessionId == sessionId) &&
-            chat.isStreaming,
+            chat.sessionActivity.active,
       );
     }
     return _entryFor(
           connectionId,
           sessionId,
           profile: profile,
-        )?.value.isStreaming ??
+        )?.value.sessionActivity.active ??
         false;
   }
 
@@ -22713,7 +22949,13 @@ class ActiveChatService {
           _onHomeWidgetChatEvent(chat, ActiveChatEvent.token);
         }
       },
-      onEvent: (event) => _onHomeWidgetChatEvent(chat, event),
+      onEvent: (event) {
+        _onHomeWidgetChatEvent(chat, event);
+        _refreshActiveIds(force: event == ActiveChatEvent.subagentActivity);
+        if (event == ActiveChatEvent.subagentActivity) {
+          _onChatUnused(key);
+        }
+      },
       initialSteerProjections:
           _steerProjectionCache[_projectionKey(
             connection.id,
@@ -22908,7 +23150,8 @@ class ActiveChatService {
     final chat = entry.value;
     _rememberSteerProjections(chat);
     chat.requestReleaseWhenUnused();
-    if (chat.isStreaming ||
+    if (chat.sessionActivity.active ||
+        chat.hasPendingBackgroundProcessRefresh ||
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
@@ -22923,7 +23166,8 @@ class ActiveChatService {
     final chat = _chats[key];
     if (chat == null ||
         !chat.releaseRequested ||
-        chat.isStreaming ||
+        chat.sessionActivity.active ||
+        chat.hasPendingBackgroundProcessRefresh ||
         chat.hasPendingDurableCancellation ||
         chat.hasListeners ||
         chat.voiceBargeHandoffPending ||
@@ -22958,15 +23202,23 @@ class ActiveChatService {
     }
     _maybeStopForeground();
     if (chat == null) return;
-    // Si nadie está mirando el chat (la pantalla se cerró), libéralo: el
-    // refetch y la notificación ya ocurrieron en onDone.
-    if (!chat.isStreaming &&
-        !chat.hasPendingDurableCancellation &&
-        !chat.hasListeners &&
-        !chat.voiceBargeHandoffPending &&
-        !chat.showReleaseToDesktopControl) {
-      _dispose(key);
+    final processRefresh = chat.refreshBackgroundProcesses();
+    unawaited(
+      processRefresh.whenComplete(() => _settleTerminalChat(key, chat)),
+    );
+  }
+
+  void _settleTerminalChat(String key, ActiveChat chat) {
+    if (!identical(_chats[key], chat) ||
+        chat.sessionActivity.active ||
+        chat.hasPendingBackgroundProcessRefresh ||
+        chat.hasPendingDurableCancellation ||
+        chat.hasListeners ||
+        chat.voiceBargeHandoffPending ||
+        chat.showReleaseToDesktopControl) {
+      return;
     }
+    _dispose(key);
   }
 
   /// Baja el foreground service salvo que (a) el usuario activó la escucha
@@ -23025,10 +23277,11 @@ class ActiveChatService {
     _refreshActiveIds();
   }
 
-  void _refreshActiveIds() {
+  void _refreshActiveIds({bool force = false}) {
+    if (_disposed) return;
     final ids = <String>{};
     for (final entry in _chats.entries) {
-      if (!entry.value.isStreaming) continue;
+      if (!entry.value.sessionActivity.active) continue;
       final profile = entry.value.sessionProfile;
       ids.add(
         _registryKey(entry.value.connection.id, entry.value.sessionId, profile),
@@ -23038,13 +23291,16 @@ class ActiveChatService {
         ids.add(_registryKey(entry.value.connection.id, storedId, profile));
       }
     }
-    if (ids.length != activeIds.value.length ||
+    if (force ||
+        ids.length != activeIds.value.length ||
         !ids.containsAll(activeIds.value)) {
       activeIds.value = ids;
     }
   }
 
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     for (final chat in _chats.values) {
       chat.dispose();
     }

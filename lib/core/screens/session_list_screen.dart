@@ -9,6 +9,7 @@ import '../../main.dart';
 import '../models/session_category.dart';
 import '../models/desktop_active_session.dart';
 import '../models/desktop_control_center.dart';
+import '../models/session_activity.dart';
 import '../navigation/chat_route.dart';
 import '../services/active_chat_service.dart';
 import '../services/connection_manager.dart';
@@ -751,26 +752,26 @@ class _SessionListScreenState extends State<SessionListScreen>
     }
   }
 
-  bool _isLocalActive(Session session) {
+  ActiveChat? _localChatForSession(Session session) {
     final activeChats = _activeChats;
-    if (activeChats == null) return false;
-    return activeChats.isActive(
-          widget.connection.id,
-          session.id,
-          profile: session.profile,
-        ) ||
-        activeChats.isActive(
-          widget.connection.id,
-          session.logicalId,
-          profile: session.profile,
-        ) ||
-        (session.parentSessionId != null &&
-            activeChats.isActive(
-              widget.connection.id,
-              session.parentSessionId!,
-              profile: session.profile,
-            ));
+    if (activeChats == null) return null;
+    for (final id in <String>{
+      session.id,
+      session.logicalId,
+      ?session.parentSessionId,
+    }) {
+      final chat = activeChats.of(
+        widget.connection.id,
+        id,
+        profile: session.profile,
+      );
+      if (chat != null) return chat;
+    }
+    return null;
   }
+
+  bool _isLocalActive(Session session) =>
+      _localChatForSession(session)?.sessionActivity.active == true;
 
   GlobalActivity? _globalForSession(Session session) {
     final aggregate = _globalActivity;
@@ -1864,6 +1865,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   Widget _sessionRow(Session session, Strings s, HermesThemeColors colors) {
     final archived = _isArchived(session);
     final pinned = _isPinned(session);
+    final localActivity = _localChatForSession(session)?.sessionActivity;
     return Dismissible(
       key: ValueKey('${session.id}-$archived'),
       direction: DismissDirection.horizontal,
@@ -1892,8 +1894,9 @@ class _SessionListScreenState extends State<SessionListScreen>
         formattedTime: _relativeTime(session.lastActivityAt, s),
         pinned: pinned,
         activity: _globalForSession(session),
+        localActivity: localActivity,
         streamActive:
-            _isLocalActive(session) ||
+            localActivity?.active == true ||
             (_globalActivity?.isActive(
                   widget.connection.id,
                   Session.profileOwner(session.profile),
@@ -2524,6 +2527,7 @@ class _SessionTile extends StatelessWidget {
   /// respuesta/ejecución sigue aunque saliste. Cuenta como "viva".
   final bool streamActive;
   final GlobalActivity? activity;
+  final SessionActivity? localActivity;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
@@ -2534,13 +2538,15 @@ class _SessionTile extends StatelessWidget {
     this.pinned = false,
     this.streamActive = false,
     this.activity,
+    this.localActivity,
     required this.onTap,
     required this.onLongPress,
   });
 
   /// Color del estado vivo: gris cuando el último estado conocido está
   /// caducado, ámbar cuando la conversación te necesita, verde cuando corre.
-  Color _liveTone(HermesThemeColors colors) => activity?.stale == true
+  Color _liveTone(HermesThemeColors colors) =>
+      (activity?.stale == true || localActivity?.stale == true)
       ? colors.textDisabled
       : activity?.requiresAction == true
       ? colors.warning
@@ -2551,9 +2557,11 @@ class _SessionTile extends StatelessWidget {
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
     final preview = session.cleanPreview.trim();
-    final activityLabel = activity == null
-        ? strings.slRunningBadge
-        : _globalActivityLabel(strings, activity!);
+    final activityLabel = localActivity?.active == true
+        ? _sessionActivityLabel(strings, localActivity!)
+        : activity != null
+        ? _globalActivityLabel(strings, activity!)
+        : strings.slRunningBadge;
     // El borrador se cuenta como texto descriptivo hilado en la línea de
     // vista previa ("Borrador · Resume los cambios…"), no como una píldora
     // de color aparte: es lo que pide el mockup y lo que evita las "cajitas".
@@ -2706,6 +2714,19 @@ String _sentenceCase(String value) =>
     value.isEmpty ? value : '${value[0].toUpperCase()}${value.substring(1)}';
 
 /// Separador "·" del pie del tile (modelo · tiempo).
+
+String _sessionActivityLabel(Strings strings, SessionActivity activity) =>
+    switch (activity.kind) {
+      SessionActivityKind.preparing => strings.slActivityPreparing,
+      SessionActivityKind.generating => strings.slActivityGenerating,
+      SessionActivityKind.usingTools => strings.slActivityUsingTools,
+      SessionActivityKind.responding => strings.chaPipelineStreaming,
+      SessionActivityKind.waitingForUser => strings.slActivityWaiting,
+      SessionActivityKind.compacting => strings.slActivityCompacting,
+      SessionActivityKind.delegated => strings.slActivityDelegated,
+      SessionActivityKind.backgroundProcess => strings.slActivityBackground,
+      SessionActivityKind.idle => strings.slActivityUnknown,
+    };
 
 String _globalActivityLabel(Strings strings, GlobalActivity activity) {
   final phase = switch (activity.phase) {
