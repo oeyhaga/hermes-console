@@ -6,6 +6,13 @@ import '../utils/assistant_content.dart';
 import '../utils/chat_turn.dart';
 import 'terminal_transcript_authority.dart';
 
+final _unsafeDisplayTextPattern = RegExp(
+  '[\\x00-\\x1f\\x7f'
+  '${String.fromCharCode(0x2028)}${String.fromCharCode(0x2029)}'
+  '${String.fromCharCode(0x202a)}-${String.fromCharCode(0x202e)}'
+  '${String.fromCharCode(0x2066)}-${String.fromCharCode(0x2069)}]',
+);
+
 /// Pure projection of a Hermes Desktop 0.19 resume/activate snapshot into the
 /// newest-first message shape consumed by [ActiveChat].
 ///
@@ -114,6 +121,28 @@ class DesktopSessionReconciler {
           message['_optimistic'] == true ||
           message['_steer'] == true);
 
+  /// Filas durables que el runtime envió como turno sintético (hoy solo el
+  /// aviso de proceso en segundo plano). Se limita a ese tipo a propósito: otros
+  /// `display_kind` (`model_switch`, `compression_result`…) no son la entrada
+  /// del turno en vuelo y, contados aquí, podrían suprimir un mensaje real.
+  static bool _isStructuredUserEvent(Map<String, dynamic> message) =>
+      message['role'] == 'user' &&
+      message['display_kind']?.toString().trim() == 'process_complete';
+
+  static bool _isDurableOpenInput(Map<String, dynamic> message) =>
+      isRealUserTurn(message) ||
+      (message['role'] == 'user' && message['_steer'] == true) ||
+      _isStructuredUserEvent(message);
+
+  static bool _matchesDurableStructuredInput(
+    Map<String, dynamic> message,
+    String content,
+  ) =>
+      _isStructuredUserEvent(message) &&
+      message['content']?.toString() == content &&
+      (message['_desktopSnapshotKind'] == 'persisted' ||
+          canonicalTranscriptIdentity(message) != null);
+
   static int? _exactPreviousAnchorIndex(
     List<Map<String, dynamic>> chronological,
     List<Map<String, dynamic>> previousNewestFirst,
@@ -206,9 +235,7 @@ class DesktopSessionReconciler {
         anchoredAt != null &&
         anchoredAt.isAfter(turnStartedAt) &&
         canonicalTranscriptIdentity(anchoredMessage) != null &&
-        (isRealUserTurn(anchoredMessage) ||
-            (anchoredMessage['role'] == 'user' &&
-                anchoredMessage['_steer'] == true));
+        _isDurableOpenInput(anchoredMessage);
     if (anchorIsDurableOpenInput) {
       terminalBoundary = -1;
       for (var index = anchorIndex - 1; index >= 0; index--) {
@@ -226,10 +253,7 @@ class DesktopSessionReconciler {
       index++
     ) {
       final message = chronological[index];
-      final isLiveUserInput =
-          isRealUserTurn(message) ||
-          (message['role'] == 'user' && message['_steer'] == true);
-      if (isLiveUserInput) durableOpenInputs.add(message);
+      if (_isDurableOpenInput(message)) durableOpenInputs.add(message);
     }
     if (durableOpenInputs.isEmpty) return _LiveUserProjectionPlan.none;
 
@@ -437,12 +461,19 @@ class DesktopSessionReconciler {
       snapshot.resolvedTurnStartedAt,
     );
     final hasInflightUser = inflightUser?.trim().isNotEmpty == true;
+    final durableStructuredInflight =
+        inflightUser != null &&
+        chronological.any(
+          (message) =>
+              _matchesDurableStructuredInput(message, inflightUser),
+        );
     // The Gateway does not link inflight users to durable row IDs. Suppress
-    // only a positionally matching suffix proven by one exact prior anchor;
-    // text/timestamps alone never authorize hiding a user bubble.
+    // ordinary turns only with an exact prior anchor; a classified durable row
+    // can identify its synthetic twin without interpreting message text.
     if (inflightUser != null &&
         inflightUser.trim().isNotEmpty &&
-        liveUserPlan.emits(0)) {
+        liveUserPlan.emits(0) &&
+        !durableStructuredInflight) {
       chronological.add(
         Map<String, dynamic>.unmodifiable({
           'role': 'user',
@@ -779,6 +810,18 @@ Map<String, dynamic>? sanitizeDelegationDisplayMetadata(Object? raw) {
     final value = decoded[key];
     if (value is int && value >= 0 && value <= 10000) {
       safe[key] = value;
+    }
+  }
+  // Título compacto que el runtime ya redactó para la UI (lo mismo que pinta
+  // Hermes Desktop). Se acepta como una sola línea acotada: nunca sustituye al
+  // contenido durable ni se reconstruye leyendo el texto del mensaje.
+  final displayText = decoded['display_text'];
+  if (displayText is String) {
+    final text = displayText.trim();
+    if (text.isNotEmpty &&
+        text.length <= 200 &&
+        !text.contains(_unsafeDisplayTextPattern)) {
+      safe['display_text'] = text;
     }
   }
   final duration = decoded['duration_seconds'];

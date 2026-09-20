@@ -544,15 +544,20 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
     }
     if (calls.isNotEmpty) normalized['tool_calls'] = calls;
   }
+  // `process_complete` viaja como `role=user` con su clasificación estructural:
+  // sin ella el carrier durable queda vacío tras el stripping y desaparece del
+  // transcript. Solo se acepta desde `display_kind`, nunca leyendo el texto.
   final displayKind =
       rawDisplayKind == 'model_switch' ||
           rawDisplayKind == 'async_delegation_complete' ||
-          rawDisplayKind == 'compression_result'
+          rawDisplayKind == 'compression_result' ||
+          rawDisplayKind == 'process_complete'
       ? rawDisplayKind
       : effectiveUserDisplayKind(normalized);
   if (displayKind == 'model_switch') {
     normalized['display_kind'] = displayKind;
-  } else if (displayKind == 'async_delegation_complete') {
+  } else if (displayKind == 'async_delegation_complete' ||
+      displayKind == 'process_complete') {
     normalized['display_kind'] = displayKind;
     final metadata = sanitizeDelegationDisplayMetadata(
       message['display_metadata'],

@@ -12289,6 +12289,7 @@ class _ChatScreenState extends State<ChatScreen>
         detail: timelineEvent.detail,
         icon: timelineEvent.icon,
         raw: content,
+        titleMaxLines: msg['display_kind'] == 'process_complete' ? 2 : null,
       );
     }
 
@@ -14438,6 +14439,18 @@ _timelineSystemEventPresentation(
             : details.join(' · '),
         icon: Icons.hub_outlined,
       );
+    case 'process_complete':
+      // El runtime ya redactó el título compacto; el payload completo queda en
+      // `raw` (copiable), nunca impreso como burbuja.
+      final rawMetadata = message['display_metadata'];
+      final metadata = rawMetadata is Map ? rawMetadata : const {};
+      final displayText = metadata['display_text'];
+      final title = displayText is String ? displayText.trim() : '';
+      return (
+        title: title.isNotEmpty ? title : strings.chaTimelineProcessFinished,
+        detail: null,
+        icon: Icons.terminal_rounded,
+      );
     case 'model_switch':
       return (
         title: strings.chaTimelineModelChanged,
@@ -14662,12 +14675,14 @@ class _TimelineSystemEventRow extends StatelessWidget {
   final String? detail;
   final IconData icon;
   final String raw;
+  final int? titleMaxLines;
 
   const _TimelineSystemEventRow({
     required this.title,
     required this.detail,
     required this.icon,
     required this.raw,
+    this.titleMaxLines,
   });
 
   @override
@@ -14712,6 +14727,10 @@ class _TimelineSystemEventRow extends StatelessWidget {
                     children: [
                       Text(
                         title,
+                        maxLines: titleMaxLines,
+                        overflow: titleMaxLines == null
+                            ? null
+                            : TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: colors.textSecondary,
                           fontSize: 13.5,

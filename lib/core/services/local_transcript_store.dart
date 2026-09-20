@@ -454,10 +454,17 @@ class LocalTranscriptStore {
       if (message.containsKey(key)) return null;
     }
     if (role == 'assistant' && message['reasoning'] == true) return null;
+    // Marcadores editoriales duraderos que la caché sí puede reconstruir sin
+    // releer el texto. El resto de clasificaciones sigue fallando cerrado.
+    const cacheableDisplayKinds = {
+      'async_delegation_complete',
+      'process_complete',
+    };
     final rawDisplayKind = message['display_kind']?.toString().trim() ?? '';
     if (rawDisplayKind == 'hidden' ||
         (rawDisplayKind.isNotEmpty &&
-            rawDisplayKind != 'async_delegation_complete')) {
+            (role != 'user' ||
+                !cacheableDisplayKinds.contains(rawDisplayKind)))) {
       return null;
     }
     final rawContent = message['content'];
@@ -468,9 +475,9 @@ class LocalTranscriptStore {
     if (content.trim().isEmpty) return null;
 
     final sanitized = <String, dynamic>{'role': role, 'content': content};
-    if (role == 'user' &&
-        effectiveUserDisplayKind(message) == 'async_delegation_complete') {
-      sanitized['display_kind'] = 'async_delegation_complete';
+    final displayKind = role == 'user' ? effectiveUserDisplayKind(message) : '';
+    if (cacheableDisplayKinds.contains(displayKind)) {
+      sanitized['display_kind'] = displayKind;
       final metadata = sanitizeDelegationDisplayMetadata(
         message['display_metadata'],
       );

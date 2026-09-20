@@ -852,6 +852,7 @@
   },
   "chaTimelineModelChanged": "Modelo cambiado",
   "chaTimelineAutoContinued": "Turno reanudado",
+  "chaTimelineProcessFinished": "Proceso en segundo plano finalizado",
   "chaTimelineSystemEvent": "Evento del sistema",
   "chaCodeCopyTooltip": "Copiar código",
   "chaCodeCopy": "copiar",

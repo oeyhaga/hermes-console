@@ -522,6 +522,7 @@
   },
   "chaTimelineModelChanged": "Model changed",
   "chaTimelineAutoContinued": "Turn resumed",
+  "chaTimelineProcessFinished": "Background process finished",
   "chaTimelineSystemEvent": "System event",
   "chaCodeCopyTooltip": "Copy code",
   "chaCodeCopy": "copy",
