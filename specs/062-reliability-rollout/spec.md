@@ -28,7 +28,8 @@ Long coding sessions from Hermes Console are unreliable in ways Hermes Desktop i
 | F6 | Scroll-to-bottom button above the pills | done, device ✅ |
 | F7 | `process_complete` rows shown | done, device ✅ (on reload) |
 | F8 | Backend-started turn appended, not overwriting | done, device ⏳ |
-| F9 | Reply text from `codex_message_items` + durable reasoning block | done, device ⏳ |
+| F9a | Reply text from `codex_message_items` (privacy-neutral) | in progress (Sol) |
+| F9b | Show durable reasoning as a collapsed block (reverses the "mobile never carries reasoning" privacy contract) | **parked — owner decision** |
 | F10 | Background-work visibility (one activity model: chat + Home/list) | in progress (Sol) |
 | F11 | In-app notifications restyle + floating-notice placement | in progress (Sonnet, Desktop as reference) |
 | F12 | Media delivery (image/video/audio/document, download from a host path) | research (Sol) |
