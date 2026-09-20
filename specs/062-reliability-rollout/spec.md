@@ -29,7 +29,9 @@ Long coding sessions from Hermes Console are unreliable in ways Hermes Desktop i
 | F7 | `process_complete` rows shown | done, device ✅ (on reload) |
 | F8 | Backend-started turn appended, not overwriting | done, device ⏳ |
 | F9a | Reply text from `codex_message_items` (privacy-neutral) | in progress (Sol) |
-| F9b | Show durable reasoning as a collapsed block (reverses the "mobile never carries reasoning" privacy contract) | **parked — owner decision** |
+| F9b | Show reasoning as a collapsed block in the bubble (Desktop parity) — **owner approved 2026-09-20**, reverses the old privacy contract, tests updated deliberately | in progress (Sol) |
+| F15 | Edit a message in place (no duplicate bubble), Desktop parity | new — investigate + fix |
+| F16 | Queue / "force" (steer) always reports failure, Desktop parity | new — investigate + fix |
 | F10 | Background-work visibility (one activity model: chat + Home/list) | in progress (Sol) |
 | F11 | In-app notifications restyle + floating-notice placement | in progress (Sonnet, Desktop as reference) |
 | F12 | Media delivery (image/video/audio/document, download from a host path) | research (Sol) |
