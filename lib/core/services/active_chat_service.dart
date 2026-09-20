@@ -4078,7 +4078,7 @@ class ActiveChat {
   /// Último runtime que este chat vio anunciado por un roster completo.
   String? _rosterLiveRuntimeSessionId;
   int _rosterRuntimeAbsenceStreak = 0;
-  int? _unboundColdOpenConvergenceEpoch;
+  int? _viewerTurnConvergenceEpoch;
 
   /// Equivalente a `sawAssistantPayload` de Desktop: prueba de que el runtime
   /// llegó a arrancar este turno. Recién enviado, el backend informa la sesión
@@ -4086,6 +4086,19 @@ class ActiveChat {
   /// cosecharlo ahí apagaría un turno que está a punto de producir.
   bool get _turnSawRuntimePayload =>
       _streamingConfirmed || _desktopTurnStartedAt != null || trace.isNotEmpty;
+
+  bool get _clientSubmittedCurrentTurn {
+    final delivery = _activeTurnDelivery;
+    return _turnSubmittedAtMs != null ||
+        (delivery != null &&
+            delivery.current.state != PreparedTurnState.terminal);
+  }
+
+  bool get _viewerTurnConvergenceIsCurrent =>
+      _viewerTurnConvergenceEpoch == _turnEpoch &&
+      isStreaming &&
+      !_runTerminal &&
+      !_clientSubmittedCurrentTurn;
 
   PassiveActivityAggregate get passiveActivityAggregate {
     if (_passiveDurableToolActivity.isEmpty) {
@@ -4174,7 +4187,7 @@ class ActiveChat {
 
   String? get _passiveRosterStoredSessionId =>
       (_desktopStoredSessionId ??
-              (_unboundColdOpenConvergenceEpoch == _turnEpoch
+              (_viewerTurnConvergenceEpoch == _turnEpoch
                   ? serverSessionId
                   : null))
           ?.trim();
@@ -4289,12 +4302,13 @@ class ActiveChat {
   Future<void> applyAuthoritativeActiveSessionList(
     DesktopActiveSessionList roster,
   ) async {
-    final runtimeId = _desktopRuntimeSessionId;
     if (roster.hasMalformedRows) return;
-    if (runtimeId == null) {
-      await _settleUnboundColdOpenAbsentFromRoster(roster);
+    if (_viewerTurnConvergenceIsCurrent) {
+      await _settleViewerTurnFromRoster(roster);
       return;
     }
+    final runtimeId = _desktopRuntimeSessionId;
+    if (runtimeId == null) return;
     if (roster.sessions.any((row) => row.runtimeSessionId == runtimeId)) {
       _rosterLiveRuntimeSessionId = runtimeId;
       _rosterRuntimeAbsenceStreak = 0;
@@ -4322,25 +4336,24 @@ class ActiveChat {
     );
   }
 
-  Future<void> _settleUnboundColdOpenAbsentFromRoster(
+  Future<void> _settleViewerTurnFromRoster(
     DesktopActiveSessionList roster,
   ) async {
-    final convergenceEpoch = _unboundColdOpenConvergenceEpoch;
-    if (convergenceEpoch == null ||
-        convergenceEpoch != _turnEpoch ||
-        !isStreaming ||
-        _runTerminal) {
-      return;
-    }
+    if (!_viewerTurnConvergenceIsCurrent) return;
     final storedId = (_desktopStoredSessionId ?? serverSessionId).trim();
     if (storedId.isEmpty) return;
-    if (roster.sessions.any((row) => row.storedSessionId == storedId)) {
+    final matchingRows = roster.sessions.where(
+      (row) => row.storedSessionId == storedId,
+    );
+    if (matchingRows.any((row) => rosterStatusIsBusy(row.status))) {
       _rosterRuntimeAbsenceStreak = 0;
       return;
     }
     if (++_rosterRuntimeAbsenceStreak < _terminalAuthorityAbsenceStreak) return;
     _rosterRuntimeAbsenceStreak = 0;
-    _unboundColdOpenConvergenceEpoch = null;
+    _rosterLiveRuntimeSessionId = null;
+    _viewerTurnConvergenceEpoch = null;
+    _desktopAutomaticReattachGeneration += 1;
     _sealRecoveredLiveActivity(completed: true);
     await _completeRun(
       finalOutput: assistantContent.isEmpty ? null : assistantContent,
@@ -6401,7 +6414,9 @@ class ActiveChat {
       _retireDesktopRuntime();
       _desktopRuntimeSessionId = runtimeId;
       _retiringDesktopRuntimeSessionId = null;
-      _unboundColdOpenConvergenceEpoch = null;
+      if (!_viewerTurnConvergenceIsCurrent) {
+        _viewerTurnConvergenceEpoch = null;
+      }
       _rosterRuntimeAbsenceStreak = 0;
       _coreReadIdentity = _coreReadIdentity.withRuntime(runtimeId);
       _desktopSessionEpoch += 1;
@@ -7604,7 +7619,7 @@ class ActiveChat {
             _desktopRuntimeSessionId == null &&
             isStreaming &&
             !_runTerminal) {
-          _unboundColdOpenConvergenceEpoch = _turnEpoch;
+          _viewerTurnConvergenceEpoch = _turnEpoch;
           _rosterRuntimeAbsenceStreak = 0;
         }
         if (prefetchedTranscriptComplete && _transcriptIsComplete) {
@@ -14160,6 +14175,7 @@ class ActiveChat {
       onError: (Object error, StackTrace stackTrace) {
         final interruptedActiveTurn =
             _usingDesktopGateway && isStreaming && !_runTerminal;
+        final clientSubmittedTurn = _clientSubmittedCurrentTurn;
         final malformedTransport =
             error is TuiGatewayRpcError &&
             error.origin == CompressionFailureOrigin.malformed;
@@ -14176,9 +14192,15 @@ class ActiveChat {
         _usingDesktopGateway = false;
         _retireDesktopRuntime();
         if (viewerRecoveryClosed) _closeViewerRecovery(gateway);
-        if (interruptedActiveTurn) {
+        if (interruptedActiveTurn && clientSubmittedTurn) {
           _scheduleDesktopTurnRecovery(gateway, _turnEpoch, error);
         } else if (!viewerRecoveryClosed) {
+          if (interruptedActiveTurn) {
+            _viewerTurnConvergenceEpoch = _turnEpoch;
+            _rosterRuntimeAbsenceStreak = 0;
+            state = ChatPipelineState.connecting;
+            _emit(ActiveChatEvent.connected);
+          }
           _scheduleAutomaticDesktopReattach(gateway);
         }
       },
@@ -14186,10 +14208,11 @@ class ActiveChat {
   }
 
   void _scheduleAutomaticDesktopReattach(HermesDesktopGateway gateway) {
-    if (!_attachDesktopRuntimeOnLoad ||
+    if ((!_attachDesktopRuntimeOnLoad &&
+            !_viewerTurnConvergenceIsCurrent) ||
         gateway is! HermesDesktopRecoverySessionLifecycleGateway ||
         _disposed ||
-        isStreaming ||
+        (isStreaming && !_viewerTurnConvergenceIsCurrent) ||
         _desktopStoredSessionKnownMissing ||
         _closedViewerRecoveryBlocks(gateway) ||
         _desktopAutomaticReattach != null ||
@@ -14224,8 +14247,8 @@ class ActiveChat {
 
     bool isCurrent() =>
         !_disposed &&
-        _attachDesktopRuntimeOnLoad &&
-        !isStreaming &&
+        (_attachDesktopRuntimeOnLoad || _viewerTurnConvergenceIsCurrent) &&
+        (!isStreaming || _viewerTurnConvergenceIsCurrent) &&
         !_desktopStoredSessionKnownMissing &&
         !_closedViewerRecoveryBlocks(gateway) &&
         generation == _desktopAutomaticReattachGeneration &&
@@ -14280,6 +14303,14 @@ class ActiveChat {
             gateway as HermesDesktopRosterBoundRecoveryGateway;
         if (!rosterGateway.consumeRosterBoundViewerAttachment(recovery)) {
           _closeViewerRecovery(gateway);
+          return;
+        }
+        if (_viewerTurnConvergenceIsCurrent &&
+            (snapshot.running ||
+                _desktopSnapshotTranscriptIsComplete(snapshot) ||
+                snapshot.inflight?.error?.trim().isNotEmpty == true ||
+                snapshot.inflight?.status?.trim().toLowerCase() == 'error')) {
+          _applyDesktopRecoverySnapshot(snapshot, expectedTurnEpoch);
           return;
         }
         _desktopStoredSessionId = snapshot.storedSessionId;
@@ -19514,6 +19545,7 @@ class ActiveChat {
     // persistencia está pendiente puede llegar un replay necesario del mismo
     // borde. A partir de aquí, el primer cierre ganado silencia duplicados.
     _runTerminal = true;
+    _viewerTurnConvergenceEpoch = null;
     _settleLiveUsersAlreadyRepresentedByDurableTail();
     final publicFinalOutput =
         _pendingAuthoritativeTerminalEpoch == pendingMetadataTurnEpoch
