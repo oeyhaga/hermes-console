@@ -316,6 +316,52 @@ void main() {
     expect((await store.load('conn-a', 'session-a')).text, isEmpty);
   });
 
+  test('android-share provisional draft round-trips text and attachments and '
+      'survives promotion to the canonical id', () async {
+    final store = ChatDraftStore(await SharedPreferences.getInstance());
+    final file = File(
+      '${Directory.systemTemp.path}/hermes-share-draft-'
+      '${DateTime.now().microsecondsSinceEpoch}.txt',
+    );
+    await file.writeAsString('shared');
+    addTearDown(() async {
+      if (await file.exists()) await file.delete();
+    });
+    final attachment = AttachmentDraft(
+      type: AttachmentType.document,
+      name: 'compartido.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 6,
+      localPath: file.path,
+    );
+    const provisional = 'mob-1000-share-provisional';
+    const canonical = 'stored-share-canonical';
+
+    await store.save('conn-share', provisional, 'texto compartido', [
+      attachment,
+    ]);
+    final reopened = await store.load('conn-share', provisional);
+    expect(reopened.text, 'texto compartido');
+    expect(reopened.attachments.single.name, 'compartido.txt');
+
+    // Promoción: el composer pasa a guardar bajo el id canónico y solo después
+    // vacía el provisional (copy-before-cleanup).
+    await store.save(
+      'conn-share',
+      canonical,
+      reopened.text,
+      reopened.attachments,
+    );
+    await store.save('conn-share', provisional, '', const []);
+
+    final promoted = await store.load('conn-share', canonical);
+    expect(promoted.text, 'texto compartido');
+    expect(promoted.attachments.single.name, 'compartido.txt');
+    expect((await store.load('conn-share', provisional)).text, isEmpty);
+    final entries = await store.listForConnection('conn-share');
+    expect(entries.map((entry) => entry.sessionId), [canonical]);
+  });
+
   test('aísla drafts de profiles con el mismo session id', () async {
     final store = ChatDraftStore(await SharedPreferences.getInstance());
     await store.save(

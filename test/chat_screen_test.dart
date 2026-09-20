@@ -4580,6 +4580,81 @@ void main() {
   );
 
   testWidgets(
+    'opening android-share without durable evidence records zero resume RPCs',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      // La lectura durable de la sesión compartida es la que paga el 4007
+      // ("session not found"): la sesión provisional aún no existe en Hermes.
+      var durableReads = 0;
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-android-share-draft'),
+        session: Session(
+          id: 'mob-android-share-draft',
+          title: 'Compartido desde Android',
+          model: 'hermes-agent',
+          source: 'android-share',
+          messageCount: 0,
+          isActive: false,
+          // La ruta de compartir sella el texto recibido en `preview` antes de
+          // que exista ningún turno durable.
+          preview: 'texto compartido desde otra app',
+          startedAt: 0,
+          hasLocalDraft: true,
+        ),
+        messagesLoaded: false,
+        initialStoredSessionId: 'mob-android-share-draft',
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) async {
+          durableReads += 1;
+          throw StateError('RPC 4007 session not found');
+        },
+      );
+      await tester.pump();
+
+      expect(durableReads, 0);
+      expect(gateway.resumeExistingCalls, 0);
+      expect(chat.messagesLoaded, isTrue);
+      expect(find.text('No se pudieron cargar los mensajes'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('persisted android-share missing remotely surfaces load error', (
+    tester,
+  ) async {
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: _UiRewindGateway(),
+      connection: _remoteConn('conn-android-share-missing'),
+      session: Session(
+        id: 'stored-android-share',
+        title: 'Compartido persistido',
+        model: 'hermes-agent',
+        source: 'android-share',
+        messageCount: 1,
+        isActive: false,
+        preview: 'texto compartido desde otra app',
+        startedAt: 0,
+      ),
+      messagesLoaded: false,
+      initialStoredSessionId: 'stored-android-share',
+      attachDesktopRuntimeOnLoad: false,
+      allowUnownedDesktopSnapshotForTesting: false,
+      storedMessageLoader: (_, _) async =>
+          throw StateError('HTTP 404 android-share missing'),
+    );
+    await tester.pump();
+
+    expect(chat.messagesLoaded, isFalse);
+    expect(find.text('No se pudieron cargar los mensajes'), findsWidgets);
+    expect(find.text('↺ reintentar'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
     'tres refresh pasivos conservan MotionEntrance superficie y scroll',
     (tester) async {
       tester.view.physicalSize = const Size(390, 844);
@@ -7255,6 +7330,129 @@ void main() {
     expect(reopened.serverSessionId, 'stored-submission-test');
     expect(find.text('canonical history'), findsWidgets);
   });
+
+  testWidgets(
+    'android-share draft with attachments is recovered when the provisional '
+    'session is reopened',
+    (tester) async {
+      late final Directory temp;
+      late final AttachmentDraft attachment;
+      await tester.runAsync(() async {
+        temp = await Directory.systemTemp.createTemp('chat-share-draft-');
+        final file = File('${temp.path}/compartido.txt');
+        await file.writeAsString('shared');
+        attachment = AttachmentDraft(
+          localId: 'share-attachment',
+          type: AttachmentType.document,
+          name: 'compartido.txt',
+          mimeType: 'text/plain',
+          sizeBytes: await file.length(),
+          localPath: file.path,
+        );
+      });
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      final connection = _remoteConn('android-share-draft-recovery');
+      const provisional = Session(
+        id: 'mob-android-share-recovery',
+        title: 'Compartido desde Android',
+        model: 'hermes-agent',
+        source: 'android-share',
+        messageCount: 0,
+        isActive: true,
+        preview: 'texto compartido desde otra app',
+        profile: 'default',
+        startedAt: 1,
+        hasLocalDraft: true,
+      );
+      secureStore[ChatDraftStore.keyForTesting(
+        connection.id,
+        provisional.id,
+      )] = jsonEncode({
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+        'text': 'texto compartido desde otra app',
+        'attachments': [attachment.toJson()],
+      });
+
+      await pumpChat(
+        tester,
+        session: provisional,
+        connection: connection,
+        desktopGateway: _SubmissionGateway(),
+      );
+      for (
+        var frame = 0;
+        frame < 20 && find.byType(AttachmentCard).evaluate().isEmpty;
+        frame++
+      ) {
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'texto compartido desde otra app',
+      );
+      expect(find.byType(AttachmentCard), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'android-share draft moves to the canonical id once the session exists',
+    (tester) async {
+      final gateway = _SubmissionGateway();
+      final connection = _remoteConn('android-share-draft-promotion');
+      const provisional = Session(
+        id: 'mob-android-share-promotion',
+        title: 'Compartido desde Android',
+        model: 'hermes-agent',
+        source: 'android-share',
+        messageCount: 0,
+        isActive: true,
+        preview: 'texto compartido desde otra app',
+        profile: 'default',
+        startedAt: 1,
+        hasLocalDraft: true,
+      );
+      final chat = await pumpChat(
+        tester,
+        session: provisional,
+        connection: connection,
+        desktopGateway: gateway,
+      );
+      final field = find.byType(TextField).first;
+      await tester.enterText(field, 'texto compartido desde otra app');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(gateway.submissions, ['texto compartido desde otra app']);
+      expect(chat.storedSessionId, 'stored-submission-test');
+      gateway.emitComplete('respuesta');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.enterText(field, 'borrador tras compartir');
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final store = ChatDraftStore(
+        await SharedPreferences.getInstance(),
+        secureStorage: _MemoryDraftSecureStorage(secureStore),
+      );
+      expect(
+        (await store.load(connection.id, 'stored-submission-test')).text,
+        'borrador tras compartir',
+      );
+      expect((await store.load(connection.id, provisional.id)).text, isEmpty);
+      expect(
+        (await store.listForConnection(
+          connection.id,
+        )).map((entry) => entry.sessionId),
+        ['stored-submission-test'],
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'draft identity: immediate pop flushes the final canonical draft',
