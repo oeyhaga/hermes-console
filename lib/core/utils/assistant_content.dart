@@ -10,6 +10,8 @@
 /// intacta, garantizando cero cambios de comportamiento en el caso normal.
 library;
 
+import 'dart:convert';
+
 /// True when transport metadata makes a transcript row non-public.
 ///
 /// Call this before projecting or copying a row: several parsers deliberately
@@ -504,6 +506,43 @@ String streamingPublicAssistantText(String raw) =>
 /// while bodies behind a valid private header remain withheld even if unclosed.
 String finalizedPublicAssistantText(String raw) =>
     projectPublicAssistantText(raw, streaming: false).text;
+
+/// Recovers reply text persisted by Responses API outside `content`.
+String codexMessageItemText(Object? rawItems) {
+  Object? items = rawItems;
+  if (items is String) {
+    try {
+      items = jsonDecode(items);
+    } on FormatException {
+      return '';
+    }
+  }
+  if (items is! List) return '';
+
+  final texts = <String>[];
+  for (final item in items) {
+    if (item is! Map ||
+        item['type'] != 'message' ||
+        item['role'] != 'assistant') {
+      continue;
+    }
+    final phase = item['phase'];
+    if (phase == 'commentary' || phase == 'analysis') continue;
+    final content = item['content'];
+    if (content is! List) continue;
+    for (final part in content) {
+      if (part is! Map) continue;
+      final type = part['type'];
+      final text = part['text'];
+      if ((type == 'output_text' || type == 'text') &&
+          text is String &&
+          text.isNotEmpty) {
+        texts.add(text);
+      }
+    }
+  }
+  return texts.join();
+}
 
 /// Separa el razonamiento (`<think>…</think>`, `<thinking>…`) de la respuesta.
 ReasoningSplit splitReasoning(String content) {

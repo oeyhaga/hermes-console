@@ -45,6 +45,73 @@ void main() {
     expect(projection.visibleUserCount, 0);
   });
 
+  test('resume recovers only reply text from decoded Codex sidecar', () {
+    const privateMarker = 'PRIVATE_RPC_PHASE_TEXT';
+    final result = reconciler.project(
+      snapshot({
+        'session_id': 'runtime-codex-sidecar',
+        'session_key': 'stored-1',
+        'messages': const [
+          {
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': [
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'analysis',
+                'content': [
+                  {'type': 'output_text', 'text': privateMarker},
+                ],
+              },
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'final_answer',
+                'content': [
+                  {
+                    'type': 'output_text',
+                    'text': '<think>$privateMarker</think>Respuesta RPC.',
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': [
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'commentary',
+                'content': [
+                  {'type': 'output_text', 'text': privateMarker},
+                ],
+              },
+            ],
+            'tool_calls': [
+              {
+                'id': 'call-private',
+                'function': {'name': 'shell', 'arguments': '{}'},
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(
+      result.messagesNewestFirst.map((message) => message['content']),
+      ['Respuesta RPC.'],
+    );
+    expect(result.messagesNewestFirst.toString(), isNot(contains(privateMarker)));
+    expect(
+      result.messagesNewestFirst.single,
+      isNot(contains('codex_message_items')),
+    );
+  });
+
   test(
     'un process_complete durable sobrevive resume y el graft de refresh',
     () {

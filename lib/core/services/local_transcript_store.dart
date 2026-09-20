@@ -468,10 +468,14 @@ class LocalTranscriptStore {
       return null;
     }
     final rawContent = message['content'];
-    if (rawContent is! String || rawContent.trim().isEmpty) return null;
-    final content = role == 'assistant'
-        ? finalizedPublicAssistantText(rawContent)
-        : rawContent;
+    if (rawContent is! String) return null;
+    var content = rawContent;
+    if (role == 'assistant') {
+      if (rawContent.trim().isEmpty) {
+        content = codexMessageItemText(message['codex_message_items']);
+      }
+      content = finalizedPublicAssistantText(content);
+    }
     if (content.trim().isEmpty) return null;
 
     final sanitized = <String, dynamic>{'role': role, 'content': content};

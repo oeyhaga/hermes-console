@@ -84,6 +84,98 @@ void main() {
       });
     });
 
+    test('recovers only public reply text from Codex sidecar encodings', () {
+      const privateMarker = 'PRIVATE_CODEX_PHASE_TEXT';
+      const sidecar = [
+        {
+          'type': 'message',
+          'role': 'user',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'reasoning',
+          'role': 'assistant',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'commentary',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'analysis',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'final_answer',
+          'content': [
+            {
+              'type': 'output_text',
+              'text': '<think>$privateMarker</think>Respuesta recuperada.',
+            },
+          ],
+        },
+      ];
+
+      for (final encoded in <Object>[sidecar, jsonEncode(sidecar)]) {
+        final normalized = normalizeTranscriptMessageForDisplay({
+          'role': 'assistant',
+          'content': '',
+          'codex_message_items': encoded,
+        });
+
+        expect(normalized?['content'], 'Respuesta recuperada.');
+        expect(normalized.toString(), isNot(contains(privateMarker)));
+        expect(normalized, isNot(contains('codex_message_items')));
+      }
+    });
+
+    test('malformed Codex sidecars are safe and canonical content wins', () {
+      for (final malformed in <Object>[
+        '{',
+        const {'not': 'a list'},
+        7,
+      ]) {
+        expect(
+          normalizeTranscriptMessageForDisplay({
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': malformed,
+          }),
+          isNull,
+        );
+      }
+
+      final normalized = normalizeTranscriptMessageForDisplay(const {
+        'role': 'assistant',
+        'content': 'Respuesta canónica.',
+        'codex_message_items': [
+          {
+            'type': 'message',
+            'role': 'assistant',
+            'content': [
+              {'type': 'output_text', 'text': 'Respuesta lateral.'},
+            ],
+          },
+        ],
+      });
+
+      expect(normalized?['content'], 'Respuesta canónica.');
+    });
+
     test('keeps only sanitized metadata for a known editorial marker', () {
       final normalized = normalizeTranscriptMessageForDisplay(const {
         'message_id': 'marker-1',

@@ -479,11 +479,17 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   final rawDisplayKind = message['display_kind']?.toString().trim() ?? '';
   if (rawDisplayKind == 'hidden') return null;
 
-  var content =
+  final rawContent =
       desktopSessionDisplayText(message['content']) ??
       desktopSessionDisplayText(message['text']) ??
       '';
-  if (role == 'assistant') content = finalizedPublicAssistantText(content);
+  var content = rawContent;
+  if (role == 'assistant') {
+    if (rawContent.trim().isEmpty) {
+      content = codexMessageItemText(message['codex_message_items']);
+    }
+    content = finalizedPublicAssistantText(content);
+  }
   // Internal Stop/recovery evidence must retain the exact submitted prompt.
   if (role == 'user' && !retainUserMentionNote) {
     content = stripBotMentionNote(content);

@@ -769,6 +769,9 @@ class DesktopSessionReconciler {
         desktopSessionDisplayText(displaySource) ??
         desktopSessionDisplayText(message.context) ??
         '';
+    if (role == 'assistant' && content.trim().isEmpty) {
+      content = codexMessageItemText(message.codexMessageItems);
+    }
     if (imageCount > 0) {
       // Aún no hay tarjeta para imágenes de bloques estructurados; el marcador
       // conserva al menos la señal de que el turno incluía una imagen.

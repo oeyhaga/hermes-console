@@ -25,6 +25,38 @@ Map<String, dynamic> _message(
 };
 
 void main() {
+  test('empty assistant tool-call row has no message bubble', () {
+    const privateMarker = 'PRIVATE_TOOL_COMMENTARY';
+    final normalized = normalizeTranscriptMessageForDisplay(
+      const {
+        'role': 'assistant',
+        'content': '',
+        'codex_message_items': [
+          {
+            'type': 'message',
+            'role': 'assistant',
+            'phase': 'commentary',
+            'content': [
+              {'type': 'output_text', 'text': privateMarker},
+            ],
+          },
+        ],
+        'tool_calls': [
+          {
+            'id': 'call-1',
+            'function': {'name': 'shell', 'arguments': '{}'},
+          },
+        ],
+      },
+      retainAssistantToolCalls: true,
+    )!;
+    final projection = ChatRenderProjection.build([normalized]);
+
+    expect(normalized.toString(), isNot(contains(privateMarker)));
+    expect(projection.units.whereType<ChatMessageUnitPlan>(), isEmpty);
+    expect(projection.assistantMessageIndexesNewestFirst, isEmpty);
+  });
+
   test('artifact-only message navigates to its nearest rendered context', () {
     final messages = <Map<String, dynamic>>[
       {

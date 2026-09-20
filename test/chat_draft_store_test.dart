@@ -1916,6 +1916,73 @@ void main() {
     },
   );
 
+  test('local transcript recovers reply text without private phases', () async {
+    const privateMarker = 'PRIVATE_CACHE_PHASE_TEXT';
+    await LocalTranscriptStore.saveFromNewestFirst(
+      'conn-codex',
+      'session-sidecar',
+      const [
+        {
+          'role': 'assistant',
+          'content': '',
+          'codex_message_items': [
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'commentary',
+              'content': [
+                {'type': 'output_text', 'text': privateMarker},
+              ],
+            },
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'final_answer',
+              'content': [
+                {
+                  'type': 'output_text',
+                  'text': '<think>$privateMarker</think>Respuesta en caché.',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          'role': 'assistant',
+          'content': '',
+          'codex_message_items': [
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'analysis',
+              'content': [
+                {'type': 'output_text', 'text': privateMarker},
+              ],
+            },
+          ],
+          'tool_calls': [
+            {
+              'id': 'call-private',
+              'function': {'name': 'shell', 'arguments': '{}'},
+            },
+          ],
+        },
+      ],
+    );
+
+    final restored = await LocalTranscriptStore.load(
+      'conn-codex',
+      'session-sidecar',
+    );
+
+    expect(restored, [
+      {'role': 'assistant', 'content': 'Respuesta en caché.'},
+    ]);
+    final raw = secureStore[_transcriptKey('conn-codex', 'session-sidecar')]!;
+    expect(raw, isNot(contains(privateMarker)));
+    expect(raw, isNot(contains('codex_message_items')));
+  });
+
   test(
     'transcript local descarta classifiers y reasoning antes de guardar',
     () async {
