@@ -2756,6 +2756,13 @@ class QueuedPreparedTurn {
 
 enum QueuedEntryKind { desktopAccepted, text, prepared }
 
+enum QueuedSteerOutcome {
+  accepted,
+  rejected,
+  unconfirmed,
+  queueRemovalFailed,
+}
+
 /// Proyección única y estable de la cola. La UI y el drenaje consumen el mismo
 /// `queueOrder`; `id` no depende de la posición visible.
 class QueuedEntryView {
@@ -11256,12 +11263,13 @@ class ActiveChat {
             expectedOrdinal: userOrdinal,
           );
         }
-        // Sin resolver: reenvío plano. Nunca se adivina un corte — el ordinal
-        // local no comparte espacio con el del gateway tras una compactación o
-        // con transcript paginado (`rewind.ts:286-325`).
+        // El ordinal local no comparte espacio con el del gateway tras una
+        // compactación o con transcript paginado (`rewind.ts:286-325`). Sin una
+        // fila durable exacta, reenviar convertiría la edición en otro turno.
+        if (truncateBeforeRowId == null) {
+          throw StateError('The message can no longer be edited safely');
+        }
       }
-      // Una edición sin dirección durable exacta aterriza como append
-      // ordinario. Lo único que jamás ocurre es inventar un recorte.
       final truncatesDurably = truncateBeforeRowId != null;
       if (!identical(_activeRewrite, reservation) ||
           _transcriptRevision != reservation.transcriptRevision ||
@@ -18046,26 +18054,40 @@ class ActiveChat {
     return true;
   }
 
-  Future<bool> steerQueuedTurn(String id) async {
+  Future<QueuedSteerOutcome> steerQueuedTurnWithOutcome(String id) async {
     if (mutationsBlockedByOwnershipConflict || _disposed || !isStreaming) {
-      return false;
+      return QueuedSteerOutcome.rejected;
     }
     final matches = queuedEntries.where((entry) => entry.id == id);
-    if (matches.isEmpty || !matches.first.isSteerable) return false;
+    if (matches.isEmpty || !matches.first.isSteerable) {
+      return QueuedSteerOutcome.rejected;
+    }
     final entry = matches.first;
     _unparkQueueLease();
     try {
-      final prepared = _preparedTurnQueue.where((item) => 'prepared:${item.turn.clientTurnId}' == id);
+      final prepared = _preparedTurnQueue.where(
+        (item) => 'prepared:${item.turn.clientTurnId}' == id,
+      );
       final legacy = _messageQueue.where((item) => item.id == id);
       final payload = prepared.isNotEmpty
-          ? appendBotMentionNote(prepared.first.turn.fullText, prepared.first.turn.mentionAnnotation)
+          ? appendBotMentionNote(
+              prepared.first.turn.fullText,
+              prepared.first.turn.mentionAnnotation,
+            )
           : legacy.isNotEmpty ? legacy.first.text : entry.text;
       await steer(payload, mentionsFrozen: true);
-    } catch (_) {
-      return false;
+    } catch (error) {
+      return activeChatSteerFailureIsSafeToQueue(error)
+          ? QueuedSteerOutcome.rejected
+          : QueuedSteerOutcome.unconfirmed;
     }
-    return cancelQueuedByIdentity(id);
+    return await cancelQueuedByIdentity(id)
+        ? QueuedSteerOutcome.accepted
+        : QueuedSteerOutcome.queueRemovalFailed;
   }
+
+  Future<bool> steerQueuedTurn(String id) async =>
+      await steerQueuedTurnWithOutcome(id) == QueuedSteerOutcome.accepted;
 
   Future<bool> cancelQueuedTurn(String clientTurnId) async {
     if (mutationsBlockedByOwnershipConflict) return false;

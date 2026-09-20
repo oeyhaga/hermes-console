@@ -841,6 +841,7 @@ class _InteractiveUiGateway extends _UiRewindGateway
 class _NoLiveMutationGateway extends _UiRewindGateway
     implements HermesDesktopRedirectGateway {
   final List<String> redirects = [];
+  Object? redirectError;
 
   int get redirectCalls => redirects.length;
   int get steerCalls => steers.length;
@@ -851,6 +852,8 @@ class _NoLiveMutationGateway extends _UiRewindGateway
     String text,
   ) async {
     redirects.add(text);
+    final error = redirectError;
+    if (error != null) throw error;
     return DesktopRedirectDisposition.redirected;
   }
 }
@@ -13530,6 +13533,46 @@ void main() {
     expect(chat.isStreaming, isFalse);
   });
 
+  testWidgets(
+    'editar sin row id durable no reenvía ni duplica el turno',
+    (tester) async {
+      final gateway = _UiRewindGateway(resolvedRowId: null);
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-rewrite-without-row-id'),
+        messages: const [
+          {'role': 'assistant', 'content': 'Respuesta original'},
+          {'role': 'user', 'content': 'pregunta original'},
+        ],
+      );
+
+      await tester.tap(find.byIcon(Icons.edit_outlined));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('edit-message-composer')),
+        'pregunta corregida',
+      );
+      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 700));
+
+      expect(gateway.resolutionCalls, [
+        (text: 'pregunta original', ordinal: 0),
+      ]);
+      expect(gateway.submissions, isEmpty);
+      expect(gateway.rewinds, isEmpty);
+      expect(
+        chat.messages.where((message) => message['role'] == 'user'),
+        [containsPair('content', 'pregunta original')],
+      );
+      expect(find.textContaining('pregunta original'), findsOneWidget);
+      expect(find.textContaining('pregunta corregida'), findsNothing);
+      expect(find.byType(SnackBar), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('prompt.submit de rewind reserva la sesión frente a otro envío', (
     tester,
   ) async {
@@ -19006,6 +19049,56 @@ void main() {
     );
     semantics.dispose();
   });
+
+  testWidgets(
+    'rechazo de redirección conserva la cola y explica el resultado',
+    (tester) async {
+      final gateway = _NoLiveMutationGateway()
+        ..redirectError = const TuiGatewayRpcError(
+          'session.redirect',
+          'Session is not accepting a redirect',
+          code: 4009,
+        );
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-queue-steer-refused'),
+        initialStoredSessionId: 'sess-test',
+        acquireDesktopRuntimeBeforeMount: true,
+      );
+      expect(
+        await chat.send(
+          fullText: 'turno vivo',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      expect(chat.enqueue('corrige el rumbo'), isTrue);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+      await tester.pump();
+      final id = chat.queuedEntries.single.id;
+
+      await tester.tap(find.byKey(ValueKey('chat-queue-steer-$id')));
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(gateway.redirects, ['corrige el rumbo']);
+      expect(chat.queuedMessages, ['corrige el rumbo']);
+      expect(
+        find.text(
+          'Hermes no aceptó la redirección. El mensaje sigue en cola y se enviará después.',
+        ),
+        findsOneWidget,
+      );
+      gateway.emit('message.complete', {'text': 'turno terminado'});
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(gateway.submissions, ['turno vivo', 'corrige el rumbo']);
+      gateway.emit('message.complete', {'text': 'seguimiento terminado'});
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('Steer se oculta para comandos slash en cola', (tester) async {
     final chat = await pumpChat(tester, chatState: ChatPipelineState.streaming);

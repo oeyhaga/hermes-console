@@ -6509,6 +6509,23 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
+  Future<void> _steerQueuedEntry(String id) async {
+    final outcome = await _chat.steerQueuedTurnWithOutcome(id);
+    if (!mounted) return;
+    final strings = Strings.of(context);
+    final message = switch (outcome) {
+      QueuedSteerOutcome.accepted => null,
+      QueuedSteerOutcome.rejected => strings.chaQueueSteerRejected,
+      QueuedSteerOutcome.unconfirmed => strings.chaQueueSteerUnconfirmed,
+      QueuedSteerOutcome.queueRemovalFailed =>
+        strings.chaQueueSteerCleanupFailed,
+    };
+    if (message == null) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _regenerateLastResponse() async {
     final projection = _currentRenderProjection;
     final user = projection.latestUserMessage;
@@ -11325,7 +11342,7 @@ class _ChatScreenState extends State<ChatScreen>
                 editingId: _editingQueuedEntryId,
                 onEdit: () => unawaited(_editQueuedEntry(queuedEntries[i])),
                 onSteer: () =>
-                    unawaited(_chat.steerQueuedTurn(queuedEntries[i].id)),
+                    unawaited(_steerQueuedEntry(queuedEntries[i].id)),
                 onSendNow: () =>
                     unawaited(_chat.sendQueuedNow(queuedEntries[i].id)),
                 onDelete: () => unawaited(
