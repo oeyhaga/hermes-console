@@ -4003,6 +4003,47 @@ void main() {
   );
 
   testWidgets(
+    'A1 el sondeo pasivo del roster sigue corriendo con el turno vivo',
+    (tester) async {
+      // Spec 061 (addendum §2.1 S-A): la autoridad terminal necesita que
+      // `session.active_list` se consulte también mientras el turno emite; si
+      // el sondeo se apaga, nada puede desmentir un «trabajando» colgado.
+      final gateway = _UiRewindGateway()
+        ..activeSessionList = const DesktopActiveSessionList(
+          sessions: [
+            DesktopActiveSession(
+              runtimeSessionId: 'runtime-live-turn',
+              storedSessionId: 'sess-test',
+              status: 'working',
+            ),
+          ],
+        );
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-probe-while-streaming'),
+        chatState: ChatPipelineState.streaming,
+        initialStoredSessionId: 'sess-test',
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) async => const [
+          {'id': 'stable-user', 'role': 'user', 'content': 'Turno durable'},
+        ],
+      );
+      expect(chat.isStreaming, isTrue);
+
+      final callsBeforeWindow = gateway.activeListCalls;
+      await tester.pump(const Duration(seconds: 4));
+      await tester.pump();
+
+      expect(gateway.activeListCalls, greaterThan(callsBeforeWindow));
+      expect(gateway.resumeExistingCalls, 0);
+      expect(gateway.createCalls, 0);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'al terminar el turno remoto recarga REST y muestra la respuesta',
     (tester) async {
       var restRows = <Map<String, dynamic>>[

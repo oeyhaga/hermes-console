@@ -3872,17 +3872,21 @@ class _ChatScreenState extends State<ChatScreen>
     });
   }
 
+  // El sondeo del roster no está condicionado por el turno vivo: una lista
+  // `session.active_list` completa es la única autoridad capaz de desmentir un
+  // `busy` colgado cuando el turno muere sin emitir su terminal. La lectura
+  // durable del transcript sí sigue vetada mientras el turno emite.
   bool get _canProbePassiveRemoteActivity =>
       !_disposed &&
       mounted &&
       _chatBound &&
       _chatRouteVisible &&
       _appInForeground &&
-      !_chat.isStreaming &&
       !_chat.resumeReconciliationInFlight;
 
   bool get _canPassivelyRefreshTranscript =>
       _canProbePassiveRemoteActivity &&
+      !_chat.isStreaming &&
       (!_chat.hasDesktopRuntime || _chat.remoteSurfaceOwnsLiveTurn) &&
       _messageRefreshInFlightEpoch == null;
 
@@ -3896,6 +3900,9 @@ class _ChatScreenState extends State<ChatScreen>
       _invalidatePassiveMessageRefresh();
       return;
     }
+    // Un turno vivo sigue siendo una transición de autoridad para la lectura
+    // durable: retira la petición REST en vuelo, pero conserva el sondeo.
+    if (_chat.isStreaming) _invalidatePassiveMessageRefresh();
     _passiveConversationReader?.setVisible(true, immediate: refreshNow);
   }
 
@@ -3904,6 +3911,9 @@ class _ChatScreenState extends State<ChatScreen>
     final ownedLiveTurn = _chat.remoteSurfaceOwnsLiveTurn;
     await _chat.refreshPassiveRemoteActivity();
     if (!_canProbePassiveRemoteActivity) return true;
+    // El sondeo ya cumplió su parte; el transcript durable no se lee mientras
+    // el turno siga vivo (una lectura así reaparece como burbuja duplicada).
+    if (_chat.isStreaming) return true;
     // Another surface's assistant is not in REST until the turn ends. The
     // busy poll therefore never sees the reply; fetch once more on idle.
     final remoteTurnSettled = ownedLiveTurn && !_chat.remoteSurfaceOwnsLiveTurn;
