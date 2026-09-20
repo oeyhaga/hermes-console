@@ -490,11 +490,18 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
     }
     content = finalizedPublicAssistantText(content);
   }
+  final reasoning = role == 'assistant'
+      ? durableAssistantReasoningText(message)
+      : '';
   // Internal Stop/recovery evidence must retain the exact submitted prompt.
   if (role == 'user' && !retainUserMentionNote) {
     content = stripBotMentionNote(content);
   }
-  final normalized = <String, dynamic>{'role': role, 'content': content};
+  final normalized = <String, dynamic>{
+    'role': role,
+    'content': content,
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
+  };
   for (final key in const ['id', 'message_id', 'row_id']) {
     final value = message[key];
     if (value is int && value > 0) {
@@ -644,6 +651,7 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   final hasAssistantToolCalls =
       assistantToolCalls is List && assistantToolCalls.isNotEmpty;
   if (content.trim().isEmpty &&
+      reasoning.isEmpty &&
       generatedImages.isEmpty &&
       !isEditorial &&
       !isLivePlaceholder &&
@@ -15897,6 +15905,7 @@ class ActiveChat {
         final text = terminalSource is String
             ? finalizedPublicAssistantText(terminalSource)
             : '';
+        final reasoning = durableAssistantReasoningText(payload);
         if ((payload['status'] ?? '').toString().trim().toLowerCase() ==
             'error') {
           _failRun(
@@ -15921,6 +15930,7 @@ class ActiveChat {
         }
         _completeRun(
           finalOutput: narratable && text.isNotEmpty ? text : null,
+          finalReasoning: reasoning.isNotEmpty ? reasoning : null,
           finalOutputNarratable: narratable,
         );
       case 'error':
@@ -19442,6 +19452,7 @@ class ActiveChat {
   /// (con sus tool events para agrupar) y notifica si procede.
   Future<void> _completeRun({
     String? finalOutput,
+    String? finalReasoning,
     bool finalOutputNarratable = true,
     List<Map<String, dynamic>>? authoritativeTranscript,
   }) async {
@@ -19459,6 +19470,7 @@ class ActiveChat {
     final invocationPublicOutput = finalOutput == null
         ? null
         : finalizedPublicAssistantText(finalOutput);
+    final invocationReasoning = finalReasoning?.trim();
     if (invocationPublicOutput?.isNotEmpty == true) {
       _pendingAuthoritativeTerminalEpoch = invocationEpoch;
       _pendingAuthoritativeTerminalOutput = invocationPublicOutput;
@@ -19556,13 +19568,16 @@ class ActiveChat {
     pendingApproval = null;
     _expireInteractivePromptsForRuntime(_desktopRuntimeSessionId);
     _markCurrentTurnAwaitingTranscript();
-    if (settledFinalOutput != null &&
-        _messages.isNotEmpty &&
+    if (_messages.isNotEmpty &&
         _messages[0]['role'] == 'assistant' &&
-        _messages[0]['content'] != settledFinalOutput) {
+        ((settledFinalOutput != null &&
+                _messages[0]['content'] != settledFinalOutput) ||
+            invocationReasoning?.isNotEmpty == true)) {
       _messages[0] = {
         ..._messages[0],
-        'content': settledFinalOutput,
+        'content': ?settledFinalOutput,
+        if (invocationReasoning?.isNotEmpty == true)
+          'reasoning': invocationReasoning,
         '_pipeline': false,
       };
     }

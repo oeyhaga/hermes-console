@@ -53,7 +53,7 @@ void main() {
       },
     );
 
-    test('keeps only public identity content and timestamp fields', () {
+    test('keeps durable reasoning only in its canonical field', () {
       final normalized = normalizeTranscriptMessageForDisplay(const {
         'id': 7,
         'message_id': 'msg-7',
@@ -61,8 +61,8 @@ void main() {
         'role': 'assistant',
         'content': '<think>PRIVATE_INLINE</think>Respuesta pública.',
         'timestamp': 123.5,
-        'reasoning': 'PRIVATE_REASONING',
-        'reasoning_content': 'PRIVATE_REASONING_CONTENT',
+        'reasoning': 'DURABLE_REASONING',
+        'reasoning_content': 'IGNORED_REASONING_CONTENT',
         'reasoning_details': [
           {'text': 'PRIVATE_TRACE'},
         ],
@@ -80,12 +80,40 @@ void main() {
         'row_id': 7,
         'role': 'assistant',
         'content': 'Respuesta pública.',
+        'reasoning': 'DURABLE_REASONING',
         'timestamp': 123.5,
       });
     });
 
-    test('recovers only public reply text from Codex sidecar encodings', () {
-      const privateMarker = 'PRIVATE_CODEX_PHASE_TEXT';
+    test('accepts only plain-string reasoning_details fallback', () {
+      expect(
+        normalizeTranscriptMessageForDisplay(const {
+          'role': 'assistant',
+          'content': 'Respuesta.',
+          'reasoning_details': 'DURABLE_DETAILS_STRING',
+        }),
+        {
+          'role': 'assistant',
+          'content': 'Respuesta.',
+          'reasoning': 'DURABLE_DETAILS_STRING',
+        },
+      );
+
+      final structured = normalizeTranscriptMessageForDisplay(const {
+        'role': 'assistant',
+        'content': 'Respuesta.',
+        'reasoning_details': [
+          {'text': 'PRIVATE_STRUCTURED_DETAILS'},
+        ],
+      });
+      expect(structured, {'role': 'assistant', 'content': 'Respuesta.'});
+      expect(structured.toString(), isNot(contains('PRIVATE_STRUCTURED_DETAILS')));
+    });
+
+    test('routes Codex commentary and analysis only to reasoning', () {
+      const privateMarker = 'PRIVATE_INLINE_CODEX_TEXT';
+      const commentary = 'COMMENTARY_REASONING_TEXT';
+      const analysis = 'ANALYSIS_REASONING_TEXT';
       const sidecar = [
         {
           'type': 'message',
@@ -106,7 +134,7 @@ void main() {
           'role': 'assistant',
           'phase': 'commentary',
           'content': [
-            {'type': 'output_text', 'text': privateMarker},
+            {'type': 'output_text', 'text': commentary},
           ],
         },
         {
@@ -114,7 +142,7 @@ void main() {
           'role': 'assistant',
           'phase': 'analysis',
           'content': [
-            {'type': 'output_text', 'text': privateMarker},
+            {'type': 'output_text', 'text': analysis},
           ],
         },
         {
@@ -138,6 +166,9 @@ void main() {
         });
 
         expect(normalized?['content'], 'Respuesta recuperada.');
+        expect(normalized?['content'], isNot(contains(commentary)));
+        expect(normalized?['content'], isNot(contains(analysis)));
+        expect(normalized?['reasoning'], '$commentary\n\n$analysis');
         expect(normalized.toString(), isNot(contains(privateMarker)));
         expect(normalized, isNot(contains('codex_message_items')));
       }

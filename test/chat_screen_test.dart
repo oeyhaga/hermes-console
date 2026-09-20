@@ -13968,7 +13968,7 @@ void main() {
     },
   );
 
-  testWidgets('reasoning estructurado nunca entra en la UI del chat', (
+  testWidgets('tool-call con solo reasoning conserva bloque plegado', (
     tester,
   ) async {
     await pumpChat(
@@ -13976,22 +13976,103 @@ void main() {
       messages: const [
         {
           'role': 'assistant',
-          'content': 'Respuesta pública final.',
-          'reasoning_content': 'PRIVATE_REASONING_SENTINEL',
-          'reasoning': 'PRIVATE_ANALYSIS_SENTINEL',
-          'reasoning_details': [
-            {'type': 'reasoning.text', 'text': 'PRIVATE_TRACE_SENTINEL'},
+          'content': '',
+          'reasoning': 'RAZONAMIENTO_DURABLE_VISIBLE',
+          'tool_calls': [
+            {
+              'id': 'call-reasoning',
+              'function': {'name': 'shell', 'arguments': '{}'},
+            },
           ],
         },
         {'role': 'user', 'content': 'Pregunta segura'},
       ],
     );
 
-    expect(find.textContaining('Respuesta pública final.'), findsOneWidget);
-    expect(find.textContaining('PRIVATE_REASONING_SENTINEL'), findsNothing);
-    expect(find.textContaining('PRIVATE_ANALYSIS_SENTINEL'), findsNothing);
-    expect(find.textContaining('PRIVATE_TRACE_SENTINEL'), findsNothing);
+    expect(find.text('Razonamiento'), findsOneWidget);
+    expect(find.textContaining('RAZONAMIENTO_DURABLE_VISIBLE'), findsNothing);
+
+    await tester.tap(find.text('Razonamiento'));
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.textContaining('RAZONAMIENTO_DURABLE_VISIBLE'), findsOneWidget);
     expect(find.text('Pregunta segura'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('copiar respuesta excluye el reasoning durable', (tester) async {
+    await pumpChat(
+      tester,
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': '**Respuesta pública final.**',
+          'reasoning': 'RAZONAMIENTO_NO_COPIABLE',
+        },
+        {'role': 'user', 'content': 'Pregunta segura'},
+      ],
+    );
+
+    expect(find.text('Razonamiento'), findsOneWidget);
+    final copyTarget = find
+        .ancestor(
+          of: find.byIcon(Icons.copy_rounded).first,
+          matching: find.byType(InkWell),
+        )
+        .first;
+    await tester.tap(copyTarget);
+    await tester.pump();
+
+    expect(clipboardText, 'Respuesta pública final.');
+    expect(clipboardText, isNot(contains('RAZONAMIENTO_NO_COPIABLE')));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('live thinking termina conservando reasoning plegado', (
+    tester,
+  ) async {
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('live-reasoning-complete'),
+      messagesLoaded: true,
+      initialStoredSessionId: 'sess-test',
+      acquireDesktopRuntimeBeforeMount: true,
+    );
+    expect(
+      await chat.send(
+        fullText: 'Piensa y responde',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    await tester.pump();
+
+    expect(find.byType(ThinkingTraceCard), findsOneWidget);
+
+    gateway.emit('message.complete', const {
+      'text': 'Respuesta terminada.',
+      'reasoning': 'RAZONAMIENTO_DEL_TURNO_TERMINADO',
+    });
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(find.byType(ThinkingTraceCard), findsNothing);
+    expect(find.text('Respuesta terminada.'), findsOneWidget);
+    expect(find.text('Razonamiento'), findsOneWidget);
+    expect(
+      find.textContaining('RAZONAMIENTO_DEL_TURNO_TERMINADO'),
+      findsNothing,
+    );
+
+    await tester.tap(find.text('Razonamiento'));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(
+      find.textContaining('RAZONAMIENTO_DEL_TURNO_TERMINADO'),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

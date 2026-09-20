@@ -1916,8 +1916,11 @@ void main() {
     },
   );
 
-  test('local transcript recovers reply text without private phases', () async {
-    const privateMarker = 'PRIVATE_CACHE_PHASE_TEXT';
+  test('local transcript keeps reply and reasoning in separate fields', () async {
+    const commentary = 'CACHE_COMMENTARY_REASONING';
+    const analysis = 'CACHE_ANALYSIS_REASONING';
+    const inlineMarker = 'PRIVATE_CACHE_INLINE_TEXT';
+    const reasoningOnly = 'CACHE_REASONING_ONLY';
     await LocalTranscriptStore.saveFromNewestFirst(
       'conn-codex',
       'session-sidecar',
@@ -1931,7 +1934,15 @@ void main() {
               'role': 'assistant',
               'phase': 'commentary',
               'content': [
-                {'type': 'output_text', 'text': privateMarker},
+                {'type': 'output_text', 'text': commentary},
+              ],
+            },
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'analysis',
+              'content': [
+                {'type': 'output_text', 'text': analysis},
               ],
             },
             {
@@ -1941,7 +1952,7 @@ void main() {
               'content': [
                 {
                   'type': 'output_text',
-                  'text': '<think>$privateMarker</think>Respuesta en caché.',
+                  'text': '<think>$inlineMarker</think>Respuesta en caché.',
                 },
               ],
             },
@@ -1956,7 +1967,7 @@ void main() {
               'role': 'assistant',
               'phase': 'analysis',
               'content': [
-                {'type': 'output_text', 'text': privateMarker},
+                {'type': 'output_text', 'text': reasoningOnly},
               ],
             },
           ],
@@ -1976,10 +1987,18 @@ void main() {
     );
 
     expect(restored, [
-      {'role': 'assistant', 'content': 'Respuesta en caché.'},
+      {'role': 'assistant', 'content': '', 'reasoning': reasoningOnly},
+      {
+        'role': 'assistant',
+        'content': 'Respuesta en caché.',
+        'reasoning': '$commentary\n\n$analysis',
+      },
     ]);
     final raw = secureStore[_transcriptKey('conn-codex', 'session-sidecar')]!;
-    expect(raw, isNot(contains(privateMarker)));
+    expect(raw, contains(commentary));
+    expect(raw, contains(analysis));
+    expect(raw, contains(reasoningOnly));
+    expect(raw, isNot(contains(inlineMarker)));
     expect(raw, isNot(contains('codex_message_items')));
   });
 

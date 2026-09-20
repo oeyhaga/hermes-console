@@ -45,8 +45,10 @@ void main() {
     expect(projection.visibleUserCount, 0);
   });
 
-  test('resume recovers only reply text from decoded Codex sidecar', () {
-    const privateMarker = 'PRIVATE_RPC_PHASE_TEXT';
+  test('resume separates reply and Codex reasoning sidecars', () {
+    const privateMarker = 'PRIVATE_RPC_INLINE_TEXT';
+    const analysisReasoning = 'RPC_ANALYSIS_REASONING';
+    const commentaryReasoning = 'RPC_COMMENTARY_REASONING';
     final result = reconciler.project(
       snapshot({
         'session_id': 'runtime-codex-sidecar',
@@ -61,7 +63,7 @@ void main() {
                 'role': 'assistant',
                 'phase': 'analysis',
                 'content': [
-                  {'type': 'output_text', 'text': privateMarker},
+                  {'type': 'output_text', 'text': analysisReasoning},
                 ],
               },
               {
@@ -86,7 +88,7 @@ void main() {
                 'role': 'assistant',
                 'phase': 'commentary',
                 'content': [
-                  {'type': 'output_text', 'text': privateMarker},
+                  {'type': 'output_text', 'text': commentaryReasoning},
                 ],
               },
             ],
@@ -103,13 +105,18 @@ void main() {
 
     expect(
       result.messagesNewestFirst.map((message) => message['content']),
-      ['Respuesta RPC.'],
+      ['', 'Respuesta RPC.'],
+    );
+    expect(result.messagesNewestFirst.first['reasoning'], commentaryReasoning);
+    expect(result.messagesNewestFirst.last['reasoning'], analysisReasoning);
+    expect(
+      result.messagesNewestFirst.last['content'],
+      isNot(contains(analysisReasoning)),
     );
     expect(result.messagesNewestFirst.toString(), isNot(contains(privateMarker)));
-    expect(
-      result.messagesNewestFirst.single,
-      isNot(contains('codex_message_items')),
-    );
+    for (final message in result.messagesNewestFirst) {
+      expect(message, isNot(contains('codex_message_items')));
+    }
   });
 
   test(

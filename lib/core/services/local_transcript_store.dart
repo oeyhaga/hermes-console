@@ -135,8 +135,8 @@ class LocalTranscriptStore {
 
   /// Guarda el transcript a partir de la lista viva del chat ([ActiveChat]
   /// usa index 0 = más nuevo). Filtra placeholders del pipeline, errores y
-  /// turnos vacíos: solo user/assistant con contenido. Si no queda nada, borra
-  /// la entrada en vez de dejar un `[]`.
+  /// turnos vacíos: solo user/assistant con contenido o reasoning durable. Si
+  /// no queda nada, borra la entrada en vez de dejar un `[]`.
   static Future<LocalTranscriptSnapshot> saveFromNewestFirst(
     String connId,
     String sessionId,
@@ -476,9 +476,16 @@ class LocalTranscriptStore {
       }
       content = finalizedPublicAssistantText(content);
     }
-    if (content.trim().isEmpty) return null;
+    final reasoning = role == 'assistant'
+        ? durableAssistantReasoningText(message)
+        : '';
+    if (content.trim().isEmpty && reasoning.isEmpty) return null;
 
-    final sanitized = <String, dynamic>{'role': role, 'content': content};
+    final sanitized = <String, dynamic>{
+      'role': role,
+      'content': content,
+      if (reasoning.isNotEmpty) 'reasoning': reasoning,
+    };
     final displayKind = role == 'user' ? effectiveUserDisplayKind(message) : '';
     if (cacheableDisplayKinds.contains(displayKind)) {
       sanitized['display_kind'] = displayKind;
