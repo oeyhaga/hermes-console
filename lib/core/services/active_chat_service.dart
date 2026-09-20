@@ -3769,6 +3769,13 @@ class ActiveChat {
   final Map<InteractivePromptKey, Future<DesktopPromptResponse>> _batchLocks =
       {};
   SubagentActivityState? _subagentActivities;
+  // Set once a fully fenced `subagent.list` for the current runtime has been
+  // applied. Only such a response proves what is still live: a delegation
+  // started with `background` outlives the turn that spawned it, so a turn
+  // that ended proves nothing, and a list that failed proves nothing either.
+  // Cleared whenever the roster's scope rotates, so proof never crosses
+  // runtimes.
+  bool _subagentLiveRosterConfirmed = false;
   String? _subagentTranscriptTurnAnchor;
   final Map<SubagentActivityKey, _PendingSubagentInterrupt>
   _pendingSubagentInterrupts = {};
@@ -4646,11 +4653,23 @@ class ActiveChat {
       }
       _subagentPublicActivities = _collectPrivateSubagentProjection();
     }
+    // Every fence above held and the roster was applied, so this response is
+    // authority over what is still live for this runtime. Record that, since
+    // it is the only evidence presentation may settle a row on.
+    _subagentLiveRosterConfirmed = true;
     if (canProvePresentation ||
         ((hadControlAuthority || rosterChanged) && rows.isEmpty)) {
       _emit(ActiveChatEvent.subagentActivity);
     }
   }
+
+  /// A fenced `subagent.list` has been applied for the current runtime and no
+  /// live child remains in it. This — not a turn that ended — is the evidence
+  /// that outstanding delegated work is over: a background delegation keeps
+  /// running past its parent turn, and a failed or never-answered list is
+  /// never evidence of absence.
+  bool get subagentLiveRosterConfirmedEmpty =>
+      _subagentLiveRosterConfirmed && safeActiveSubagentCount == 0;
 
   Future<void> refreshSubagents() => _hydrateSubagentsForCurrentRuntime();
 
@@ -16180,6 +16199,9 @@ class ActiveChat {
     _rememberRetiredSubagentTerminals(current);
     _rememberSubagentHistoricalEvidence(current);
     _subagentActivities = SubagentActivityState.empty(recoveredScope);
+    // The new runtime's roster has not been listed yet, so no earlier list is
+    // authority over it: proof of absence never crosses a rotation.
+    _subagentLiveRosterConfirmed = false;
     _subagentControlAuthority.clear();
     _subagentMutationGeneration += 1;
     _pendingSubagentInterrupts.clear();

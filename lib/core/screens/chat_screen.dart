@@ -1152,6 +1152,19 @@ class _ChatScreenState extends State<ChatScreen>
     if (live.isNotEmpty) {
       _lastNonEmptySubagentActivities = live;
       if (live.any((a) => !a.isTerminal)) _subagentPillDismissed = false;
+    } else if (_chat.subagentLiveRosterConfirmedEmpty) {
+      // Keeping the rows is the point of this cache; keeping them *running*
+      // is not. A turn that dies without a successor (`_failRun`'s "Modelo
+      // sin respuesta", a cancel, any end that never emits another
+      // `started`) left the cached non-terminal rows spinning a "trabajando"
+      // label until the next prompt. Settle them the moment the service has
+      // authority that nothing is live — a fenced `subagent.list` that no
+      // longer reports them — and only then: a background delegation keeps
+      // running after its parent turn ends, so the turn ending is not
+      // evidence, and neither is a list that failed to answer.
+      _lastNonEmptySubagentActivities = _settledSubagentActivities(
+        _lastNonEmptySubagentActivities,
+      );
     }
     // A momentarily empty `live` (a poll gap, a cover/pause/reconnect cycle)
     // is not proof of retirement — this getter runs on every build, so
@@ -1162,6 +1175,39 @@ class _ChatScreenState extends State<ChatScreen>
     return _subagentPillDismissed
         ? const <SubagentActivity>[]
         : _lastNonEmptySubagentActivities;
+  }
+
+  /// A row the pill still counts and paints as live work.
+  static bool _presentsAsRunning(SubagentActivity activity) =>
+      !activity.isTerminal && activity.phase != SubagentActivityPhase.unknown;
+
+  /// Copies of [activities] with every still-running row presented as stopped,
+  /// so the pill reads as finished/interrupted (no spinner, no "trabajando")
+  /// instead of pretending the work is still going. Terminal rows keep their
+  /// real phase (completed, failed), and an `unknown` row stays unknown:
+  /// absence is not evidence of what that one did.
+  static List<SubagentActivity> _settledSubagentActivities(
+    List<SubagentActivity> activities,
+  ) {
+    if (!activities.any(_presentsAsRunning)) return activities;
+    return List<SubagentActivity>.unmodifiable([
+      for (final activity in activities)
+        if (!_presentsAsRunning(activity))
+          activity
+        else
+          SubagentActivity(
+            key: activity.key,
+            source: activity.source,
+            phase: SubagentActivityPhase.cancelled,
+            subagentId: activity.subagentId,
+            delegationId: activity.delegationId,
+            childSessionId: activity.childSessionId,
+            legacyToolCallId: activity.legacyToolCallId,
+            eventRevision: activity.eventRevision,
+            seenEventIds: activity.seenEventIds,
+            details: activity.details,
+          ),
+    ]);
   }
 
   void _dismissSubagentPill() {

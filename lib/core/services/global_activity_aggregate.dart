@@ -714,10 +714,15 @@ _EventReduction? _reduceEvent(
       GlobalActivityPhase.delegated,
       subagentCount: type == 'subagent.start' ? subagents + 1 : subagents,
     ),
+    // `subagent.start` raised this count, so its completion has to lower it
+    // again or the aggregate keeps reporting delegated children that already
+    // finished. Clamped at zero: a duplicate or unmatched completion (replay,
+    // reconnect) must not drive it negative.
     'subagent.complete' => live(
       processes > 0
           ? GlobalActivityPhase.backgroundWork
           : GlobalActivityPhase.generating,
+      subagentCount: subagents > 0 ? subagents - 1 : 0,
     ),
     'status.update' => switch ((payload['kind'] ?? payload['status'])) {
       'compacting' => live(GlobalActivityPhase.compacting),
