@@ -4078,6 +4078,7 @@ class ActiveChat {
   /// Último runtime que este chat vio anunciado por un roster completo.
   String? _rosterLiveRuntimeSessionId;
   int _rosterRuntimeAbsenceStreak = 0;
+  int? _unboundColdOpenConvergenceEpoch;
 
   /// Equivalente a `sawAssistantPayload` de Desktop: prueba de que el runtime
   /// llegó a arrancar este turno. Recién enviado, el backend informa la sesión
@@ -4171,6 +4172,13 @@ class ActiveChat {
     return previousState != next || previousVisible != _passiveActivityVisible;
   }
 
+  String? get _passiveRosterStoredSessionId =>
+      (_desktopStoredSessionId ??
+              (_unboundColdOpenConvergenceEpoch == _turnEpoch
+                  ? serverSessionId
+                  : null))
+          ?.trim();
+
   bool _passiveRemoteActivityRequestStillCurrent({
     required String storedSessionId,
     required String? runtimeSessionId,
@@ -4186,7 +4194,7 @@ class ActiveChat {
       isStreaming == streaming &&
       activeChatPassiveActivityRequestStillCurrent(
         expectedStoredSessionId: storedSessionId,
-        currentStoredSessionId: this.storedSessionId?.trim(),
+        currentStoredSessionId: _passiveRosterStoredSessionId,
         expectedRuntimeSessionId: runtimeSessionId,
         currentRuntimeSessionId: _desktopRuntimeSessionId,
         expectedTurnEpoch: turnEpoch,
@@ -4204,7 +4212,7 @@ class ActiveChat {
     final gateway = _desktopGateway;
     if (gateway is! HermesDesktopSessionActivityGateway) return;
     final activityGateway = gateway as HermesDesktopSessionActivityGateway;
-    final storedId = storedSessionId?.trim();
+    final storedId = _passiveRosterStoredSessionId;
     if (storedId == null || storedId.isEmpty) return;
     final requestGeneration = ++_passiveRemoteActivityRequestGeneration;
     final requestRuntimeSessionId = _desktopRuntimeSessionId;
@@ -4225,7 +4233,7 @@ class ActiveChat {
       )) {
         return;
       }
-      await _settleTurnAbsentFromRoster(active);
+      await applyAuthoritativeActiveSessionList(active);
       // Con un turno propio vivo el roster solo aporta autoridad terminal: la
       // máquina de presentación pasiva describe la actividad de otra superficie.
       if (isStreaming) return;
@@ -4276,18 +4284,17 @@ class ActiveChat {
     }
   }
 
-  /// Paridad con Desktop (`rehydrateLiveSessionStatuses`,
-  /// `use-background-sync.ts`): un roster completo también es autoritativo
-  /// sobre la AUSENCIA. El gateway retira la sesión de `_sessions` cuando su
-  /// turno acaba y su transporte desaparece, así que un turno que muere con el
-  /// socket degradado nunca entrega su terminal y `busy` se quedaría colgado
-  /// hasta reiniciar la app.
-  Future<void> _settleTurnAbsentFromRoster(
+  /// Applies one complete roster result already fetched by another activity
+  /// owner, so Home and an open chat can share the same liveness authority.
+  Future<void> applyAuthoritativeActiveSessionList(
     DesktopActiveSessionList roster,
   ) async {
     final runtimeId = _desktopRuntimeSessionId;
-    // Un roster incompleto o malformado no prueba nada sobre la ausencia.
-    if (runtimeId == null || roster.hasMalformedRows) return;
+    if (roster.hasMalformedRows) return;
+    if (runtimeId == null) {
+      await _settleUnboundColdOpenAbsentFromRoster(roster);
+      return;
+    }
     if (roster.sessions.any((row) => row.runtimeSessionId == runtimeId)) {
       _rosterLiveRuntimeSessionId = runtimeId;
       _rosterRuntimeAbsenceStreak = 0;
@@ -4305,14 +4312,35 @@ class ActiveChat {
     } else if (_rosterLiveRuntimeSessionId != runtimeId) {
       return;
     }
-    // Una fila que falta una sola vez tolera una carrera de la lista; la racha
-    // confirmada es el hecho terminal que los eventos perdidos no entregaron.
     if (++_rosterRuntimeAbsenceStreak < _terminalAuthorityAbsenceStreak) return;
     _rosterRuntimeAbsenceStreak = 0;
     _rosterLiveRuntimeSessionId = null;
-    // Un `tool.complete` perdido dejaría una fila de herramienta girando en una
-    // sesión ya inerte: sella las partes abiertas igual que la recuperación por
-    // snapshot. Esto no es un fallo del turno y no escribe burbuja de error.
+    _sealRecoveredLiveActivity(completed: true);
+    await _completeRun(
+      finalOutput: assistantContent.isEmpty ? null : assistantContent,
+      finalOutputNarratable: false,
+    );
+  }
+
+  Future<void> _settleUnboundColdOpenAbsentFromRoster(
+    DesktopActiveSessionList roster,
+  ) async {
+    final convergenceEpoch = _unboundColdOpenConvergenceEpoch;
+    if (convergenceEpoch == null ||
+        convergenceEpoch != _turnEpoch ||
+        !isStreaming ||
+        _runTerminal) {
+      return;
+    }
+    final storedId = (_desktopStoredSessionId ?? serverSessionId).trim();
+    if (storedId.isEmpty) return;
+    if (roster.sessions.any((row) => row.storedSessionId == storedId)) {
+      _rosterRuntimeAbsenceStreak = 0;
+      return;
+    }
+    if (++_rosterRuntimeAbsenceStreak < _terminalAuthorityAbsenceStreak) return;
+    _rosterRuntimeAbsenceStreak = 0;
+    _unboundColdOpenConvergenceEpoch = null;
     _sealRecoveredLiveActivity(completed: true);
     await _completeRun(
       finalOutput: assistantContent.isEmpty ? null : assistantContent,
@@ -6373,6 +6401,8 @@ class ActiveChat {
       _retireDesktopRuntime();
       _desktopRuntimeSessionId = runtimeId;
       _retiringDesktopRuntimeSessionId = null;
+      _unboundColdOpenConvergenceEpoch = null;
+      _rosterRuntimeAbsenceStreak = 0;
       _coreReadIdentity = _coreReadIdentity.withRuntime(runtimeId);
       _desktopSessionEpoch += 1;
       _sessionInfoEpoch = 0;
@@ -7570,6 +7600,13 @@ class ActiveChat {
       // Si REST ya pintó un transcript legible, un fallo del canal vivo no lo
       // vuelve a ocultar. El próximo envío/reintento podrá enlazar el runtime.
       if (prefetchedNewestFirst?.isNotEmpty == true || _messages.isNotEmpty) {
+        if (capturedResumeError != null &&
+            _desktopRuntimeSessionId == null &&
+            isStreaming &&
+            !_runTerminal) {
+          _unboundColdOpenConvergenceEpoch = _turnEpoch;
+          _rosterRuntimeAbsenceStreak = 0;
+        }
         if (prefetchedTranscriptComplete && _transcriptIsComplete) {
           final projected = _applyCancelledTurnTombstones(
             _messages,
