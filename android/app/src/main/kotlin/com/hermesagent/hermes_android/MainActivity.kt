@@ -481,21 +481,35 @@ class MainActivity : FlutterFragmentActivity() {
             ?.take(65536)
             .orEmpty()
         val text = when {
+            // Compartir un enlace pega solo el enlace: el título de la página
+            // (EXTRA_SUBJECT) no es lo que la persona quiso enviar.
+            SHARED_LINK_ONLY.matches(body) -> body
             subject.isEmpty() -> body
             body.isEmpty() -> subject
             body.startsWith(subject) -> body
             else -> "$subject\n\n$body"
         }
 
+        // En un compartido de texto (enlace, selección) los URI de EXTRA_STREAM
+        // y del ClipData son la vista previa que añade la app emisora (la
+        // miniatura de la página), no un archivo elegido por la persona. Un
+        // archivo de texto compartido sin cuerpo sí sigue adjuntándose.
+        val isTextShare = source.type?.startsWith("text/") == true
+        val streamsArePreview = source.action == Intent.ACTION_SEND &&
+            isTextShare &&
+            body.isNotEmpty()
+
         val uris = linkedSetOf<Uri>()
-        if (source.action == Intent.ACTION_SEND_MULTIPLE) {
-            uris.addAll(parcelableUriList(source))
-        } else {
-            parcelableUri(source)?.let(uris::add)
-        }
-        source.clipData?.let { clip ->
-            for (index in 0 until clip.itemCount.coerceAtMost(10)) {
-                clip.getItemAt(index).uri?.let(uris::add)
+        if (!streamsArePreview) {
+            if (source.action == Intent.ACTION_SEND_MULTIPLE) {
+                uris.addAll(parcelableUriList(source))
+            } else {
+                parcelableUri(source)?.let(uris::add)
+            }
+            source.clipData?.let { clip ->
+                for (index in 0 until clip.itemCount.coerceAtMost(10)) {
+                    clip.getItemAt(index).uri?.let(uris::add)
+                }
             }
         }
 
@@ -653,6 +667,9 @@ class MainActivity : FlutterFragmentActivity() {
     companion object {
         private const val MAX_SHARE_ITEM_BYTES = 8L * 1024L * 1024L
         private const val MAX_SHARE_BATCH_BYTES = 24L * 1024L * 1024L
+
+        /** Un único enlace http(s) sin espacios ni saltos de línea. */
+        private val SHARED_LINK_ONLY = Regex("^https?://\\S+$", RegexOption.IGNORE_CASE)
     }
 
     private fun openAppSettings(): Boolean {
