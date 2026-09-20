@@ -48,6 +48,38 @@ SavedConnection _conn({String id = 'conn-1'}) => SavedConnection(
   apiKey: 'test-key',
 );
 
+class _CapturingRunApi extends ApiClient {
+  _CapturingRunApi()
+    : super(
+        baseUrl: 'http://hermes.local:8642',
+        apiKey: 'test-key',
+        httpClient: MockClient((_) async => http.Response('', 500)),
+      );
+
+  Duration? streamIdleTimeout;
+
+  @override
+  Future<String> startRun({
+    required String input,
+    String? sessionId,
+    String? model,
+    List<Map<String, dynamic>>? history,
+    String? profile,
+  }) async => 'run-watchdog';
+
+  @override
+  Future<void> streamRunEvents(
+    String runId, {
+    String? profile,
+    required void Function(Map<String, dynamic> event) onEvent,
+    required void Function() onDone,
+    required void Function(String error) onError,
+    Duration? idleTimeout = const Duration(seconds: 90),
+  }) async {
+    streamIdleTimeout = idleTimeout;
+  }
+}
+
 class _StaticWebSocketAuthDashboardClient extends DashboardClient {
   _StaticWebSocketAuthDashboardClient()
     : super(host: '127.0.0.1', port: 1, manualToken: 'unused');
@@ -627,6 +659,30 @@ ActiveChat _attachmentChat(_AttachmentDesktopGateway gateway) => ActiveChat(
   desktopGateway: gateway,
 );
 
+bool _noActivityHint(ActiveChat chat) => chat.noActivityHint;
+
+bool _hasAssistantError(ActiveChat chat) =>
+    chat.messages.any((message) => message['role'] == 'assistant_error');
+
+Future<ActiveChat> _startWatchdogTurn(
+  WidgetTester tester,
+  _AttachmentDesktopGateway gateway,
+) async {
+  final chat = _attachmentChat(gateway)..smoothStreaming = false;
+  addTearDown(chat.dispose);
+  expect(
+    await chat.send(
+      fullText: 'trabaja en silencio',
+      model: 'hermes-agent',
+      history: const [],
+    ),
+    isTrue,
+  );
+  await tester.pump();
+  expect(chat.isStreaming, isTrue);
+  return chat;
+}
+
 Future<AttachmentDraft> _privateTestAttachment(
   Directory directory, {
   required String localId,
@@ -663,6 +719,143 @@ Session _widgetSession() => const Session(
 );
 
 void main() {
+  group('desktop activity watchdog', () {
+    testWidgets('B1 a 120 second foreground tool does not fail the turn', (
+      tester,
+    ) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      gateway.emit('tool.start', const {'name': 'execute_code'});
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 120));
+
+      expect(chat.isStreaming, isTrue);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+      expect(_hasAssistantError(chat), isFalse);
+      chat.dispose();
+    });
+
+    testWidgets('B2 five minutes of silence shows a non-terminal hint', (
+      tester,
+    ) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      await tester.pump(const Duration(minutes: 5) - Duration(milliseconds: 1));
+      expect(_noActivityHint(chat), isFalse);
+      await tester.pump(const Duration(milliseconds: 1));
+
+      expect(_noActivityHint(chat), isTrue);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+      expect(_hasAssistantError(chat), isFalse);
+    });
+
+    testWidgets(
+      'B3 runtime activity clears the hint and completion stays normal',
+      (tester) async {
+        final gateway = _AttachmentDesktopGateway();
+        final chat = await _startWatchdogTurn(tester, gateway);
+
+        await tester.pump(const Duration(minutes: 5));
+        expect(_noActivityHint(chat), isTrue);
+
+        gateway.emit('status.update', const {'text': 'working'});
+        await tester.pump();
+        expect(_noActivityHint(chat), isFalse);
+
+        gateway.emit('message.complete', const {'text': 'terminado'});
+        await tester.pump();
+        expect(chat.state, ChatPipelineState.completed);
+        expect(_hasAssistantError(chat), isFalse);
+        chat.dispose();
+        await tester.pump(const Duration(milliseconds: 100));
+      },
+    );
+
+    testWidgets('B4 a post-first-token stall is still watched', (tester) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      gateway.emit('message.delta', const {'text': 'inicio'});
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(chat.state, ChatPipelineState.streaming);
+
+      await tester.pump(const Duration(minutes: 5));
+
+      expect(_noActivityHint(chat), isTrue);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+    });
+
+    testWidgets('B5 a ten minute tool remains a live turn with a hint', (
+      tester,
+    ) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      gateway.emit('tool.start', const {'name': 'execute_code'});
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 10));
+
+      expect(_noActivityHint(chat), isTrue);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+      expect(_hasAssistantError(chat), isFalse);
+    });
+
+    testWidgets('B6 silence without tool events only shows the hint', (
+      tester,
+    ) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      await tester.pump(const Duration(minutes: 10));
+
+      expect(_noActivityHint(chat), isTrue);
+      expect(chat.isStreaming, isTrue);
+      expect(chat.state, isNot(ChatPipelineState.failed));
+      expect(_hasAssistantError(chat), isFalse);
+    });
+
+    testWidgets('transport pong does not clear model inactivity', (
+      tester,
+    ) async {
+      final gateway = _AttachmentDesktopGateway();
+      final chat = await _startWatchdogTurn(tester, gateway);
+
+      await tester.pump(const Duration(minutes: 5));
+      expect(_noActivityHint(chat), isTrue);
+
+      gateway.emit('gateway.pong');
+      await tester.pump();
+
+      expect(_noActivityHint(chat), isTrue);
+      expect(chat.isStreaming, isTrue);
+    });
+
+    for (final terminal in const [
+      ('B7 message.complete error remains terminal', 'message.complete'),
+      ('B7 standalone error remains terminal', 'error'),
+    ]) {
+      testWidgets(terminal.$1, (tester) async {
+        final gateway = _AttachmentDesktopGateway();
+        final chat = await _startWatchdogTurn(tester, gateway);
+
+        gateway.emit(terminal.$2, const {
+          'status': 'error',
+          'message': 'server rejected the turn',
+        });
+        await tester.pump();
+
+        expect(chat.state, ChatPipelineState.failed);
+        expect(chat.isStreaming, isFalse);
+        expect(_hasAssistantError(chat), isTrue);
+      });
+    }
+  });
+
   test(
     'compacted terminal groups skip identities removed in the same pass',
     () {
@@ -1721,6 +1914,36 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('REST silence has no client-side terminal timeout', () async {
+    final api = _CapturingRunApi();
+    final service = ActiveChatService(
+      compressionFenceStore: testCompressionFenceStore(),
+    );
+    addTearDown(service.dispose);
+    final chat = service.attach(
+      connection: _conn(id: 'conn-rest-watchdog'),
+      sessionId: 'session-rest-watchdog',
+      sessionTitle: 'REST watchdog',
+      api: api,
+    );
+
+    expect(
+      await chat
+          .send(
+            fullText: 'trabaja en silencio',
+            model: 'hermes-agent',
+            history: const [],
+          )
+          .timeout(const Duration(seconds: 2)),
+      isTrue,
+    );
+
+    expect(api.streamIdleTimeout, isNull);
+    expect(chat.isStreaming, isTrue);
+    expect(chat.state, isNot(ChatPipelineState.failed));
+    expect(_hasAssistantError(chat), isFalse);
+  });
 
   group('ActiveTurnDelivery — FSM de adjuntos', () {
     const pending = AttachmentDraft(

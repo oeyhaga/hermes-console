@@ -5292,6 +5292,7 @@
   "chaQueueEditFailed": "No se pudo actualizar el mensaje en cola.",
   "chaQueueStuck": "Un mensaje en cola no se pudo enviar tras varios intentos. Sigue en la cola: prueba a enviarlo otra vez.",
   "chaTurnStillWorking": "Sigo trabajando",
+  "chaNoRecentActivity": "Sin actividad reciente",
   "chaStopStopping": "Deteniendo…",
   "chaStopRetrying": "Reintentando Stop…",
   "chaStopConfirmed": "Detenido",

@@ -890,7 +890,7 @@ class _RestFallbackApiClient extends ApiClient {
     required void Function(Map<String, dynamic> event) onEvent,
     required void Function() onDone,
     required void Function(String error) onError,
-    Duration idleTimeout = const Duration(seconds: 90),
+    Duration? idleTimeout = const Duration(seconds: 90),
   }) => Completer<void>().future;
 }
 
@@ -1805,7 +1805,7 @@ void main() {
         await chat.loadMessages(profile: 'owner-profile');
         final transient = status == 429 || status >= 500;
         if (transient) {
-          await _waitUntil(() => upgradeRequests == 2);
+          await _waitUntil(() => gateway.resumeExistingCalls == 1);
           expect(gateway.connectCalls, 2, reason: 'HTTP $status');
           expect(upgradeRequests, 2, reason: 'HTTP $status');
           expect(gateway.resumeExistingCalls, 1, reason: 'HTTP $status');

@@ -4293,9 +4293,18 @@ class ActiveChat {
       _rosterRuntimeAbsenceStreak = 0;
       return;
     }
-    // Solo un runtime que este perfil vio vivo puede darse por terminado.
-    if (_rosterLiveRuntimeSessionId != runtimeId) return;
-    if (!isStreaming || _runTerminal || !_turnSawRuntimePayload) return;
+    if (!isStreaming || _runTerminal) return;
+    if (!_turnSawRuntimePayload) {
+      final submittedAtMs = _turnSubmittedAtMs;
+      if (submittedAtMs == null ||
+          _wallClockMs() - submittedAtMs <
+              _preTurnLiveSettleGrace.inMilliseconds) {
+        _rosterRuntimeAbsenceStreak = 0;
+        return;
+      }
+    } else if (_rosterLiveRuntimeSessionId != runtimeId) {
+      return;
+    }
     // Una fila que falta una sola vez tolera una carrera de la lista; la racha
     // confirmada es el hecho terminal que los eventos perdidos no entregaron.
     if (++_rosterRuntimeAbsenceStreak < _terminalAuthorityAbsenceStreak) return;
@@ -4381,7 +4390,8 @@ class ActiveChat {
       _desktopContinuationRequired;
 
   @visibleForTesting
-  bool get firstTokenWatchdogArmed => _firstTokenTimer != null;
+  bool get activityWatchdogArmed => _activityWatchdogTimer != null;
+  bool get noActivityHint => _noActivityHint;
 
   /// Live standing-goal state for this session (`session.control`), null when
   /// there is no active goal. Hydrated once via [_hydrateGoal] and kept fresh
@@ -5528,19 +5538,14 @@ class ActiveChat {
     if (!isStreaming) Timer.run(_drainQueue);
   }
 
-  /// Modelo lento y sin streaming (p.ej. Mixture of Agents): cada turno se
-  /// calcula entero por dentro y puede estar 1-3 min en silencio antes de
-  /// emitir. Con el watchdog normal de 90 s el run se cortaría en falso ("se
-  /// cayó") mientras el servidor sigue trabajando. Para estos, el watchdog de
-  /// inactividad sube a 4 min.
-  bool _slowModel = false;
-  Duration get _idleTimeout =>
-      _slowModel ? const Duration(seconds: 240) : const Duration(seconds: 90);
+  static const _activityHintTimeout = Duration(minutes: 5);
+  static const _preTurnLiveSettleGrace = Duration(seconds: 15);
 
   /// Identidad monotónica del turno. Al cancelar/iniciar otro se incrementa;
   /// cualquier callback tardío del transporte anterior queda invalidado y no
   /// puede escribir sobre el estado del nuevo run.
   int _turnEpoch = 0;
+  int? _turnSubmittedAtMs;
   Completer<void> _turnEpochInvalidated = Completer<void>();
   int _transcriptRevision = 0;
   _RewriteReservation? _activeRewrite;
@@ -5668,12 +5673,10 @@ class ActiveChat {
   // tras cada refetch, incluso con prompts idénticos o más turnos posteriores.
   final List<SteerProjection> _steerRecords = [];
 
-  // Timer de primer token para el path remoto (/v1/runs). Se inicia al recibir
-  // el run_id y se cancela al llegar el primer message.delta. Si dispara antes de
-  // que llegue cualquier token, falla el run con un error descriptivo de
-  // "firstTokenTimeout" para que classifyChatError lo clasifique correctamente
-  // (en lugar de colgar la UI indefinidamente).
-  Timer? _firstTokenTimer;
+  // Silence is only a presentation signal. The server remains authoritative
+  // over whether the turn is running or failed.
+  Timer? _activityWatchdogTimer;
+  bool _noActivityHint = false;
 
   late final StreamController<ActiveChatEvent> _changes;
 
@@ -7251,8 +7254,10 @@ class ActiveChat {
             : null;
         _replaceDesktopAcceptedQueue(projection.queuedUser);
         if (projection.failed) {
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
+          _turnSubmittedAtMs = null;
+          _activityWatchdogTimer?.cancel();
+          _activityWatchdogTimer = null;
+          _setNoActivityHint(false);
           _usingDesktopGateway = false;
           _runTerminal = true;
           traceActive = false;
@@ -7275,8 +7280,10 @@ class ActiveChat {
           // enviado que todavía no produjo nada es más nuevo que el snapshot
           // (mismo veto de pre-arranque que la cosecha por roster), así que no
           // lo cierra.
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
+          _turnSubmittedAtMs = null;
+          _activityWatchdogTimer?.cancel();
+          _activityWatchdogTimer = null;
+          _setNoActivityHint(false);
           _desktopTurnStartedAt = null;
           _sealRecoveredLiveActivity(completed: true);
           _runTerminal = true;
@@ -10299,7 +10306,6 @@ class ActiveChat {
     required List<Map<String, dynamic>> history,
     String profile = '',
     String? serverSessionId,
-    bool slowModel = false,
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
@@ -10353,7 +10359,6 @@ class ActiveChat {
           history: history,
           profile: profile,
           serverSessionId: serverSessionId,
-          slowModel: slowModel,
           nativeAttachments: nativeAttachments,
           desktopText: desktopText,
           voicePlaybackInterrupted: voicePlaybackInterrupted,
@@ -10407,7 +10412,6 @@ class ActiveChat {
       history: history,
       profile: profile,
       serverSessionId: serverSessionId,
-      slowModel: slowModel,
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
@@ -10438,7 +10442,6 @@ class ActiveChat {
     required List<Map<String, dynamic>> history,
     required String profile,
     required String? serverSessionId,
-    required bool slowModel,
     required List<AttachmentDraft> nativeAttachments,
     required String? desktopText,
     required bool voicePlaybackInterrupted,
@@ -10460,7 +10463,6 @@ class ActiveChat {
       history: history,
       profile: profile,
       serverSessionId: serverSessionId,
-      slowModel: slowModel,
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
@@ -10511,7 +10513,6 @@ class ActiveChat {
     required List<Map<String, dynamic>> history,
     String profile = '',
     String? serverSessionId,
-    bool slowModel = false,
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
@@ -10620,6 +10621,8 @@ class ActiveChat {
       _desktopTerminalRequiresLifecycleEvidence =
           _runTerminal && _desktopRuntimeSessionId != null;
       turnEpoch = _advanceTurnEpoch();
+      _turnSubmittedAtMs = _wallClockMs();
+      _setNoActivityHint(false);
       // Una hidratación iniciada al abrir la ruta nunca puede aterrizar después
       // del primer submit y sustituir el turno optimista recién insertado.
       _messageLoadEpoch += 1;
@@ -10631,7 +10634,6 @@ class ActiveChat {
       _lastModel = model;
       _turnProfile = sessionProfile;
       _turnSessionConfig = capturedSessionConfig;
-      _slowModel = slowModel;
       // Sesión server-side a usar para este turno (y los reintentos/cola de este
       // turno). Si es null se usa la propia [sessionId] del chat. El modo voz pasa
       // su sesión rotable aquí: así puede empezar de cero tras cancelar sin tocar
@@ -13253,7 +13255,7 @@ class ActiveChat {
         );
         state = ChatPipelineState.waiting;
         _emit(ActiveChatEvent.connected);
-        _armFirstTokenTimer();
+        _armActivityWatchdog();
       }
       return resolved;
     } on TuiGatewayRpcError {
@@ -13512,7 +13514,7 @@ class ActiveChat {
       state = ChatPipelineState.waiting;
       await _onForegroundKeepAlive?.call();
       _emit(ActiveChatEvent.connected);
-      _armFirstTokenTimer();
+      _armActivityWatchdog();
       final annotatedText = desktopText ?? fullText;
       final mentionAnnotation = botMentionNote(annotatedText);
       var promptText = stripBotMentionNote(annotatedText);
@@ -14014,8 +14016,10 @@ class ActiveChat {
         final rollback = _rewindRollbackMessages;
         final rollbackState = _rewindRollbackState;
         if (rollback != null) {
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
+          _turnSubmittedAtMs = null;
+          _activityWatchdogTimer?.cancel();
+          _activityWatchdogTimer = null;
+          _setNoActivityHint(false);
           _messages = rollback;
           _rewindRollbackMessages = null;
           _rewindRollbackState = null;
@@ -14039,8 +14043,10 @@ class ActiveChat {
             (error is DashboardAuthException &&
                 _isTerminalDesktopRecoveryError(error));
         if (deterministicRejection && rollback != null) {
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
+          _turnSubmittedAtMs = null;
+          _activityWatchdogTimer?.cancel();
+          _activityWatchdogTimer = null;
+          _setNoActivityHint(false);
           _messages = rollback;
           _rewindRollbackMessages = null;
           _rewindRollbackState = null;
@@ -14095,8 +14101,8 @@ class ActiveChat {
         _ownershipConflictGeneration += 1;
         _queueDrainSuspended = true;
       }
-      _firstTokenTimer?.cancel();
-      _firstTokenTimer = null;
+      _activityWatchdogTimer?.cancel();
+      _activityWatchdogTimer = null;
       _expireInteractivePromptsForRuntime(_desktopRuntimeSessionId);
       _usingDesktopGateway = false;
       _retireDesktopRuntime();
@@ -14496,8 +14502,8 @@ class ActiveChat {
     if (!_canRecoverTurn(turnEpoch)) return;
     if (_recoveringDesktopTurnEpoch == turnEpoch) return;
     _recoveringDesktopTurnEpoch = turnEpoch;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
     state = ChatPipelineState.connecting;
     _emit(ActiveChatEvent.connected);
     try {
@@ -14593,7 +14599,7 @@ class ActiveChat {
               );
               _usingDesktopGateway = true;
               state = ChatPipelineState.waiting;
-              _armFirstTokenTimer();
+              _armActivityWatchdog();
               _emit(ActiveChatEvent.waiting);
               return;
             case DesktopTurnState.running:
@@ -14641,7 +14647,7 @@ class ActiveChat {
               );
               _usingDesktopGateway = true;
               state = ChatPipelineState.executing;
-              _armFirstTokenTimer();
+              _armActivityWatchdog();
               _emit(ActiveChatEvent.toolProgress);
               return;
             case DesktopTurnState.terminal:
@@ -15004,8 +15010,10 @@ class ActiveChat {
   void _degradeLegacyTurnRecovery(int turnEpoch, Object originalError) {
     if (!_canRecoverTurn(turnEpoch) || awaitingDurableTurnRecovery) return;
     debugPrint(activeChatDesktopRecoveryDiagnostic(originalError));
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     _flushTokenBuffer();
     state = ChatPipelineState.failed;
     traceActive = false;
@@ -15565,6 +15573,10 @@ class ActiveChat {
           (receipt.producerChannel == null ||
               identical(event.producerChannel, receipt.producerChannel));
       if (!exactAuthority) return;
+      _turnSubmittedAtMs = null;
+      _activityWatchdogTimer?.cancel();
+      _activityWatchdogTimer = null;
+      _setNoActivityHint(false);
       _retireDesktopRuntime();
       _usingDesktopGateway = false;
       _runTerminal = true;
@@ -15577,6 +15589,11 @@ class ActiveChat {
     }
     _observeDesktopOwnershipTransport(event);
     final payload = event.payload;
+    if (_usingDesktopGateway &&
+        event.type != 'gateway.ping' &&
+        event.type != 'gateway.pong') {
+      _observeRuntimeActivity();
+    }
     if (event.type == 'session.control.update') {
       _applyGoalUpdate(payload['control']);
       return;
@@ -15634,14 +15651,6 @@ class ActiveChat {
     }
     if (event.type == 'status.update') {
       _applyDesktopStatusUpdate(payload);
-      // Compaction is a real native liveness edge while a turn is waiting;
-      // it must refresh the first-token watchdog without projecting text.
-      if (_usingDesktopGateway &&
-          isStreaming &&
-          !_streamingConfirmed &&
-          !_runTerminal) {
-        _armFirstTokenTimer();
-      }
       return;
     }
     if (event.type == 'background.complete') {
@@ -15673,8 +15682,8 @@ class ActiveChat {
     }.contains(event.type)) {
       // The mobile client deliberately stores no vault payload or secret origin.
       _desktopContinuationRequired = true;
-      _firstTokenTimer?.cancel();
-      _firstTokenTimer = null;
+      _activityWatchdogTimer?.cancel();
+      _activityWatchdogTimer = null;
       state = ChatPipelineState.executing;
       _emit(ActiveChatEvent.approvalRequest);
       return;
@@ -15774,14 +15783,6 @@ class ActiveChat {
       return;
     }
 
-    if (!_streamingConfirmed &&
-        event.type != 'message.delta' &&
-        event.type != 'message.interim' &&
-        event.type != 'message.complete' &&
-        event.type != 'error') {
-      _armFirstTokenTimer();
-    }
-
     switch (event.type) {
       case 'message.start':
         _clearDesktopCompactingIndicator();
@@ -15796,8 +15797,6 @@ class ActiveChat {
         if (!narratable) break;
         if (!_streamingConfirmed) {
           _streamingConfirmed = true;
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
           ConnectionManager.markStreamingSupported(connection.id);
         }
         _enqueueToken(deltaText, narratable: true);
@@ -16079,8 +16078,8 @@ class ActiveChat {
       InteractivePromptReceived(request),
     );
     if (!changed) return;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
     if (!_runTerminal) state = ChatPipelineState.executing;
     if (request is TerminalReadPromptRequest) {
       unawaited(respondToTerminalRead(request.key));
@@ -16659,7 +16658,7 @@ class ActiveChat {
     // A child may finish after the parent emitted its terminal event. Keep that
     // completion visible without pretending that the parent pipeline reopened.
     if (!event.phase.isTerminal && !_runTerminal) {
-      if (!_streamingConfirmed) _armFirstTokenTimer();
+      _armActivityWatchdog();
       state = ChatPipelineState.executing;
     }
     return true;
@@ -16724,7 +16723,7 @@ class ActiveChat {
     if (rawText is! String || rawText.trim().isEmpty) return;
     if (narratable) _assistantNarration.sealInterim(rawText);
     _observeFirstResponseContent(rawText);
-    if (!_streamingConfirmed) _armFirstTokenTimer();
+    if (!_streamingConfirmed) _armActivityWatchdog();
     _flushTokenBuffer();
     final key = 'assistant-interim-$_turnEpoch-${++_desktopInterimSerial}';
     if (_messages.isNotEmpty && _messages.first['role'] == 'assistant') {
@@ -16875,11 +16874,9 @@ class ActiveChat {
       // (la app está en primer plano aquí, así que iniciarlo está permitido).
       _onRunStarted?.call(runId);
       _emit(ActiveChatEvent.connected);
-      // Watchdog de actividad: si en 90s NO llega ninguna señal de vida del run
-      // (ni texto ni herramientas) se da por fallido. Lo rearma cualquier evento
-      // (ver _onRunEvent): así un run agéntico que tira herramientas largo rato
-      // (sin texto aún) NO se marca como "Model not responding" en falso.
-      _armFirstTokenTimer();
+      // El reloj de silencio solo gobierna la pista visual; el terminal sigue
+      // viniendo del servidor o de la recuperación del transporte.
+      _armActivityWatchdog();
       _api.streamRunEvents(
         runId,
         profile: sessionProfile,
@@ -16895,13 +16892,13 @@ class ActiveChat {
           // retirado. Conserva la reconciliación histórica de runs REST.
           unawaited(_recoverRestTurnFromTranscript(turnEpoch, e));
         },
-        idleTimeout: _idleTimeout,
+        idleTimeout: null,
       );
       return true;
     } catch (e) {
       if (_turnEpoch != turnEpoch) return false;
-      _firstTokenTimer?.cancel();
-      _firstTokenTimer = null;
+      _activityWatchdogTimer?.cancel();
+      _activityWatchdogTimer = null;
       _failRun(e.toString());
       return false;
     }
@@ -18300,28 +18297,35 @@ class ActiveChat {
     return history;
   }
 
-  /// Procesa un evento del SSE de `/v1/runs/{id}/events`.
-  /// (Re)arma el watchdog de actividad del run: 90 s sin NINGUNA señal de vida
-  /// (texto o herramientas) → se da por fallido. Cualquier evento lo reinicia.
-  void _armFirstTokenTimer() {
-    _firstTokenTimer?.cancel();
-    // While the agent waits on a human (approval, clarify, sudo, vault card)
-    // there is no server inactivity to watch: any liveness event that lands
-    // meanwhile must not restart the budget under the user's feet.
-    if (needsInput) {
-      _firstTokenTimer = null;
-      return;
-    }
-    final secs = _idleTimeout.inSeconds;
-    _firstTokenTimer = Timer(_idleTimeout, () {
-      if (!_streamingConfirmed && !_runTerminal && !needsInput) {
-        _failRun(
-          'firstTokenTimeout: El servidor conectó pero lleva $secs s sin '
-          'actividad (ni texto ni herramientas). El modelo puede estar cargando '
-          'o el servidor sobrecargado. Reintenta en unos segundos.',
-        );
+  void _setNoActivityHint(bool value) {
+    if (_noActivityHint == value) return;
+    _noActivityHint = value;
+    _emit(ActiveChatEvent.sessionInfo);
+  }
+
+  void _armActivityWatchdog() {
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
+    if (_runTerminal || !isStreaming || needsInput) return;
+    final turnEpoch = _turnEpoch;
+    _activityWatchdogTimer = Timer(_activityHintTimeout, () {
+      _activityWatchdogTimer = null;
+      if (_disposed ||
+          _turnEpoch != turnEpoch ||
+          _runTerminal ||
+          !isStreaming ||
+          needsInput) {
+        return;
       }
+      _setNoActivityHint(true);
     });
+  }
+
+  void _observeRuntimeActivity() {
+    if (_runTerminal || !isStreaming) return;
+    _setNoActivityHint(false);
+    _armActivityWatchdog();
   }
 
   void _onRunEvent(Map<String, dynamic> event) {
@@ -18332,24 +18336,11 @@ class ActiveChat {
     // (STOP + spinner) pese a estar ya cancelado/fallado.
     if (_runTerminal) return;
     final type = (event['event'] ?? '').toString();
-    // Mientras no haya llegado texto, cualquier señal de vida del run (tools,
-    // aprobaciones, progreso…) reinicia el watchdog de 90 s. Evita el falso
-    // "Model not responding" en runs agénticos que ejecutan herramientas un buen
-    // rato antes de emitir el primer token. message.delta lo cancela del todo;
-    // los terminales se gestionan en sus casos.
-    if (!_streamingConfirmed &&
-        type != 'message.delta' &&
-        type != 'run.completed' &&
-        type != 'run.failed' &&
-        type != 'run.cancelled') {
-      _armFirstTokenTimer();
-    }
+    _observeRuntimeActivity();
     switch (type) {
       case 'message.delta':
         if (!_streamingConfirmed) {
           _streamingConfirmed = true;
-          _firstTokenTimer?.cancel();
-          _firstTokenTimer = null;
           ConnectionManager.markStreamingSupported(connection.id);
         }
         _enqueueToken((event['delta'] ?? '').toString());
@@ -18474,8 +18465,8 @@ class ActiveChat {
   void _handleApprovalRequest(Map<String, dynamic> event) {
     // User input may legitimately take longer than the transport watchdog.
     // Resume the inactivity budget only after the approval is answered.
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
     final command = (event['command'] ?? '').toString();
     final patternKey = (event['pattern_key'] ?? '').toString();
     final policy = _policy;
@@ -18638,7 +18629,7 @@ class ActiveChat {
       if (!requestStillCurrent()) return;
       pendingApproval = null;
       state = ChatPipelineState.executing;
-      if (!_streamingConfirmed) _armFirstTokenTimer();
+      _armActivityWatchdog();
       _emit(ActiveChatEvent.toolProgress);
       return;
     }
@@ -18659,7 +18650,7 @@ class ActiveChat {
     if (!requestStillCurrent()) return;
     pendingApproval = null;
     state = ChatPipelineState.executing;
-    if (!_streamingConfirmed) _armFirstTokenTimer();
+    if (!_streamingConfirmed) _armActivityWatchdog();
     _emit(ActiveChatEvent.toolProgress);
   }
 
@@ -18822,9 +18813,7 @@ class ActiveChat {
         return result;
       }
       _reduceInteractivePrompt(InteractivePromptResponded(key));
-      if (!_runTerminal && !_streamingConfirmed) {
-        _armFirstTokenTimer();
-      }
+      if (!_runTerminal) _armActivityWatchdog();
       return result;
     } catch (error) {
       if (_interactivePrompts[key]?.isTerminal == true) {
@@ -19095,9 +19084,7 @@ class ActiveChat {
             ? InteractivePromptExpired(key)
             : InteractivePromptResponded(key),
       );
-      if (!result.isExpired && !_runTerminal && !_streamingConfirmed) {
-        _armFirstTokenTimer();
-      }
+      if (!result.isExpired && !_runTerminal) _armActivityWatchdog();
       return result;
     } catch (error) {
       final rpcCode = error is TuiGatewayRpcError ? error.code : null;
@@ -19209,8 +19196,10 @@ class ActiveChat {
     _observeFirstResponseContent(finalOutput);
     _clearDesktopCompactingIndicator();
     _desktopTurnStartedAt = null;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     if (_fluidStreaming) {
       _queueAuthoritativeFinalTail(finalOutput);
       _publishBufferedTokenBatch();
@@ -19298,7 +19287,7 @@ class ActiveChat {
       'content': '',
       '_pipeline': true,
     });
-    _armFirstTokenTimer();
+    _armActivityWatchdog();
     _emit(ActiveChatEvent.queueChanged);
     _emit(ActiveChatEvent.started);
   }
@@ -19501,8 +19490,10 @@ class ActiveChat {
     _messageLoadEpoch += 1;
     final completingMessageLoadEpoch = _messageLoadEpoch;
     _desktopTurnStartedAt = null;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     if (_fluidStreaming) {
       _queueAuthoritativeFinalTail(settledFinalOutput);
       _publishBufferedTokenBatch();
@@ -20042,8 +20033,10 @@ class ActiveChat {
     _messageLoadEpoch += 1;
     _runTerminal = true;
     _desktopTurnStartedAt = null;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     _flushTokenBuffer();
     if (pendingApproval != null) {
       _cancelApprovalNotification(pendingApproval!, terminal: true);
@@ -20636,8 +20629,10 @@ class ActiveChat {
     _messageLoadEpoch += 1;
     _runTerminal = true;
     _desktopTurnStartedAt = null;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     _flushTokenBuffer();
     if (pendingApproval != null) {
       _cancelApprovalNotification(pendingApproval!, terminal: true);
@@ -21169,8 +21164,10 @@ class ActiveChat {
     // Invalida todos los callbacks del transporte que se está abandonando.
     _advanceTurnEpoch();
     _messageLoadEpoch += 1;
-    _firstTokenTimer?.cancel();
-    _firstTokenTimer = null;
+    _turnSubmittedAtMs = null;
+    _activityWatchdogTimer?.cancel();
+    _activityWatchdogTimer = null;
+    _setNoActivityHint(false);
     _flushTokenBuffer();
     // Pide al servidor detener el run; el SSE cerrará (o emitirá run.cancelled),
     // pero ya marcamos terminal para no procesarlo dos veces.
@@ -21718,7 +21715,7 @@ class ActiveChat {
     }
     _turnEpoch++;
     if (!_disposeSignal.isCompleted) _disposeSignal.complete();
-    _firstTokenTimer?.cancel();
+    _activityWatchdogTimer?.cancel();
     _cancelPassiveActivityExpiry();
     _voiceBargeHandoffTimer?.cancel();
     _voiceBargeHandoffTimer = null;
