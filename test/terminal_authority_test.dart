@@ -202,6 +202,7 @@ ActiveChat _chat(
   _TerminalAuthorityGateway gateway, {
   required String id,
   StoredSessionMessageLoader? storedMessageLoader,
+  int Function()? wallClockMs,
 }) => ActiveChat(
   compressionFenceStore: testCompressionFenceStore(),
   connection: _connection('conn-$id'),
@@ -218,6 +219,7 @@ ActiveChat _chat(
   desktopGateway: gateway,
   attachDesktopRuntimeOnLoad: true,
   storedMessageLoader: storedMessageLoader,
+  wallClockMs: wallClockMs,
   terminalReconcileBudget: Duration.zero,
 )..smoothStreaming = false;
 
@@ -244,9 +246,15 @@ Future<ActiveChat> _liveTurn(
   required String id,
   bool withToolPart = true,
   StoredSessionMessageLoader? storedMessageLoader,
+  int Function()? wallClockMs,
 }) async {
   gateway.activeList = _liveRoster();
-  final chat = _chat(gateway, id: id, storedMessageLoader: storedMessageLoader);
+  final chat = _chat(
+    gateway,
+    id: id,
+    storedMessageLoader: storedMessageLoader,
+    wallClockMs: wallClockMs,
+  );
   addTearDown(chat.dispose);
   expect(
     await chat.send(
@@ -392,6 +400,54 @@ void main() {
 
     expect(chat.isStreaming, isTrue);
   });
+
+  test('A4b pre-start absence settles after the 15 second grace', () async {
+    final gateway = _TerminalAuthorityGateway();
+    addTearDown(gateway.close);
+    var nowMs = 1000;
+    final chat = await _liveTurn(
+      gateway,
+      id: 'a4b',
+      withToolPart: false,
+      wallClockMs: () => nowMs,
+    );
+
+    gateway.activeList = _emptyRoster;
+    await chat.refreshPassiveRemoteActivity();
+    await chat.refreshPassiveRemoteActivity();
+    expect(chat.isStreaming, isTrue);
+
+    nowMs += 15000;
+    await chat.refreshPassiveRemoteActivity();
+    await chat.refreshPassiveRemoteActivity();
+    await _waitUntil(() => !chat.isStreaming);
+
+    expect(chat.state, isNot(ChatPipelineState.failed));
+    expect(_hasErrorBubble(chat), isFalse);
+  });
+
+  test(
+    'A4c a listed pre-start runtime stays running after the grace',
+    () async {
+      final gateway = _TerminalAuthorityGateway();
+      addTearDown(gateway.close);
+      var nowMs = 1000;
+      final chat = await _liveTurn(
+        gateway,
+        id: 'a4c',
+        withToolPart: false,
+        wallClockMs: () => nowMs,
+      );
+
+      nowMs += 15001;
+      await chat.refreshPassiveRemoteActivity();
+      await chat.refreshPassiveRemoteActivity();
+      await _settle();
+
+      expect(chat.isStreaming, isTrue);
+      expect(_hasErrorBubble(chat), isFalse);
+    },
+  );
 
   test(
     'A5 loadMessages settles a neither-failed-nor-running snapshot',

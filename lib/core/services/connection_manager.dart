@@ -1962,7 +1962,7 @@ class ApiClient {
     required void Function(Map<String, dynamic> event) onEvent,
     required void Function() onDone,
     required void Function(String error) onError,
-    Duration idleTimeout = const Duration(seconds: 90),
+    Duration? idleTimeout = const Duration(seconds: 90),
   }) async {
     try {
       final request = http.Request(
@@ -1978,43 +1978,42 @@ class ApiClient {
         return;
       }
       String buffer = '';
-      // A-010 (spec 028): timeout de inactividad también a MITAD de stream,
-      // igual que la ruta rápida. Si la conexión muere en silencio (cambio
-      // wifi→datos, NAT/Tailscale) el turno no queda en "respondiendo…" para
-      // siempre: el error cierra el run con la burbuja de reintento. Los
-      // keepalives del gateway (frames no-JSON) también cuentan como actividad.
-      await response.stream
-          .transform(utf8.decoder)
-          .timeout(
-            idleTimeout,
-            onTimeout: (sink) {
-              sink.addError(
-                TimeoutException(
-                  'SSE run events idle timeout (${idleTimeout.inSeconds}s)',
-                ),
-              );
-              sink.close();
-            },
-          )
-          .forEach((chunk) {
-            buffer += chunk;
-            while (buffer.contains('\n\n')) {
-              final end = buffer.indexOf('\n\n');
-              final frame = buffer.substring(0, end);
-              buffer = buffer.substring(end + 2);
-              for (final line in frame.split('\n')) {
-                if (!line.startsWith('data:')) continue;
-                final data = line.substring(5).trim();
-                if (data.isEmpty) continue;
-                try {
-                  final parsed = jsonDecode(data);
-                  if (parsed is Map<String, dynamic>) onEvent(parsed);
-                } catch (_) {
-                  // Frame no-JSON (keepalive/comentario): ignorar.
-                }
-              }
+      // A-010 (spec 028): callers that need transport expiry retain the
+      // mid-stream timeout. Active chat passes null because model silence is not
+      // terminal; its server remains the liveness authority.
+      var events = response.stream.transform(utf8.decoder);
+      if (idleTimeout != null) {
+        events = events.timeout(
+          idleTimeout,
+          onTimeout: (sink) {
+            sink.addError(
+              TimeoutException(
+                'SSE run events idle timeout (${idleTimeout.inSeconds}s)',
+              ),
+            );
+            sink.close();
+          },
+        );
+      }
+      await events.forEach((chunk) {
+        buffer += chunk;
+        while (buffer.contains('\n\n')) {
+          final end = buffer.indexOf('\n\n');
+          final frame = buffer.substring(0, end);
+          buffer = buffer.substring(end + 2);
+          for (final line in frame.split('\n')) {
+            if (!line.startsWith('data:')) continue;
+            final data = line.substring(5).trim();
+            if (data.isEmpty) continue;
+            try {
+              final parsed = jsonDecode(data);
+              if (parsed is Map<String, dynamic>) onEvent(parsed);
+            } catch (_) {
+              // Frame no-JSON (keepalive/comentario): ignorar.
             }
-          });
+          }
+        }
+      });
       onDone();
     } catch (e) {
       onError(e.toString());

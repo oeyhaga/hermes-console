@@ -14188,6 +14188,7 @@ void main() {
         greaterThan(0),
         reason: 'Received second delta must be visible',
       );
+      chat.dispose();
     });
   }
 
@@ -14464,6 +14465,7 @@ void main() {
       reason: 'el streaming nunca pasa por la proyección terminal',
     );
     expect(tester.takeException(), isNull);
+    chat.dispose();
   });
 
   testWidgets(
@@ -14576,6 +14578,7 @@ void main() {
         reason: 'el reveal alcanza siempre todo lo recibido',
       );
       expect(tester.takeException(), isNull);
+      chat.dispose();
     },
   );
 
@@ -14951,6 +14954,7 @@ void main() {
         reason: 'el texto que el usuario lee no se mueve al llegar más tokens',
       );
       expect(tester.takeException(), isNull);
+      chat.dispose();
     },
   );
 
@@ -15040,6 +15044,7 @@ void main() {
       // La flecha "ir al final" refleja que el lector está lejos del fondo.
       expect(find.byIcon(Icons.keyboard_arrow_down), findsOneWidget);
       expect(tester.takeException(), isNull);
+      chat.dispose();
     },
   );
 
@@ -15229,6 +15234,7 @@ void main() {
       for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
         await tester.pump(const Duration(milliseconds: 33));
       }
+      chat.dispose();
     },
   );
 
@@ -15317,6 +15323,7 @@ void main() {
         findsNothing,
       );
       expect(tester.takeException(), isNull);
+      chat.dispose();
     },
   );
 

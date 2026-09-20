@@ -4000,27 +4000,24 @@ class _ChatScreenState extends State<ChatScreen>
   /// que el turno local se marca aquí, donde llegan todas las transiciones.
   DateTime? _turnActivityStartedAt;
 
-  /// Un turno está «trabajando sin contarlo» mientras hay run vivo y el
-  /// pipeline aún no emite tokens. Es exactamente la ventana de la que se
-  /// queja el mantenedor: `connecting` / `waiting` / `executing`. En cuanto
-  /// pasa a `streaming` el propio texto ya prueba que está vivo, y la pastilla
-  /// se aparta. Entre herramientas el pipeline vuelve a `executing`, así que
-  /// reaparece sin reiniciar el contador.
+  /// Un turno está «trabajando sin contarlo» mientras sigue vivo y aún no emite
+  /// texto. Tras el primer token, la misma pastilla reaparece solo cuando el
+  /// servicio lleva cinco minutos sin recibir actividad del runtime.
   bool get _turnWorkingWithoutOutput =>
-      _chat.isStreaming &&
-      (_pipelineState == ChatPipelineState.connecting ||
-          _pipelineState == ChatPipelineState.waiting ||
-          _pipelineState == ChatPipelineState.executing);
+      _chat.noActivityHint ||
+      (_chat.isStreaming &&
+          (_pipelineState == ChatPipelineState.connecting ||
+              _pipelineState == ChatPipelineState.waiting ||
+              _pipelineState == ChatPipelineState.executing));
 
   /// La pastilla de subagentes ya narra su propia espera con su duración. Dos
   /// pastillas contando lo mismo es la doble narración que Desktop evita con
   /// `toolNarratesWait`; gana la más específica.
   ///
-  /// Esta pastilla sigue viva pase lo que pase con el scroll: su razón de
-  /// ser —avisar que el turno «parado» (sin texto aún) sigue trabajando de
-  /// verdad, con un cronómetro que lo demuestra— no depende de si el lector
-  /// está mirando el fondo o el historial. Lo que sí depende del scroll es
-  /// si repite la palabra de estado: ver `_turnActivityPillLabel`.
+  /// Esta pastilla sigue viva pase lo que pase con el scroll: avisa que el turno
+  /// continúa y, tras una pausa larga, que no hubo actividad reciente. Lo que sí
+  /// depende del scroll es si repite la palabra de estado: ver
+  /// `_turnActivityPillLabel`.
   bool get _showTurnActivityPill =>
       _turnWorkingWithoutOutput &&
       _turnActivityStartedAt != null &&
@@ -4034,12 +4031,13 @@ class _ChatScreenState extends State<ChatScreen>
   /// (`_autoFollowStreaming`), la `ThinkingTraceCard` en vivo —mascota grande
   /// + la misma palabra, animada— ya está a la vista en el sitio exacto donde
   /// va a salir la respuesta; repetirla en la pastilla es la doble narración
-  /// reportada en dispositivo real. El cronómetro no es redundante en ningún
-  /// caso (la tarjeta no cuenta tiempo), así que la pastilla se queda —solo se
-  /// calla la palabra— hasta que el lector se aparta del fondo y la tarjeta
-  /// deja de ser la señal más específica.
-  String? get _turnActivityPillLabel =>
-      _autoFollowStreaming ? null : _traceHeadline();
+  /// reportada en dispositivo real. El aviso de inactividad sí se muestra
+  /// siempre porque comunica un estado distinto.
+  String? get _turnActivityPillLabel => _chat.noActivityHint
+      ? Strings.of(context).chaNoRecentActivity
+      : _autoFollowStreaming
+      ? null
+      : _traceHeadline();
 
   /// Mismo principio que `_showTurnActivityPill` de arriba, aplicado a la
   /// cabecera del Bot Chat: su subtítulo («@nombre · Pensando») y esta
@@ -6029,7 +6027,6 @@ class _ChatScreenState extends State<ChatScreen>
       model: selectedModel,
       history: history,
       profile: _effectiveSessionProfile,
-      slowModel: (_activeModel?.provider ?? '').toLowerCase().startsWith('moa'),
       nativeAttachments: attachments,
       desktopText: prepared.desktopText,
       delivery: delivery,
@@ -8721,6 +8718,9 @@ class _ChatScreenState extends State<ChatScreen>
                                           active: _showTurnActivityPill,
                                           startedAt: _turnActivityStartedAt,
                                           statusLabel: _turnActivityPillLabel,
+                                          reassureAfter: _chat.noActivityHint
+                                              ? const Duration(days: 1)
+                                              : const Duration(seconds: 20),
                                         ),
                                         KeyedSubtree(
                                           key: const ValueKey(
