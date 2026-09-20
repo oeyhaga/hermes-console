@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:share_plus/share_plus.dart';
@@ -410,6 +413,321 @@ class AttachmentCard extends StatelessWidget {
       ),
     );
   }
+}
+
+enum GeneratedFileStatus { consent, downloading, ready, error }
+
+class GeneratedFileCard extends StatelessWidget {
+  final String name;
+  final String mimeType;
+  final GeneratedFileStatus status;
+  final int receivedBytes;
+  final int? totalBytes;
+  final String? errorLabel;
+  final VoidCallback onDownload;
+  final VoidCallback? onCancel;
+  final VoidCallback? onOpen;
+  final VoidCallback? onShare;
+  final VoidCallback? onSave;
+
+  const GeneratedFileCard({
+    super.key,
+    required this.name,
+    required this.mimeType,
+    required this.status,
+    required this.onDownload,
+    this.onCancel,
+    this.receivedBytes = 0,
+    this.totalBytes,
+    this.errorLabel,
+    this.onOpen,
+    this.onShare,
+    this.onSave,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = Strings.of(context);
+    final total = totalBytes;
+    final determinate = total != null && total > 0;
+    final progress = determinate
+        ? (receivedBytes / total).clamp(0.0, 1.0)
+        : null;
+    final sizeLabel = switch (status) {
+      GeneratedFileStatus.consent => strings.commonDownload,
+      GeneratedFileStatus.downloading => determinate
+          ? '${_formatFileBytes(receivedBytes)} / ${_formatFileBytes(total)}'
+          : strings.genMediaLoading,
+      GeneratedFileStatus.ready => total != null
+          ? _formatFileBytes(total)
+          : _formatFileBytes(receivedBytes),
+      GeneratedFileStatus.error => errorLabel ?? strings.genMediaError,
+    };
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AttachmentCard(
+            key: const ValueKey<String>('generated-file-card'),
+            name: name,
+            mimeType: mimeType,
+            sizeLabel: sizeLabel,
+            onTap: status == GeneratedFileStatus.ready ? onOpen : null,
+          ),
+          if (status == GeneratedFileStatus.downloading) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: 260,
+              child: LinearProgressIndicator(value: progress),
+            ),
+          ],
+          const SizedBox(height: 4),
+          if (status == GeneratedFileStatus.consent)
+            TextButton.icon(
+              onPressed: onDownload,
+              icon: const Icon(Icons.download_rounded),
+              label: Text(strings.commonDownload),
+            )
+          else if (status == GeneratedFileStatus.downloading && onCancel != null)
+            TextButton.icon(
+              onPressed: onCancel,
+              icon: const Icon(Icons.close_rounded),
+              label: Text(strings.commonCancel),
+            )
+          else if (status == GeneratedFileStatus.error)
+            TextButton.icon(
+              onPressed: onDownload,
+              icon: const Icon(Icons.refresh_rounded),
+              label: Text(strings.commonRetry),
+            )
+          else if (status == GeneratedFileStatus.ready)
+            Wrap(
+              spacing: 4,
+              children: [
+                TextButton.icon(
+                  onPressed: onOpen,
+                  icon: const Icon(Icons.open_in_new_rounded),
+                  label: Text(strings.commonOpen),
+                ),
+                TextButton.icon(
+                  onPressed: onShare,
+                  icon: const Icon(Icons.share_outlined),
+                  label: Text(strings.commonShare),
+                ),
+                TextButton.icon(
+                  onPressed: onSave,
+                  icon: const Icon(Icons.save_alt_rounded),
+                  label: Text(strings.commonSave),
+                ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatFileBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kib = bytes / 1024;
+  if (kib < 1024) return '${kib.toStringAsFixed(kib < 10 ? 1 : 0)} KB';
+  final mib = kib / 1024;
+  return '${mib.toStringAsFixed(mib < 10 ? 1 : 0)} MB';
+}
+
+abstract interface class GeneratedAudioPlayback {
+  Stream<Duration> get durationChanges;
+  Stream<Duration> get positionChanges;
+  Stream<bool> get playingChanges;
+
+  Future<void> play(File file);
+  Future<void> resume();
+  Future<void> pause();
+  Future<void> seek(Duration position);
+  Future<void> dispose();
+}
+
+final class AudioplayersGeneratedAudioPlayback
+    implements GeneratedAudioPlayback {
+  final AudioPlayer _player = AudioPlayer();
+
+  @override
+  Stream<Duration> get durationChanges => _player.onDurationChanged;
+
+  @override
+  Stream<Duration> get positionChanges => _player.onPositionChanged;
+
+  @override
+  Stream<bool> get playingChanges => _player.onPlayerStateChanged.map(
+    (state) => state == PlayerState.playing,
+  );
+
+  @override
+  Future<void> play(File file) => _player.play(DeviceFileSource(file.path));
+
+  @override
+  Future<void> resume() => _player.resume();
+
+  @override
+  Future<void> pause() => _player.pause();
+
+  @override
+  Future<void> seek(Duration position) => _player.seek(position);
+
+  @override
+  Future<void> dispose() => _player.dispose();
+}
+
+class GeneratedAudioPlayerCard extends StatefulWidget {
+  final File file;
+  final String name;
+  final String mimeType;
+  final int sizeBytes;
+  final VoidCallback onShare;
+  final VoidCallback onSave;
+  final GeneratedAudioPlayback? playback;
+
+  const GeneratedAudioPlayerCard({
+    super.key,
+    required this.file,
+    required this.name,
+    required this.mimeType,
+    required this.sizeBytes,
+    required this.onShare,
+    required this.onSave,
+    this.playback,
+  });
+
+  @override
+  State<GeneratedAudioPlayerCard> createState() =>
+      _GeneratedAudioPlayerCardState();
+}
+
+class _GeneratedAudioPlayerCardState extends State<GeneratedAudioPlayerCard> {
+  late final GeneratedAudioPlayback _playback =
+      widget.playback ?? AudioplayersGeneratedAudioPlayback();
+  final List<StreamSubscription<dynamic>> _subscriptions = [];
+  Duration _duration = Duration.zero;
+  Duration _position = Duration.zero;
+  bool _playing = false;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscriptions.addAll([
+      _playback.durationChanges.listen((value) {
+        if (mounted) setState(() => _duration = value);
+      }),
+      _playback.positionChanges.listen((value) {
+        if (mounted) setState(() => _position = value);
+      }),
+      _playback.playingChanges.listen((value) {
+        if (mounted) setState(() => _playing = value);
+      }),
+    ]);
+  }
+
+  @override
+  void dispose() {
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    unawaited(_playback.dispose());
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    if (_playing) {
+      await _playback.pause();
+      return;
+    }
+    if (_started) {
+      await _playback.resume();
+    } else {
+      _started = true;
+      await _playback.play(widget.file);
+    }
+  }
+
+  Future<void> _seek(double milliseconds) async {
+    await _playback.seek(Duration(milliseconds: milliseconds.round()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = Strings.of(context);
+    final durationMs = _duration.inMilliseconds;
+    final positionMs = _position.inMilliseconds.clamp(0, durationMs);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Column(
+        key: const ValueKey<String>('generated-audio-player'),
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AttachmentCard(
+            name: widget.name,
+            mimeType: widget.mimeType,
+            sizeLabel: _formatFileBytes(widget.sizeBytes),
+            onTap: _toggle,
+          ),
+          SizedBox(
+            width: 300,
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: _toggle,
+                  icon: Icon(
+                    _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+                  ),
+                ),
+                Expanded(
+                  child: Slider(
+                    value: positionMs.toDouble(),
+                    max: math.max(1, durationMs).toDouble(),
+                    onChanged: durationMs > 0 ? _seek : null,
+                  ),
+                ),
+                Text(
+                  '${_formatAudioDuration(_position)} / ${_formatAudioDuration(_duration)}',
+                ),
+              ],
+            ),
+          ),
+          Wrap(
+            spacing: 4,
+            children: [
+              TextButton.icon(
+                onPressed: _toggle,
+                icon: const Icon(Icons.open_in_new_rounded),
+                label: Text(strings.commonOpen),
+              ),
+              TextButton.icon(
+                onPressed: widget.onShare,
+                icon: const Icon(Icons.share_outlined),
+                label: Text(strings.commonShare),
+              ),
+              TextButton.icon(
+                onPressed: widget.onSave,
+                icon: const Icon(Icons.save_alt_rounded),
+                label: Text(strings.commonSave),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatAudioDuration(Duration value) {
+  final minutes = value.inMinutes;
+  final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$minutes:$seconds';
 }
 
 /// Abre la imagen [file] a pantalla completa con zoom (pinch/double-tap),

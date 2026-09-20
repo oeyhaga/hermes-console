@@ -155,6 +155,101 @@ void main() {
     expect(tracked.cancelled, isTrue);
   });
 
+  test('descarga informa progreso determinista con Content-Length', () async {
+    final temp = await Directory.systemTemp.createTemp('dashboard-progress-');
+    addTearDown(() => temp.delete(recursive: true));
+    final target = File('${temp.path}/report.bin');
+    final transport = _StreamingClient((_, _) async {
+      return http.StreamedResponse(
+        Stream.fromIterable(const <List<int>>[
+          [1, 2, 3],
+          [4, 5, 6],
+        ]),
+        200,
+        contentLength: 6,
+      );
+    });
+    final client = dashboard(transport);
+    addTearDown(client.close);
+    final progress = <(int, int?)>[];
+    Object? failure;
+
+    try {
+      await client.apiDownloadToFile(
+        'files/download',
+        target,
+        maxBytes: 10,
+        onProgress: (int received, int? total) {
+          progress.add((received, total));
+        },
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure, isNull);
+    expect(progress, <(int, int?)>[(3, 6), (6, 6)]);
+    expect(await target.length(), 6);
+  });
+
+  test('cancelación durante stream elimina el archivo parcial', () async {
+    final temp = await Directory.systemTemp.createTemp('dashboard-cancel-');
+    addTearDown(() => temp.delete(recursive: true));
+    final target = File('${temp.path}/report.bin');
+    final transport = _StreamingClient((_, _) async {
+      return http.StreamedResponse(
+        Stream.fromIterable(const <List<int>>[
+          [1, 2, 3],
+          [4, 5, 6],
+        ]),
+        200,
+        contentLength: 6,
+      );
+    });
+    final client = dashboard(transport);
+    addTearDown(client.close);
+    var cancelled = false;
+    Object? failure;
+
+    try {
+      await client.apiDownloadToFile(
+        'files/download',
+        target,
+        maxBytes: 10,
+        isCancelled: () => cancelled,
+        onProgress: (int received, int? _) {
+          if (received >= 3) cancelled = true;
+        },
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure.toString(), contains('download_cancelled'));
+    expect(await target.exists(), isFalse);
+  });
+
+  test('stream truncado respecto a Content-Length elimina el parcial', () async {
+    final temp = await Directory.systemTemp.createTemp('dashboard-truncated-');
+    addTearDown(() => temp.delete(recursive: true));
+    final target = File('${temp.path}/report.bin');
+    final transport = _StreamingClient((_, _) async {
+      return http.StreamedResponse(
+        Stream.value(const <int>[1, 2, 3]),
+        200,
+        contentLength: 6,
+      );
+    });
+    final client = dashboard(transport);
+    addTearDown(client.close);
+
+    await expectLater(
+      client.apiDownloadToFile('files/download', target, maxBytes: 10),
+      throwsA(isA<StateError>()),
+    );
+    expect(await target.exists(), isFalse);
+  });
+
   test(
     'respuesta multipart queda acotada y cancela el stream excesivo',
     () async {

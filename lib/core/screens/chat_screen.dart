@@ -39,6 +39,7 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:markdown/markdown.dart' as md;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
@@ -3355,28 +3356,41 @@ class _ChatScreenState extends State<ChatScreen>
   /// managed-files endpoint, then stores them only in app-private cache. This
   /// supports generated files outside Hermes' legacy image cache without
   /// publishing a bearer token or a server-local path to another Android app.
-  Future<File> downloadGeneratedMedia(GeneratedMediaReference reference) {
+  Future<File> downloadGeneratedMedia(
+    GeneratedMediaReference reference, {
+    GeneratedMediaProgress? onProgress,
+    bool Function()? isCancelled,
+  }) {
     final profile = _effectiveSessionProfile;
     final cacheScope = '${widget.connection.id}\u0000$profile';
+    final maxBytes = switch (reference.kind) {
+      GeneratedMediaKind.image => GeneratedMediaService.maxImageBytes,
+      GeneratedMediaKind.video => GeneratedMediaService.maxVideoBytes,
+      GeneratedMediaKind.audio || GeneratedMediaKind.file =>
+        GeneratedMediaService.maxFileBytes,
+    };
     return GeneratedMediaService.ensureDownloaded(
       cacheScope,
       reference,
-      fetchServerPathToFile: (path, destination) async {
-        final client = DashboardClient.lazy(widget.connection);
-        try {
-          await client.apiDownloadToFile(
-            'files/download?path=${Uri.encodeQueryComponent(path)}',
-            destination,
-            maxBytes: reference.kind == GeneratedMediaKind.image
-                ? GeneratedMediaService.maxImageBytes
-                : GeneratedMediaService.maxVideoBytes,
-            profile: profile,
-            timeout: const Duration(minutes: 3),
-          );
-        } finally {
-          client.close();
-        }
-      },
+      fetchServerPathToFileWithProgress:
+          (path, destination, reportProgress, downloadCancelled) async {
+            final client = DashboardClient.lazy(widget.connection);
+            try {
+              await client.apiDownloadToFile(
+                'files/download?path=${Uri.encodeQueryComponent(path)}',
+                destination,
+                maxBytes: maxBytes,
+                profile: profile,
+                timeout: const Duration(minutes: 3),
+                onProgress: reportProgress,
+                isCancelled: downloadCancelled,
+              );
+            } finally {
+              client.close();
+            }
+          },
+      onProgress: onProgress,
+      isCancelled: isCancelled,
     );
   }
 
@@ -16336,6 +16350,10 @@ class _GeneratedMediaSlot extends StatefulWidget {
 class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
   late GeneratedImageStatus _status;
   File? _file;
+  int _receivedBytes = 0;
+  int? _totalBytes;
+  String? _errorLabel;
+  bool _cancelled = false;
 
   @override
   void initState() {
@@ -16347,6 +16365,12 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
     _status = GeneratedImageStatus.unsupported;
   }
 
+  @override
+  void dispose() {
+    _cancelled = true;
+    super.dispose();
+  }
+
   Future<void> _start() async {
     final state = context.findAncestorStateOfType<_ChatScreenState>();
     if (state == null) {
@@ -16355,32 +16379,215 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
     }
     if (mounted) {
       setState(() {
+        _cancelled = false;
+        _receivedBytes = 0;
+        _totalBytes = null;
+        _errorLabel = null;
         _status = GeneratedImageStatus.downloading;
         _file = null;
       });
     }
     try {
-      final file = await state.downloadGeneratedMedia(widget.reference);
-      if (!mounted) return;
+      final file = await state.downloadGeneratedMedia(
+        widget.reference,
+        onProgress: (received, total) {
+          if (!mounted || _cancelled) return;
+          setState(() {
+            _receivedBytes = received;
+            _totalBytes = total;
+          });
+        },
+        isCancelled: () => _cancelled || !mounted,
+      );
+      if (!mounted || _cancelled) return;
+      final length = await file.length();
+      if (!mounted || _cancelled) return;
       setState(() {
         _file = file;
+        _receivedBytes = length;
+        _totalBytes = length;
         _status = GeneratedImageStatus.ready;
       });
-    } catch (_) {
+    } on GeneratedMediaDownloadCancelled {
       if (!mounted) return;
-      setState(() => _status = GeneratedImageStatus.error);
+      setState(() => _status = GeneratedImageStatus.unsupported);
+    } on DashboardDownloadCancelled {
+      if (!mounted) return;
+      setState(() => _status = GeneratedImageStatus.unsupported);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _errorLabel = _downloadErrorLabel(error);
+        _status = GeneratedImageStatus.error;
+      });
     }
+  }
+
+  String _downloadErrorLabel(Object error) {
+    final strings = Strings.of(context);
+    if (error is DashboardHttpException) {
+      if (error.statusCode == 401 || error.statusCode == 403) {
+        return strings.genMediaDenied;
+      }
+      if (error.statusCode == 404) return strings.genMediaUnavailable;
+    }
+    final message = error.toString().toLowerCase();
+    if (message.contains('exceeds') || message.contains('too large')) {
+      return strings.genMediaTooLarge;
+    }
+    if (message.contains('incomplete') ||
+        message.contains('before content-length')) {
+      return strings.genMediaIncomplete;
+    }
+    return strings.genMediaError;
+  }
+
+  void _cancel() {
+    if (_status != GeneratedImageStatus.downloading) return;
+    setState(() {
+      _cancelled = true;
+      _status = GeneratedImageStatus.unsupported;
+      _receivedBytes = 0;
+      _totalBytes = null;
+    });
+  }
+
+  Future<void> _share() async {
+    final file = _file;
+    if (file == null) return;
+    try {
+      await Share.shareXFiles([
+        XFile(
+          file.path,
+          name: widget.reference.displayName,
+          mimeType: widget.reference.mimeType,
+        ),
+      ]);
+    } catch (_) {
+      if (mounted) _showActionError();
+    }
+  }
+
+  Future<void> _save() async {
+    final file = _file;
+    if (file == null) return;
+    try {
+      await FilePicker.platform.saveFile(
+        dialogTitle: 'Hermes Console',
+        fileName: widget.reference.displayName,
+        bytes: await file.readAsBytes(),
+      );
+    } catch (_) {
+      if (mounted) _showActionError();
+    }
+  }
+
+  Future<void> _open() async {
+    final file = _file;
+    if (file == null) return;
+    try {
+      final length = await file.length();
+      final digest = (await sha256.bind(file.openRead()).first).toString();
+      var reference = AttachmentHistoryReference(
+        index: 0,
+        storageKey: digest,
+        type: AttachmentType.document,
+        mimeType: widget.reference.mimeType,
+        sizeBytes: length,
+        sha256Hex: digest,
+      );
+      var previewFile = file;
+      if (widget.reference.mimeType == 'application/pdf' ||
+          widget.reference.displayName.toLowerCase().endsWith('.pdf')) {
+        final persisted = await AttachmentUploader.persistForHistory(
+          AttachmentDraft(
+            type: AttachmentType.document,
+            name: widget.reference.displayName,
+            mimeType: widget.reference.mimeType,
+            sizeBytes: length,
+            localPath: file.path,
+          ),
+          index: 0,
+        );
+        if (persisted != null) {
+          final resolved = await AttachmentUploader.resolveHistoryReference(
+            persisted,
+          );
+          if (resolved != null) {
+            reference = persisted;
+            previewFile = resolved;
+          }
+        }
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => AttachmentBytesPreviewScreen(
+            name: widget.reference.displayName,
+            sizeLabel: _formatGeneratedFileBytes(length),
+            reference: reference,
+            file: previewFile,
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) _showActionError();
+    }
+  }
+
+  void _showActionError() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(Strings.of(context).genMediaError)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final file = _file;
+    final kind = widget.reference.kind;
+    final strings = Strings.of(context);
+    if (kind == GeneratedMediaKind.audio &&
+        _status == GeneratedImageStatus.ready &&
+        file != null) {
+      return GeneratedAudioPlayerCard(
+        file: file,
+        name: widget.reference.displayName,
+        mimeType: widget.reference.mimeType,
+        sizeBytes: _receivedBytes,
+        onShare: _share,
+        onSave: _save,
+      );
+    }
+    if (kind == GeneratedMediaKind.file || kind == GeneratedMediaKind.audio) {
+      final fileStatus = switch (_status) {
+        GeneratedImageStatus.unsupported => GeneratedFileStatus.consent,
+        GeneratedImageStatus.downloading => GeneratedFileStatus.downloading,
+        GeneratedImageStatus.ready => GeneratedFileStatus.ready,
+        GeneratedImageStatus.error || GeneratedImageStatus.gone =>
+          GeneratedFileStatus.error,
+      };
+      return GeneratedFileCard(
+        key: kind == GeneratedMediaKind.audio
+            ? const ValueKey<String>('generated-audio-card')
+            : null,
+        name: widget.reference.displayName,
+        mimeType: widget.reference.mimeType,
+        status: fileStatus,
+        receivedBytes: _receivedBytes,
+        totalBytes: _totalBytes,
+        errorLabel: _errorLabel,
+        onDownload: _start,
+        onCancel: _cancel,
+        onOpen: file == null ? null : _open,
+        onShare: file == null ? null : _share,
+        onSave: file == null ? null : _save,
+      );
+    }
     if (_status == GeneratedImageStatus.ready && file != null) {
-      return widget.reference.kind == GeneratedMediaKind.image
+      return kind == GeneratedMediaKind.image
           ? GeneratedImageCard(status: GeneratedImageStatus.ready, file: file)
           : GeneratedVideoCard(file: file);
     }
-    final strings = Strings.of(context);
     final colors = Theme.of(context).hermes;
     final loading = _status == GeneratedImageStatus.downloading;
     final awaitingConsent = _status == GeneratedImageStatus.unsupported;
@@ -16428,6 +16635,14 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
       ),
     );
   }
+}
+
+String _formatGeneratedFileBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  final kib = bytes / 1024;
+  if (kib < 1024) return '${kib.toStringAsFixed(kib < 10 ? 1 : 0)} KB';
+  final mib = kib / 1024;
+  return '${mib.toStringAsFixed(mib < 10 ? 1 : 0)} MB';
 }
 
 /// Intercepts fenced code blocks so they render inside [_CodeBlockWrapper]
