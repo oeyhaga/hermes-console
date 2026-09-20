@@ -20,7 +20,7 @@ Legend: ✅ passed with evidence · ❌ failed · ⏳ to run · A/B = compared w
 | D-09 | F12 | Ask for image / PDF / audio / video / `.txt` from a host path | each shows a real preview and can be saved | image ✅ · txt ❌ (raw `MEDIA:`) · pdf/audio/video ⏳ |
 | D-10 | F11 | Trigger the top banner and each bottom notice, keyboard open/closed | no colour bar; no overlap with composer/dock/others | ⏳ |
 | D-11 | F10 | Background subagent + Home list + chat | chip/pill stays while a child runs, clears on authoritative absence, no flapping (≥30 frames) | ❌ on pure 1.2.11 and on combined → ⏳ after F10 |
-| D-12 | F14 | **Force-stop the app mid-turn**, wait ≥60 s, reopen | same chat, correct working/finished state, no lost/duplicated content, draft kept | ⏳ (now) |
+| D-12 | F14 | **Force-stop the app mid-turn**, wait ≥60 s, reopen | same chat, correct working/finished state, no lost/duplicated content, draft kept | ❌ on combined (9014) **and** on pure 1.2.11 (A/B 9015): first user message duplicated, stuck in "Conectando / Sigo trabajando", final reply never shown. Backend is fine (`detached_sessions=1`, turn finished). Pre-existing. Fix in progress (Sol, `fix/console-resume-after-app-closed`). |
 | D-12b | F14 | Swipe away from recents / `am kill` (process death) instead of force-stop | same as D-12 | ⏳ |
 | D-13 | F13 | Talk on the tablet; phone Console in background | phone gets a notification when the turn finishes / needs input | ⏳ (after research) |
 | D-14 | all | Rotate, dark/light, large font, keyboard open, split-screen | no overlap/regression | ⏳ |
