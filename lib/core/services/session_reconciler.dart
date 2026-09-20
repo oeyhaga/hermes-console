@@ -194,7 +194,16 @@ class DesktopSessionReconciler {
   static bool _isDurableOpenTurnActivity(Map<String, dynamic> message) {
     final role = message['role']?.toString().trim().toLowerCase();
     if (role != 'assistant' && role != 'tool') return false;
-    if (canonicalTranscriptIdentity(message) == null) return false;
+    // Rows that come from the durable history do not always carry an id (the
+    // tool-call assistant row of `session.history` has neither `id` nor
+    // `message_id` on a real device), so identity cannot be required here.
+    // What must be excluded is anything this client synthesised itself.
+    if (message['_desktopSnapshotKind'] == 'inflight' ||
+        message['_pipeline'] == true ||
+        message['_optimistic'] == true ||
+        message['_interim'] == true) {
+      return false;
+    }
     return role == 'tool' || !_isDurableTerminalAssistant(message);
   }
 

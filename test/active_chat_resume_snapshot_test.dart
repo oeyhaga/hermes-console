@@ -1095,6 +1095,56 @@ void main() {
     },
   );
 
+  test(
+    'cold open suppresses the inflight user twin when the REST assistant row has no identity',
+    () async {
+      // Shape measured on a real device: `session.history` returns the user
+      // row with only a numeric id and the tool-call assistant row with no id
+      // and no message_id at all.
+      const prompt = 'prompt actual sin identidad en el asistente';
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-live-noid',
+          'session_key': 'stored-chat',
+          'turn_started_at': 100.0,
+          'inflight': {'user': prompt, 'streaming': true},
+          'running': true,
+          'status': 'working',
+        });
+      final chat = _chat(
+        'rest-inflight-assistant-without-identity',
+        gateway,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'id': 401,
+            'role': 'user',
+            'content': prompt,
+            'timestamp': 101.0,
+          },
+          {
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': [
+              {
+                'id': 'call-without-row-identity',
+                'function': {'name': 'terminal', 'arguments': '{}'},
+              },
+            ],
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      final users = chat.messages
+          .where((message) => message['role'] == 'user')
+          .toList(growable: false);
+      expect(users, hasLength(1), reason: 'one bubble for the open first turn');
+      expect(users.single['content'], prompt);
+    },
+  );
+
   test('warm REST suffix uses the exact previous anchor once', () async {
     const prompt = 'prompt actual con anchor';
     var includeCurrent = false;
