@@ -306,7 +306,6 @@ class DesktopSessionMessage {
   final String? reasoningContent;
   final Object? reasoningDetails;
   final Object? codexReasoningItems;
-  final Object? codexMessageItems;
   final Object? context;
   final DateTime? timestamp;
   final String? toolCallId;
@@ -332,7 +331,6 @@ class DesktopSessionMessage {
     this.reasoningContent,
     this.reasoningDetails,
     this.codexReasoningItems,
-    this.codexMessageItems,
     this.context,
     this.timestamp,
     this.toolCallId,
@@ -382,7 +380,6 @@ class DesktopSessionMessage {
       reasoningContent: _stringValue(json['reasoning_content']),
       reasoningDetails: _freezeJson(json['reasoning_details']),
       codexReasoningItems: _freezeJson(json['codex_reasoning_items']),
-      codexMessageItems: _freezeJson(json['codex_message_items']),
       context: _freezeJson(json['context']),
       timestamp: _epochSeconds(json['timestamp']),
       toolCallId: _nonEmptyString(json['tool_call_id']),
@@ -1042,7 +1039,6 @@ const _messageParsedKeys = <String>{
   'reasoning_content',
   'reasoning_details',
   'codex_reasoning_items',
-  'codex_message_items',
   'context',
   'timestamp',
   'tool_call_id',

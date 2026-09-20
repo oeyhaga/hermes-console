@@ -15666,14 +15666,13 @@ class _AssistantMessage extends StatelessWidget {
     final List<String> metaLines = _buildMetaLines(verbose, metadata);
     final timestamp = _formatMessageTimestamp(metadata);
 
+    // El parser retira `<think>`/Harmony del contenido público. El razonamiento
+    // inline o estructurado nunca se materializa en la UI móvil.
     final parsedSplit =
         terminalProjection?.split ??
         slice?.plan.split ??
         splitReasoning(content);
-    final split = mergeStructuredReasoning(
-      ReasoningSplit(reasoning: '', answer: parsedSplit.answer),
-      metadata,
-    );
+    final split = ReasoningSplit(reasoning: '', answer: parsedSplit.answer);
     final showHeader = slice?.showHeader ?? true;
     final showFooter = slice?.showFooter ?? true;
     final structuredImages = _structuredGeneratedImages(metadata);

@@ -10,8 +10,6 @@
 /// intacta, garantizando cero cambios de comportamiento en el caso normal.
 library;
 
-import 'dart:convert';
-
 /// True when transport metadata makes a transcript row non-public.
 ///
 /// Call this before projecting or copying a row: several parsers deliberately
@@ -538,43 +536,6 @@ ReasoningSplit splitReasoning(String content) {
     answer: answer,
     reasoningInProgress: inProgress,
   );
-}
-
-/// Recupera texto de respuesta persistido por Responses API fuera de `content`.
-String codexMessageItemText(Object? rawItems) {
-  Object? items = rawItems;
-  if (items is String) {
-    try {
-      items = jsonDecode(items);
-    } on FormatException {
-      return '';
-    }
-  }
-  if (items is! List) return '';
-
-  final texts = <String>[];
-  for (final item in items) {
-    if (item is! Map ||
-        item['type'] != 'message' ||
-        item['role'] != 'assistant') {
-      continue;
-    }
-    final phase = item['phase'];
-    if (phase == 'commentary' || phase == 'analysis') continue;
-    final content = item['content'];
-    if (content is! List) continue;
-    for (final part in content) {
-      if (part is! Map) continue;
-      final type = part['type'];
-      final text = part['text'];
-      if ((type == 'output_text' || type == 'text') &&
-          text is String &&
-          text.isNotEmpty) {
-        texts.add(text);
-      }
-    }
-  }
-  return texts.join();
 }
 
 /// Extrae el razonamiento ESTRUCTURADO que el backend entrega fuera del
