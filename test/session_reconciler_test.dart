@@ -301,6 +301,55 @@ void main() {
     },
   );
 
+  test(
+    'el turno abierto se reconoce también en la segunda pasada, con proyección previa',
+    () {
+      // Reopening mid-turn hydrates several times: after the first pass the
+      // client already holds its own projection of the same durable rows and
+      // feeds it back as `previous`. The inflight user twin must not come back.
+      const prompt = 'prompt del turno abierto en segunda pasada';
+      final snap = snapshot({
+        'session_id': 'runtime-open-second-pass',
+        'session_key': 'stored-1',
+        'turn_started_at': 100.0,
+        'inflight': {'user': prompt, 'streaming': true},
+        'running': true,
+        'status': 'working',
+      });
+      const fallback = <Map<String, dynamic>>[
+        {
+          'role': 'assistant',
+          'content': '',
+          'tool_calls': [
+            {
+              'id': 'call-second-pass',
+              'function': {'name': 'terminal', 'arguments': '{}'},
+            },
+          ],
+        },
+        {'id': 501, 'role': 'user', 'content': prompt, 'timestamp': 101.0},
+      ];
+      int users(List<Map<String, dynamic>> list) =>
+          list.where((message) => message['role'] == 'user').length;
+
+      final first = reconciler.project(snap, fallbackNewestFirst: fallback);
+      final second = reconciler.project(
+        snap,
+        fallbackNewestFirst: fallback,
+        previousNewestFirst: first.messagesNewestFirst,
+      );
+      final third = reconciler.project(
+        snap,
+        fallbackNewestFirst: fallback,
+        previousNewestFirst: second.messagesNewestFirst,
+      );
+
+      expect(users(first.messagesNewestFirst), 1, reason: 'first pass');
+      expect(users(second.messagesNewestFirst), 1, reason: 'second pass');
+      expect(users(third.messagesNewestFirst), 1, reason: 'third pass');
+    },
+  );
+
   test('display_text rechaza saltos Unicode y controles bidi', () {
     const title = 'Background Process Finished: node verify.mjs';
     for (final injected in [
