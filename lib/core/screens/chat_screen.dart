@@ -15666,13 +15666,14 @@ class _AssistantMessage extends StatelessWidget {
     final List<String> metaLines = _buildMetaLines(verbose, metadata);
     final timestamp = _formatMessageTimestamp(metadata);
 
-    // El parser retira `<think>`/Harmony del contenido público. El razonamiento
-    // inline o estructurado nunca se materializa en la UI móvil.
     final parsedSplit =
         terminalProjection?.split ??
         slice?.plan.split ??
         splitReasoning(content);
-    final split = ReasoningSplit(reasoning: '', answer: parsedSplit.answer);
+    final split = mergeStructuredReasoning(
+      ReasoningSplit(reasoning: '', answer: parsedSplit.answer),
+      {'reasoning': metadata['reasoning']},
+    );
     final showHeader = slice?.showHeader ?? true;
     final showFooter = slice?.showFooter ?? true;
     final structuredImages = _structuredGeneratedImages(metadata);
@@ -15976,14 +15977,10 @@ class _AssistantMessage extends StatelessWidget {
                         message: Strings.of(context).chaCopyMessage,
                         child: InkWell(
                           onTap: () {
-                            // Copia la respuesta final (sin el razonamiento `<think>`);
-                            // si solo hubo razonamiento, copia el contenido íntegro.
                             Clipboard.setData(
                               ClipboardData(
                                 text: markdownToClipboardText(
-                                  GeneratedMediaService.stripDirectives(
-                                    answer.isNotEmpty ? answer : content,
-                                  ),
+                                  GeneratedMediaService.stripDirectives(answer),
                                 ),
                               ),
                             );

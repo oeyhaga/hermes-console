@@ -534,6 +534,7 @@ void main() {
   test(
     'snapshot publica solo narración y tarjetas públicas allowlisted',
     () async {
+      const reasoningMarker = 'DURABLE_SNAPSHOT_REASONING';
       const privateMarker = 'PRIVATE_SNAPSHOT_OWNER_PID_991_/home/private';
       final gateway = _SnapshotGateway()
         ..snapshot = _snapshot({
@@ -544,8 +545,11 @@ void main() {
             {
               'role': 'assistant',
               'content': '<think>$privateMarker</think>Respuesta pública.',
-              'reasoning': privateMarker,
-              'reasoning_content': privateMarker,
+              'reasoning': reasoningMarker,
+              'reasoning_content': 'IGNORED_REASONING_FALLBACK',
+              'reasoning_details': [
+                {'text': privateMarker},
+              ],
               'trace': privateMarker,
               'owner_pid': 991,
               'path': '/home/private',
@@ -593,14 +597,35 @@ void main() {
         'Respuesta pública.',
         'Pregunta pública',
       ]);
+      final assistant = chat.messages.singleWhere(
+        (message) => message['role'] == 'assistant',
+      );
+      expect(assistant['reasoning'], reasoningMarker);
       expect(chat.messages.toString(), isNot(contains(privateMarker)));
       expect(chat.messages.toString(), isNot(contains('/home/private')));
+      expect(chat.messages.toString(), isNot(contains('IGNORED_REASONING_FALLBACK')));
+      expect(
+        chat.messages.where((message) => message['role'] == 'tool'),
+        isEmpty,
+      );
+      for (final message in chat.messages) {
+        expect(message['content'].toString(), isNot(contains(reasoningMarker)));
+        for (final entry in message.entries) {
+          if (identical(message, assistant) && entry.key == 'reasoning') continue;
+          expect(
+            entry.value.toString(),
+            isNot(contains(reasoningMarker)),
+            reason: entry.key,
+          );
+        }
+      }
       for (final forbidden in const [
-        'reasoning',
         'reasoning_content',
+        'reasoning_details',
         'tool_calls',
         'tool_name',
         'tool_call_id',
+        'analysis',
         'trace',
         'owner_pid',
         'path',
@@ -622,6 +647,7 @@ void main() {
   );
 
   test('REST publica narración sin roles ni metadata privados', () async {
+    const reasoningMarker = 'DURABLE_REST_REASONING';
     const privateMarker = 'PRIVATE_REST_TRACE_/srv/hermes/session.jsonl';
     final gateway = _SnapshotGateway()
       ..resumeExistingError = const TuiGatewayRpcError(
@@ -642,7 +668,10 @@ void main() {
                 'role': 'assistant',
                 'content':
                     '<think>$privateMarker</think>Respuesta REST pública.',
-                'reasoning': privateMarker,
+                'reasoning': reasoningMarker,
+                'reasoning_details': [
+                  {'text': privateMarker},
+                ],
                 'analysis': privateMarker,
                 'trace': privateMarker,
                 'owner_pid': 744,
@@ -677,6 +706,10 @@ void main() {
       'Respuesta REST pública.',
       'Pregunta REST pública',
     ]);
+    final assistant = chat.messages.singleWhere(
+      (message) => message['role'] == 'assistant',
+    );
+    expect(assistant['reasoning'], reasoningMarker);
     expect(chat.messages.toString(), isNot(contains(privateMarker)));
     expect(
       chat.messages.any(
@@ -685,6 +718,33 @@ void main() {
       ),
       isFalse,
     );
+    for (final message in chat.messages) {
+      expect(message['content'].toString(), isNot(contains(reasoningMarker)));
+      for (final entry in message.entries) {
+        if (identical(message, assistant) && entry.key == 'reasoning') continue;
+        expect(
+          entry.value.toString(),
+          isNot(contains(reasoningMarker)),
+          reason: entry.key,
+        );
+      }
+    }
+    for (final forbidden in const [
+      'reasoning_content',
+      'reasoning_details',
+      'tool_calls',
+      'tool_name',
+      'tool_call_id',
+      'analysis',
+      'trace',
+      'owner_pid',
+    ]) {
+      expect(
+        chat.messages.any((message) => message.containsKey(forbidden)),
+        isFalse,
+        reason: forbidden,
+      );
+    }
   });
 
   test(

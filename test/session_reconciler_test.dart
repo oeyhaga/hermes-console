@@ -45,6 +45,80 @@ void main() {
     expect(projection.visibleUserCount, 0);
   });
 
+  test('resume separates reply and Codex reasoning sidecars', () {
+    const privateMarker = 'PRIVATE_RPC_INLINE_TEXT';
+    const analysisReasoning = 'RPC_ANALYSIS_REASONING';
+    const commentaryReasoning = 'RPC_COMMENTARY_REASONING';
+    final result = reconciler.project(
+      snapshot({
+        'session_id': 'runtime-codex-sidecar',
+        'session_key': 'stored-1',
+        'messages': const [
+          {
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': [
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'analysis',
+                'content': [
+                  {'type': 'output_text', 'text': analysisReasoning},
+                ],
+              },
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'final_answer',
+                'content': [
+                  {
+                    'type': 'output_text',
+                    'text': '<think>$privateMarker</think>Respuesta RPC.',
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': [
+              {
+                'type': 'message',
+                'role': 'assistant',
+                'phase': 'commentary',
+                'content': [
+                  {'type': 'output_text', 'text': commentaryReasoning},
+                ],
+              },
+            ],
+            'tool_calls': [
+              {
+                'id': 'call-private',
+                'function': {'name': 'shell', 'arguments': '{}'},
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(
+      result.messagesNewestFirst.map((message) => message['content']),
+      ['', 'Respuesta RPC.'],
+    );
+    expect(result.messagesNewestFirst.first['reasoning'], commentaryReasoning);
+    expect(result.messagesNewestFirst.last['reasoning'], analysisReasoning);
+    expect(
+      result.messagesNewestFirst.last['content'],
+      isNot(contains(analysisReasoning)),
+    );
+    expect(result.messagesNewestFirst.toString(), isNot(contains(privateMarker)));
+    for (final message in result.messagesNewestFirst) {
+      expect(message, isNot(contains('codex_message_items')));
+    }
+  });
+
   test(
     'un process_complete durable sobrevive resume y el graft de refresh',
     () {

@@ -25,6 +25,26 @@ Map<String, dynamic> _message(
 };
 
 void main() {
+  test('empty assistant tool-call row has no message bubble', () {
+    final normalized = normalizeTranscriptMessageForDisplay(
+      const {
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-1',
+            'function': {'name': 'shell', 'arguments': '{}'},
+          },
+        ],
+      },
+      retainAssistantToolCalls: true,
+    )!;
+    final projection = ChatRenderProjection.build([normalized]);
+
+    expect(projection.units.whereType<ChatMessageUnitPlan>(), isEmpty);
+    expect(projection.assistantMessageIndexesNewestFirst, isEmpty);
+  });
+
   test('artifact-only message navigates to its nearest rendered context', () {
     final messages = <Map<String, dynamic>>[
       {
@@ -564,16 +584,24 @@ void main() {
     expect(projection.units.single, isA<ChatUserTurnUnitPlan>());
   });
 
-  test('un assistant con solo razonamiento estructurado no se proyecta', () {
+  test('tool-call assistant con solo reasoning conserva su burbuja', () {
     final reasoner = _message('assistant', '')
-      ..['reasoning_content'] = 'pensé paso a paso';
+      ..['reasoning'] = 'pensé paso a paso'
+      ..['tool_calls'] = [
+        {
+          'id': 'call-reasoning',
+          'function': {'name': 'shell', 'arguments': '{}'},
+        },
+      ];
     final projection = ChatRenderProjection.build([
       reasoner,
       _message('user', 'Pregunta'),
     ]);
 
-    expect(projection.units, hasLength(1));
-    expect(projection.assistantMessageIndexesNewestFirst, isEmpty);
+    expect(projection.units.whereType<ChatMessageUnitPlan>(), hasLength(1));
+    expect(projection.units.whereType<ChatUserTurnUnitPlan>(), hasLength(1));
+    expect(projection.units.whereType<ChatToolActivityUnitPlan>(), hasLength(1));
+    expect(projection.assistantMessageIndexesNewestFirst, [0]);
   });
 
   test('un assistant vacío sin razonamiento sigue evaporándose', () {
@@ -596,7 +624,7 @@ void main() {
       final projection = ChatRenderProjection.build(messages);
 
       messages[0] = _message('assistant', '')
-        ..['reasoning_content'] = 'razonamiento tardío';
+        ..['reasoning'] = 'razonamiento tardío';
 
       expect(projection.canReuseFor(messages), isFalse);
     },

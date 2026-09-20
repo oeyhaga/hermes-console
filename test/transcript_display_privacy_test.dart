@@ -53,7 +53,7 @@ void main() {
       },
     );
 
-    test('keeps only public identity content and timestamp fields', () {
+    test('keeps durable reasoning only in its canonical field', () {
       final normalized = normalizeTranscriptMessageForDisplay(const {
         'id': 7,
         'message_id': 'msg-7',
@@ -61,8 +61,8 @@ void main() {
         'role': 'assistant',
         'content': '<think>PRIVATE_INLINE</think>Respuesta pública.',
         'timestamp': 123.5,
-        'reasoning': 'PRIVATE_REASONING',
-        'reasoning_content': 'PRIVATE_REASONING_CONTENT',
+        'reasoning': 'DURABLE_REASONING',
+        'reasoning_content': 'IGNORED_REASONING_CONTENT',
         'reasoning_details': [
           {'text': 'PRIVATE_TRACE'},
         ],
@@ -80,8 +80,131 @@ void main() {
         'row_id': 7,
         'role': 'assistant',
         'content': 'Respuesta pública.',
+        'reasoning': 'DURABLE_REASONING',
         'timestamp': 123.5,
       });
+    });
+
+    test('accepts only plain-string reasoning_details fallback', () {
+      expect(
+        normalizeTranscriptMessageForDisplay(const {
+          'role': 'assistant',
+          'content': 'Respuesta.',
+          'reasoning_details': 'DURABLE_DETAILS_STRING',
+        }),
+        {
+          'role': 'assistant',
+          'content': 'Respuesta.',
+          'reasoning': 'DURABLE_DETAILS_STRING',
+        },
+      );
+
+      final structured = normalizeTranscriptMessageForDisplay(const {
+        'role': 'assistant',
+        'content': 'Respuesta.',
+        'reasoning_details': [
+          {'text': 'PRIVATE_STRUCTURED_DETAILS'},
+        ],
+      });
+      expect(structured, {'role': 'assistant', 'content': 'Respuesta.'});
+      expect(structured.toString(), isNot(contains('PRIVATE_STRUCTURED_DETAILS')));
+    });
+
+    test('routes Codex commentary and analysis only to reasoning', () {
+      const privateMarker = 'PRIVATE_INLINE_CODEX_TEXT';
+      const commentary = 'COMMENTARY_REASONING_TEXT';
+      const analysis = 'ANALYSIS_REASONING_TEXT';
+      const sidecar = [
+        {
+          'type': 'message',
+          'role': 'user',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'reasoning',
+          'role': 'assistant',
+          'content': [
+            {'type': 'output_text', 'text': privateMarker},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'commentary',
+          'content': [
+            {'type': 'output_text', 'text': commentary},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'analysis',
+          'content': [
+            {'type': 'output_text', 'text': analysis},
+          ],
+        },
+        {
+          'type': 'message',
+          'role': 'assistant',
+          'phase': 'final_answer',
+          'content': [
+            {
+              'type': 'output_text',
+              'text': '<think>$privateMarker</think>Respuesta recuperada.',
+            },
+          ],
+        },
+      ];
+
+      for (final encoded in <Object>[sidecar, jsonEncode(sidecar)]) {
+        final normalized = normalizeTranscriptMessageForDisplay({
+          'role': 'assistant',
+          'content': '',
+          'codex_message_items': encoded,
+        });
+
+        expect(normalized?['content'], 'Respuesta recuperada.');
+        expect(normalized?['content'], isNot(contains(commentary)));
+        expect(normalized?['content'], isNot(contains(analysis)));
+        expect(normalized?['reasoning'], '$commentary\n\n$analysis');
+        expect(normalized.toString(), isNot(contains(privateMarker)));
+        expect(normalized, isNot(contains('codex_message_items')));
+      }
+    });
+
+    test('malformed Codex sidecars are safe and canonical content wins', () {
+      for (final malformed in <Object>[
+        '{',
+        const {'not': 'a list'},
+        7,
+      ]) {
+        expect(
+          normalizeTranscriptMessageForDisplay({
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': malformed,
+          }),
+          isNull,
+        );
+      }
+
+      final normalized = normalizeTranscriptMessageForDisplay(const {
+        'role': 'assistant',
+        'content': 'Respuesta canónica.',
+        'codex_message_items': [
+          {
+            'type': 'message',
+            'role': 'assistant',
+            'content': [
+              {'type': 'output_text', 'text': 'Respuesta lateral.'},
+            ],
+          },
+        ],
+      });
+
+      expect(normalized?['content'], 'Respuesta canónica.');
     });
 
     test('keeps only sanitized metadata for a known editorial marker', () {

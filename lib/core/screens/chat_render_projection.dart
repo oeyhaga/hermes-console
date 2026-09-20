@@ -1,4 +1,3 @@
-import '../utils/assistant_content.dart';
 import '../utils/chat_turn.dart';
 import '../widgets/chat_event_cards.dart';
 
@@ -17,6 +16,11 @@ Set<String> _delegateTaskCallIds(List<Map<String, dynamic>> messages) {
     }
   }
   return ids;
+}
+
+bool _hasCanonicalReasoning(Map<String, dynamic> message) {
+  final reasoning = message['reasoning'];
+  return reasoning is String && reasoning.trim().isNotEmpty;
 }
 
 bool _isDelegateTaskTranscriptMessage(
@@ -116,7 +120,7 @@ final class ChatRenderProjection {
            source.isNotEmpty && _hasVisibleText(source.first['content']),
        _headHasStructuredReasoning =
            source.isNotEmpty &&
-           structuredReasoningText(source.first).isNotEmpty;
+           _hasCanonicalReasoning(source.first);
 
   factory ChatRenderProjection.build(List<Map<String, dynamic>> messages) {
     final chronologicalUnits = <ChatRenderUnitPlan>[];
@@ -203,16 +207,21 @@ final class ChatRenderProjection {
       }
 
       final event = ChatEventInfo.classify(message);
+      final hasStructuredReasoning =
+          role == 'assistant' && _hasCanonicalReasoning(message);
       if (event.kind == ChatEventKind.toolEvent ||
           event.kind == ChatEventKind.approval) {
+        if (hasStructuredReasoning) {
+          flushTools();
+          chronologicalUnits.add(ChatMessageUnitPlan(index));
+          assistantIndexes.add(index);
+        }
         (pendingTools ??= <ChatEventInfo>[]).add(event);
         (pendingToolIndexes ??= <int>[]).add(index);
         continue;
       }
 
-      // Los assistant sin contenido público no generan huecos. El razonamiento
-      // estructurado es metadata privada y nunca convierte una fila en visible.
-      if (event.text.trim().isEmpty) {
+      if (event.text.trim().isEmpty && !hasStructuredReasoning) {
         continue;
       }
       flushTools();
@@ -247,7 +256,7 @@ final class ChatRenderProjection {
         (head['_steer'] == true) == _headSteer &&
         effectiveUserDisplayKind(head) == _headDisplayKind &&
         _hasVisibleText(head['content']) == _headHasVisibleText &&
-        structuredReasoningText(head).isNotEmpty == _headHasStructuredReasoning;
+        _hasCanonicalReasoning(head) == _headHasStructuredReasoning;
   }
 
   Map<String, dynamic>? get latestUserMessage {
