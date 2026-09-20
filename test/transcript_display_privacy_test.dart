@@ -53,7 +53,7 @@ void main() {
       },
     );
 
-    test('keeps only public identity content and timestamp fields', () {
+    test('keeps public content identity timestamp and durable reasoning', () {
       final normalized = normalizeTranscriptMessageForDisplay(const {
         'id': 7,
         'message_id': 'msg-7',
@@ -61,10 +61,10 @@ void main() {
         'role': 'assistant',
         'content': '<think>PRIVATE_INLINE</think>Respuesta pública.',
         'timestamp': 123.5,
-        'reasoning': 'PRIVATE_REASONING',
-        'reasoning_content': 'PRIVATE_REASONING_CONTENT',
+        'reasoning': 'DURABLE_REASONING',
+        'reasoning_content': 'DURABLE_REASONING_CONTENT',
         'reasoning_details': [
-          {'text': 'PRIVATE_TRACE'},
+          {'text': 'DURABLE_TRACE'},
         ],
         'trace': 'PRIVATE_TRACE',
         'owner_pid': 991,
@@ -80,8 +80,74 @@ void main() {
         'row_id': 7,
         'role': 'assistant',
         'content': 'Respuesta pública.',
+        'reasoning':
+            'DURABLE_REASONING_CONTENT\n\nDURABLE_REASONING\n\nDURABLE_TRACE',
         'timestamp': 123.5,
       });
+    });
+
+    test('recovers only reply-phase Codex sidecar text', () {
+      const replyItem = {
+        'type': 'message',
+        'role': 'assistant',
+        'phase': 'final_answer',
+        'content': [
+          {'type': 'output_text', 'text': 'Respuesta recuperada.'},
+        ],
+      };
+      const commentaryItem = {
+        'type': 'message',
+        'role': 'assistant',
+        'phase': 'commentary',
+        'content': [
+          {'type': 'output_text', 'text': '1\n2\n3'},
+        ],
+      };
+
+      for (final items in <Object>[
+        const [commentaryItem, replyItem],
+        jsonEncode(const [commentaryItem, replyItem]),
+      ]) {
+        final normalized = normalizeTranscriptMessageForDisplay({
+          'role': 'assistant',
+          'content': '',
+          'reasoning_content': '**Conteo**\n1\n2\n3',
+          'codex_message_items': items,
+        });
+
+        expect(normalized?['content'], 'Respuesta recuperada.');
+        expect(normalized?['content'], isNot(contains('1\n2\n3')));
+        expect(normalized?['reasoning'], '**Conteo**\n1\n2\n3');
+      }
+    });
+
+    test('Codex sidecar malformed is safe and canonical content wins', () {
+      for (final malformed in <Object>['{', const {'not': 'a list'}, 7]) {
+        expect(
+          normalizeTranscriptMessageForDisplay({
+            'role': 'assistant',
+            'content': '',
+            'codex_message_items': malformed,
+          }),
+          isNull,
+        );
+      }
+
+      final normalized = normalizeTranscriptMessageForDisplay(const {
+        'role': 'assistant',
+        'content': 'Respuesta canónica.',
+        'codex_message_items': [
+          {
+            'type': 'message',
+            'role': 'assistant',
+            'content': [
+              {'type': 'output_text', 'text': 'Respuesta lateral.'},
+            ],
+          },
+        ],
+      });
+
+      expect(normalized?['content'], 'Respuesta canónica.');
     });
 
     test('keeps only sanitized metadata for a known editorial marker', () {

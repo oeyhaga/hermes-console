@@ -725,6 +725,16 @@ class DesktopSessionReconciler {
         desktopSessionDisplayText(displaySource) ??
         desktopSessionDisplayText(message.context) ??
         '';
+    if (role == 'assistant' && content.trim().isEmpty) {
+      content = codexMessageItemText(message.codexMessageItems);
+    }
+    final reasoning = role == 'assistant'
+        ? structuredReasoningText({
+            'reasoning_content': message.reasoningContent,
+            'reasoning': message.reasoning,
+            'reasoning_details': message.reasoningDetails,
+          })
+        : '';
     if (imageCount > 0) {
       // Aún no hay tarjeta para imágenes de bloques estructurados; el marcador
       // conserva al menos la señal de que el turno incluía una imagen.
@@ -760,11 +770,12 @@ class DesktopSessionReconciler {
     if (role == 'assistant') content = finalizedPublicAssistantText(content);
     final dropMain =
         (role == 'user' && content.isEmpty && toolResultBlocks.isNotEmpty) ||
-        (!retainMediaEvidence && content.trim().isEmpty) ||
+        (!retainMediaEvidence && content.trim().isEmpty && reasoning.isEmpty) ||
         (role == 'tool' && !retainMediaEvidence);
     final main = Map<String, dynamic>.unmodifiable({
       'role': role,
       'content': content,
+      if (reasoning.isNotEmpty) 'reasoning': reasoning,
       '_desktopSnapshotKey': 'message-$runtimeSessionId-$ordinal',
       '_desktopSnapshotKind': 'persisted',
       '_desktopMessageOrdinal': ordinal,

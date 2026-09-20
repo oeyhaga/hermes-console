@@ -483,12 +483,26 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
       desktopSessionDisplayText(message['content']) ??
       desktopSessionDisplayText(message['text']) ??
       '';
-  if (role == 'assistant') content = finalizedPublicAssistantText(content);
+  if (role == 'assistant') {
+    content = finalizedPublicAssistantText(content);
+    if (content.trim().isEmpty) {
+      content = finalizedPublicAssistantText(
+        codexMessageItemText(message['codex_message_items']),
+      );
+    }
+  }
+  final reasoning = role == 'assistant'
+      ? structuredReasoningText(message)
+      : '';
   // Internal Stop/recovery evidence must retain the exact submitted prompt.
   if (role == 'user' && !retainUserMentionNote) {
     content = stripBotMentionNote(content);
   }
-  final normalized = <String, dynamic>{'role': role, 'content': content};
+  final normalized = <String, dynamic>{
+    'role': role,
+    'content': content,
+    if (reasoning.isNotEmpty) 'reasoning': reasoning,
+  };
   for (final key in const ['id', 'message_id', 'row_id']) {
     final value = message[key];
     if (value is int && value > 0) {
@@ -638,6 +652,7 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   final hasAssistantToolCalls =
       assistantToolCalls is List && assistantToolCalls.isNotEmpty;
   if (content.trim().isEmpty &&
+      reasoning.isEmpty &&
       generatedImages.isEmpty &&
       !isEditorial &&
       !isLivePlaceholder &&

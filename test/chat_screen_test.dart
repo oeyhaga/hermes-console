@@ -13968,7 +13968,7 @@ void main() {
     },
   );
 
-  testWidgets('reasoning estructurado nunca entra en la UI del chat', (
+  testWidgets('reasoning durable aparece plegado sobre la respuesta', (
     tester,
   ) async {
     await pumpChat(
@@ -13977,10 +13977,10 @@ void main() {
         {
           'role': 'assistant',
           'content': 'Respuesta pública final.',
-          'reasoning_content': 'PRIVATE_REASONING_SENTINEL',
-          'reasoning': 'PRIVATE_ANALYSIS_SENTINEL',
+          'reasoning_content': 'RESUMEN_DURABLE',
+          'reasoning': 'ANALISIS_DURABLE',
           'reasoning_details': [
-            {'type': 'reasoning.text', 'text': 'PRIVATE_TRACE_SENTINEL'},
+            {'type': 'reasoning.text', 'text': 'TRAZA_DURABLE'},
           ],
         },
         {'role': 'user', 'content': 'Pregunta segura'},
@@ -13988,9 +13988,17 @@ void main() {
     );
 
     expect(find.textContaining('Respuesta pública final.'), findsOneWidget);
-    expect(find.textContaining('PRIVATE_REASONING_SENTINEL'), findsNothing);
-    expect(find.textContaining('PRIVATE_ANALYSIS_SENTINEL'), findsNothing);
-    expect(find.textContaining('PRIVATE_TRACE_SENTINEL'), findsNothing);
+    expect(find.text('Razonamiento'), findsOneWidget);
+    expect(find.textContaining('RESUMEN_DURABLE'), findsNothing);
+    expect(find.textContaining('ANALISIS_DURABLE'), findsNothing);
+    expect(find.textContaining('TRAZA_DURABLE'), findsNothing);
+
+    await tester.tap(find.text('Razonamiento'));
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.textContaining('RESUMEN_DURABLE'), findsOneWidget);
+    expect(find.textContaining('ANALISIS_DURABLE'), findsOneWidget);
+    expect(find.textContaining('TRAZA_DURABLE'), findsOneWidget);
     expect(find.text('Pregunta segura'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

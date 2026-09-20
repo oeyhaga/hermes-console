@@ -45,6 +45,41 @@ void main() {
     expect(projection.visibleUserCount, 0);
   });
 
+  test('resume recupera respuesta Codex y conserva reasoning separado', () {
+    final result = reconciler.project(
+      snapshot({
+        'session_id': 'runtime-codex-sidecar',
+        'session_key': 'stored-1',
+        'messages': const [
+          {
+            'role': 'assistant',
+            'content': '',
+            'reasoning': '**Conteo**\n1\n2\n3',
+            'codex_message_items':
+                '[{"type":"message","role":"assistant","phase":"analysis",'
+                '"content":[{"type":"output_text","text":"1\\n2\\n3"}]},'
+                '{"type":"message","role":"assistant","phase":"final_answer",'
+                '"content":[{"type":"output_text","text":"Terminado."}]}]',
+            'tool_calls': [
+              {
+                'id': 'call-1',
+                'function': {'name': 'shell', 'arguments': '{}'},
+              },
+            ],
+          },
+        ],
+      }),
+      retainMediaEvidence: true,
+    );
+
+    final assistant = result.messagesNewestFirst.single;
+    expect(assistant['content'], 'Terminado.');
+    expect(assistant['content'], isNot(contains('1\n2\n3')));
+    expect(assistant['reasoning'], '**Conteo**\n1\n2\n3');
+    expect(assistant['tool_calls'], isNotEmpty);
+    expect(ChatRenderProjection.build(result.messagesNewestFirst).units, hasLength(1));
+  });
+
   test(
     'un process_complete durable sobrevive resume y el graft de refresh',
     () {

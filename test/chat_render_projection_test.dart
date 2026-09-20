@@ -25,6 +25,42 @@ Map<String, dynamic> _message(
 };
 
 void main() {
+  test('durable assistant reasoning creates a renderable row', () {
+    final messages = <Map<String, dynamic>>[
+      {
+        'role': 'assistant',
+        'content': '',
+        'reasoning_content': 'Análisis durable',
+      },
+    ];
+
+    final projection = ChatRenderProjection.build(messages);
+
+    expect(projection.units, hasLength(1));
+    expect(projection.units.single, isA<ChatMessageUnitPlan>());
+    expect(projection.assistantMessageIndexesNewestFirst, [0]);
+  });
+
+  test('empty assistant tool row has no message bubble', () {
+    final messages = <Map<String, dynamic>>[
+      {
+        'role': 'assistant',
+        'content': '',
+        'tool_calls': [
+          {
+            'id': 'call-1',
+            'function': {'name': 'shell', 'arguments': '{}'},
+          },
+        ],
+      },
+    ];
+
+    final projection = ChatRenderProjection.build(messages);
+
+    expect(projection.units.whereType<ChatMessageUnitPlan>(), isEmpty);
+    expect(projection.assistantMessageIndexesNewestFirst, isEmpty);
+  });
+
   test('artifact-only message navigates to its nearest rendered context', () {
     final messages = <Map<String, dynamic>>[
       {
@@ -564,7 +600,7 @@ void main() {
     expect(projection.units.single, isA<ChatUserTurnUnitPlan>());
   });
 
-  test('un assistant con solo razonamiento estructurado no se proyecta', () {
+  test('un assistant con solo razonamiento estructurado se proyecta', () {
     final reasoner = _message('assistant', '')
       ..['reasoning_content'] = 'pensé paso a paso';
     final projection = ChatRenderProjection.build([
@@ -572,8 +608,8 @@ void main() {
       _message('user', 'Pregunta'),
     ]);
 
-    expect(projection.units, hasLength(1));
-    expect(projection.assistantMessageIndexesNewestFirst, isEmpty);
+    expect(projection.units, hasLength(2));
+    expect(projection.assistantMessageIndexesNewestFirst, [0]);
   });
 
   test('un assistant vacío sin razonamiento sigue evaporándose', () {

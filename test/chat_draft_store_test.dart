@@ -1916,8 +1916,54 @@ void main() {
     },
   );
 
+  test('transcript local recupera sidecar y conserva reasoning al reabrir', () async {
+    await LocalTranscriptStore.saveFromNewestFirst(
+      'conn-codex',
+      'session-sidecar',
+      const [
+        {
+          'role': 'assistant',
+          'content': '',
+          'reasoning_content': '**Conteo**\n1\n2\n3',
+          'codex_message_items': [
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'analysis',
+              'content': [
+                {'type': 'output_text', 'text': '1\n2\n3'},
+              ],
+            },
+            {
+              'type': 'message',
+              'role': 'assistant',
+              'phase': 'final_answer',
+              'content': [
+                {'type': 'output_text', 'text': 'Terminado.'},
+              ],
+            },
+          ],
+        },
+      ],
+    );
+
+    final restored = await LocalTranscriptStore.load(
+      'conn-codex',
+      'session-sidecar',
+    );
+
+    expect(restored, [
+      {
+        'role': 'assistant',
+        'content': 'Terminado.',
+        'reasoning': '**Conteo**\n1\n2\n3',
+      },
+    ]);
+    expect(restored.single, isNot(contains('codex_message_items')));
+  });
+
   test(
-    'transcript local descarta classifiers y reasoning antes de guardar',
+    'transcript local descarta classifiers y reasoning inline antes de guardar',
     () async {
       await LocalTranscriptStore.saveFromNewestFirst(
         'conn-private',
