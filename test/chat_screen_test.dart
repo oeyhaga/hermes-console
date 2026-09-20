@@ -19045,4 +19045,250 @@ void main() {
     await expectArrowScrollsToBottom(tester, controller);
     expect(tester.takeException(), isNull);
   });
+  // ---------------------------------------------------------------------
+  // Zona de avisos inferior: ningún aviso transitorio (SnackBar) puede tapar
+  // el composer, la pila de estado (pastilla + flecha) ni las tiras en flujo.
+  // ---------------------------------------------------------------------
+
+  Future<void> showChatSnackBar(WidgetTester tester, String text) async {
+    ScaffoldMessenger.of(tester.element(find.byType(ChatScreen))).showSnackBar(
+      SnackBar(content: Text(text), duration: const Duration(days: 1)),
+    );
+    // El hueco medido se publica tras el layout y reconstruye el tema del
+    // SnackBar en el frame siguiente; después corre la animación de entrada.
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  /// Rect del cuerpo visible del SnackBar: el propio `SnackBar` incluye su
+  /// margen inferior (el hueco que aquí se está midiendo).
+  Rect snackBarRect(WidgetTester tester) => tester.getRect(
+    find
+        .descendant(of: find.byType(SnackBar), matching: find.byType(Material))
+        .first,
+  );
+
+  Rect composerHostRect(WidgetTester tester) =>
+      tester.getRect(find.byKey(const ValueKey('chat-composer-host')));
+
+  testWidgets('un SnackBar del chat flota por encima del composer', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 24, bottom: 24)
+      ..viewPadding = const FakeViewPadding(top: 24, bottom: 24);
+    addTearDown(tester.view.reset);
+    await pumpChat(tester, messages: scrollableChatHistory('snack reposo'));
+
+    await showChatSnackBar(tester, 'Aviso transitorio');
+    final snack = snackBarRect(tester);
+    final composer = composerHostRect(tester);
+    expect(snack.height, greaterThan(0));
+    expect(
+      snack.overlaps(composer),
+      isFalse,
+      reason: 'el SnackBar $snack tapa el composer $composer',
+    );
+    expect(snack.bottom, lessThanOrEqualTo(composer.top));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('un SnackBar sigue el alto del composer cuando este crece', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800);
+    addTearDown(tester.view.reset);
+    final chat = await pumpChat(
+      tester,
+      messages: scrollableChatHistory('snack cola'),
+    );
+    final before = composerHostRect(tester);
+    // Un borrador de varias líneas agranda el composer: el hueco medido debe
+    // seguirlo.
+    await tester.enterText(find.byType(TextField), 'uno\ndos\ntres\ncuatro');
+    await tester.pump();
+    await tester.pump();
+    expect(composerHostRect(tester).height, greaterThan(before.height));
+    expect(chat.messages, isNotEmpty);
+
+    await showChatSnackBar(tester, 'Aviso con composer alto');
+    expect(
+      snackBarRect(tester).bottom,
+      lessThanOrEqualTo(composerHostRect(tester).top),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('con teclado abierto el SnackBar sigue sin tapar el composer', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 24, bottom: 24)
+      ..viewPadding = const FakeViewPadding(top: 24, bottom: 24)
+      ..viewInsets = const FakeViewPadding(bottom: 300);
+    addTearDown(tester.view.reset);
+    await pumpChat(tester, messages: scrollableChatHistory('snack teclado'));
+
+    await showChatSnackBar(tester, 'Aviso con teclado');
+    final snack = snackBarRect(tester);
+    final composer = composerHostRect(tester);
+    expect(snack.overlaps(composer), isFalse);
+    expect(snack.bottom, lessThanOrEqualTo(composer.top));
+    // Sigue dentro de la pantalla, sobre el teclado.
+    expect(snack.top, greaterThanOrEqualTo(0));
+    expect(composer.bottom, lessThanOrEqualTo(800 - 300));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'SnackBar, tarjeta de subagentes y flecha ocupan huecos distintos',
+    (tester) async {
+      failOnMissedTaps();
+      tester.view
+        ..devicePixelRatio = 1
+        ..physicalSize = const Size(360, 800);
+      addTearDown(tester.view.reset);
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-snack-vs-stack'),
+        desktopGateway: gateway,
+        messages: scrollableChatHistory('snack vs pila'),
+      );
+      expect(
+        await chat.send(
+          fullText: 'delega el trabajo',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('subagent.start', const {
+        'subagent_id': 'snack-overlap-child',
+        'delegation_id': 'snack-overlap-delegation',
+        'goal': 'TRABAJO DELEGADO',
+        'status': 'running',
+      });
+      await tester.pump();
+      final card = find.byKey(const ValueKey('chat-subagent-status'));
+      expect(card, findsOneWidget);
+      await holdTranscriptAwayFromBottom(tester);
+      expectScrollToBottomVisible();
+
+      await showChatSnackBar(tester, 'Aviso con pila completa');
+      final snack = snackBarRect(tester);
+      final cardRect = tester.getRect(card);
+      final arrow = tester.getRect(scrollToBottomFinder());
+      final composer = composerHostRect(tester);
+      expect(cardRect.height, greaterThan(0));
+      expect(snack.overlaps(cardRect), isFalse, reason: '$snack vs $cardRect');
+      expect(snack.overlaps(arrow), isFalse, reason: '$snack vs $arrow');
+      expect(snack.overlaps(composer), isFalse, reason: '$snack vs $composer');
+      expect(arrow.overlaps(cardRect), isFalse);
+      expect(cardRect.bottom, lessThanOrEqualTo(composer.top));
+      // Y el orden vertical es el del diseño: SnackBar > flecha > tarjeta.
+      expect(snack.bottom, lessThanOrEqualTo(arrow.top));
+      expect(arrow.bottom, lessThanOrEqualTo(cardRect.top));
+      expect(tester.takeException(), isNull);
+
+      gateway.emit('subagent.complete', const {
+        'subagent_id': 'snack-overlap-child',
+        'status': 'completed',
+      });
+      gateway.emit('message.complete', const {'text': 'TRABAJO ENTREGADO'});
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 2));
+    },
+  );
+
+  testWidgets('el aviso de historial local va en flujo, sobre el transcript', (
+    tester,
+  ) async {
+    final connection = _conn();
+    final session = Session(
+      id: 'sess-notice-in-flow',
+      title: 'Historial local acotado',
+      model: 'hermes-agent',
+      source: 'mobile-local',
+      messageCount: 121,
+      isActive: false,
+      preview: '',
+      startedAt: 0,
+    );
+    await LocalTranscriptStore.saveFromNewestFirst(connection.id, session.id, [
+      for (var index = 121; index >= 1; index--)
+        {
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'mensaje visible $index',
+        },
+    ]);
+    await pumpChat(
+      tester,
+      connection: connection,
+      session: session,
+      messagesLoaded: false,
+    );
+    await tester.pump();
+
+    final notice = find.byKey(
+      const ValueKey('local-transcript-truncation-notice'),
+    );
+    expect(notice, findsOneWidget);
+    final body = tester.getRect(find.byKey(const ValueKey('chat-stable-body')));
+    // En flujo: nunca se solapa con el transcript ni con sus controles.
+    expect(tester.getRect(notice).bottom, lessThanOrEqualTo(body.top));
+    // Superficie neutra del tema, sin relleno de color de aviso.
+    final colors = Theme.of(tester.element(notice)).hermes;
+    final decorations = find
+        .descendant(of: notice, matching: find.byType(Container))
+        .evaluate()
+        .map((e) => (e.widget as Container).decoration)
+        .whereType<BoxDecoration>();
+    expect(decorations, isNotEmpty);
+    for (final decoration in decorations) {
+      expect(decoration.color, colors.surface);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  test('chatSnackBarBottomInset respeta reposo, techo y safe area', () {
+    double inset({
+      double bars = 90,
+      double pill = 0,
+      bool arrow = false,
+      double padding = 0,
+      double insets = 0,
+      double height = 800,
+    }) => chatSnackBarBottomInset(
+      bottomBarsExtent: bars,
+      activityPillExtent: pill,
+      scrollToBottomVisible: arrow,
+      viewPaddingBottom: padding,
+      viewInsetsBottom: insets,
+      screenHeight: height,
+      resting: 18,
+    );
+
+    // Sin pila: 8 (reposo) + 8 (respiro) sobre el composer.
+    expect(inset(), 90 + 16);
+    // La pastilla y la flecha suman su hueco exacto.
+    expect(inset(pill: 60), 90 + 16 + 60);
+    expect(inset(pill: 60, arrow: true), 90 + 16 + 60 + 48);
+    // El SafeArea inferior ya está dentro del composer y el Scaffold ya lo
+    // descuenta del ancla: sin teclado se resta; con teclado no.
+    expect(inset(padding: 24), 90 - 24 + 16);
+    expect(inset(padding: 24, insets: 300), 90 + 16);
+    // Nunca por debajo del margen normal ni por encima del 40 % libre.
+    expect(inset(bars: 0), 18);
+    expect(inset(bars: 900, height: 800), 320);
+    expect(inset(bars: 900, height: 800, insets: 300), 200);
+  });
 }
