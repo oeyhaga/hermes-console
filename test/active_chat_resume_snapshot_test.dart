@@ -19,6 +19,7 @@ import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _MemoryCompressionFenceStorage implements DesktopCompressionFenceStorage {
   String? value;
@@ -2810,6 +2811,137 @@ void main() {
       expect(chat.state, ChatPipelineState.waiting);
       expect(chat.isStreaming, isTrue);
       expect(chat.desktopTurnStartedAt, isNotNull);
+    },
+  );
+
+  test(
+    'backend-started turn appends after process completion and converges',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      const processPayload =
+          '[IMPORTANT: Background process proc_0123456789ab exited '
+          '(exit code 0).]';
+      var durable = <Map<String, dynamic>>[
+        {
+          'message_id': 'turn-1-user',
+          'role': 'user',
+          'content': 'Lanza el proceso',
+          'timestamp': 100,
+        },
+        {
+          'message_id': 'turn-1-assistant',
+          'role': 'assistant',
+          'content': 'Lanzado en segundo plano con aviso al terminar.',
+          'timestamp': 101,
+        },
+      ];
+      final producer = Object();
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-backend-turn',
+          'session_key': 'stored-chat',
+          'messages': durable,
+          'inflight': {'assistant': '', 'streaming': true},
+          'running': true,
+          'status': 'working',
+        });
+      final chat = _chat(
+        'resume-backend-turn',
+        gateway,
+        storedMessageLoader: (_, _) async => durable,
+      )..smoothStreaming = false;
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+      final turnOneDone = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit(
+        'message.complete',
+        const {'text': 'Lanzado en segundo plano con aviso al terminar.'},
+        40,
+        7,
+        producer,
+      );
+      await turnOneDone.timeout(const Duration(seconds: 1));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      durable = <Map<String, dynamic>>[
+        ...durable,
+        {
+          'message_id': 'process-complete',
+          'role': 'user',
+          'content': processPayload,
+          'display_kind': 'process_complete',
+          'display_metadata': {
+            'display_text': 'Background Process Finished',
+          },
+          'timestamp': 118,
+        },
+      ];
+      chat.internalMessagesForTesting = durable.reversed
+          .map(Map<String, dynamic>.of)
+          .toList(growable: false);
+      gateway.emit('message.start', const {}, 41, 7, producer);
+      gateway.emit(
+        'message.delta',
+        const {'text': 'Terminó correctamente: HECHO-BG.'},
+        42,
+        7,
+        producer,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final liveChronological = chat.messages.reversed.toList(growable: false);
+      expect(
+        liveChronological.map((message) => message['content']),
+        const [
+          'Lanza el proceso',
+          'Lanzado en segundo plano con aviso al terminar.',
+          processPayload,
+          'Terminó correctamente: HECHO-BG.',
+        ],
+      );
+      expect(liveChronological[1]['message_id'], 'turn-1-assistant');
+      expect(liveChronological[1]['timestamp'], 101);
+      expect(liveChronological[2]['display_kind'], 'process_complete');
+      expect(liveChronological[3]['message_id'], isNull);
+      expect(liveChronological[3]['timestamp'], isNull);
+
+      durable = <Map<String, dynamic>>[
+        ...durable,
+        {
+          'message_id': 'turn-2-assistant',
+          'role': 'assistant',
+          'content': 'Terminó correctamente: HECHO-BG.',
+          'timestamp': 124,
+        },
+      ];
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit(
+        'message.complete',
+        const {'text': 'Terminó correctamente: HECHO-BG.'},
+        43,
+        7,
+        producer,
+      );
+      await done.timeout(const Duration(seconds: 1));
+      await Future<void>.delayed(Duration.zero);
+      await chat.loadMessages(passiveOnly: true);
+
+      expect(
+        chat.messages.reversed.map((message) => message['message_id']),
+        durable.map((message) => message['message_id']),
+      );
+      expect(
+        chat.messages.reversed.map((message) => message['content']),
+        durable.map((message) => message['content']),
+      );
+      expect(
+        chat.messages.reversed.map((message) => message['timestamp']),
+        durable.map((message) => message['timestamp']),
+      );
     },
   );
 

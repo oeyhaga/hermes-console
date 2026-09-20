@@ -19156,6 +19156,12 @@ class ActiveChat {
     _beginObservedResponseTiming();
     final prompt = snapshot.inflight?.user?.trim() ?? '';
     if (prompt.isNotEmpty) lastPrompt = stripBotMentionNote(prompt);
+    _settlePipelinePlaceholders();
+    _messages.insert(0, {
+      'role': 'assistant',
+      'content': '',
+      '_pipeline': true,
+    });
     trace.clear();
     _activeVoiceTools.clear();
     traceActive = true;
@@ -19363,9 +19369,10 @@ class ActiveChat {
     }
     final expectedUsers = _messages.where(isRealUserTurn).length;
     if (!_terminalTranscriptCanReplaceVisibleProjection(
-      transcript,
-      expectedUsers,
-    )) {
+          transcript,
+          expectedUsers,
+        ) &&
+        !_completedProcessTurnCoversLiveAssistant(transcript)) {
       return false;
     }
     final gate = _terminalCommitGate;
@@ -19973,6 +19980,36 @@ class ActiveChat {
   ) =>
       _terminalAuthority(chronological, expectedUsers).reason ==
       TerminalAuthorityReason.openToolInvocation;
+
+  bool _completedProcessTurnCoversLiveAssistant(
+    List<Map<String, dynamic>> chronological,
+  ) {
+    if (_messages.length < 2) return false;
+    final liveAssistant = _messages[0];
+    final processComplete = _messages[1];
+    if (liveAssistant['role'] != 'assistant' ||
+        _hasDurableTranscriptIdentity(liveAssistant) ||
+        processComplete['display_kind'] != 'process_complete' ||
+        !transcriptIdentityAliasesAreConsistent(processComplete)) {
+      return false;
+    }
+    final anchor = _transcriptMessageIdentity(processComplete);
+    if (anchor == null) return false;
+    final newestFirst = chronological.reversed.toList(growable: false);
+    final resolved = _resolveTranscriptIdentity(
+      newestFirst,
+      messageId: anchor.messageId,
+      rowId: anchor.rowId,
+      accepts: (message) => message['display_kind'] == 'process_complete',
+    );
+    if (resolved.kind != _TranscriptIdentityResolutionKind.unique) return false;
+    return newestFirst.take(resolved.index).any(
+      (message) =>
+          message['role'] == 'assistant' &&
+          _hasDurableTranscriptIdentity(message) &&
+          (message['content'] ?? '').toString().trim().isNotEmpty,
+    );
+  }
 
   /// Prefix comparison remains a projection concern; terminal semantics come
   /// exclusively from [decideTerminalAuthority].
