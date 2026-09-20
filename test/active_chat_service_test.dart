@@ -20,6 +20,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:hermes_android/core/models/home_widget_snapshot.dart';
 import 'package:hermes_android/core/models/attachment_draft.dart';
+import 'package:hermes_android/core/models/desktop_control_center.dart';
 import 'package:hermes_android/core/models/prepared_turn.dart';
 import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
@@ -28,6 +29,7 @@ import 'package:hermes_android/core/services/approval_policy.dart';
 import 'package:hermes_android/core/services/attachment_uploader.dart';
 import 'package:hermes_android/core/services/bridge_client.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/desktop_control_gateway.dart';
 import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
 import 'package:hermes_android/core/services/home_widget_publisher.dart';
 import 'package:hermes_android/core/services/notifications/notification_service.dart';
@@ -433,6 +435,23 @@ class _AttachmentDesktopGateway
 
   @override
   Future<void> close() => _events.close();
+}
+
+class _DelayedProcessGateway extends _AttachmentDesktopGateway
+    implements HermesDesktopControlGateway {
+  Completer<AgentCenterSnapshot> processSnapshot = Completer();
+  bool connected = true;
+
+  @override
+  bool get isConnected => connected;
+
+  @override
+  Future<AgentCenterSnapshot> agentCenterSnapshot({
+    String runtimeSessionId = '',
+  }) => processSnapshot.future;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _NativeSessionSplitGateway
@@ -3073,6 +3092,87 @@ void main() {
       // un indicador; no selecciona ni devuelve contenido de ningún chat.
       expect(service.isActive(connection.id, 'sess-shared'), isTrue);
       service.dispose();
+    },
+  );
+
+  test(
+    'terminal espera process.list pendiente y conserva trabajo de fondo',
+    () async {
+      final gateway = _DelayedProcessGateway();
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(service.dispose);
+      addTearDown(gateway.close);
+      final connection = _conn(id: 'conn-terminal-process');
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 'sess-terminal-process',
+        sessionTitle: 'Proceso terminal',
+        desktopGateway: gateway,
+        disableForegroundKeepAlive: true,
+      )..smoothStreaming = false;
+      expect(
+        await chat.send(
+          fullText: 'lanza el proceso',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      final processRefresh = chat.refreshBackgroundProcessesForTesting();
+      service.release(connection.id, chat.sessionId);
+      gateway.connected = false;
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+
+      gateway.emit('message.complete', const {'text': 'proceso iniciado'});
+      await done.timeout(const Duration(seconds: 1));
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      expect(
+        service.of(connection.id, chat.sessionId),
+        same(chat),
+        reason: 'la lista pendiente todavía puede probar trabajo de fondo',
+      );
+
+      gateway.processSnapshot.complete(
+        const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [
+            BackgroundProcessEntry(
+              opaqueId: 'process-1',
+              status: AgentCenterStatus.running,
+              uptimeSeconds: 2,
+            ),
+          ],
+        ),
+      );
+      await processRefresh;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(service.isActive(connection.id, chat.sessionId), isTrue);
+      expect(service.of(connection.id, chat.sessionId), same(chat));
+
+      gateway.processSnapshot = Completer<AgentCenterSnapshot>();
+      final terminalRefresh = chat.refreshBackgroundProcessesForTesting();
+      gateway.processSnapshot.complete(
+        const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [
+            BackgroundProcessEntry(
+              opaqueId: 'process-1',
+              status: AgentCenterStatus.completed,
+              uptimeSeconds: 3,
+            ),
+          ],
+        ),
+      );
+      await terminalRefresh;
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      expect(service.of(connection.id, chat.sessionId), isNull);
     },
   );
 

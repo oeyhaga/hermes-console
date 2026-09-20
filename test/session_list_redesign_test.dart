@@ -1,20 +1,28 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/desktop_active_session.dart';
+import 'package:hermes_android/core/models/desktop_control_center.dart';
+import 'package:hermes_android/core/screens/home_dashboard_screen.dart';
 import 'package:hermes_android/core/screens/session_list_screen.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/global_activity_aggregate.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/desktop_control_gateway.dart';
 import 'package:hermes_android/core/services/dock_preferences_store.dart';
 import 'package:hermes_android/core/services/session_repository.dart';
+import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/in_memory_compression_fence_storage.dart';
 
 /// Rediseño de Conversaciones (drawer › "Conversaciones").
 ///
@@ -79,6 +87,113 @@ SavedConnection _connection() => SavedConnection(
   kind: InstanceKind.vps,
 );
 
+class _HomeActivityClient extends ApiClient {
+  _HomeActivityClient()
+    : super(
+        baseUrl: 'http://127.0.0.1:8642',
+        apiKey: 'gateway-key',
+        httpClient: MockClient((_) async => http.Response('{}', 200)),
+      );
+
+  @override
+  Future<bool> healthCheck() async => true;
+
+  @override
+  Future<List<Session>> getSessions({
+    bool includeChildren = false,
+    String? profile,
+  }) async => [
+    Session(
+      id: 'background-1',
+      title: 'Informe prolongado',
+      model: 'hermes-agent',
+      source: 'mobile',
+      messageCount: 2,
+      isActive: false,
+      preview: 'Proceso iniciado',
+      startedAt: DateTime.now().millisecondsSinceEpoch / 1000,
+    ),
+  ];
+
+  @override
+  void close() {}
+}
+
+class _ProcessActivityGateway
+    implements HermesDesktopGateway, HermesDesktopControlGateway {
+  final StreamController<TuiGatewayEvent> _events =
+      StreamController<TuiGatewayEvent>.broadcast();
+  AgentCenterSnapshot snapshot = const AgentCenterSnapshot(
+    snapshots: [],
+    processes: [
+      BackgroundProcessEntry(
+        opaqueId: 'process-1',
+        status: AgentCenterStatus.running,
+        uptimeSeconds: 3,
+      ),
+    ],
+  );
+
+  @override
+  Stream<TuiGatewayEvent> get events => _events.stream;
+
+  @override
+  bool get isConnected => true;
+
+  @override
+  Future<void> connect() async {}
+
+  @override
+  Future<DesktopSessionBinding> resumeSession(
+    String storedSessionId, {
+    String profile = '',
+    List<Map<String, dynamic>> seedMessages = const [],
+    String model = '',
+  }) async => DesktopSessionBinding(
+    runtimeSessionId: 'runtime-$storedSessionId',
+    storedSessionId: storedSessionId,
+    created: false,
+  );
+
+  @override
+  Future<void> submitPrompt(String runtimeSessionId, String text) async {}
+
+  @override
+  Future<void> steer(String runtimeSessionId, String text) async {}
+
+  @override
+  Future<void> interrupt(String runtimeSessionId) async {}
+
+  @override
+  Future<void> resolveApproval(
+    String runtimeSessionId,
+    String choice, {
+    bool resolveAll = false,
+    String? requestId,
+  }) async {}
+
+  @override
+  Future<AgentCenterSnapshot> agentCenterSnapshot({
+    String runtimeSessionId = '',
+  }) async => snapshot;
+
+  void emit(String type, [Map<String, dynamic> payload = const {}]) {
+    _events.add(
+      TuiGatewayEvent(
+        type: type,
+        sessionId: 'runtime-background-1',
+        payload: payload,
+      ),
+    );
+  }
+
+  @override
+  Future<void> close() => _events.close();
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 Future<void> _pumpUntil(
   WidgetTester tester,
   Finder finder, {
@@ -137,8 +252,9 @@ void main() {
   /// Monta la pantalla con `rows` como biblioteca autoritativa del Dashboard.
   Future<ConnectionManager> pump(
     WidgetTester tester,
-    List<Map<String, dynamic>> rows,
-  ) async {
+    List<Map<String, dynamic>> rows, {
+    ActiveChatService? activeChats,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final manager = await ConnectionManager.create(prefs);
     final dashboard = DashboardClient(
@@ -170,6 +286,7 @@ void main() {
           connManager: manager,
           clientOverride: gateway,
           repositoryOverride: repository,
+          activeChatsOverride: activeChats,
         ),
       ),
     );
@@ -342,6 +459,180 @@ void main() {
     // Y sin dock no debe quedar un hueco muerto.
     expect(bottomPadding(), 12);
   });
+
+  testWidgets(
+    'el proceso de fondo conserva la actividad tras acabar el turno',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final gateway = _ProcessActivityGateway();
+      final activeChats = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(activeChats.dispose);
+      addTearDown(gateway.close);
+      final chat = activeChats.attach(
+        connection: _connection(),
+        sessionId: 'background-1',
+        sessionTitle: 'Informe prolongado',
+        desktopGateway: gateway,
+        disableForegroundKeepAlive: true,
+      )..smoothStreaming = false;
+      expect(
+        await chat.send(
+          fullText: 'genera el informe',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      await chat.refreshBackgroundProcessesForTesting();
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit('message.complete', const {'text': 'proceso iniciado'});
+      await done.timeout(const Duration(seconds: 1));
+
+      await pump(
+        tester,
+        [
+          _row(
+            'background-1',
+            title: 'Informe prolongado',
+            lastActive: nowSeconds(),
+          ),
+        ],
+        activeChats: activeChats,
+      );
+      await _pumpUntil(tester, find.text('Informe prolongado'));
+
+      final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
+      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('session-running-background-1')),
+        findsOneWidget,
+      );
+
+      gateway.snapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-1',
+            status: AgentCenterStatus.completed,
+            uptimeSeconds: 4,
+          ),
+        ],
+      );
+      await chat.refreshBackgroundProcessesForTesting();
+      expect(chat.hasActiveBackgroundProcesses, isFalse);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(
+        find.byKey(const ValueKey('session-running-background-1')),
+        findsNothing,
+      );
+      await tester.pump(const Duration(seconds: 10));
+    },
+  );
+
+  testWidgets(
+    'inicio conserva el proceso de fondo tras acabar el turno',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final prefs = await SharedPreferences.getInstance();
+      final manager = await ConnectionManager.create(prefs);
+      await manager.saveConnection(
+        'Redesign QA',
+        '127.0.0.1',
+        8642,
+        'gateway-key',
+        kind: InstanceKind.vps,
+      );
+      final connection = manager.getConnections().single;
+      final gateway = _ProcessActivityGateway();
+      final activeChats = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(activeChats.dispose);
+      addTearDown(gateway.close);
+      final chat = activeChats.attach(
+        connection: connection,
+        sessionId: 'background-1',
+        sessionTitle: 'Informe prolongado',
+        desktopGateway: gateway,
+        disableForegroundKeepAlive: true,
+      )..smoothStreaming = false;
+      expect(
+        await chat.send(
+          fullText: 'genera el informe',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      await chat.refreshBackgroundProcessesForTesting();
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit('message.complete', const {'text': 'proceso iniciado'});
+      await done.timeout(const Duration(seconds: 1));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          locale: const Locale('es'),
+          theme: AppTheme.fromId('dark'),
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          home: HomeDashboardScreen(
+            connManager: manager,
+            clientFactory: (_) => _HomeActivityClient(),
+            activeChatsOverride: activeChats,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, find.text('Informe prolongado'));
+
+      final strings = Strings.of(
+        tester.element(find.byType(HomeDashboardScreen)),
+      );
+      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('home-activity-background-1')),
+        findsOneWidget,
+      );
+
+      gateway.snapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-1',
+            status: AgentCenterStatus.completed,
+            uptimeSeconds: 4,
+          ),
+        ],
+      );
+      await chat.refreshBackgroundProcessesForTesting();
+      expect(chat.hasActiveBackgroundProcesses, isFalse);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(
+        find.byKey(const ValueKey('home-activity-background-1')),
+        findsNothing,
+      );
+      await tester.pump(const Duration(seconds: 10));
+    },
+  );
 
   testWidgets(
     'el punto en vivo no deja una animación colgada con movimiento reducido',

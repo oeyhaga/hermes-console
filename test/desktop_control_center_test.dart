@@ -140,6 +140,10 @@ void main() {
               'command': 'private command --token secret',
               'status': 'RUNNING',
               'uptime_seconds': 5,
+              'started_at': 1720000000,
+              'notify_on_complete': true,
+              'watch_patterns': ['ready', 'done'],
+              'watch_hit': true,
               'output_tail': 'private process output',
               'error': 'private process error',
               'metadata': {'model': 'private-model', 'cwd': '/private/path'},
@@ -175,6 +179,15 @@ void main() {
       expect(result.processes.first.opaqueId, 'proc-a');
       expect(result.processes.first.status, AgentCenterStatus.running);
       expect(result.processes.first.uptimeSeconds, 5);
+      expect(result.processes.first.command, 'private');
+      expect(result.processes.first.command, isNot(contains('secret')));
+      expect(result.processes.first.notifyOnComplete, isTrue);
+      expect(result.processes.first.watchPatterns, ['ready', 'done']);
+      expect(result.processes.first.watchHit, isTrue);
+      expect(
+        result.processes.first.startedAt,
+        DateTime.fromMillisecondsSinceEpoch(1720000000000, isUtc: true),
+      );
       expect(result.processes.last.status, AgentCenterStatus.unknown);
       expect(detail.startedAt, 1);
       expect(detail.finishedAt, 2);

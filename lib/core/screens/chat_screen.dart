@@ -3865,6 +3865,7 @@ class _ChatScreenState extends State<ChatScreen>
     _subagentPollTimer?.cancel();
     _subagentPollingRuntimeId = runtimeId;
     unawaited(_chat.refreshSubagents());
+    unawaited(_chat.refreshBackgroundProcesses());
     _subagentPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_disposed || !mounted) return;
       if (_chat.desktopRuntimeSessionId != _subagentPollingRuntimeId) {
@@ -3872,6 +3873,9 @@ class _ChatScreenState extends State<ChatScreen>
         return;
       }
       unawaited(_chat.refreshSubagents());
+      if (_chat.hasActiveBackgroundProcesses) {
+        unawaited(_chat.refreshBackgroundProcesses());
+      }
     });
   }
 
@@ -4087,6 +4091,18 @@ class _ChatScreenState extends State<ChatScreen>
       : _autoFollowStreaming
       ? null
       : _traceHeadline();
+
+  String get _backgroundProcessPillLabel {
+    final strings = Strings.of(context);
+    final activity = _chat.sessionActivity;
+    final command = activity.processCommand;
+    final status = command == null
+        ? strings.chaBackgroundProcessRunning
+        : strings.chaBackgroundProcessCommand(command);
+    return activity.willNotifyLater
+        ? '$status · ${strings.chaBackgroundProcessWillNotify}'
+        : status;
+  }
 
   /// Mismo principio que `_showTurnActivityPill` de arriba, aplicado a la
   /// cabecera del Bot Chat: su subtítulo («@nombre · Pensando») y esta
@@ -8782,6 +8798,23 @@ class _ChatScreenState extends State<ChatScreen>
                                                   ? const Duration(days: 1)
                                                   : const Duration(seconds: 20),
                                             ),
+                                            if (_chat
+                                                .hasActiveBackgroundProcesses)
+                                              TurnActivityPill(
+                                                key: const ValueKey(
+                                                  'chat-background-process-status',
+                                                ),
+                                                active: true,
+                                                startedAt: _chat
+                                                    .sessionActivity
+                                                    .startedAt,
+                                                statusLabel:
+                                                    _backgroundProcessPillLabel,
+                                                revealAfter: Duration.zero,
+                                                reassureAfter: const Duration(
+                                                  days: 1,
+                                                ),
+                                              ),
                                             KeyedSubtree(
                                               key: const ValueKey(
                                                 'chat-session-activity',
