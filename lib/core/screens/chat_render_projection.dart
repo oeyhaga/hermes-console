@@ -210,9 +210,9 @@ final class ChatRenderProjection {
         continue;
       }
 
-      // Los assistant sin contenido público no generan huecos. El razonamiento
-      // estructurado es metadata privada y nunca convierte una fila en visible.
-      if (event.text.trim().isEmpty) {
+      final hasStructuredReasoning =
+          role == 'assistant' && structuredReasoningText(message).isNotEmpty;
+      if (event.text.trim().isEmpty && !hasStructuredReasoning) {
         continue;
       }
       flushTools();
