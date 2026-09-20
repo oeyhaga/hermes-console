@@ -2352,6 +2352,13 @@ class DashboardHttpException implements Exception {
   String toString() => 'HTTP $statusCode';
 }
 
+class DashboardDownloadCancelled implements Exception {
+  const DashboardDownloadCancelled();
+
+  @override
+  String toString() => 'download_cancelled';
+}
+
 /// El servidor entendió el DELETE pero conservó deliberadamente el cron
 /// (`200 {"deleted":false}`). Es un rechazo de negocio, no un fallo de red.
 class CronDeleteRejectedException implements Exception {
@@ -3099,9 +3106,14 @@ class DashboardClient {
     String? profile,
     bool retried = false,
     Duration timeout = const Duration(minutes: 3),
+    void Function(int received, int? total)? onProgress,
+    bool Function()? isCancelled,
   }) async {
     if (maxBytes < 1) {
       throw RangeError.range(maxBytes, 1, null, 'maxBytes');
+    }
+    if (isCancelled?.call() ?? false) {
+      throw const DashboardDownloadCancelled();
     }
     final scopedEndpoint = ApiClient.profileEndpoint(
       'api/$endpoint',
@@ -3126,6 +3138,8 @@ class DashboardClient {
         profile: profile,
         retried: true,
         timeout: timeout,
+        onProgress: onProgress,
+        isCancelled: isCancelled,
       );
     }
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
@@ -3152,12 +3166,22 @@ class DashboardClient {
     try {
       sink = target.openWrite(mode: FileMode.writeOnly);
       while (await iterator.moveNext()) {
+        if (isCancelled?.call() ?? false) {
+          throw const DashboardDownloadCancelled();
+        }
         final chunk = iterator.current;
         received += chunk.length;
         if (received > maxBytes) {
           throw StateError('Dashboard download exceeds $maxBytes bytes');
         }
         sink.add(chunk);
+        onProgress?.call(received, declaredLength);
+        if (isCancelled?.call() ?? false) {
+          throw const DashboardDownloadCancelled();
+        }
+      }
+      if (declaredLength != null && received != declaredLength) {
+        throw StateError('Dashboard download ended before Content-Length');
       }
       await sink.flush();
       await sink.close();

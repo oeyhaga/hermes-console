@@ -6,19 +6,39 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
-enum GeneratedMediaKind { image, video }
+enum GeneratedMediaKind { image, video, audio, file }
 
 enum GeneratedMediaSourceKind { serverPath, https }
+
+typedef GeneratedMediaProgress = void Function(int received, int? total);
+typedef GeneratedMediaStreamingFetcher =
+    Future<void> Function(
+      String path,
+      File destination,
+      GeneratedMediaProgress onProgress,
+      bool Function() isCancelled,
+    );
+
+class GeneratedMediaDownloadCancelled implements Exception {
+  const GeneratedMediaDownloadCancelled();
+
+  @override
+  String toString() => 'generated_media_download_cancelled';
+}
 
 class GeneratedMediaReference {
   final String source;
   final GeneratedMediaKind kind;
   final GeneratedMediaSourceKind sourceKind;
+  final String displayName;
+  final String mimeType;
 
   const GeneratedMediaReference({
     required this.source,
     required this.kind,
     required this.sourceKind,
+    this.displayName = 'file',
+    this.mimeType = 'application/octet-stream',
   });
 }
 
@@ -43,6 +63,7 @@ class GeneratedMediaFileSegment extends GeneratedMediaSegment {
 class GeneratedMediaService {
   static const int maxImageBytes = 25 * 1024 * 1024;
   static const int maxVideoBytes = 100 * 1024 * 1024;
+  static const int maxFileBytes = 100 * 1024 * 1024;
   static const int _maxCacheBytes = 512 * 1024 * 1024;
   static const int _maxRedirects = 3;
 
@@ -53,13 +74,64 @@ class GeneratedMediaService {
     '.gif',
     '.webp',
     '.bmp',
+    '.tiff',
   };
   static const Set<String> _videoExtensions = {
     '.mp4',
-    '.webm',
     '.mov',
-    '.mkv',
     '.avi',
+    '.mkv',
+    '.webm',
+    '.3gp',
+  };
+  static const Set<String> _audioExtensions = {
+    '.mp3',
+    '.m2a',
+    '.wav',
+    '.ogg',
+    '.opus',
+    '.m4a',
+    '.flac',
+  };
+  static const Set<String> _knownFileExtensions = {
+    '.svg',
+    '.pdf',
+    '.docx',
+    '.doc',
+    '.odt',
+    '.rtf',
+    '.txt',
+    '.md',
+    '.epub',
+    '.xlsx',
+    '.xls',
+    '.ods',
+    '.csv',
+    '.tsv',
+    '.json',
+    '.xml',
+    '.yaml',
+    '.yml',
+    '.kmz',
+    '.kml',
+    '.geojson',
+    '.gpx',
+    '.pptx',
+    '.ppt',
+    '.odp',
+    '.key',
+    '.zip',
+    '.tar',
+    '.gz',
+    '.tgz',
+    '.bz2',
+    '.xz',
+    '.7z',
+    '.rar',
+    '.apk',
+    '.ipa',
+    '.html',
+    '.htm',
   };
 
   static final Map<String, Future<File>> _inFlight = {};
@@ -74,6 +146,7 @@ class GeneratedMediaService {
     final text = StringBuffer();
     String? fenceMarker;
     var fenceWidth = 0;
+    var withheldDirective = false;
 
     void flushText() {
       if (text.isEmpty) return;
@@ -107,6 +180,7 @@ class GeneratedMediaService {
         // Drop malformed/unsupported directives so local paths, signed URLs or
         // traversal attempts never leak through Markdown, clipboard or TTS.
         if (fenceMarker == null && line.trimLeft().startsWith('MEDIA:')) {
+          withheldDirective = true;
           if (hasNewline) text.write('\n');
           continue;
         }
@@ -120,9 +194,10 @@ class GeneratedMediaService {
       if (hasNewline) text.write('\n');
     }
     flushText();
-    return segments.isEmpty
-        ? <GeneratedMediaSegment>[GeneratedMediaTextSegment(content)]
-        : segments;
+    if (segments.isNotEmpty) return segments;
+    return <GeneratedMediaSegment>[
+      GeneratedMediaTextSegment(withheldDirective ? '' : content),
+    ];
   }
 
   static GeneratedMediaReference? referenceFromSource(String rawSource) {
@@ -195,7 +270,8 @@ class GeneratedMediaService {
       if (uri == null ||
           !uri.hasAuthority ||
           uri.host.isEmpty ||
-          uri.userInfo.isNotEmpty) {
+          uri.userInfo.isNotEmpty ||
+          _hasCredentialQuery(uri)) {
         return null;
       }
       source = uri.removeFragment().toString();
@@ -208,15 +284,122 @@ class GeneratedMediaService {
     final path = sourceKind == GeneratedMediaSourceKind.https
         ? uri!.path
         : source;
+    final rawName = _decodedBasename(path);
+    if (_isSensitiveName(rawName)) return null;
+    final displayName = _displayName(rawName);
     final lower = path.toLowerCase();
-    final image = _imageExtensions.any(lower.endsWith);
-    final video = _videoExtensions.any(lower.endsWith);
-    if (!image && !video) return null;
+    final kind = _imageExtensions.any(lower.endsWith)
+        ? GeneratedMediaKind.image
+        : _videoExtensions.any(lower.endsWith)
+        ? GeneratedMediaKind.video
+        : _audioExtensions.any(lower.endsWith)
+        ? GeneratedMediaKind.audio
+        : GeneratedMediaKind.file;
     return GeneratedMediaReference(
       source: source,
-      kind: image ? GeneratedMediaKind.image : GeneratedMediaKind.video,
+      kind: kind,
       sourceKind: sourceKind,
+      displayName: displayName,
+      mimeType: _mimeType(displayName, kind),
     );
+  }
+
+  static bool _hasCredentialQuery(Uri uri) {
+    try {
+      return uri.queryParametersAll.keys.any(
+        (key) => RegExp(
+          r'(^|[_-])(token|key|secret|signature|credential|password|auth)($|[_-])',
+          caseSensitive: false,
+        ).hasMatch(key),
+      );
+    } on FormatException {
+      return true;
+    }
+  }
+
+  static String _decodedBasename(String path) {
+    final raw = path.replaceAll('\\', '/').split('/').last;
+    try {
+      return Uri.decodeComponent(raw);
+    } on FormatException {
+      return raw;
+    }
+  }
+
+  static String _displayName(String name) {
+    var safe = name
+        .replaceAll(RegExp(r'[\\/:*?"<>|\x00-\x1f\x7f]'), '_')
+        .replaceAll(RegExp(r'\.{2,}'), '.')
+        .trim();
+    safe = safe.replaceFirst(RegExp(r'^\.+'), '');
+    if (safe.length > 120) safe = safe.substring(0, 120);
+    return safe.isEmpty ? 'file' : safe;
+  }
+
+  static bool _isSensitiveName(String name) {
+    final lower = name.toLowerCase();
+    if (lower == '.env' ||
+        lower.endsWith('.env') ||
+        lower.startsWith('.env.') ||
+        lower == 'key.properties' ||
+        lower == 'credentials.json' ||
+        lower == 'secrets.json' ||
+        lower == 'id_rsa' ||
+        lower == 'id_ed25519') {
+      return true;
+    }
+    return const {
+      '.jks',
+      '.keystore',
+      '.p12',
+      '.pfx',
+      '.pem',
+      '.keytab',
+    }.any(lower.endsWith);
+  }
+
+  static String _mimeType(String name, GeneratedMediaKind kind) {
+    final lower = name.toLowerCase();
+    if (kind == GeneratedMediaKind.image) {
+      if (lower.endsWith('.png')) return 'image/png';
+      if (lower.endsWith('.gif')) return 'image/gif';
+      if (lower.endsWith('.webp')) return 'image/webp';
+      if (lower.endsWith('.bmp')) return 'image/bmp';
+      if (lower.endsWith('.tiff')) return 'image/tiff';
+      return 'image/jpeg';
+    }
+    if (kind == GeneratedMediaKind.video) {
+      if (lower.endsWith('.webm')) return 'video/webm';
+      if (lower.endsWith('.mov')) return 'video/quicktime';
+      if (lower.endsWith('.avi')) return 'video/x-msvideo';
+      if (lower.endsWith('.mkv')) return 'video/x-matroska';
+      if (lower.endsWith('.3gp')) return 'video/3gpp';
+      return 'video/mp4';
+    }
+    if (kind == GeneratedMediaKind.audio) {
+      if (lower.endsWith('.wav')) return 'audio/wav';
+      if (lower.endsWith('.ogg') || lower.endsWith('.opus')) return 'audio/ogg';
+      if (lower.endsWith('.m4a') || lower.endsWith('.m2a')) return 'audio/mp4';
+      if (lower.endsWith('.flac')) return 'audio/flac';
+      return 'audio/mpeg';
+    }
+    final dot = lower.lastIndexOf('.');
+    final extension = dot < 0 ? '' : lower.substring(dot);
+    if (!_knownFileExtensions.contains(extension)) {
+      return 'application/octet-stream';
+    }
+    return switch (extension) {
+      '.pdf' => 'application/pdf',
+      '.txt' || '.md' || '.csv' || '.tsv' => 'text/plain',
+      '.json' || '.geojson' => 'application/json',
+      '.xml' => 'application/xml',
+      '.yaml' || '.yml' => 'application/yaml',
+      '.svg' => 'image/svg+xml',
+      '.html' || '.htm' => 'text/html',
+      '.zip' => 'application/zip',
+      '.apk' => 'application/vnd.android.package-archive',
+      _ => 'application/octet-stream',
+    };
   }
 
   static bool _isSafeServerPath(String source) {
@@ -261,11 +444,15 @@ class GeneratedMediaService {
     GeneratedMediaReference reference, {
     Future<Uint8List> Function(String path)? fetchServerPath,
     Future<void> Function(String path, File destination)? fetchServerPathToFile,
+    GeneratedMediaStreamingFetcher? fetchServerPathToFileWithProgress,
+    GeneratedMediaProgress? onProgress,
+    bool Function()? isCancelled,
     Directory? baseDir,
   }) {
     if (reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
         fetchServerPath == null &&
-        fetchServerPathToFile == null) {
+        fetchServerPathToFile == null &&
+        fetchServerPathToFileWithProgress == null) {
       throw ArgumentError('A server-path fetcher is required');
     }
     final key =
@@ -277,6 +464,9 @@ class GeneratedMediaService {
       reference,
       fetchServerPath: fetchServerPath,
       fetchServerPathToFile: fetchServerPathToFile,
+      fetchServerPathToFileWithProgress: fetchServerPathToFileWithProgress,
+      onProgress: onProgress,
+      isCancelled: isCancelled,
       baseDir: baseDir,
     );
     _inFlight[key] = future;
@@ -298,12 +488,18 @@ class GeneratedMediaService {
     GeneratedMediaReference reference, {
     Future<Uint8List> Function(String path)? fetchServerPath,
     Future<void> Function(String path, File destination)? fetchServerPathToFile,
+    GeneratedMediaStreamingFetcher? fetchServerPathToFileWithProgress,
+    GeneratedMediaProgress? onProgress,
+    bool Function()? isCancelled,
     Directory? baseDir,
   }) async {
+    if (isCancelled?.call() ?? false) {
+      throw const GeneratedMediaDownloadCancelled();
+    }
     final root = baseDir ?? await getApplicationSupportDirectory();
     final connectionHash = sha256.convert(utf8.encode(connectionId)).toString();
     final sourceHash = sha256.convert(utf8.encode(reference.source)).toString();
-    final suffix = _extensionFor(reference.source, reference.kind);
+    final suffix = _extensionFor(reference.displayName, reference.kind);
     final directory = Directory('${root.path}/generated_media/$connectionHash');
     await directory.create(recursive: true);
     final target = File('${directory.path}/$sourceHash$suffix');
@@ -314,6 +510,10 @@ class GeneratedMediaService {
         if (length > 0 && length <= _maxBytes(reference.kind)) {
           final probe = await _readPrefix(target, 32);
           if (validateBytes(probe, reference.kind)) {
+            if (isCancelled?.call() ?? false) {
+              throw const GeneratedMediaDownloadCancelled();
+            }
+            onProgress?.call(length, length);
             await target.setLastModified(DateTime.now());
             return target;
           }
@@ -331,6 +531,14 @@ class GeneratedMediaService {
     );
     try {
       if (reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
+          fetchServerPathToFileWithProgress != null) {
+        await fetchServerPathToFileWithProgress(
+          reference.source,
+          temporary,
+          onProgress ?? (_, _) {},
+          isCancelled ?? () => false,
+        );
+      } else if (reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
           fetchServerPathToFile != null) {
         await fetchServerPathToFile(reference.source, temporary);
       } else if (reference.sourceKind == GeneratedMediaSourceKind.serverPath) {
@@ -338,11 +546,24 @@ class GeneratedMediaService {
         if (bytes.isEmpty || bytes.length > _maxBytes(reference.kind)) {
           throw const FormatException('generated media exceeds its size limit');
         }
+        if (isCancelled?.call() ?? false) {
+          throw const GeneratedMediaDownloadCancelled();
+        }
         await temporary.writeAsBytes(bytes, flush: true);
+        onProgress?.call(bytes.length, bytes.length);
       } else {
-        await _downloadHttpsToFile(reference.source, reference.kind, temporary);
+        await _downloadHttpsToFile(
+          reference.source,
+          reference.kind,
+          temporary,
+          onProgress: onProgress,
+          isCancelled: isCancelled,
+        );
       }
 
+      if (isCancelled?.call() ?? false) {
+        throw const GeneratedMediaDownloadCancelled();
+      }
       final length = await temporary.length();
       if (length <= 0 || length > _maxBytes(reference.kind)) {
         throw const FormatException('generated media exceeds its size limit');
@@ -361,21 +582,34 @@ class GeneratedMediaService {
     return target;
   }
 
-  static int _maxBytes(GeneratedMediaKind kind) =>
-      kind == GeneratedMediaKind.image ? maxImageBytes : maxVideoBytes;
+  static int _maxBytes(GeneratedMediaKind kind) => switch (kind) {
+    GeneratedMediaKind.image => maxImageBytes,
+    GeneratedMediaKind.video => maxVideoBytes,
+    GeneratedMediaKind.audio || GeneratedMediaKind.file => maxFileBytes,
+  };
 
-  static String _extensionFor(String source, GeneratedMediaKind kind) {
-    final uri = Uri.tryParse(source);
-    final path = uri != null && uri.hasScheme ? uri.path : source;
-    final dot = path.lastIndexOf('.');
+  static String _extensionFor(String name, GeneratedMediaKind kind) {
+    final dot = name.lastIndexOf('.');
     if (dot >= 0) {
-      final extension = path.substring(dot).toLowerCase();
-      final allowed = kind == GeneratedMediaKind.image
-          ? _imageExtensions
-          : _videoExtensions;
-      if (allowed.contains(extension)) return extension;
+      final extension = name.substring(dot).toLowerCase();
+      final allowed = switch (kind) {
+        GeneratedMediaKind.image => _imageExtensions,
+        GeneratedMediaKind.video => _videoExtensions,
+        GeneratedMediaKind.audio => _audioExtensions,
+        GeneratedMediaKind.file => _knownFileExtensions,
+      };
+      if (allowed.contains(extension) ||
+          (kind == GeneratedMediaKind.file &&
+              RegExp(r'^\.[a-z0-9]{1,16}$').hasMatch(extension))) {
+        return extension;
+      }
     }
-    return kind == GeneratedMediaKind.image ? '.img' : '.video';
+    return switch (kind) {
+      GeneratedMediaKind.image => '.img',
+      GeneratedMediaKind.video => '.video',
+      GeneratedMediaKind.audio => '.audio',
+      GeneratedMediaKind.file => '.file',
+    };
   }
 
   static Future<Uint8List> _readPrefix(File file, int count) async {
@@ -415,7 +649,44 @@ class GeneratedMediaService {
           String.fromCharCodes(bytes.sublist(8, 12)) == 'WEBP') {
         return true;
       }
+      if (bytes.length >= 4) {
+        final signature = bytes.sublist(0, 4);
+        if ((signature[0] == 0x49 &&
+                signature[1] == 0x49 &&
+                signature[2] == 0x2a &&
+                signature[3] == 0x00) ||
+            (signature[0] == 0x4d &&
+                signature[1] == 0x4d &&
+                signature[2] == 0x00 &&
+                signature[3] == 0x2a)) {
+          return true;
+        }
+      }
       return bytes.length >= 2 && bytes[0] == 0x42 && bytes[1] == 0x4d;
+    }
+
+    if (kind == GeneratedMediaKind.file) return bytes.isNotEmpty;
+    if (kind == GeneratedMediaKind.audio) {
+      if (bytes.length >= 3 &&
+          String.fromCharCodes(bytes.sublist(0, 3)) == 'ID3') {
+        return true;
+      }
+      if (bytes.length >= 2 &&
+          bytes[0] == 0xff &&
+          (bytes[1] & 0xe0) == 0xe0) {
+        return true;
+      }
+      if (bytes.length >= 4) {
+        final signature = String.fromCharCodes(bytes.sublist(0, 4));
+        if (signature == 'OggS' || signature == 'fLaC') return true;
+      }
+      if (bytes.length >= 12 &&
+          String.fromCharCodes(bytes.sublist(0, 4)) == 'RIFF' &&
+          String.fromCharCodes(bytes.sublist(8, 12)) == 'WAVE') {
+        return true;
+      }
+      return bytes.length >= 12 &&
+          String.fromCharCodes(bytes.sublist(4, 8)) == 'ftyp';
     }
 
     if (bytes.length >= 12 &&
@@ -437,13 +708,18 @@ class GeneratedMediaService {
   static Future<void> _downloadHttpsToFile(
     String source,
     GeneratedMediaKind kind,
-    File target,
-  ) async {
+    File target, {
+    GeneratedMediaProgress? onProgress,
+    bool Function()? isCancelled,
+  }) async {
     var uri = Uri.parse(source);
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15);
     try {
       for (var redirect = 0; redirect <= _maxRedirects; redirect++) {
+        if (isCancelled?.call() ?? false) {
+          throw const GeneratedMediaDownloadCancelled();
+        }
         if (uri.scheme != 'https' ||
             uri.host.isEmpty ||
             uri.userInfo.isNotEmpty) {
@@ -477,6 +753,7 @@ class GeneratedMediaService {
         }
         final maxBytes = _maxBytes(kind);
         final declared = response.contentLength;
+        final total = declared >= 0 ? declared : null;
         if (declared > maxBytes) {
           await _cancelHttpResponse(response);
           throw const HttpException('generated media is too large');
@@ -488,11 +765,18 @@ class GeneratedMediaService {
           await for (final chunk in response.timeout(
             const Duration(minutes: 2),
           )) {
+            if (isCancelled?.call() ?? false) {
+              throw const GeneratedMediaDownloadCancelled();
+            }
             received += chunk.length;
             if (received > maxBytes) {
               throw const HttpException('generated media is too large');
             }
             sink.add(chunk);
+            onProgress?.call(received, total);
+            if (isCancelled?.call() ?? false) {
+              throw const GeneratedMediaDownloadCancelled();
+            }
           }
           await sink.flush();
         } finally {
@@ -500,6 +784,9 @@ class GeneratedMediaService {
         }
         if (received <= 0) {
           throw const HttpException('generated media is empty');
+        }
+        if (total != null && received != total) {
+          throw const HttpException('generated media download was incomplete');
         }
         return;
       }

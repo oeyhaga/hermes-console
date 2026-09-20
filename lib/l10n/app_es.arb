@@ -29,6 +29,10 @@
   "@commonSave": {
     "description": "Botón guardar genérico"
   },
+  "commonOpen": "Abrir",
+  "@commonOpen": {
+    "description": "Botón abrir genérico"
+  },
   "homeStatusChecking": "verificando · {label}",
   "@homeStatusChecking": {
     "description": "Línea de estado del header mientras se comprueba la salud de la instancia. {label} = nombre de la instancia activa.",
@@ -932,6 +936,10 @@
   "genImgHint": "El agente generó una imagen en el servidor. Actualiza el Mobile Bridge para verla aquí.",
   "genMediaLoading": "Cargando contenido generado…",
   "genMediaError": "No se pudo cargar el contenido generado",
+  "genMediaDenied": "Se denegó el acceso a este archivo",
+  "genMediaUnavailable": "Este archivo ya no está disponible",
+  "genMediaTooLarge": "Este archivo es demasiado grande para descargarlo",
+  "genMediaIncomplete": "La descarga del archivo quedó incompleta",
   "genMediaLoad": "Cargar contenido generado",
   "genMediaLoadFrom": "Cargar contenido generado desde {domain}",
   "genVideoSemanticLabel": "Vídeo generado por el agente",

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -15,7 +16,7 @@ void main() {
         'video_generate',
         const {
           'success': true,
-          'video': 'https://cdn.example/generated.webm?token=secret#fragment',
+          'video': 'https://cdn.example/generated.webm?download=1#fragment',
         },
       );
       final image = GeneratedMediaService.referencesFromToolResult(
@@ -151,6 +152,74 @@ void main() {
       );
       expect(segments.whereType<GeneratedMediaFileSegment>(), hasLength(2));
     });
+
+    test('preserves document, audio, and unknown safe files', () {
+      final document = GeneratedMediaService.parseSegments(
+        'MEDIA:/workspace/report.txt',
+      );
+      final audio = GeneratedMediaService.parseSegments(
+        'MEDIA:/workspace/voice.flac',
+      );
+      final unknown = GeneratedMediaService.parseSegments(
+        'MEDIA:/workspace/result.custom',
+      );
+
+      expect(document.whereType<GeneratedMediaFileSegment>(), hasLength(1));
+      expect(
+        document.whereType<GeneratedMediaFileSegment>().single.reference.kind.name,
+        'file',
+      );
+      expect(audio.whereType<GeneratedMediaFileSegment>(), hasLength(1));
+      expect(
+        audio.whereType<GeneratedMediaFileSegment>().single.reference.kind.name,
+        'audio',
+      );
+      expect(unknown.whereType<GeneratedMediaFileSegment>(), hasLength(1));
+      expect(
+        unknown.whereType<GeneratedMediaFileSegment>().single.reference.kind.name,
+        'file',
+      );
+    });
+
+    test('keeps prose around a document directive', () {
+      final segments = GeneratedMediaService.parseSegments(
+        'Your report is ready.\nMEDIA:/workspace/report.pdf\nOpen it below.',
+      );
+
+      expect(segments.whereType<GeneratedMediaFileSegment>(), hasLength(1));
+      final text = segments
+          .whereType<GeneratedMediaTextSegment>()
+          .map((segment) => segment.text)
+          .join();
+      expect(text, contains('Your report is ready.'));
+      expect(text, contains('Open it below.'));
+      expect(text, isNot(contains('/workspace/report.pdf')));
+    });
+
+    test('unsafe directives stay non-fetching and never reveal their source', () {
+      const unsafe = <String>[
+        'MEDIA:https://user:password@example.test/report.pdf',
+        'MEDIA:file:///workspace/report.pdf',
+        'MEDIA:/workspace/../private/report.pdf',
+        'MEDIA:/workspace/key.properties',
+        'MEDIA:/workspace/.env',
+        'MEDIA:/workspace/%2Eenv',
+      ];
+
+      for (final directive in unsafe) {
+        final segments = GeneratedMediaService.parseSegments(directive);
+        expect(
+          segments.whereType<GeneratedMediaFileSegment>(),
+          isEmpty,
+          reason: directive,
+        );
+        expect(
+          GeneratedMediaService.stripDirectives(directive),
+          isNot(contains(directive.substring('MEDIA:'.length))),
+          reason: directive,
+        );
+      }
+    });
   });
 
   group('GeneratedMediaService.validateBytes', () {
@@ -285,5 +354,146 @@ void main() {
         expect(cached, isEmpty);
       },
     );
+
+    test('generic file bytes are promoted atomically and retain safe suffix', () async {
+      const reference = GeneratedMediaReference(
+        source: '/workspace/private/report.txt',
+        kind: GeneratedMediaKind.file,
+        sourceKind: GeneratedMediaSourceKind.serverPath,
+        displayName: 'report.txt',
+        mimeType: 'text/plain',
+      );
+
+      final file = await GeneratedMediaService.ensureDownloaded(
+        'connection-file',
+        reference,
+        fetchServerPath: (_) async => Uint8List.fromList(utf8.encode('report')),
+        baseDir: temporary,
+      );
+
+      expect(file.path, endsWith('.txt'));
+      expect(await file.readAsString(), 'report');
+      expect(file.path, isNot(contains('/workspace/private')));
+      expect(
+        temporary
+            .listSync(recursive: true)
+            .whereType<File>()
+            .where((entry) => entry.path.contains('.tmp-')),
+        isEmpty,
+      );
+    });
+
+    test('generic file download can retry after a cleaned failure', () async {
+      const reference = GeneratedMediaReference(
+        source: '/workspace/private/retry.pdf',
+        kind: GeneratedMediaKind.file,
+        sourceKind: GeneratedMediaSourceKind.serverPath,
+        displayName: 'retry.pdf',
+        mimeType: 'application/pdf',
+      );
+      var calls = 0;
+
+      Future<void> fetch(String _, File destination) async {
+        calls++;
+        await destination.writeAsString('partial');
+        if (calls == 1) throw const FileSystemException('cancelled');
+        await destination.writeAsBytes(<int>[0x25, 0x50, 0x44, 0x46, 0x2d]);
+      }
+
+      await expectLater(
+        GeneratedMediaService.ensureDownloaded(
+          'connection-retry',
+          reference,
+          fetchServerPathToFile: fetch,
+          baseDir: temporary,
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
+      expect(
+        temporary.listSync(recursive: true).whereType<File>(),
+        isEmpty,
+      );
+
+      final file = await GeneratedMediaService.ensureDownloaded(
+        'connection-retry',
+        reference,
+        fetchServerPathToFile: fetch,
+        baseDir: temporary,
+      );
+      expect(calls, 2);
+      expect(await file.readAsBytes(), <int>[0x25, 0x50, 0x44, 0x46, 0x2d]);
+    });
+
+    test('streaming file fetch reports progress through the service', () async {
+      const reference = GeneratedMediaReference(
+        source: '/workspace/private/progress.txt',
+        kind: GeneratedMediaKind.file,
+        sourceKind: GeneratedMediaSourceKind.serverPath,
+        displayName: 'progress.txt',
+        mimeType: 'text/plain',
+      );
+      final progress = <(int, int?)>[];
+
+      await GeneratedMediaService.ensureDownloaded(
+        'connection-progress',
+        reference,
+        fetchServerPathToFileWithProgress:
+            (
+              String _,
+              File destination,
+              void Function(int, int?) onProgress,
+              bool Function() isCancelled,
+            ) async {
+              expect(isCancelled(), isFalse);
+              await destination.writeAsString('report');
+              onProgress(6, 6);
+            },
+        onProgress: (int received, int? total) {
+          progress.add((received, total));
+        },
+        isCancelled: () => false,
+        baseDir: temporary,
+      );
+
+      expect(progress, <(int, int?)>[(6, 6)]);
+    });
+
+    test('cancelled streaming file fetch leaves no temporary file', () async {
+      const reference = GeneratedMediaReference(
+        source: '/workspace/private/cancel.txt',
+        kind: GeneratedMediaKind.file,
+        sourceKind: GeneratedMediaSourceKind.serverPath,
+        displayName: 'cancel.txt',
+        mimeType: 'text/plain',
+      );
+      var cancelled = false;
+
+      await expectLater(
+        GeneratedMediaService.ensureDownloaded(
+          'connection-cancel',
+          reference,
+          fetchServerPathToFileWithProgress:
+              (
+                String _,
+                File destination,
+                void Function(int, int?) onProgress,
+                bool Function() isCancelled,
+              ) async {
+                await destination.writeAsString('partial');
+                onProgress(7, 14);
+                cancelled = true;
+                if (isCancelled()) {
+                  throw StateError('cancelled');
+                }
+              },
+          onProgress: (int _, int? _) {},
+          isCancelled: () => cancelled,
+          baseDir: temporary,
+        ),
+        throwsA(isA<StateError>()),
+      );
+
+      expect(temporary.listSync(recursive: true).whereType<File>(), isEmpty);
+    });
   });
 }

@@ -6785,6 +6785,109 @@ void main() {
   );
 
   testWidgets(
+    'MEDIA de documento solo pinta tarjeta y oculta la ruta del servidor',
+    (tester) async {
+      const source = '/workspace/private/qa_documento.txt';
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'assistant', 'content': 'MEDIA:$source'},
+          {'role': 'user', 'content': 'Envía el documento'},
+        ],
+      );
+
+      expect(find.byType(AttachmentCard), findsOneWidget);
+      expect(find.text('qa_documento.txt'), findsOneWidget);
+      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.textContaining(source), findsNothing);
+      expect(find.textContaining('MEDIA:'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'MEDIA de audio solo pinta tarjeta de audio sin filtrar la ruta',
+    (tester) async {
+      const source = '/workspace/private/resumen.mp3';
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'assistant', 'content': 'MEDIA:$source'},
+          {'role': 'user', 'content': 'Envía el audio'},
+        ],
+      );
+
+      expect(
+        find.byKey(const ValueKey<String>('generated-audio-card')),
+        findsOneWidget,
+      );
+      expect(find.text('resumen.mp3'), findsOneWidget);
+      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
+      expect(find.textContaining(source), findsNothing);
+      expect(find.textContaining('MEDIA:'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'MEDIA de imagen solo en historial pinta la tarjeta de consentimiento',
+    (tester) async {
+      const source = '/workspace/generated/circle.png';
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'assistant', 'content': 'MEDIA:$source'},
+          {'role': 'user', 'content': 'Envía la imagen'},
+        ],
+      );
+
+      expect(
+        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        findsOneWidget,
+      );
+      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.textContaining(source), findsNothing);
+      expect(find.textContaining('MEDIA:'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'MEDIA de imagen solo tras message.complete pinta el mismo consentimiento',
+    (tester) async {
+      const source = '/workspace/generated/circle.png';
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-live-media-image'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+
+      expect(
+        await chat.send(
+          fullText: 'Envía la imagen',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      gateway.emit('message.complete', const {'text': 'MEDIA:$source'});
+      await tester.pump(const Duration(milliseconds: 150));
+
+      expect(
+        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        findsOneWidget,
+      );
+      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.textContaining(source), findsNothing);
+      expect(find.textContaining('MEDIA:'), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'MEDIA de vídeo crea tarjeta privada y oculta la ruta del servidor',
     (tester) async {
       const source = '/home/hermes/workspace/private-generated-clip.mp4';
