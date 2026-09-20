@@ -37,7 +37,7 @@ class DesktopSessionProjection {
   });
 }
 
-enum _LiveUserProjectionProof { none, exactAnchorPrefix }
+enum _LiveUserProjectionProof { none, exactAnchorPrefix, openTurn }
 
 class _LiveUserProjectionPlan {
   final int representedPrefixLength;
@@ -191,6 +191,48 @@ class DesktopSessionReconciler {
     }
   }
 
+  static bool _isDurableOpenTurnActivity(Map<String, dynamic> message) {
+    final role = message['role']?.toString().trim().toLowerCase();
+    if (role != 'assistant' && role != 'tool') return false;
+    if (canonicalTranscriptIdentity(message) == null) return false;
+    return role == 'tool' || !_isDurableTerminalAssistant(message);
+  }
+
+  static _LiveUserProjectionPlan _firstOpenTurnPlan(
+    List<Map<String, dynamic>> chronological,
+    List<Map<String, dynamic>> previousNewestFirst,
+  ) {
+    if (previousNewestFirst.isNotEmpty) return _LiveUserProjectionPlan.none;
+    var terminalBoundary = -1;
+    for (var index = 0; index < chronological.length; index++) {
+      if (_isDurableTerminalAssistant(chronological[index])) {
+        terminalBoundary = index;
+      }
+    }
+    final openInputs = <int>[];
+    for (
+      var index = terminalBoundary + 1;
+      index < chronological.length;
+      index++
+    ) {
+      final message = chronological[index];
+      if (_isDurableOpenInput(message) &&
+          canonicalTranscriptIdentity(message) != null) {
+        openInputs.add(index);
+      }
+    }
+    if (openInputs.length != 1) return _LiveUserProjectionPlan.none;
+    final inputIndex = openInputs.single;
+    final hasOpenActivity = chronological
+        .skip(inputIndex + 1)
+        .any(_isDurableOpenTurnActivity);
+    if (!hasOpenActivity) return _LiveUserProjectionPlan.none;
+    return const _LiveUserProjectionPlan(
+      representedPrefixLength: 1,
+      proof: _LiveUserProjectionProof.openTurn,
+    );
+  }
+
   static _LiveUserProjectionPlan _liveUserProjectionPlan(
     List<Map<String, dynamic>> chronological,
     List<Map<String, dynamic>> previousNewestFirst,
@@ -210,7 +252,9 @@ class DesktopSessionReconciler {
       previousNewestFirst,
       bridgeOwnedLiveUser,
     );
-    if (anchorIndex == null) return _LiveUserProjectionPlan.none;
+    if (anchorIndex == null) {
+      return _firstOpenTurnPlan(chronological, previousNewestFirst);
+    }
 
     var terminalBoundary = anchorIndex;
     var terminalFoundAfterAnchor = false;
@@ -467,9 +511,9 @@ class DesktopSessionReconciler {
           (message) =>
               _matchesDurableStructuredInput(message, inflightUser),
         );
-    // The Gateway does not link inflight users to durable row IDs. Suppress
-    // ordinary turns only with an exact prior anchor; a classified durable row
-    // can identify its synthetic twin without interpreting message text.
+    // The Gateway does not link inflight users to durable row IDs. Suppress an
+    // ordinary user only from an exact prior anchor or one unambiguous durable
+    // open turn; a classified durable row carries its own structural identity.
     if (inflightUser != null &&
         inflightUser.trim().isNotEmpty &&
         liveUserPlan.emits(0) &&

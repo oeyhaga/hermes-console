@@ -1024,54 +1024,76 @@ void main() {
     expect(chat.hasRecentPassiveRemoteActivity, isFalse);
   });
 
-  test('cold REST user sin anchor conserva inflight fail-closed', () async {
-    const prompt = 'prompt actual repetido';
-    final gateway = _SnapshotGateway()
-      ..snapshot = _snapshot({
-        'session_id': 'runtime-live-user',
-        'session_key': 'stored-chat',
-        'turn_started_at': 100.0,
-        'inflight': {
-          'user': prompt,
-          'assistant': 'parcial vivo',
-          'streaming': true,
-        },
-        'running': true,
-        'status': 'working',
-      });
-    final chat = _chat(
-      'rest-inflight-same-turn',
-      gateway,
-      storedMessageLoader: (_, _) async => const [
-        {
-          'id': 298292,
-          'message_id': 'durable-current-user',
-          'role': 'user',
-          'content': prompt,
-          'timestamp': 101.0,
-        },
-      ],
-    );
-    addTearDown(chat.dispose);
+  test(
+    'cold open structurally suppresses the first inflight user twin',
+    () async {
+      const prompt = 'prompt actual repetido';
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-live-user',
+          'session_key': 'stored-chat',
+          'turn_started_at': 100.0,
+          'inflight': {
+            'user': prompt,
+            'assistant': 'parcial vivo',
+            'streaming': true,
+          },
+          'running': true,
+          'status': 'working',
+        });
+      final chat = _chat(
+        'rest-inflight-same-turn',
+        gateway,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'id': 298292,
+            'message_id': 'durable-current-user',
+            'role': 'user',
+            'content': prompt,
+            'timestamp': 101.0,
+          },
+          {
+            'id': 298293,
+            'message_id': 'durable-current-reasoning',
+            'role': 'assistant',
+            'content': '',
+            'reasoning': 'Voy a consultar el estado.',
+            'tool_calls': [
+              {
+                'id': 'durable-current-tool-call',
+                'function': {'name': 'shell', 'arguments': '{}'},
+              },
+            ],
+          },
+          {
+            'id': 298294,
+            'message_id': 'durable-current-tool-result',
+            'role': 'tool',
+            'tool_call_id': 'durable-current-tool-call',
+            'content': 'todavía trabajando',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages();
+      await chat.loadMessages();
 
-    final users = chat.messages
-        .where((message) => message['role'] == 'user')
-        .toList(growable: false);
-    expect(users, hasLength(2));
-    expect(users.map((message) => message['content']), everyElement(prompt));
-    expect(users.where((message) => message['id'] == 298292), hasLength(1));
-    expect(users.where((message) => message['id'] == null), hasLength(1));
-    expect(
-      chat.messages.where((message) => message['role'] == 'assistant'),
-      contains(
-        predicate<Map<String, dynamic>>(
-          (message) => message['content'] == 'parcial vivo',
+      final users = chat.messages
+          .where((message) => message['role'] == 'user')
+          .toList(growable: false);
+      expect(users, hasLength(1));
+      expect(users.single['content'], prompt);
+      expect(users.single['id'], 298292);
+      expect(
+        chat.messages.where((message) => message['role'] == 'assistant'),
+        contains(
+          predicate<Map<String, dynamic>>(
+            (message) => message['content'] == 'parcial vivo',
+          ),
         ),
-      ),
-    );
-  });
+      );
+    },
+  );
 
   test('warm REST suffix uses the exact previous anchor once', () async {
     const prompt = 'prompt actual con anchor';
@@ -2396,6 +2418,163 @@ void main() {
       expect(changed, isFalse);
       expect(chat.messages, same(before));
       expect(chat.messages, hasLength(2));
+    },
+  );
+
+  test(
+    'cold open converges from roster absence to one durable final refresh',
+    () async {
+      const toolTail = <Map<String, dynamic>>[
+        {
+          'message_id': 'roster-final-user',
+          'role': 'user',
+          'content': 'espera el resultado',
+        },
+        {
+          'message_id': 'roster-final-reasoning',
+          'role': 'assistant',
+          'content': '',
+          'reasoning': 'Esperando el proceso.',
+          'tool_calls': [
+            {
+              'id': 'roster-final-call',
+              'function': {'name': 'shell', 'arguments': '{}'},
+            },
+          ],
+        },
+        {
+          'message_id': 'roster-final-tool',
+          'role': 'tool',
+          'tool_call_id': 'roster-final-call',
+          'content': 'proceso iniciado',
+        },
+      ];
+      var durableTranscript = toolTail;
+      var transcriptReads = 0;
+      final gateway = _SnapshotGateway()
+        ..activitySupported = true
+        ..activeSessionList = const DesktopActiveSessionList(
+          sessions: [
+            DesktopActiveSession(
+              runtimeSessionId: 'runtime-roster-final',
+              storedSessionId: 'stored-chat',
+              status: 'working',
+            ),
+          ],
+        )
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-roster-final',
+          'session_key': 'stored-chat',
+          'messages': toolTail,
+          'turn_started_at': 100.0,
+          'inflight': {
+            'user': 'espera el resultado',
+            'assistant': '',
+            'streaming': true,
+          },
+          'running': true,
+          'status': 'working',
+        });
+      final chat = _chat(
+        'roster-final-refresh',
+        gateway,
+        storedMessageLoader: (_, _) async {
+          transcriptReads += 1;
+          return durableTranscript;
+        },
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+      expect(chat.isStreaming, isTrue);
+      await chat.refreshPassiveRemoteActivity();
+
+      durableTranscript = const [
+        ...toolTail,
+        {
+          'message_id': 'roster-final-assistant',
+          'role': 'assistant',
+          'content': 'resultado durable final',
+        },
+      ];
+      gateway.activeSessionList = const DesktopActiveSessionList();
+      await chat.refreshPassiveRemoteActivity();
+      expect(chat.isStreaming, isTrue);
+      await chat.refreshPassiveRemoteActivity();
+
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.isStreaming, isFalse);
+      expect(chat.assistantContent, 'resultado durable final');
+      expect(transcriptReads, 2);
+    },
+  );
+
+  test(
+    'failed cold resume settles from durable final and authoritative absence',
+    () async {
+      const toolTail = <Map<String, dynamic>>[
+        {
+          'message_id': 'unbound-final-user',
+          'role': 'user',
+          'content': 'continúa aunque cierre la app',
+        },
+        {
+          'message_id': 'unbound-final-reasoning',
+          'role': 'assistant',
+          'content': '',
+          'reasoning': 'Trabajo en curso.',
+          'tool_calls': [
+            {
+              'id': 'unbound-final-call',
+              'function': {'name': 'shell', 'arguments': '{}'},
+            },
+          ],
+        },
+        {
+          'message_id': 'unbound-final-tool',
+          'role': 'tool',
+          'tool_call_id': 'unbound-final-call',
+          'content': 'proceso iniciado',
+        },
+      ];
+      var durableTranscript = toolTail;
+      var transcriptReads = 0;
+      final gateway = _SnapshotGateway()
+        ..activitySupported = true
+        ..activeSessionList = const DesktopActiveSessionList()
+        ..resumeExistingError = StateError('core read unavailable');
+      final chat = _chat(
+        'unbound-final-refresh',
+        gateway,
+        storedMessageLoader: (_, _) async {
+          transcriptReads += 1;
+          return durableTranscript;
+        },
+      );
+      addTearDown(chat.dispose);
+      chat.state = ChatPipelineState.connecting;
+
+      await chat.loadMessages();
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(chat.isStreaming, isTrue);
+
+      durableTranscript = const [
+        ...toolTail,
+        {
+          'message_id': 'unbound-final-assistant',
+          'role': 'assistant',
+          'content': 'la app volvió y el turno terminó',
+        },
+      ];
+      await chat.refreshPassiveRemoteActivity();
+      expect(chat.isStreaming, isTrue);
+      await chat.refreshPassiveRemoteActivity();
+
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.isStreaming, isFalse);
+      expect(chat.assistantContent, 'la app volvió y el turno terminó');
+      expect(transcriptReads, 2);
+      expect(gateway.listActiveCalls, 2);
     },
   );
 
