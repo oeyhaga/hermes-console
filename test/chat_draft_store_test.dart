@@ -2006,6 +2006,81 @@ void main() {
   );
 
   test(
+    'transcript local conserva el aviso durable de proceso en segundo plano',
+    () async {
+      const carrier =
+          '[IMPORTANT: Background process proc_0123456789ab exited (exit code 0).\n'
+          'Command: node verify.mjs\n'
+          'Output:\n'
+          'verificacion completada\n'
+          ']';
+      await LocalTranscriptStore.saveFromNewestFirst(
+        'conn-a',
+        'session-process-complete',
+        [
+          {
+            'role': 'user',
+            'content': carrier,
+            'display_kind': 'process_complete',
+            'display_metadata': {
+              'display_text': 'Background Process Finished: node verify.mjs',
+              'goal': 'prompt privado',
+              'path': '/home/private',
+            },
+          },
+        ],
+      );
+
+      final restored = await LocalTranscriptStore.load(
+        'conn-a',
+        'session-process-complete',
+      );
+
+      expect(restored, hasLength(1));
+      expect(restored.single, {
+        'role': 'user',
+        'content': carrier,
+        'display_kind': 'process_complete',
+        'display_metadata': {
+          'display_text': 'Background Process Finished: node verify.mjs',
+        },
+      });
+    },
+  );
+
+  test(
+    'transcript local descarta una clasificación editorial en rol assistant',
+    () async {
+      await LocalTranscriptStore.saveFromNewestFirst(
+        'conn-a',
+        'session-editorial-assistant',
+        [
+          {
+            'role': 'assistant',
+            'content': 'PRIVATE_EDITORIAL_ASSISTANT',
+            'display_kind': 'process_complete',
+          },
+          {
+            'role': 'assistant',
+            'content': 'PRIVATE_EDITORIAL_DELEGATION',
+            'display_kind': 'async_delegation_complete',
+          },
+          {'role': 'user', 'content': 'Pregunta pública'},
+        ],
+      );
+
+      final restored = await LocalTranscriptStore.load(
+        'conn-a',
+        'session-editorial-assistant',
+      );
+
+      expect(restored, [
+        {'role': 'user', 'content': 'Pregunta pública'},
+      ]);
+    },
+  );
+
+  test(
     'transcripts quedan aislados por perfil y cleanup conserva vecinos',
     () async {
       const defaultTranscript = [

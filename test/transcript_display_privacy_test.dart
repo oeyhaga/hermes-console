@@ -116,6 +116,36 @@ void main() {
       });
     });
 
+    test('keeps the durable background-process marker and its title', () {
+      const carrier =
+          '[IMPORTANT: Background process proc_0123456789ab exited (exit code 0).\n'
+          'Command: node verify.mjs\n'
+          'Output:\n'
+          'verificacion completada\n'
+          ']';
+      final normalized = normalizeTranscriptMessageForDisplay(const {
+        'row_id': 9200,
+        'role': 'user',
+        'content': carrier,
+        'display_kind': 'process_complete',
+        'display_metadata': {
+          'display_text': 'Background Process Finished: node verify.mjs',
+          'goal': 'PRIVATE_GOAL',
+          'path': '/home/private',
+        },
+      });
+
+      expect(normalized, {
+        'row_id': 9200,
+        'role': 'user',
+        'content': carrier,
+        'display_kind': 'process_complete',
+        'display_metadata': {
+          'display_text': 'Background Process Finished: node verify.mjs',
+        },
+      });
+    });
+
     test(
       'central display projection drops private reconciliation identity',
       () {

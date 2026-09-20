@@ -45,6 +45,215 @@ void main() {
     expect(projection.visibleUserCount, 0);
   });
 
+  test(
+    'un process_complete durable sobrevive resume y el graft de refresh',
+    () {
+      const raw =
+          '[IMPORTANT: Background process proc_0123456789ab exited (exit code 0).\n'
+          'Command: node verify.mjs\n'
+          'Output:\n'
+          'verificacion completada\n'
+          ']';
+      const title = 'Background Process Finished: node verify.mjs';
+      final result = reconciler.project(
+        snapshot({
+          'session_id': 'runtime-process-complete',
+          'session_key': 'stored-1',
+          'messages': const [
+            {
+              'role': 'user',
+              'content': raw,
+              'row_id': 9100,
+              'message_id': 'process-complete-1',
+              'display_kind': 'process_complete',
+              'display_metadata': {
+                'display_text': title,
+                'private_path': '/home/private',
+              },
+            },
+          ],
+        }),
+      );
+
+      expect(result.messagesNewestFirst.single['display_kind'], 'process_complete');
+      expect(result.messagesNewestFirst.single['display_metadata'], {
+        'display_text': title,
+      });
+      final resumed = ChatRenderProjection.build(result.messagesNewestFirst);
+      expect(resumed.units, hasLength(1));
+      expect(resumed.units.single, isA<ChatMessageUnitPlan>());
+      expect(resumed.visibleUserCount, 0);
+
+      // Refresh REST: la fila llega sin clasificación y el graft la recupera
+      // desde el snapshot durable, sin releer el texto del mensaje.
+      final persisted = DesktopSessionMessage.tryParse({
+        'row_id': 9100,
+        'message_id': 'process-complete-1',
+        'role': 'user',
+        'content': raw,
+        'display_kind': 'process_complete',
+        'display_metadata': {
+          'display_text': title,
+          'private_path': '/home/private',
+        },
+      })!;
+      final rest = <Map<String, dynamic>>[
+        {'id': 9100, 'role': 'user', 'content': raw},
+      ];
+
+      final merged = reconciler.overlayDurableDisplayMetadata(rest, [
+        persisted,
+      ]);
+
+      expect(merged.single['display_kind'], 'process_complete');
+      expect(merged.single['display_metadata'], {'display_text': title});
+      final regrafted = ChatRenderProjection.build(merged);
+      expect(regrafted.units, hasLength(1));
+      expect(regrafted.units.single, isA<ChatMessageUnitPlan>());
+      expect(regrafted.visibleUserCount, 0);
+    },
+  );
+
+  test(
+    'la fila durable process_complete suprime su gemelo inflight sintético',
+    () {
+      const singleCarrier =
+          '[IMPORTANT: Background process proc_0123456789ab exited (exit code 0).\n'
+          'Command: node verify.mjs\n'
+          'Output:\n'
+          'verificacion completada\n'
+          ']';
+      // Lote real del runtime: cabecera + un carrier por proceso. El stripping
+      // del carrier no borra la cabecera, así que el gemelo inflight sin
+      // clasificar se materializaría como burbuja cruda junto al evento.
+      const batch =
+          '[IMPORTANT: 2 background processes completed. Treat these results '
+          'as one batch and give one consolidated response; preserve failures '
+          'and actionable results.]\n'
+          '\n'
+          '$singleCarrier\n'
+          '\n'
+          '[IMPORTANT: Background process proc_ba9876543210 exited (exit code 1).\n'
+          'Command: npm test\n'
+          'Output:\n'
+          '1 failing\n'
+          ']';
+
+      for (final content in const [singleCarrier, batch]) {
+        final result = reconciler.project(
+          snapshot({
+            'session_id': 'runtime-process-inflight',
+            'session_key': 'stored-1',
+            'messages': [
+              {
+                'role': 'user',
+                'content': content,
+                'row_id': 9300,
+                'message_id': 'process-complete-inflight',
+                'display_kind': 'process_complete',
+              },
+            ],
+            'inflight': {'user': content, 'streaming': true},
+            'running': true,
+          }),
+        );
+
+        final projection = ChatRenderProjection.build(
+          result.messagesNewestFirst,
+        );
+        final rendered = projection.units
+            .whereType<ChatMessageUnitPlan>()
+            .map((unit) => result.messagesNewestFirst[unit.messageIndex])
+            .toList(growable: false);
+
+        // Un único evento del sistema y ninguna fila de usuario cruda: el
+        // gemelo inflight sin clasificar no puede materializar la cabecera.
+        expect(
+          rendered.where(
+            (message) => message['display_kind'] == 'process_complete',
+          ),
+          hasLength(1),
+          reason: content,
+        );
+        expect(
+          rendered.where(
+            (message) =>
+                message['role'] == 'user' &&
+                (message['display_kind'] ?? '').toString().isEmpty,
+          ),
+          isEmpty,
+          reason: content,
+        );
+        expect(
+          projection.units.whereType<ChatUserTurnUnitPlan>(),
+          isEmpty,
+          reason: content,
+        );
+        expect(projection.visibleUserCount, 0, reason: content);
+      }
+    },
+  );
+
+  test(
+    'otro display_kind durable no suprime el mensaje real en vuelo',
+    () {
+      // Solo `process_complete` identifica a su gemelo sintético. Un evento
+      // editorial cualquiera (`model_switch`) no es la entrada del turno en
+      // vuelo, aunque su contenido coincida: no puede esconder al usuario.
+      const content = 'cambia de modelo y sigue';
+      final result = reconciler.project(
+        snapshot({
+          'session_id': 'runtime-other-kind-inflight',
+          'session_key': 'stored-1',
+          'messages': [
+            {
+              'role': 'user',
+              'content': content,
+              'row_id': 9400,
+              'message_id': 'model-switch-inflight',
+              'display_kind': 'model_switch',
+            },
+          ],
+          'inflight': {'user': content, 'streaming': true},
+          'running': true,
+        }),
+      );
+
+      final projection = ChatRenderProjection.build(
+        result.messagesNewestFirst,
+      );
+      expect(projection.visibleUserCount, 1);
+      expect(projection.units.whereType<ChatUserTurnUnitPlan>(), hasLength(1));
+    },
+  );
+
+  test('display_text rechaza saltos Unicode y controles bidi', () {
+    const title = 'Background Process Finished: node verify.mjs';
+    for (final injected in [
+      String.fromCharCode(0x2028),
+      String.fromCharCode(0x2029),
+      String.fromCharCode(0x202a),
+      String.fromCharCode(0x202e),
+      String.fromCharCode(0x2066),
+      String.fromCharCode(0x2069),
+      '\n',
+      '\u0007',
+    ]) {
+      final sanitized = sanitizeDelegationDisplayMetadata({
+        'display_text': '$title$injected oculto',
+      });
+      expect(
+        sanitized?['display_text'],
+        isNull,
+        reason: injected.codeUnits.toString(),
+      );
+    }
+
+    expect(sanitizeDelegationDisplayMetadata(const {'display_text': title}), {
+      'display_text': title,
+    });
+  });
+
   test('proyecta transcript autoritativo en orden newest-first', () {
     final result = reconciler.project(
       snapshot({

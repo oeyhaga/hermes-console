@@ -1,6 +1,16 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/screens/chat_render_projection.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
+
+/// Carrier canónico que Hermes persiste junto a `display_kind: process_complete`
+/// cuando termina un proceso en segundo plano.
+const _processCompleteCarrier =
+    '[IMPORTANT: Background process proc_0123456789ab exited (exit code 0).\n'
+    'Command: node verify.mjs\n'
+    'Output:\n'
+    'verificacion completada\n'
+    ']';
 
 Map<String, dynamic> _message(
   String role,
@@ -250,6 +260,111 @@ void main() {
       expect(projection.visibleUserCount, 0);
       expect(projection.userOrdinalFor(carrier), isNull);
       expect(carrier['content'], raw, reason: 'la historia durable no se muta');
+    },
+  );
+
+  test('un process_complete durable sobrevive a la normalización y se proyecta '
+      'como evento del sistema', () {
+    final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{
+      'row_id': 9100,
+      'role': 'user',
+      'content': _processCompleteCarrier,
+      'display_kind': 'process_complete',
+      'display_metadata': const {
+        'display_text': 'Background Process Finished: node verify.mjs',
+      },
+    });
+
+    expect(normalized, isNotNull);
+    expect(normalized!['display_kind'], 'process_complete');
+    expect(effectiveUserDisplayKind(normalized), 'process_complete');
+    expect(normalized['display_metadata'], {
+      'display_text': 'Background Process Finished: node verify.mjs',
+    });
+
+    final realUser = _message('user', 'Pregunta real');
+    final projection = ChatRenderProjection.build([
+      _message('assistant', 'Respuesta'),
+      normalized,
+      realUser,
+    ]);
+
+    // assistant + evento del sistema; el prompt real es la única burbuja.
+    expect(projection.units.whereType<ChatMessageUnitPlan>(), hasLength(2));
+    expect(
+      projection.units
+          .whereType<ChatUserTurnUnitPlan>()
+          .single
+          .primaryMessageIndex,
+      2,
+    );
+  });
+
+  test('un process_complete durable no cuenta ni se edita como turno', () {
+    final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{
+      'row_id': 9101,
+      'role': 'user',
+      'content': _processCompleteCarrier,
+      'display_kind': 'process_complete',
+    })!;
+    final realUser = _message('user', 'Pregunta real');
+
+    expect(isRealUserTurn(normalized), isFalse);
+
+    final projection = ChatRenderProjection.build([normalized, realUser]);
+
+    // Visible como fila de sistema (ChatMessageUnitPlan), nunca como turno
+    // editable: `ChatUserTurnUnitPlan` es el único plan con editar/rebobinar.
+    expect(
+      projection.units.whereType<ChatMessageUnitPlan>().single.messageIndex,
+      0,
+    );
+    expect(projection.userOrdinalFor(normalized), isNull);
+    expect(projection.userOrdinalFor(realUser), 0);
+    expect(projection.visibleUserCount, 1);
+    expect(projection.latestUserMessage, same(realUser));
+    expect(projection.units.whereType<ChatUserTurnUnitPlan>(), hasLength(1));
+  });
+
+  test(
+    'un carrier interno sin display_kind sigue oculto junto a process_complete',
+    () {
+      final carrier = _message('user', _processCompleteCarrier)
+        ..['row_id'] = 9102;
+
+      expect(effectiveUserDisplayKind(carrier), 'hidden');
+
+      final hidden = _message('user', 'payload interno de otro carrier')
+        ..['display_kind'] = 'hidden';
+
+      expect(normalizeTranscriptMessageForDisplay(hidden), isNull);
+
+      final projection = ChatRenderProjection.build([carrier, hidden]);
+
+      expect(projection.units, isEmpty);
+      expect(projection.visibleUserCount, 0);
+    },
+  );
+
+  test(
+    'un prompt real parecido a un aviso de proceso sigue siendo del usuario',
+    () {
+      final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{
+        'row_id': 9103,
+        'role': 'user',
+        'content':
+            'Background Process Finished: node verify.mjs — ¿qué significa '
+            'eso? El proceso proc_0123456789ab salió con exit code 0.',
+      })!;
+
+      expect(normalized.containsKey('display_kind'), isFalse);
+      expect(effectiveUserDisplayKind(normalized), isEmpty);
+      expect(isRealUserTurn(normalized), isTrue);
+
+      final projection = ChatRenderProjection.build([normalized]);
+
+      expect(projection.units.single, isA<ChatUserTurnUnitPlan>());
+      expect(projection.visibleUserCount, 1);
     },
   );
 
