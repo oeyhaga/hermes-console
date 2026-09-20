@@ -4058,6 +4058,22 @@ class ActiveChat {
 
   static const Duration _passiveRemoteActivityWindow = Duration(seconds: 9);
 
+  /// Rachas de ausencia exigidas antes de dar por terminado un runtime que el
+  /// roster ya no anuncia. Una sola lectura puede perder la fila por una
+  /// carrera de la lista; dos seguidas ya no.
+  static const int _terminalAuthorityAbsenceStreak = 2;
+
+  /// Último runtime que este chat vio anunciado por un roster completo.
+  String? _rosterLiveRuntimeSessionId;
+  int _rosterRuntimeAbsenceStreak = 0;
+
+  /// Equivalente a `sawAssistantPayload` de Desktop: prueba de que el runtime
+  /// llegó a arrancar este turno. Recién enviado, el backend informa la sesión
+  /// como inactiva mientras el stream local ya espera su primer frame, y
+  /// cosecharlo ahí apagaría un turno que está a punto de producir.
+  bool get _turnSawRuntimePayload =>
+      _streamingConfirmed || _desktopTurnStartedAt != null || trace.isNotEmpty;
+
   PassiveActivityAggregate get passiveActivityAggregate {
     if (_passiveDurableToolActivity.isEmpty) {
       return PassiveActivityAggregate.empty;
@@ -4150,9 +4166,12 @@ class ActiveChat {
     required int bindEpoch,
     required int sessionEpoch,
     required int requestGeneration,
+    required bool streaming,
   }) =>
       !_disposed &&
-      !isStreaming &&
+      // El roster es una instantánea asíncrona: si el turno arrancó o terminó
+      // entre la petición y su respuesta, el estado local es más nuevo.
+      isStreaming == streaming &&
       activeChatPassiveActivityRequestStillCurrent(
         expectedStoredSessionId: storedSessionId,
         currentStoredSessionId: this.storedSessionId?.trim(),
@@ -4169,7 +4188,7 @@ class ActiveChat {
       );
 
   Future<void> refreshPassiveRemoteActivity() async {
-    if (_disposed || isStreaming) return;
+    if (_disposed) return;
     final gateway = _desktopGateway;
     if (gateway is! HermesDesktopSessionActivityGateway) return;
     final activityGateway = gateway as HermesDesktopSessionActivityGateway;
@@ -4180,6 +4199,7 @@ class ActiveChat {
     final requestTurnEpoch = _turnEpoch;
     final requestBindEpoch = _desktopBindEpoch;
     final requestSessionEpoch = _desktopSessionEpoch;
+    final requestStreaming = isStreaming;
     try {
       final active = await activityGateway.listActiveSessions();
       if (!_passiveRemoteActivityRequestStillCurrent(
@@ -4189,9 +4209,14 @@ class ActiveChat {
         bindEpoch: requestBindEpoch,
         sessionEpoch: requestSessionEpoch,
         requestGeneration: requestGeneration,
+        streaming: requestStreaming,
       )) {
         return;
       }
+      await _settleTurnAbsentFromRoster(active);
+      // Con un turno propio vivo el roster solo aporta autoridad terminal: la
+      // máquina de presentación pasiva describe la actividad de otra superficie.
+      if (isStreaming) return;
       final rows = active.sessions.where(
         (candidate) => candidate.storedSessionId == storedId,
       );
@@ -4222,18 +4247,56 @@ class ActiveChat {
         unawaited(_drainQueue());
       }
     } catch (_) {
-      // Capability absence or a transient inventory failure cannot prove idle.
-      if (_passiveRemoteActivityRequestStillCurrent(
-        storedSessionId: storedId,
-        runtimeSessionId: requestRuntimeSessionId,
-        turnEpoch: requestTurnEpoch,
-        bindEpoch: requestBindEpoch,
-        sessionEpoch: requestSessionEpoch,
-        requestGeneration: requestGeneration,
-      )) {
+      // Capability absence or a transient inventory failure cannot prove idle,
+      // and it is never evidence of absence for the terminal authority either.
+      if (!isStreaming &&
+          _passiveRemoteActivityRequestStillCurrent(
+            storedSessionId: storedId,
+            runtimeSessionId: requestRuntimeSessionId,
+            turnEpoch: requestTurnEpoch,
+            bindEpoch: requestBindEpoch,
+            sessionEpoch: requestSessionEpoch,
+            requestGeneration: requestGeneration,
+            streaming: requestStreaming,
+          )) {
         _applyPassiveActivityState(DesktopPassiveActivityState.unknown);
       }
     }
+  }
+
+  /// Paridad con Desktop (`rehydrateLiveSessionStatuses`,
+  /// `use-background-sync.ts`): un roster completo también es autoritativo
+  /// sobre la AUSENCIA. El gateway retira la sesión de `_sessions` cuando su
+  /// turno acaba y su transporte desaparece, así que un turno que muere con el
+  /// socket degradado nunca entrega su terminal y `busy` se quedaría colgado
+  /// hasta reiniciar la app.
+  Future<void> _settleTurnAbsentFromRoster(
+    DesktopActiveSessionList roster,
+  ) async {
+    final runtimeId = _desktopRuntimeSessionId;
+    // Un roster incompleto o malformado no prueba nada sobre la ausencia.
+    if (runtimeId == null || roster.hasMalformedRows) return;
+    if (roster.sessions.any((row) => row.runtimeSessionId == runtimeId)) {
+      _rosterLiveRuntimeSessionId = runtimeId;
+      _rosterRuntimeAbsenceStreak = 0;
+      return;
+    }
+    // Solo un runtime que este perfil vio vivo puede darse por terminado.
+    if (_rosterLiveRuntimeSessionId != runtimeId) return;
+    if (!isStreaming || _runTerminal || !_turnSawRuntimePayload) return;
+    // Una fila que falta una sola vez tolera una carrera de la lista; la racha
+    // confirmada es el hecho terminal que los eventos perdidos no entregaron.
+    if (++_rosterRuntimeAbsenceStreak < _terminalAuthorityAbsenceStreak) return;
+    _rosterRuntimeAbsenceStreak = 0;
+    _rosterLiveRuntimeSessionId = null;
+    // Un `tool.complete` perdido dejaría una fila de herramienta girando en una
+    // sesión ya inerte: sella las partes abiertas igual que la recuperación por
+    // snapshot. Esto no es un fallo del turno y no escribe burbuja de error.
+    _sealRecoveredLiveActivity(completed: true);
+    await _completeRun(
+      finalOutput: assistantContent.isEmpty ? null : assistantContent,
+      finalOutputNarratable: false,
+    );
   }
 
   bool get desktopManualCompressionInFlight => _desktopCompressionInFlight;
@@ -7177,6 +7240,27 @@ class ActiveChat {
           state = snapshot.inflight?.assistant?.isNotEmpty == true
               ? ChatPipelineState.streaming
               : ChatPipelineState.executing;
+        } else if (isStreaming &&
+            !_runTerminal &&
+            _turnSawRuntimePayload &&
+            !rejectSnapshotLiveActivity &&
+            snapshotTranscriptComplete) {
+          // Un snapshot completo y bien formado que no está ni fallido ni
+          // corriendo es el hecho terminal durable: el turno acabó en silencio
+          // y un estado local vivo no puede sobrevivirle. Un turno recién
+          // enviado que todavía no produjo nada es más nuevo que el snapshot
+          // (mismo veto de pre-arranque que la cosecha por roster), así que no
+          // lo cierra.
+          _firstTokenTimer?.cancel();
+          _firstTokenTimer = null;
+          _desktopTurnStartedAt = null;
+          _sealRecoveredLiveActivity(completed: true);
+          _runTerminal = true;
+          traceActive = false;
+          pendingApproval = null;
+          _cancelling = false;
+          state = ChatPipelineState.completed;
+          _emit(ActiveChatEvent.sessionInfo);
         }
       }
 
@@ -17921,6 +18005,8 @@ class ActiveChat {
         bindEpoch: expectedBindEpoch,
         sessionEpoch: expectedSessionEpoch,
         requestGeneration: requestGeneration,
+        // Arbitrar la cola solo es válido sin turno vivo propio.
+        streaming: false,
       )) {
         return false;
       }
@@ -17938,6 +18024,7 @@ class ActiveChat {
         bindEpoch: expectedBindEpoch,
         sessionEpoch: expectedSessionEpoch,
         requestGeneration: requestGeneration,
+        streaming: false,
       )) {
         _applyPassiveActivityState(DesktopPassiveActivityState.unknown);
       }
