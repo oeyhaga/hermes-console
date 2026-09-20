@@ -94,6 +94,8 @@ import 'package:hermes_android/core/widgets/hermes_premium_ui.dart';
 import 'package:hermes_android/core/widgets/mission_profile_avatar.dart';
 import 'package:hermes_android/core/widgets/motion_entrance.dart';
 import 'package:hermes_android/core/widgets/session_context_usage.dart';
+import 'package:hermes_android/core/models/subagent_activity.dart';
+import 'package:hermes_android/core/widgets/compact_pill_text.dart';
 import 'package:hermes_android/core/widgets/subagent_activity_card.dart';
 import 'package:hermes_android/core/widgets/turn_activity_pill.dart';
 import 'support/inter_font.dart';
@@ -1485,6 +1487,25 @@ Finder _pillLabel(String full) => find.byWidgetPredicate(
   (widget) =>
       widget is Text && (widget.data == full || widget.semanticsLabel == full),
 );
+
+Finder get _subagentPillFinder =>
+    find.byKey(const ValueKey('chat-subagent-status'), skipOffstage: false);
+
+/// Filas que la pastilla de subagentes está mostrando ahora mismo (la copia
+/// de pantalla de `chat_screen.dart`, no el roster vivo del servicio).
+List<SubagentActivity> _subagentPillRows(WidgetTester tester) =>
+    tester.widget<SubagentActivityCard>(_subagentPillFinder).activities;
+
+/// Texto completo de la pastilla (`CompactPillText` puede pintar la versión
+/// corta si no cabe, pero `label` siempre lleva la copia íntegra).
+String _subagentPillLabel(WidgetTester tester) => tester
+    .widget<CompactPillText>(
+      find.descendant(
+        of: _subagentPillFinder,
+        matching: find.byType(CompactPillText),
+      ),
+    )
+    .label;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -13829,6 +13850,266 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  // La pastilla cachea a propósito las últimas filas conocidas para poder
+  // abrirla y ver qué pasó cuando el trabajo ya terminó (ver
+  // `_displaySubagentActivities`). Lo que no puede hacer es seguir
+  // presentando como vivo un trabajo que ya no lo está: un turno que muere
+  // por `_failRun` ("Modelo sin respuesta") no emite un nuevo `started`, que
+  // era el único punto que reseteaba esa caché, así que la fila se quedaba
+  // girando hasta el siguiente prompt.
+  Future<({ActiveChat chat, _StableRefreshGateway gateway, HermesAppState app})>
+  pumpChatWithRunningSubagent(WidgetTester tester, String scope) async {
+    final gateway = _StableRefreshGateway(subagents: const []);
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn(scope),
+      desktopGateway: gateway,
+      messages: const [
+        {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+      ],
+      registerActiveChatsTearDown: false,
+    );
+    final app = tester.state<HermesAppState>(find.byType(HermesApp));
+    expect(
+      await chat.send(
+        fullText: 'PUBLIC_PARENT_REQUEST',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('subagent.start', const {
+      'subagent_id': 'pill-child',
+      'status': 'running',
+    });
+    await tester.pump();
+    expect(chat.subagentActivities, hasLength(1));
+    expect(_subagentPillRows(tester), hasLength(1));
+    expect(_subagentPillRows(tester).single.isTerminal, isFalse);
+    return (chat: chat, gateway: gateway, app: app);
+  }
+
+  Future<void> disposeChatFixture(
+    WidgetTester tester,
+    HermesAppState app,
+  ) async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    app.activeChats.dispose();
+  }
+
+  testWidgets('pastilla de subagentes se asienta si el roster ya no la lista', (
+    tester,
+  ) async {
+    final fixture = await pumpChatWithRunningSubagent(
+      tester,
+      'subagent-pill-stuck',
+    );
+    final chat = fixture.chat;
+
+    // El turno muere sin `message.complete` y sin un nuevo `started`.
+    fixture.gateway.emit('error', const {'message': 'PUBLIC_TURN_FAILURE'});
+    await tester.pump();
+    expect(chat.isStreaming, isFalse);
+
+    // Y un `subagent.list` completo —la única autoridad— ya no reporta al
+    // hijo: el servicio reconcilia la ausencia y el roster vivo se vacía.
+    await chat.refreshSubagentsForTesting();
+    await tester.pump();
+    expect(chat.subagentActivities, isEmpty);
+    expect(chat.subagentLiveRosterConfirmedEmpty, isTrue);
+
+    // La pastilla sigue disponible para revisar lo que pasó…
+    final rows = _subagentPillRows(tester);
+    expect(rows, hasLength(1));
+    // …pero ya no presenta trabajo vivo.
+    expect(rows.every((activity) => activity.isTerminal), isTrue);
+    expect(_subagentPillLabel(tester), isNot(contains('trabajando')));
+    expect(
+      find.descendant(
+        of: _subagentPillFinder,
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+    await disposeChatFixture(tester, fixture.app);
+  });
+
+  testWidgets(
+    'pastilla de subagentes conserva la fila viva sin roster que lo desmienta',
+    (tester) async {
+      final fixture = await pumpChatWithRunningSubagent(
+        tester,
+        'subagent-pill-flicker',
+      );
+      final chat = fixture.chat;
+
+      // Tapar la ruta suelta la presentación: la lista pública se vacía sin
+      // que ningún `subagent.list` haya dicho que el hijo ya no está. Es el
+      // parpadeo que la caché existe para evitar.
+      final navigator = tester.state<NavigatorState>(
+        find.byType(Navigator).first,
+      );
+      unawaited(
+        navigator.push<void>(
+          MaterialPageRoute<void>(builder: (_) => const SizedBox.expand()),
+        ),
+      );
+      await tester.pump();
+      expect(chat.subagentActivities, isEmpty);
+      expect(chat.subagentLiveRosterConfirmedEmpty, isFalse);
+
+      final rows = _subagentPillRows(tester);
+      expect(rows, hasLength(1));
+      expect(rows.single.isTerminal, isFalse);
+      expect(tester.takeException(), isNull);
+      await disposeChatFixture(tester, fixture.app);
+    },
+  );
+
+  testWidgets(
+    'delegación en segundo plano sigue trabajando tras acabar el turno',
+    (tester) async {
+      final fixture = await pumpChatWithRunningSubagent(
+        tester,
+        'subagent-pill-background',
+      );
+      final chat = fixture.chat;
+
+      // `delegate_task(background=…)` sobrevive a su turno padre: el turno
+      // acaba pero el roster sigue reportando al hijo.
+      fixture.gateway.subagents = const [
+        DesktopSubagentSnapshot(
+          subagentId: 'pill-child',
+          status: 'running',
+          goal: 'PUBLIC_GOAL',
+        ),
+      ];
+      fixture.gateway.emit('message.complete', const {
+        'text': 'PUBLIC_PARENT_DONE',
+      });
+      await tester.pump();
+      expect(chat.isStreaming, isFalse);
+
+      await chat.refreshSubagentsForTesting();
+      await tester.pump();
+      expect(chat.subagentLiveRosterConfirmedEmpty, isFalse);
+
+      final rows = _subagentPillRows(tester);
+      expect(rows, hasLength(1));
+      expect(rows.single.isTerminal, isFalse);
+      expect(_subagentPillLabel(tester), contains('trabajando'));
+      expect(tester.takeException(), isNull);
+      await disposeChatFixture(tester, fixture.app);
+    },
+  );
+
+  testWidgets('un subagent.list que falla no asienta ni borra filas', (
+    tester,
+  ) async {
+    final fixture = await pumpChatWithRunningSubagent(
+      tester,
+      'subagent-pill-rpc-error',
+    );
+    final chat = fixture.chat;
+    fixture.gateway.emit('error', const {'message': 'PUBLIC_TURN_FAILURE'});
+    await tester.pump();
+    expect(chat.isStreaming, isFalse);
+
+    // El RPC cae (p. ej. 4001): no saber no es saber que ya no está.
+    final gate = Completer<List<DesktopSubagentSnapshot>>();
+    fixture.gateway.listGate = gate;
+    final refresh = chat.refreshSubagentsForTesting();
+    gate.completeError(StateError('PUBLIC_SUBAGENT_LIST_DOWN'));
+    await refresh;
+    fixture.gateway.listGate = null;
+    await tester.pump();
+
+    expect(chat.subagentActivities, hasLength(1));
+    expect(chat.subagentLiveRosterConfirmedEmpty, isFalse);
+    final rows = _subagentPillRows(tester);
+    expect(rows, hasLength(1));
+    expect(rows.single.isTerminal, isFalse);
+    expect(tester.takeException(), isNull);
+    await disposeChatFixture(tester, fixture.app);
+  });
+
+  testWidgets('pastilla de subagentes muestra trabajando con un hijo vivo', (
+    tester,
+  ) async {
+    final fixture = await pumpChatWithRunningSubagent(
+      tester,
+      'subagent-pill-live',
+    );
+    final chat = fixture.chat;
+
+    // Roster vivo coherente con el evento: nada que asentar.
+    fixture.gateway.subagents = const [
+      DesktopSubagentSnapshot(
+        subagentId: 'pill-child',
+        status: 'running',
+        goal: 'PUBLIC_GOAL',
+      ),
+    ];
+    await chat.refreshSubagentsForTesting();
+    await tester.pump();
+
+    expect(chat.subagentActivities, hasLength(1));
+    final rows = _subagentPillRows(tester);
+    expect(rows.single.isTerminal, isFalse);
+    expect(_subagentPillLabel(tester), contains('trabajando'));
+    expect(tester.takeException(), isNull);
+    await disposeChatFixture(tester, fixture.app);
+  });
+
+  testWidgets('descartar y nuevo turno siguen gobernando la pastilla', (
+    tester,
+  ) async {
+    final fixture = await pumpChatWithRunningSubagent(
+      tester,
+      'subagent-pill-dismiss',
+    );
+    final chat = fixture.chat;
+    fixture.gateway.emit('error', const {'message': 'PUBLIC_TURN_FAILURE'});
+    await tester.pump();
+    await chat.refreshSubagentsForTesting();
+    await tester.pump();
+    expect(_subagentPillRows(tester), hasLength(1));
+
+    // Con todo asentado la × está disponible y vacía la pastilla.
+    final dismiss = find.descendant(
+      of: _subagentPillFinder,
+      matching: find.byIcon(Icons.close_rounded),
+    );
+    expect(dismiss, findsOneWidget);
+    await tester.tap(dismiss);
+    await tester.pump();
+    expect(_subagentPillRows(tester), isEmpty);
+
+    // Un turno nuevo vuelve a poblarla desde cero.
+    expect(
+      await chat.send(
+        fullText: 'PUBLIC_SECOND_REQUEST',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    fixture.gateway.emit('message.start');
+    fixture.gateway.emit('subagent.start', const {
+      'subagent_id': 'pill-child-2',
+      'status': 'running',
+    });
+    await tester.pump();
+    final rows = _subagentPillRows(tester);
+    expect(rows, hasLength(1));
+    expect(rows.single.isTerminal, isFalse);
+    expect(tester.takeException(), isNull);
+    await disposeChatFixture(tester, fixture.app);
+  });
 
   testWidgets(
     'terminal libera composer antes de reconciliar transcript con hijo activo',

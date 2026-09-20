@@ -478,6 +478,33 @@ void main() {
     );
   });
 
+  test('subagent.complete retires its child from the delegated count', () {
+    final aggregate = GlobalActivityAggregate.inMemory();
+    GlobalActivity? activity() =>
+        aggregate.activityFor('connection-a', 'default', 'durable-a');
+    void observe(String type) => aggregate.observeEvent(
+      scope: scope,
+      event: TuiGatewayEvent(
+        type: type,
+        sessionId: 'runtime-a',
+        payload: const {},
+      ),
+    );
+
+    observe('message.start');
+    observe('subagent.start');
+    observe('subagent.start');
+    expect(activity()?.subagentCount, 2);
+
+    observe('subagent.complete');
+    expect(activity()?.subagentCount, 1);
+    observe('subagent.complete');
+    expect(activity()?.subagentCount, 0);
+    // A duplicate or unmatched completion cannot drive the count negative.
+    observe('subagent.complete');
+    expect(activity()?.subagentCount, 0);
+  });
+
   test('stale public projection stops claiming liveness after its ceiling', () {
     var now = DateTime.utc(2026);
     final aggregate = GlobalActivityAggregate.inMemory(now: () => now);
