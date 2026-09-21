@@ -985,8 +985,8 @@ void main() {
   testWidgets(
     'el punto en vivo no deja una animación colgada con movimiento reducido',
     (tester) async {
-      tester.view.physicalSize = const Size(1170, 2532);
-      tester.view.devicePixelRatio = 3;
+      tester.view.physicalSize = const Size(320, 800);
+      tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
 
@@ -1025,7 +1025,10 @@ void main() {
           // animación infinita aquí dejaría `pumpAndSettle` colgado y, en el
           // dispositivo, incumpliría la preferencia de accesibilidad.
           home: MediaQuery(
-            data: const MediaQueryData(disableAnimations: true),
+            data: const MediaQueryData(
+              disableAnimations: true,
+              textScaler: TextScaler.linear(2),
+            ),
             child: SessionListScreen(
               connection: _connection(),
               connManager: manager,
@@ -1056,6 +1059,10 @@ void main() {
       // La actividad ocupa la línea de vista previa (estructura del mockup) y
       // se anuncia como un único nodo accesible.
       expect(find.bySemanticsLabel('trabajando'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('session-row-stop')),
+        findsOneWidget,
+      );
       expect(
         find.byKey(const ValueKey('session-running-live-2')),
         findsNothing,

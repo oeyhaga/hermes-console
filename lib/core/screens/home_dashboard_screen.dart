@@ -48,6 +48,7 @@ import '../widgets/hermes_ui.dart';
 import '../widgets/hermes_pill.dart';
 import '../widgets/session_deletion_dialogs.dart';
 import '../widgets/session_title_editor_route.dart';
+import '../widgets/session_row_stop_control.dart';
 import 'chat_screen.dart';
 import 'gateway_manager_screen.dart';
 import 'local_instance_control_screen.dart';
@@ -1185,21 +1186,27 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       Widget recentTile(
         SessionActivityKind activity, {
         int backgroundCount = 0,
-      }) => _RecentSessionTile(
-        session: session,
-        title: title,
-        summary: summary,
-        activityLabel: _activityLabel(
+      }) {
+        final activityLabel = _activityLabel(
           activity,
           backgroundCount: backgroundCount,
-        ),
-        relativeTime: relativeTime(
-          session.lastActivityAt,
-          languageCode: Localizations.localeOf(context).languageCode,
-        ),
-        onTap: () => _openChat(session),
-        onManage: () => _showRecentActions(session),
-      );
+        );
+        return _RecentSessionTile(
+          session: session,
+          title: title,
+          summary: summary,
+          activityLabel: activityLabel,
+          relativeTime: relativeTime(
+            session.lastActivityAt,
+            languageCode: Localizations.localeOf(context).languageCode,
+          ),
+          onTap: () => _openChat(session),
+          onStop: activityLabel == null
+              ? null
+              : () => _stopSession(connection, session),
+          onManage: () => _showRecentActions(session),
+        );
+      }
 
       rows.add(
         FadeSlideIn(
@@ -1244,6 +1251,32 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         : Strings.of(context).slActivityBackground,
     SessionActivityKind.idle => null,
   };
+
+  Future<void> _stopSession(
+    SavedConnection connection,
+    Session session,
+  ) async {
+    final activeChats = _activeChats;
+    if (activeChats == null) {
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).chaStopFailed)),
+        kind: HermesNoticeKind.error,
+      );
+      return;
+    }
+    try {
+      await activeChats.stopSessionWork(
+        connection: connection,
+        session: session,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).chaStopFailed)),
+        kind: HermesNoticeKind.error,
+      );
+    }
+  }
 
   void _openChat(
     Session session, {
@@ -2493,6 +2526,7 @@ class _RecentSessionTile extends StatelessWidget {
   final String? activityLabel;
   final String relativeTime;
   final VoidCallback onTap;
+  final Future<void> Function()? onStop;
   final VoidCallback? onManage;
 
   const _RecentSessionTile({
@@ -2502,6 +2536,7 @@ class _RecentSessionTile extends StatelessWidget {
     required this.activityLabel,
     required this.relativeTime,
     required this.onTap,
+    this.onStop,
     this.onManage,
   });
 
@@ -2538,6 +2573,7 @@ class _RecentSessionTile extends StatelessWidget {
     // reciente y estado); ExcludeSemantics evita repeticiones.
     final tile = Semantics(
       button: true,
+      explicitChildNodes: onStop != null,
       onLongPress: onManage,
       label: [
         strings.homeSemanticChat(title, session.messageCount),
@@ -2551,8 +2587,7 @@ class _RecentSessionTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
         onLongPress: onManage,
-        child: ExcludeSemantics(
-          child: Container(
+        child: Container(
             decoration: BoxDecoration(
               border: Border(
                 bottom: BorderSide(
@@ -2565,77 +2600,87 @@ class _RecentSessionTile extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: AnimatedSize(
-                    duration: reduceMotion
-                        ? Duration.zero
-                        : const Duration(milliseconds: 180),
-                    curve: Curves.easeOutCubic,
-                    alignment: Alignment.topLeft,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w500,
-                            fontSize: 15,
-                            color: colors.textPrimary,
+                  child: ExcludeSemantics(
+                    child: AnimatedSize(
+                      duration: reduceMotion
+                          ? Duration.zero
+                          : const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      alignment: Alignment.topLeft,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w500,
+                              fontSize: 15,
+                              color: colors.textPrimary,
+                            ),
                           ),
-                        ),
-                        AnimatedSwitcher(
-                          duration: reduceMotion
-                              ? Duration.zero
-                              : const Duration(milliseconds: 160),
-                          switchInCurve: Curves.easeOut,
-                          switchOutCurve: Curves.easeIn,
-                          child: activityLabel != null
-                              ? Padding(
-                                  key: ValueKey('activity-$activityLabel'),
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: _ActivityLine(
-                                    key: ValueKey(
-                                      'home-activity-${session.id}',
+                          AnimatedSwitcher(
+                            duration: reduceMotion
+                                ? Duration.zero
+                                : const Duration(milliseconds: 160),
+                            switchInCurve: Curves.easeOut,
+                            switchOutCurve: Curves.easeIn,
+                            child: activityLabel != null
+                                ? Padding(
+                                    key: ValueKey('activity-$activityLabel'),
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: _ActivityLine(
+                                      key: ValueKey(
+                                        'home-activity-${session.id}',
+                                      ),
+                                      label: activityLabel!,
                                     ),
-                                    label: activityLabel!,
-                                  ),
-                                )
-                              : Padding(
-                                  key: ValueKey('preview-$visiblePreview'),
-                                  padding: const EdgeInsets.only(top: 3),
-                                  child: Text(
-                                    visiblePreview,
-                                    key: session.hasLocalDraft
-                                        ? ValueKey('home-draft-${session.id}')
-                                        : null,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 12.5,
-                                      height: 1.2,
-                                      color: colors.textSecondary,
+                                  )
+                                : Padding(
+                                    key: ValueKey('preview-$visiblePreview'),
+                                    padding: const EdgeInsets.only(top: 3),
+                                    child: Text(
+                                      visiblePreview,
+                                      key: session.hasLocalDraft
+                                          ? ValueKey('home-draft-${session.id}')
+                                          : null,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12.5,
+                                        height: 1.2,
+                                        color: colors.textSecondary,
+                                      ),
                                     ),
                                   ),
-                                ),
-                        ),
-                      ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
+                if (onStop != null) ...[
+                  const SizedBox(width: 8),
+                  SessionRowStopControl(onStop: onStop!),
+                ],
                 const SizedBox(width: 12),
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
-                    relativeTime,
-                    // WCAG AA: el tiempo es información real → textSecondary (≥4.5:1).
-                    style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                ExcludeSemantics(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      relativeTime,
+                      // WCAG AA: el tiempo es información real → textSecondary (≥4.5:1).
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.textSecondary,
+                      ),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-        ),
       ),
     );
     if (onManage == null) return tile;
@@ -2689,6 +2734,7 @@ class HomeRecentSessionTileForTesting extends StatelessWidget {
     this.activityLabel,
     this.hasLocalDraft = false,
     this.relativeTime = '12:40',
+    this.onStop,
     super.key,
   });
 
@@ -2699,6 +2745,7 @@ class HomeRecentSessionTileForTesting extends StatelessWidget {
   final String? activityLabel;
   final bool hasLocalDraft;
   final String relativeTime;
+  final Future<void> Function()? onStop;
 
   @override
   Widget build(BuildContext context) => _RecentSessionTile(
@@ -2718,6 +2765,7 @@ class HomeRecentSessionTileForTesting extends StatelessWidget {
     activityLabel: activityLabel,
     relativeTime: relativeTime,
     onTap: () {},
+    onStop: onStop,
   );
 }
 

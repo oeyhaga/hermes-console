@@ -93,6 +93,24 @@ ActiveChat _buildChat(_FakeDesktopGateway gateway) => ActiveChat(
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test(
+    'session controls report a missing runtime instead of succeeding',
+    () async {
+      final gateway = _FakeDesktopGateway();
+      final chat = _buildChat(gateway);
+      addTearDown(chat.dispose);
+
+      await expectLater(
+        chat.sendSessionControlAction('loop.stop'),
+        throwsA(isA<TuiGatewayRpcError>()),
+      );
+      await expectLater(
+        chat.stopBackgroundProcess('process-1'),
+        throwsA(isA<TuiGatewayRpcError>()),
+      );
+    },
+  );
+
   test('background.complete records a successful outcome by task_id', () async {
     final gateway = _FakeDesktopGateway();
     final chat = _buildChat(gateway);
