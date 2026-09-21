@@ -40,6 +40,8 @@ class _RewriteGateway
   final Object? durableError;
   final List<Object?> durableOutcomes;
   final List<DesktopSessionSnapshot> resumeSnapshots;
+  final durableEntered = Completer<void>();
+  Completer<void>? durableGate;
 
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> plainPrompts = [];
@@ -164,6 +166,8 @@ class _RewriteGateway
       rowId: truncateBeforeRowId,
       rebind: List<int>.of(rebindSurvivorRowIds),
     ));
+    if (!durableEntered.isCompleted) durableEntered.complete();
+    await durableGate?.future;
     if (durableOutcomes.isNotEmpty) {
       final outcome = durableOutcomes.removeAt(0);
       if (outcome != null) throw outcome;
@@ -297,6 +301,121 @@ void main() {
     expect(contents, contains('pregunta original'));
   });
 
+  test(
+    'rewrite reuses the target row through every optimistic publication',
+    () async {
+      final gateway = _RewriteGateway();
+      gateway.durableGate = Completer<void>();
+      final attached = _attach(gateway);
+      addTearDown(attached.service.dispose);
+      final chat = attached.chat;
+      final olderUser = <String, dynamic>{
+        'role': 'user',
+        'content': 'pregunta anterior',
+        'id': 'turn-a',
+        '_desktopRowId': 11,
+      };
+      final target = <String, dynamic>{
+        'role': 'user',
+        'content': 'pregunta original',
+        'id': 'turn-b',
+        'timestamp': 1712345678,
+        '_desktopRowId': 73,
+        'attachmentRefs': const ['attachment-1'],
+      };
+      chat.internalMessagesForTesting = [
+        {'role': 'assistant', 'content': 'respuesta posterior'},
+        {'role': 'user', 'content': 'pregunta posterior', 'id': 'turn-c'},
+        {'role': 'assistant', 'content': 'respuesta que debe desaparecer'},
+        target,
+        {'role': 'assistant', 'content': 'respuesta anterior'},
+        olderUser,
+      ];
+      chat.state = ChatPipelineState.completed;
+      expect(
+        await chat.ensureDesktopRuntime(acquireForExplicitAction: true),
+        isTrue,
+      );
+      final publications = <List<Map<String, dynamic>>>[];
+      final subscription = chat.changes.listen((_) {
+        publications.add(List<Map<String, dynamic>>.of(
+          chat.internalMessagesForTesting,
+        ));
+      });
+      addTearDown(subscription.cancel);
+
+      final rewrite = chat.rewrite(
+        userOrdinal: 1,
+        text: 'pregunta corregida',
+        model: 'hermes-agent',
+      );
+      await gateway.durableEntered.future;
+      await Future<void>.delayed(Duration.zero);
+
+      final optimisticTargets = chat.internalMessagesForTesting
+          .where((message) => message['id'] == 'turn-b')
+          .toList(growable: false);
+      expect(optimisticTargets, hasLength(1));
+      expect(identical(optimisticTargets.single, target), isTrue);
+      expect(optimisticTargets.single, containsPair('content', 'pregunta corregida'));
+      expect(optimisticTargets.single, containsPair('timestamp', 1712345678));
+      expect(optimisticTargets.single, containsPair('_desktopRowId', 73));
+      expect(
+        optimisticTargets.single['attachmentRefs'],
+        same(target['attachmentRefs']),
+      );
+      expect(
+        chat.internalMessagesForTesting.any(
+          (message) => message['content'] == 'respuesta que debe desaparecer',
+        ),
+        isFalse,
+      );
+      expect(publications, isNotEmpty);
+      void expectUniqueEditedTurnInEveryPublication() {
+        for (final transcript in publications) {
+          expect(
+            transcript.where((message) => message['id'] == 'turn-b'),
+            hasLength(1),
+          );
+          expect(
+            transcript.where(
+              (message) =>
+                  message['content'] == 'pregunta original' ||
+                  message['content'] == 'pregunta corregida',
+            ),
+            hasLength(1),
+          );
+        }
+      }
+
+      expectUniqueEditedTurnInEveryPublication();
+      gateway.durableGate!.complete();
+      await rewrite;
+      gateway.emit('message.complete', const {'text': 'respuesta regenerada'});
+      for (var attempt = 0; attempt < 20 && chat.isStreaming; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      final chronological = chat.internalMessagesForTesting.reversed.toList();
+      final targetIndex = chronological.indexWhere(
+        (message) => message['id'] == 'turn-b',
+      );
+      expect(targetIndex, greaterThanOrEqualTo(0));
+      expect(
+        chronological.skip(targetIndex + 1).any(
+          (message) => message['content'] == 'respuesta regenerada',
+        ),
+        isTrue,
+      );
+      expect(
+        chronological.any(
+          (message) => message['content'] == 'respuesta que debe desaparecer',
+        ),
+        isFalse,
+      );
+      expectUniqueEditedTurnInEveryPublication();
+    },
+  );
+
   test('editar un turno fallido reenvía plano', () async {
     final gateway = _RewriteGateway(resolvedRowId: 73);
     final attached = _attach(gateway);
@@ -332,9 +451,14 @@ void main() {
     final attached = _attach(gateway);
     addTearDown(attached.service.dispose);
     final chat = attached.chat;
+    final latestTarget = <String, dynamic>{
+      'role': 'user',
+      'content': 'pregunta C',
+      '_desktopRowId': 33,
+    };
     chat.internalMessagesForTesting = [
       {'role': 'assistant', 'content': 'respuesta C'},
-      {'role': 'user', 'content': 'pregunta C', '_desktopRowId': 33},
+      latestTarget,
       {'role': 'assistant', 'content': 'respuesta B'},
       {'role': 'user', 'content': 'pregunta B', '_desktopRowId': 22},
       {'role': 'assistant', 'content': 'respuesta A'},
@@ -355,6 +479,10 @@ void main() {
     expect(gateway.durableRewinds, hasLength(1));
     expect(gateway.durableRewinds.single.rowId, 33);
     final messages = chat.internalMessagesForTesting;
+    expect(
+      identical(_userRow(messages, 'pregunta C corregida'), latestTarget),
+      isTrue,
+    );
     // El ACK sólo describe un superviviente, pero eso no invalida a los que sí
     // cubre: únicamente los ordinales fuera del rango pierden su identidad.
     expect(_userRow(messages, 'pregunta A')['_desktopRowId'], 111);
@@ -544,6 +672,25 @@ void main() {
         isFalse,
       );
       expect(chat.state, ChatPipelineState.cancelled);
+      expect(
+        chat.internalMessagesForTesting.where(
+          (message) => message['content'] == 'pregunta original',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.internalMessagesForTesting.any(
+          (message) => message['content'] == 'pregunta corregida',
+        ),
+        isFalse,
+      );
+      expect(
+        _userRow(
+          chat.internalMessagesForTesting,
+          'pregunta original',
+        )['_desktopRowId'],
+        73,
+      );
     },
   );
 

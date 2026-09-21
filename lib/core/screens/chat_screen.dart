@@ -1099,6 +1099,20 @@ class _ChatScreenState extends State<ChatScreen>
   /// diálogo: Cancelar revela el progreso real y Guardar rebobina el turno.
   List<Map<String, dynamic>> get _messages =>
       _editingMessagesSnapshot ?? _chat.messages;
+  bool get _editingTranscriptChanged {
+    final before = _editingMessagesSnapshot;
+    if (before == null) return false;
+    final current = _chat.messages;
+    if (before.length != current.length) return true;
+    for (var index = 0; index < before.length; index++) {
+      if (before[index]['role'] != current[index]['role'] ||
+          before[index]['content'] != current[index]['content']) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   ChatPipelineState get _pipelineState =>
       _editingPipelineSnapshot ?? _chat.state;
   set _pipelineState(ChatPipelineState v) => _chat.state = v;
@@ -4754,11 +4768,7 @@ class _ChatScreenState extends State<ChatScreen>
       terminal: passiveTerminalEvent,
     );
     if (_editingRewriteSubmitted &&
-        ((event == ActiveChatEvent.started &&
-                (_editingPipelineSnapshot == ChatPipelineState.connecting ||
-                    _editingPipelineSnapshot == ChatPipelineState.waiting ||
-                    _editingPipelineSnapshot == ChatPipelineState.executing ||
-                    _editingPipelineSnapshot == ChatPipelineState.streaming)) ||
+        ((event == ActiveChatEvent.started && _editingTranscriptChanged) ||
             event == ActiveChatEvent.done ||
             event == ActiveChatEvent.error ||
             event == ActiveChatEvent.cancelled ||
@@ -6992,6 +7002,59 @@ class _ChatScreenState extends State<ChatScreen>
     return _currentRenderProjection.userOrdinalFor(target);
   }
 
+  bool _attachmentsCanBeReused(List<_ParsedAttachment> attachments) =>
+      attachments.every((attachment) => attachment.historyReference != null);
+
+  Future<List<AttachmentDraft>?> _resolveAttachmentsForEdit(
+    List<_ParsedAttachment> attachments,
+  ) async {
+    final drafts = <AttachmentDraft>[];
+    for (final attachment in attachments) {
+      final reference = attachment.historyReference;
+      if (reference == null) return null;
+      final file = await AttachmentUploader.resolveHistoryReference(reference);
+      if (file == null) return null;
+      drafts.add(
+        AttachmentDraft(
+          localId: 'edit-${reference.index}-${reference.storageKey}',
+          type: reference.type,
+          name: attachment.name,
+          mimeType: reference.mimeType,
+          sizeBytes: reference.sizeBytes,
+          localPath: file.path,
+        ),
+      );
+    }
+    return drafts;
+  }
+
+  String _editedAttachmentContent({
+    required String raw,
+    required List<_ParsedAttachment> attachments,
+    required String editedText,
+    required bool includePayload,
+  }) {
+    final result = <String>[
+      for (final attachment in attachments)
+        '[📎 ${attachment.name}${attachment.sizeLabel.isEmpty ? '' : ' · ${attachment.sizeLabel}'}]',
+      editedText,
+    ];
+    final lines = stripBotMentionNote(raw).split('\n');
+    final sentinel = lines.indexWhere((line) => line.trim() == '⟦adjunto⟧');
+    if (includePayload && sentinel >= 0) {
+      result.add('⟦adjunto⟧');
+      result.addAll(
+        lines.skip(sentinel + 1).where(
+          (line) => AttachmentHistoryReference.tryParseMarker(line) == null,
+        ),
+      );
+    }
+    result.addAll(
+      attachments.map((attachment) => attachment.historyReference!.toMarker()),
+    );
+    return result.join('\n').trimRight();
+  }
+
   bool _canEditUserMessage(Map<String, dynamic> message) {
     final parsed = _parseUserContent((message['content'] ?? '').toString());
     final ordinal = _userOrdinalFor(message);
@@ -7000,7 +7063,7 @@ class _ChatScreenState extends State<ChatScreen>
         _compressingSession ||
         ordinal == null ||
         parsed.text.trim().isEmpty ||
-        parsed.attachments.isNotEmpty) {
+        !_attachmentsCanBeReused(parsed.attachments)) {
       return false;
     }
     return true;
@@ -7014,8 +7077,12 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _editUserMessage(Map<String, dynamic> message) async {
     final ordinal = _userOrdinalFor(message);
     if (ordinal == null) return;
-    final parsed = _parseUserContent((message['content'] ?? '').toString());
-    if (parsed.text.trim().isEmpty || parsed.attachments.isNotEmpty) return;
+    final rawContent = (message['content'] ?? '').toString();
+    final parsed = _parseUserContent(rawContent);
+    if (parsed.text.trim().isEmpty ||
+        !_attachmentsCanBeReused(parsed.attachments)) {
+      return;
+    }
     setState(() {
       _editingUserMessage = true;
       _editingRewriteSubmitted = false;
@@ -7049,6 +7116,40 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
 
+    final nativeAttachments = parsed.attachments.isEmpty
+        ? const <AttachmentDraft>[]
+        : await _resolveAttachmentsForEdit(parsed.attachments);
+    if (!mounted) return;
+    if (nativeAttachments == null) {
+      setState(() {
+        _editingUserMessage = false;
+        _editingRewriteSubmitted = false;
+        _editingMessagesSnapshot = null;
+        _editingPipelineSnapshot = null;
+      });
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).chaEditFailed)),
+        kind: HermesNoticeKind.error,
+      );
+      return;
+    }
+    final rewriteText = parsed.attachments.isEmpty
+        ? edited
+        : _editedAttachmentContent(
+            raw: rawContent,
+            attachments: parsed.attachments,
+            editedText: edited,
+            includePayload: true,
+          );
+    final desktopRewriteText = parsed.attachments.isEmpty
+        ? null
+        : _editedAttachmentContent(
+            raw: rawContent,
+            attachments: parsed.attachments,
+            editedText: edited,
+            includePayload: false,
+          );
+
     var failed = false;
     var authRequired = false;
     Object? failure;
@@ -7056,9 +7157,12 @@ class _ChatScreenState extends State<ChatScreen>
     try {
       await _chat.rewrite(
         userOrdinal: ordinal,
-        text: edited,
+        text: rewriteText,
         model: _selectedModel,
         profile: _effectiveSessionProfile,
+        desktopText: desktopRewriteText,
+        mentionText: edited,
+        nativeAttachments: nativeAttachments,
       );
       // Un rechazo previo al arranque no lanza: `rewrite` rebobina y lo deja
       // marcado. Sin consultarlo, la edición fracasaba en silencio — el turno

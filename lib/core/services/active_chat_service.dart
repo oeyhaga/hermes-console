@@ -11405,6 +11405,7 @@ class ActiveChat {
     bool? allowTransportFallbackOverride,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
     _RewriteReservation? rewriteReservation,
+    Map<String, dynamic>? reusedOptimisticUserRow,
     required LocalConversationLifecycle? capturedLifecycle,
     LocalConversationOperation? transcriptOperation,
   }) async {
@@ -11563,14 +11564,17 @@ class ActiveChat {
     // Un terminal sin texto o una reconciliación tardía no puede arrastrar el
     // placeholder del turno anterior al nuevo timeline.
     _settlePipelinePlaceholders();
-    // Optimista: el mensaje del usuario aparece de inmediato.
-    _messages.insert(0, {
-      'role': 'user',
-      'content': fullText,
-      '_optimistic': true,
-      if (transcriptOperation != null)
-        '_localOperationId': transcriptOperation.operationId,
-    });
+    // Un rewind ya dejó la misma fila user en su slot. Los envíos normales sí
+    // crean una fila optimista nueva.
+    if (reusedOptimisticUserRow == null) {
+      _messages.insert(0, {
+        'role': 'user',
+        'content': fullText,
+        '_optimistic': true,
+        if (transcriptOperation != null)
+          '_localOperationId': transcriptOperation.operationId,
+      });
+    }
     // Burbuja placeholder del asistente con el estado del pipeline.
     _messages.insert(0, {
       'role': 'assistant',
@@ -11867,6 +11871,34 @@ class ActiveChat {
     );
   }
 
+  ({
+    List<Map<String, dynamic>> messages,
+    Map<String, dynamic> target,
+  })
+  _reuseMessageForOptimisticRewrite({
+    required List<Map<String, dynamic>> chronological,
+    required int targetIndex,
+    required Map<String, dynamic> target,
+    required String content,
+  }) {
+    var reused = target;
+    try {
+      reused['content'] = content;
+    } on UnsupportedError {
+      reused = Map<String, dynamic>.from(target)..['content'] = content;
+      chronological[targetIndex] = reused;
+    }
+    return (
+      messages: chronological
+          .take(targetIndex + 1)
+          .where((message) => message['_pipeline'] != true)
+          .toList(growable: true)
+          .reversed
+          .toList(growable: true),
+      target: reused,
+    );
+  }
+
   /// Rebobina hasta un prompt visible y lo vuelve a ejecutar. El ordinal usa el
   /// mismo índice de usuarios (0-based, de antiguo a nuevo) que Hermes Desktop.
   /// La conversación visible se recorta de forma optimista; si el transporte
@@ -11876,14 +11908,20 @@ class ActiveChat {
     required String text,
     required String model,
     String profile = '',
+    String? desktopText,
+    String? mentionText,
+    List<AttachmentDraft> nativeAttachments = const [],
   }) async {
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.rewind');
     }
-    final mentionPayload = appendBotMentionNote(
-      text,
-      buildBotMentionAnnotation(mentionResolver.resolve(text)),
+    final mentionAnnotation = buildBotMentionAnnotation(
+      mentionResolver.resolve(mentionText ?? text),
     );
+    final mentionPayload = appendBotMentionNote(text, mentionAnnotation);
+    final desktopMentionPayload = desktopText == null
+        ? null
+        : appendBotMentionNote(desktopText, mentionAnnotation);
     final capturedLifecycle = _localConversationLifecycle;
     if (_activeRewrite != null) {
       throw StateError('Another conversation rewrite is already active');
@@ -11914,7 +11952,7 @@ class ActiveChat {
       if (targetIndex < 0) {
         throw StateError('The message is no longer in this conversation');
       }
-      final target = chronological[targetIndex];
+      var target = chronological[targetIndex];
       final sourceText = (target['content'] ?? '').toString();
       final sourceWasNewestUser =
           userOrdinal == chronological.where(isRealUserTurn).length - 1;
@@ -12031,22 +12069,20 @@ class ActiveChat {
           .where((message) => message['_pipeline'] != true)
           .map((message) => Map<String, dynamic>.from(message))
           .toList(growable: false);
+      final optimisticRewrite = _reuseMessageForOptimisticRewrite(
+        chronological: chronological,
+        targetIndex: targetIndex,
+        target: target,
+        content: mentionPayload,
+      );
+      _messages = optimisticRewrite.messages;
+      target = optimisticRewrite.target;
       if (truncatesDurably) {
-        final prefix = chronological
-            .take(targetIndex)
-            .where((m) {
-              final role = m['role'];
-              return (role == 'user' || role == 'assistant') &&
-                  m['_pipeline'] != true;
-            })
-            .map((m) => Map<String, dynamic>.from(m))
-            .toList();
-        _messages = prefix.reversed.toList();
         _rewindRollbackMessages = rollbackMessages;
         _rewindRollbackState = rollbackState;
         _rewind4018FallbackOrdinal = fallbackOrdinal;
-        _rewindRestoredOnError = false;
       }
+      _rewindRestoredOnError = false;
       // Editar es un gesto explícito del usuario: como enviar, se admite
       // siempre y levanta el park que dejó un Stop anterior. `_send` no pasa
       // por el gate de `send()`, así que hay que replicarlo aquí o la cola
@@ -12056,16 +12092,19 @@ class ActiveChat {
           _turnEpoch != reservation.turnEpoch) {
         return;
       }
-      final history = _buildHistoryFromMessages();
+      final history = _buildHistoryFromMessages(excluding: target);
       try {
         final accepted = await _send(
           fullText: mentionPayload,
           model: model,
           history: history,
           profile: profile,
+          nativeAttachments: nativeAttachments,
+          desktopText: desktopMentionPayload,
           truncateBeforeUserOrdinal: truncatesDurably ? userOrdinal : null,
           truncateBeforeRowId: truncateBeforeRowId,
           rewriteReservation: reservation,
+          reusedOptimisticUserRow: target,
           capturedLifecycle: capturedLifecycle,
         );
         if (!accepted &&
@@ -12111,17 +12150,15 @@ class ActiveChat {
               running: retryPlan.snapshot.running,
             );
             _usingDesktopGateway = true;
-            _messages = refreshedChronological
-                .take(retryPlan.targetIndex)
-                .where((message) {
-                  final role = message['role'];
-                  return (role == 'user' || role == 'assistant') &&
-                      message['_pipeline'] != true;
-                })
-                .map((message) => Map<String, dynamic>.from(message))
-                .toList()
-                .reversed
-                .toList();
+            var retryTarget = refreshedChronological[retryPlan.targetIndex];
+            final retryOptimistic = _reuseMessageForOptimisticRewrite(
+              chronological: refreshedChronological,
+              targetIndex: retryPlan.targetIndex,
+              target: retryTarget,
+              content: mentionPayload,
+            );
+            _messages = retryOptimistic.messages;
+            retryTarget = retryOptimistic.target;
             _transcriptRevision += 1;
             rollbackMessages = refreshedRollback;
             rollbackState = state;
@@ -12139,24 +12176,25 @@ class ActiveChat {
             final retryAccepted = await _send(
               fullText: mentionPayload,
               model: model,
-              history: _buildHistoryFromMessages(),
+              history: _buildHistoryFromMessages(excluding: retryTarget),
               profile: profile,
+              nativeAttachments: nativeAttachments,
+              desktopText: desktopMentionPayload,
               truncateBeforeUserOrdinal: retryPlan.userOrdinal,
               truncateBeforeRowId: retryPlan.rowId,
               rewriteReservation: reservation,
+              reusedOptimisticUserRow: retryTarget,
               capturedLifecycle: capturedLifecycle,
             );
             if (retryAccepted) return;
           }
         }
         if (!accepted) {
-          if (truncatesDurably) {
-            _messages = rollbackMessages;
-            state = rollbackState;
-            _rewindRollbackMessages = null;
-            _rewindRollbackState = null;
-            _rewind4018FallbackOrdinal = null;
-          }
+          _messages = rollbackMessages;
+          state = rollbackState;
+          _rewindRollbackMessages = null;
+          _rewindRollbackState = null;
+          _rewind4018FallbackOrdinal = null;
           // La reserva seguía siendo nuestra, así que esto no es una carrera
           // con otra edición: el transporte rechazó este turno. El reenvío
           // plano no recorta nada, pero también fracasó — y sin esta marca la
@@ -12172,15 +12210,11 @@ class ActiveChat {
           return;
         }
       } catch (_) {
-        // Sólo el camino que recortó de forma optimista tiene algo que
-        // restaurar; un reenvío plano no tocó el transcript visible.
-        if (truncatesDurably) {
-          _messages = rollbackMessages;
-          state = rollbackState;
-          _rewindRollbackMessages = null;
-          _rewindRollbackState = null;
-          _rewind4018FallbackOrdinal = null;
-        }
+        _messages = rollbackMessages;
+        state = rollbackState;
+        _rewindRollbackMessages = null;
+        _rewindRollbackState = null;
+        _rewind4018FallbackOrdinal = null;
         rethrow;
       }
     } finally {
@@ -19872,10 +19906,13 @@ class ActiveChat {
   /// Reconstruye el historial OpenAI `[{role, content}]` en orden cronológico a
   /// partir de [_messages] (index 0 = más nuevo), descartando placeholders del
   /// pipeline y errores: solo turnos conversacionales reales de user/assistant.
-  List<Map<String, dynamic>> _buildHistoryFromMessages() {
+  List<Map<String, dynamic>> _buildHistoryFromMessages({
+    Map<String, dynamic>? excluding,
+  }) {
     final history = <Map<String, dynamic>>[];
     for (var i = _messages.length - 1; i >= 0; i--) {
       final m = _messages[i];
+      if (identical(m, excluding)) continue;
       final role = (m['role'] ?? '').toString();
       if (role != 'user' && role != 'assistant') continue;
       if (m['_pipeline'] == true) continue;
