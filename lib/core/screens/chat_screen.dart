@@ -61,6 +61,7 @@ import '../models/desktop_session_snapshot.dart';
 import '../models/generated_artifact.dart';
 import '../models/interactive_prompt.dart';
 import '../models/prepared_turn.dart';
+import '../models/session_activity.dart';
 import '../models/session_artifact.dart';
 import '../models/subagent_activity.dart';
 import '../navigation/chat_route.dart';
@@ -3894,6 +3895,7 @@ class _ChatScreenState extends State<ChatScreen>
     _subagentPollingRuntimeId = runtimeId;
     unawaited(_chat.refreshSubagents());
     unawaited(_chat.refreshBackgroundProcesses());
+    unawaited(_chat.refreshSessionControl());
     _subagentPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (_disposed || !mounted) return;
       if (_chat.desktopRuntimeSessionId != _subagentPollingRuntimeId) {
@@ -3901,8 +3903,9 @@ class _ChatScreenState extends State<ChatScreen>
         return;
       }
       unawaited(_chat.refreshSubagents());
-      if (_chat.hasActiveBackgroundProcesses) {
+      if (_chat.sessionActivity.backgroundItemCount > 0) {
         unawaited(_chat.refreshBackgroundProcesses());
+        unawaited(_chat.refreshSessionControl());
       }
     });
   }
@@ -4124,12 +4127,344 @@ class _ChatScreenState extends State<ChatScreen>
     final strings = Strings.of(context);
     final activity = _chat.sessionActivity;
     final command = activity.processCommand;
-    final status = command == null
-        ? strings.chaBackgroundProcessRunning
-        : strings.chaBackgroundProcessCommand(command);
-    return activity.willNotifyLater
-        ? '$status · ${strings.chaBackgroundProcessWillNotify}'
-        : status;
+    final String status;
+    if (activity.backgroundItemCount == 1 && activity.processes.length == 1) {
+      status = command == null
+          ? strings.chaBackgroundProcessRunning
+          : strings.chaBackgroundProcessCommand(command);
+    } else {
+      status = strings.chaBackgroundActivityCount(activity.backgroundItemCount);
+    }
+    final notify = activity.willNotifyLater
+        ? ' · ${strings.chaBackgroundProcessWillNotify}'
+        : '';
+    final stale = activity.stale
+        ? ' · ${strings.chaBackgroundActivityStale}'
+        : '';
+    return '$status$notify$stale';
+  }
+
+  String _backgroundTime(DateTime value) => MaterialLocalizations.of(
+    context,
+  ).formatTimeOfDay(TimeOfDay.fromDateTime(value.toLocal()));
+
+  String _backgroundDuration(Duration value) {
+    if (value.inHours > 0 && value.inMinutes % 60 == 0) {
+      return '${value.inHours} h';
+    }
+    if (value.inMinutes > 0) return '${value.inMinutes} min';
+    return '${value.inSeconds} s';
+  }
+
+  String _backgroundStatusLabel(String value) => switch (value) {
+    'active' => Strings.of(context).chaBackgroundStatusActive,
+    'paused' => Strings.of(context).chaBackgroundStatusPaused,
+    'waiting' => Strings.of(context).chaBackgroundStatusWaiting,
+    'done' => Strings.of(context).chaBackgroundStatusDone,
+    _ => value,
+  };
+
+  Future<void> _runBackgroundAction(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(Strings.of(context).chaBackgroundActionFailed),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showBackgroundActivitySheet() async {
+    final activity = _chat.sessionActivity;
+    if (activity.backgroundItemCount == 0) return;
+    final colors = Theme.of(context).hermes;
+    final s = Strings.of(context);
+    await showHermesFloatingSurface<void>(
+      context: context,
+      surfaceKey: const ValueKey('chat-background-activity-sheet'),
+      maxWidth: 560,
+      builder: (sheetContext) {
+        Widget detailRow(String value, {Key? key, Color? color}) => Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            value,
+            key: key,
+            style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
+              color: color ?? colors.textSecondary,
+            ),
+          ),
+        );
+
+        Widget section({
+          required Widget title,
+          required List<Widget> children,
+          List<Widget> actions = const [],
+        }) => Container(
+          margin: const EdgeInsets.only(top: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: colors.surfaceVariant,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: colors.divider),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              title,
+              ...children,
+              if (actions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, runSpacing: 4, children: actions),
+              ],
+            ],
+          ),
+        );
+
+        Widget actionButton(
+          String label,
+          Future<void> Function() action, {
+          Key? key,
+        }) => TextButton(
+          key: key,
+          onPressed: () async {
+            await _runBackgroundAction(action);
+            if (sheetContext.mounted) Navigator.of(sheetContext).pop();
+          },
+          child: Text(label),
+        );
+
+        final rows = <Widget>[];
+        if (activity.stale) {
+          rows.add(
+            detailRow(
+              s.chaBackgroundActivityStale,
+              color: colors.warning,
+            ),
+          );
+        }
+        if (activity.goal case final goal?) {
+          final goalActions = <Widget>[
+            TextButton(
+              onPressed: () {
+                Navigator.of(sheetContext).pop();
+                final snapshot = _chat.goal;
+                if (snapshot != null) unawaited(_showGoalSheet(snapshot));
+              },
+              child: Text(s.chaBackgroundGoalDetails),
+            ),
+          ];
+          if (_chat.canControlGoal) {
+            if (goal.status == 'active') {
+              goalActions.add(
+                actionButton(
+                  s.chaGoalActionPause,
+                  () => _chat.sendGoalAction('goal.pause'),
+                ),
+              );
+            } else if (goal.status == 'paused') {
+              goalActions.add(
+                actionButton(
+                  s.chaGoalActionResume,
+                  () => _chat.sendGoalAction('goal.resume'),
+                ),
+              );
+            } else if (goal.status == 'waiting') {
+              goalActions.add(
+                actionButton(
+                  s.chaGoalActionResumeNow,
+                  () => _chat.sendGoalAction('goal.unwait'),
+                ),
+              );
+            }
+            goalActions.add(
+              actionButton(
+                s.chaGoalActionClear,
+                () => _chat.sendGoalAction('goal.clear'),
+              ),
+            );
+          }
+          rows.add(
+            section(
+              title: Text(
+                goal.title.isEmpty ? s.chaGoalSheetTitle : goal.title,
+                style: Theme.of(sheetContext).textTheme.titleSmall,
+              ),
+              children: [
+                detailRow(
+                  s.chaBackgroundStatus(_backgroundStatusLabel(goal.status)),
+                ),
+              ],
+              actions: goalActions,
+            ),
+          );
+        }
+        for (final schedule in activity.schedules) {
+          final isLoop = schedule.kind == SessionActivityScheduleKind.loop;
+          final actions = <Widget>[];
+          if (_chat.canControlSessionActivity) {
+            if (schedule.status == 'paused') {
+              actions.add(
+                actionButton(
+                  s.chaBackgroundActionResume,
+                  () => _chat.sendSessionControlAction(
+                    isLoop ? 'loop.resume' : 'heartbeat.resume',
+                  ),
+                  key: ValueKey(
+                    isLoop
+                        ? 'background-loop-resume'
+                        : 'background-heartbeat-resume',
+                  ),
+                ),
+              );
+            } else if (schedule.status == 'active') {
+              actions.add(
+                actionButton(
+                  s.chaBackgroundActionPause,
+                  () => _chat.sendSessionControlAction(
+                    isLoop ? 'loop.pause' : 'heartbeat.pause',
+                  ),
+                  key: ValueKey(
+                    isLoop
+                        ? 'background-loop-pause'
+                        : 'background-heartbeat-pause',
+                  ),
+                ),
+              );
+            }
+            actions.add(
+              actionButton(
+                isLoop
+                    ? s.chaBackgroundActionStop
+                    : s.chaBackgroundActionClear,
+                () => _chat.sendSessionControlAction(
+                  isLoop ? 'loop.stop' : 'heartbeat.clear',
+                ),
+                key: ValueKey(
+                  isLoop
+                      ? 'background-loop-stop'
+                      : 'background-heartbeat-clear',
+                ),
+              ),
+            );
+          }
+          rows.add(
+            section(
+              title: Text(
+                isLoop
+                    ? s.chaBackgroundLoop
+                    : s.chaBackgroundHeartbeat,
+                style: Theme.of(sheetContext).textTheme.titleSmall,
+              ),
+              children: [
+                detailRow(
+                  s.chaBackgroundStatus(
+                    _backgroundStatusLabel(schedule.status),
+                  ),
+                ),
+                detailRow(
+                  s.chaBackgroundInterval(
+                    _backgroundDuration(schedule.interval),
+                  ),
+                ),
+                if (schedule.nextDueAt case final nextDue?)
+                  detailRow(
+                    s.chaBackgroundNextDue(_backgroundTime(nextDue)),
+                  ),
+                if (schedule.lastRunAt case final lastRun?)
+                  detailRow(
+                    s.chaBackgroundLastRun(_backgroundTime(lastRun)),
+                  ),
+                detailRow(s.chaBackgroundRunCount(schedule.runCount)),
+                if (schedule.awaitingResponse)
+                  detailRow(s.chaBackgroundAwaitingResponse),
+                if (schedule.deferredByGoal)
+                  detailRow(s.chaBackgroundDeferredByGoal),
+              ],
+              actions: actions,
+            ),
+          );
+        }
+        for (final process in activity.processes) {
+          final watches = process.watchPatterns;
+          rows.add(
+            section(
+              title: Text(
+                process.command.isEmpty
+                    ? s.chaBackgroundProcessRunning
+                    : process.command,
+                style: Theme.of(sheetContext).textTheme.titleSmall,
+              ),
+              children: [
+                if (watches.isNotEmpty) ...[
+                  detailRow(s.chaBackgroundWatchPatterns),
+                  for (final pattern in watches)
+                    detailRow(pattern, key: ValueKey('process-watch-$pattern')),
+                ],
+                if (process.watchHit)
+                  detailRow(
+                    s.chaBackgroundWatchHit,
+                    color: colors.success,
+                  ),
+                if (process.notifyOnComplete)
+                  detailRow(s.chaBackgroundProcessWillNotify),
+              ],
+              actions: _chat.canStopBackgroundProcesses
+                  ? [
+                      actionButton(
+                        s.chaBackgroundActionStop,
+                        () => _chat.stopBackgroundProcess(process.id),
+                        key: ValueKey('background-process-stop-${process.id}'),
+                      ),
+                    ]
+                  : const [],
+            ),
+          );
+        }
+        final tasks = activity.pendingTasks;
+        if (tasks.isNotEmpty) {
+          final counted = activity.tasks
+              .where(
+                (task) => task.status != SessionActivityTaskStatus.cancelled,
+              )
+              .toList(growable: false);
+          final done = counted
+              .where(
+                (task) => task.status == SessionActivityTaskStatus.completed,
+              )
+              .length;
+          rows.add(
+            section(
+              title: Text(
+                s.chaBackgroundTasks(done, counted.length),
+                style: Theme.of(sheetContext).textTheme.titleSmall,
+              ),
+              children: [
+                for (final task in tasks)
+                  detailRow(
+                    task.content,
+                    key: ValueKey('background-task-${task.id}'),
+                  ),
+              ],
+            ),
+          );
+        }
+
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+          children: [
+            Text(
+              s.chaBackgroundActivityTitle,
+              style: Theme.of(sheetContext).textTheme.titleMedium,
+            ),
+            ...rows,
+          ],
+        );
+      },
+    );
   }
 
   /// Mismo principio que `_showTurnActivityPill` de arriba, aplicado a la
@@ -8849,7 +9184,9 @@ class _ChatScreenState extends State<ChatScreen>
                                                   : const Duration(seconds: 20),
                                             ),
                                             if (_chat
-                                                .hasActiveBackgroundProcesses)
+                                                    .sessionActivity
+                                                    .backgroundItemCount >
+                                                0)
                                               TurnActivityPill(
                                                 key: const ValueKey(
                                                   'chat-background-process-status',
@@ -8864,6 +9201,12 @@ class _ChatScreenState extends State<ChatScreen>
                                                 reassureAfter: const Duration(
                                                   days: 1,
                                                 ),
+                                                showElapsed: _chat
+                                                        .sessionActivity
+                                                        .startedAt !=
+                                                    null,
+                                                onTap:
+                                                    _showBackgroundActivitySheet,
                                               ),
                                             KeyedSubtree(
                                               key: const ValueKey(
@@ -9048,7 +9391,6 @@ class _ChatScreenState extends State<ChatScreen>
                                 // live/completed count changes never resize this
                                 // Column or shift the composer.
                                 _buildStopStatusStrip(colors),
-                                _buildGoalStrip(colors),
                                 _buildBackgroundTaskStrip(colors),
                                 _buildQueueStrip(colors),
                                 if ((_vc?.active ?? false) && !showVoiceSurface)
@@ -10916,94 +11258,6 @@ class _ChatScreenState extends State<ChatScreen>
                   child: Text(strings.chaStopRetry),
                 ),
             ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Live standing-goal status, one line above the composer — same slot
-  /// family as [_buildStopStatusStrip]. Tap opens the detail sheet with the
-  /// contract, criteria, gates and the pause/resume/clear actions. This is
-  /// deliberately not a card: goals are ambient state, not an interruption.
-  Widget _buildGoalStrip(HermesThemeColors colors) {
-    final goal = _chat.goal;
-    if (goal == null) return const SizedBox.shrink();
-    final s = Strings.of(context);
-    final blocked = goal.isBlocked;
-    final label = blocked
-        ? s.chaGoalBlocked
-        : switch (goal.status) {
-            'paused' => s.chaGoalPaused,
-            'waiting' => s.chaGoalWaiting,
-            'done' => s.chaGoalDoneTurns(goal.turnsUsed),
-            _ => s.chaGoalTurnLabel(goal.turnsUsed, goal.maxTurns),
-          };
-    final icon = blocked
-        ? Icons.flag_circle_outlined
-        : switch (goal.status) {
-            'paused' => Icons.pause_circle_outlined,
-            'waiting' => Icons.hourglass_empty_rounded,
-            'done' => Icons.flag_outlined,
-            _ => Icons.flag_circle_outlined,
-          };
-    final color = blocked
-        ? colors.error
-        : switch (goal.status) {
-            'paused' || 'waiting' => colors.warning,
-            'done' => colors.textSecondary,
-            _ => colors.accent,
-          };
-    final reason = goal.displayReason;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
-      child: Semantics(
-        liveRegion: true,
-        label: [
-          label,
-          goal.title,
-          reason,
-        ].where((part) => part.isNotEmpty).join('. '),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => unawaited(_showGoalSheet(goal)),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 44),
-            child: Row(
-              children: [
-                Icon(icon, size: 18, color: color),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        label,
-                        key: const ValueKey('chat-goal-primary-label'),
-                        maxLines: 1,
-                        style: Theme.of(
-                          context,
-                        ).textTheme.bodySmall?.copyWith(color: color),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (reason.isNotEmpty)
-                        Text(
-                          reason,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(color: colors.textSecondary),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  size: 18,
-                  color: colors.textDisabled,
-                ),
-              ],
-            ),
           ),
         ),
       ),

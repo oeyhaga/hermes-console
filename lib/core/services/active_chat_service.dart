@@ -4468,18 +4468,87 @@ class ActiveChat {
   bool get activityWatchdogArmed => _activityWatchdogTimer != null;
   bool get noActivityHint => _noActivityHint;
 
-  /// Live standing-goal state for this session (`session.control`), null when
-  /// there is no active goal. Hydrated once via [_hydrateGoal] and kept fresh
-  /// by `session.control.update` while the socket stays connected.
+  // Live control state refreshed by reads and `session.control.update` pushes.
   SessionGoalSnapshot? _goal;
+  SessionLoopSnapshot? _loop;
+  SessionHeartbeatSnapshot? _heartbeat;
+  List<SessionActivityTask> _sessionTasks = const [];
+  int _sessionTaskRevision = -1;
+  bool _sessionControlStale = false;
+  int _sessionControlAbsenceStreak = 0;
+  Future<void>? _sessionControlRefreshFlight;
+  bool _sessionControlRefreshQueued = false;
   SessionGoalSnapshot? get goal => _goal;
   String? _lastNotifiedGoalStatus;
 
-  void _applyGoalUpdate(Object? control) {
-    if (control is! Map) return;
-    _goal = SessionGoalSnapshot.tryParse(control['goal']);
+  bool get _hasSessionControl =>
+      _goal != null || _loop != null || _heartbeat != null;
+
+  void _applySessionControl(
+    SessionControlSnapshot snapshot, {
+    required bool authoritativePush,
+  }) {
+    final absent =
+        snapshot.goal == null &&
+        snapshot.loop == null &&
+        snapshot.heartbeat == null;
+    if (!authoritativePush && absent && _hasSessionControl) {
+      _sessionControlAbsenceStreak += 1;
+      if (_sessionControlAbsenceStreak < 2) return;
+    } else {
+      _sessionControlAbsenceStreak = 0;
+    }
+    _goal = snapshot.goal;
+    _loop = snapshot.loop;
+    _heartbeat = snapshot.heartbeat;
+    _sessionControlStale = false;
     _syncGoalWatch();
     _emit(ActiveChatEvent.goalUpdated);
+  }
+
+  void _applySessionControlUpdate(Object? control) {
+    if (control is! Map) return;
+    _applySessionControl(
+      SessionControlSnapshot.fromJson(control),
+      authoritativePush: true,
+    );
+  }
+
+  void _applyTodoUpdate(Map<String, dynamic> payload) {
+    final revision = payload['revision'];
+    final parsedRevision = revision is num
+        ? revision.toInt()
+        : int.tryParse(revision?.toString() ?? '');
+    if (parsedRevision == null || parsedRevision <= _sessionTaskRevision) return;
+    final rawTodos = payload['todos'];
+    if (rawTodos is! List) return;
+    final next = <SessionActivityTask>[];
+    for (final raw in rawTodos.take(200)) {
+      if (raw is! Map) continue;
+      final id = (raw['id'] ?? '').toString().trim();
+      final content = (raw['content'] ?? '')
+          .toString()
+          .replaceAll(RegExp(r'[\x00-\x1f\x7f]+'), ' ')
+          .trim();
+      final status = switch ((raw['status'] ?? '').toString()) {
+        'pending' => SessionActivityTaskStatus.pending,
+        'in_progress' => SessionActivityTaskStatus.inProgress,
+        'completed' => SessionActivityTaskStatus.completed,
+        'cancelled' => SessionActivityTaskStatus.cancelled,
+        _ => null,
+      };
+      if (id.isEmpty || content.isEmpty || status == null) continue;
+      next.add(
+        SessionActivityTask(
+          id: id.length <= 512 ? id : id.substring(0, 512),
+          content: content.length <= 200 ? content : content.substring(0, 200),
+          status: status,
+        ),
+      );
+    }
+    _sessionTasks = List.unmodifiable(next);
+    _sessionTaskRevision = parsedRevision;
+    _emit(ActiveChatEvent.subagentActivity);
   }
 
   /// Registers/unregisters this session with [BackgroundGoalWatch] so the
@@ -4522,21 +4591,52 @@ class ActiveChat {
     }());
   }
 
-  /// One-shot hydration for a freshly opened/resumed chat — the live push
-  /// (`session.control.update`) only carries deltas from here on.
-  Future<void> _hydrateGoal(String runtimeSessionId) async {
+  Future<void> _hydrateSessionControl(String runtimeSessionId) async {
     if (!_usingDesktopGateway) return;
     try {
-      final snapshot = await desktopControlGateway?.readSessionGoal(
-        runtimeSessionId,
-      );
+      final gateway = _desktopGateway;
+      final snapshot = gateway is HermesDesktopSessionControlGateway
+          ? await (gateway as HermesDesktopSessionControlGateway)
+                .readSessionControl(runtimeSessionId)
+          : SessionControlSnapshot(
+              goal: await desktopControlGateway?.readSessionGoal(
+                runtimeSessionId,
+              ),
+              loop: null,
+              heartbeat: null,
+              revision: '',
+              updatedAt: null,
+            );
       if (_disposed || _desktopRuntimeSessionId != runtimeSessionId) return;
-      _goal = snapshot;
-      _syncGoalWatch();
-      _emit(ActiveChatEvent.goalUpdated);
+      _applySessionControl(snapshot, authoritativePush: false);
     } catch (_) {
-      // Best-effort: an unsupported/older gateway simply shows no goal state.
+      if (_disposed || _desktopRuntimeSessionId != runtimeSessionId) return;
+      if (_hasSessionControl && !_sessionControlStale) {
+        _sessionControlStale = true;
+        _emit(ActiveChatEvent.goalUpdated);
+      }
     }
+  }
+
+  Future<void> refreshSessionControl() {
+    final activeFlight = _sessionControlRefreshFlight;
+    if (activeFlight != null) {
+      _sessionControlRefreshQueued = true;
+      return activeFlight;
+    }
+    final runtimeId = _desktopRuntimeSessionId;
+    if (runtimeId == null) return Future.value();
+    late final Future<void> flight;
+    flight = _hydrateSessionControl(runtimeId).whenComplete(() {
+      if (!identical(_sessionControlRefreshFlight, flight)) return;
+      _sessionControlRefreshFlight = null;
+      if (_sessionControlRefreshQueued) {
+        _sessionControlRefreshQueued = false;
+        unawaited(refreshSessionControl());
+      }
+    });
+    _sessionControlRefreshFlight = flight;
+    return flight;
   }
 
   /// Sends a `session.control` goal action (pause/resume/unwait/clear). The
@@ -4546,8 +4646,51 @@ class ActiveChat {
   Future<void> sendGoalAction(String action) async {
     final runtimeId = _desktopRuntimeSessionId;
     if (runtimeId == null) return;
+    final gateway = _desktopGateway;
+    if (gateway is HermesDesktopSessionControlGateway) {
+      await (gateway as HermesDesktopSessionControlGateway)
+          .sendSessionControlAction(runtimeId, action);
+      return;
+    }
     await desktopControlGateway?.sendGoalAction(runtimeId, action);
   }
+
+  Future<void> sendSessionControlAction(String action) async {
+    final runtimeId = _desktopRuntimeSessionId;
+    final gateway = _desktopGateway;
+    if (runtimeId == null || gateway is! HermesDesktopSessionControlGateway) {
+      return;
+    }
+    await (gateway as HermesDesktopSessionControlGateway)
+        .sendSessionControlAction(runtimeId, action);
+  }
+
+  Future<void> stopBackgroundProcess(String processId) async {
+    final runtimeId = _desktopRuntimeSessionId;
+    final gateway = _desktopGateway;
+    if (runtimeId == null || gateway is! HermesDesktopControlGateway) return;
+    await (gateway as HermesDesktopControlGateway).killBackgroundProcess(
+      runtimeId,
+      processId,
+    );
+    await refreshBackgroundProcesses();
+  }
+
+  bool get canControlGoal =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      (_desktopGateway is HermesDesktopSessionControlGateway ||
+          desktopControlGateway != null);
+
+  bool get canControlSessionActivity =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      _desktopGateway is HermesDesktopSessionControlGateway;
+
+  bool get canStopBackgroundProcesses =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      _desktopGateway is HermesDesktopControlGateway;
 
   List<SubagentActivity> get subagentActivities {
     if (_disposed ||
@@ -4665,14 +4808,41 @@ class ActiveChat {
               SessionActivityKind.waitingForUser,
             null => SessionActivityKind.idle,
           };
+    final schedules = <SessionActivitySchedule>[
+      if (_loop case final loop?)
+        SessionActivitySchedule(
+          kind: SessionActivityScheduleKind.loop,
+          status: loop.status,
+          interval: loop.interval,
+          lastRunAt: loop.lastRunAt,
+          nextDueAt: loop.nextDueAt,
+          runCount: loop.ticksFired,
+          awaitingResponse: loop.awaitingResponse,
+          deferredByGoal: loop.deferredByGoal,
+        ),
+      if (_heartbeat case final heartbeat?)
+        SessionActivitySchedule(
+          kind: SessionActivityScheduleKind.heartbeat,
+          status: heartbeat.status,
+          interval: heartbeat.interval,
+          lastRunAt: heartbeat.lastRunAt,
+          nextDueAt: heartbeat.nextDueAt,
+          runCount: heartbeat.fireCount,
+        ),
+    ];
     return SessionActivity(
       foregroundTurn: isStreaming,
       rosterTurn: remoteSurfaceOwnsLiveTurn,
       subagentCount: safeActiveSubagentCount,
       processes: _backgroundProcesses,
+      schedules: schedules,
+      goal: _goal == null
+          ? null
+          : SessionActivityGoal(title: _goal!.title, status: _goal!.status),
+      tasks: _sessionTasks,
       foregroundKind: foregroundKind,
       observedAt: _backgroundProcessesObservedAt ?? _desktopTurnStartedAt,
-      stale: _backgroundProcessesStale,
+      stale: _backgroundProcessesStale || _sessionControlStale,
     );
   }
 
@@ -4707,7 +4877,9 @@ class ActiveChat {
       left.id == right.id &&
       left.command == right.command &&
       left.notifyOnComplete == right.notifyOnComplete &&
-      left.startedAt == right.startedAt;
+      left.startedAt == right.startedAt &&
+      left.watchHit == right.watchHit &&
+      listEquals(left.watchPatterns, right.watchPatterns);
 
   bool get hasPendingBackgroundProcessRefresh =>
       _backgroundProcessRefreshFlight != null;
@@ -4768,7 +4940,11 @@ class ActiveChat {
         requestGeneration: requestGeneration,
         mutationGeneration: mutationGeneration,
       )) {
-        _backgroundProcessesStale = _backgroundProcesses.isNotEmpty;
+        final nextStale = _backgroundProcesses.isNotEmpty;
+        if (_backgroundProcessesStale != nextStale) {
+          _backgroundProcessesStale = nextStale;
+          _emit(ActiveChatEvent.subagentActivity);
+        }
       }
       return;
     }
@@ -4826,6 +5002,10 @@ class ActiveChat {
               row.startedAt ??
               current?.startedAt ??
               now.subtract(Duration(seconds: row.uptimeSeconds)),
+          watchPatterns: row.watchPatterns.isEmpty
+              ? current?.watchPatterns ?? const []
+              : row.watchPatterns,
+          watchHit: row.watchHit,
         ),
       );
     }
@@ -4849,9 +5029,10 @@ class ActiveChat {
           next.length,
           (index) => !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
         ).any((different) => different);
+    final staleChanged = _backgroundProcessesStale;
     _backgroundProcessesObservedAt = now;
     _backgroundProcessesStale = false;
-    if (!changed) return;
+    if (!changed && !staleChanged) return;
     _backgroundProcesses = List.unmodifiable(next);
     _backgroundProcessMutationGeneration += 1;
     _emit(ActiveChatEvent.subagentActivity);
@@ -6680,7 +6861,7 @@ class ActiveChat {
     }
     if (didAdopt) {
       unawaited(_hydrateSubagentsForCurrentRuntime());
-      unawaited(_hydrateGoal(runtimeId));
+      unawaited(_hydrateSessionControl(runtimeId));
     }
   }
 
@@ -6731,6 +6912,14 @@ class ActiveChat {
     _abandonPendingDesktopCompression();
     _desktopBindEpoch += 1;
     _goal = null;
+    _loop = null;
+    _heartbeat = null;
+    _sessionTasks = const [];
+    _sessionTaskRevision = -1;
+    _sessionControlStale = false;
+    _sessionControlAbsenceStreak = 0;
+    _sessionControlRefreshFlight = null;
+    _sessionControlRefreshQueued = false;
     _lastNotifiedGoalStatus = null;
     final retiredRuntimeId = _desktopRuntimeSessionId;
     if (retiredRuntimeId != null) {
@@ -15926,7 +16115,13 @@ class ActiveChat {
 
   void _onDesktopEvent(TuiGatewayEvent event) {
     final runtimeId = _desktopRuntimeSessionId;
-    if (runtimeId == null || event.sessionId != runtimeId) return;
+    if (runtimeId == null) return;
+    if (event.type == 'sessions.changed') {
+      unawaited(refreshBackgroundProcesses());
+      unawaited(refreshSessionControl());
+      return;
+    }
+    if (event.sessionId != runtimeId) return;
     if (event.type == 'session.reclaimed') {
       final receipt = _desktopRuntimeOwnershipReceipt;
       final reclaimedStoredId = event.payload['stored_session_id']?.toString();
@@ -15966,7 +16161,11 @@ class ActiveChat {
       _observeRuntimeActivity();
     }
     if (event.type == 'session.control.update') {
-      _applyGoalUpdate(payload['control']);
+      _applySessionControlUpdate(payload['control']);
+      return;
+    }
+    if (event.type == 'todo.updated') {
+      _applyTodoUpdate(payload);
       return;
     }
     final isTerminal =
@@ -16303,6 +16502,10 @@ class ActiveChat {
         .toLowerCase();
     if (kind == 'process') {
       unawaited(refreshBackgroundProcesses());
+      return;
+    }
+    if (const {'goal', 'loop', 'heartbeat'}.contains(kind)) {
+      unawaited(refreshSessionControl());
       return;
     }
     if (kind == 'compacted') {
