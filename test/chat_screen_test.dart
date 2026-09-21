@@ -33,6 +33,7 @@ import 'package:http/testing.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:record/record.dart';
 
 import 'package:hermes_android/main.dart';
 import 'package:hermes_android/core/config/flavor.dart';
@@ -86,6 +87,7 @@ import 'package:hermes_android/core/services/ssh_session_service.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/services/turn_outbox_store.dart';
 import 'package:hermes_android/core/services/voice/stt_engine.dart';
+import 'package:hermes_android/core/services/voice/stt_remote.dart';
 import 'package:hermes_android/core/services/voice/conversation/native_voice.dart';
 import 'package:hermes_android/core/services/voice/voice_phase.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
@@ -315,6 +317,137 @@ class _PartialSttEngine implements SttEngine {
     _results.add(SttResult(text, true));
     await endSegmentWithoutFinal();
   }
+}
+
+class _ScreenServerRecorder implements ServerSttRecorder {
+  final audio = StreamController<Uint8List>();
+  bool disposed = false;
+  int startCalls = 0;
+  int stopCalls = 0;
+
+  @override
+  Future<bool> hasPermission() async => true;
+
+  @override
+  Future<Stream<Uint8List>> startStream(RecordConfig config) async {
+    startCalls++;
+    return audio.stream;
+  }
+
+  @override
+  Future<void> stop() async {
+    stopCalls++;
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    if (!audio.isClosed) unawaited(audio.close());
+  }
+}
+
+class _ScreenServerTransport {
+  final List<_ScreenServerRecorder> recorders = [];
+  final List<_ScreenServerSession> sessions = [];
+  bool poisonNextTurn = false;
+
+  ServerSttRecorder createRecorder() {
+    final recorder = _ScreenServerRecorder();
+    recorders.add(recorder);
+    return recorder;
+  }
+
+  Future<ServerSttSession> connect(Uri _) async {
+    final session = _ScreenServerSession(
+      this,
+      sessions.length + 1,
+      poisoned: poisonNextTurn,
+    );
+    poisonNextTurn = false;
+    sessions.add(session);
+    return session;
+  }
+}
+
+class _ScreenServerSession implements ServerSttSession {
+  _ScreenServerSession(this.transport, this.turn, {required this.poisoned}) {
+    incoming = StreamController<dynamic>(
+      onCancel: () {
+        if (normalCloseStarted) return;
+        abnormalClose = true;
+        transport.poisonNextTurn = true;
+      },
+    );
+  }
+
+  final _ScreenServerTransport transport;
+  final int turn;
+  final bool poisoned;
+  late final StreamController<dynamic> incoming;
+  final List<Object> sent = [];
+  bool abnormalClose = false;
+  bool normalCloseStarted = false;
+  bool eofReceived = false;
+  bool finalSent = false;
+
+  @override
+  dynamic get firstMessage => '{"type":"ready"}';
+
+  @override
+  Stream<dynamic> get messages => incoming.stream;
+
+  @override
+  void add(Object data) {
+    sent.add(data);
+    if (data == '{"type":"eof"}') eofReceived = true;
+  }
+
+  void sendFinal() {
+    finalSent = true;
+    incoming.add(
+      jsonEncode({
+        'type': 'final',
+        'text': poisoned ? '' : 'Recording $turn',
+      }),
+    );
+  }
+
+  @override
+  Future<void> close() async {
+    normalCloseStarted = true;
+    if (!incoming.isClosed) await incoming.close();
+  }
+}
+
+class _ScreenServerSttEngine implements SttEngine {
+  _ScreenServerSttEngine(this.delegate);
+
+  final ServerSttEngine delegate;
+
+  @override
+  bool get supportsPartials => delegate.supportsPartials;
+
+  @override
+  Future<bool> available() async => true;
+
+  @override
+  Stream<SttResult> listen({
+    String localeId = 'es_ES',
+    void Function()? onSpeechEnd,
+    void Function()? onCaptureReady,
+    bool continuous = false,
+  }) => delegate.listen(
+    localeId: localeId,
+    onSpeechEnd: onSpeechEnd,
+    onCaptureReady: onCaptureReady,
+    continuous: continuous,
+  );
+
+  @override
+  Future<void> stop() => delegate.stop();
+
+  @override
+  Future<void> dispose() => delegate.dispose();
 }
 
 class _UiRewindGateway
@@ -1894,7 +2027,7 @@ void main() {
   Future<ActiveChat> pumpChat(
     WidgetTester tester, {
     List<Map<String, dynamic>> messages = const [],
-    _PartialSttEngine? stt,
+    SttEngine? stt,
     ChatPipelineState chatState = ChatPipelineState.idle,
     HermesDesktopGateway? desktopGateway,
     SavedConnection? connection,
@@ -18491,6 +18624,103 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'dos dictados server cierran cada canal y conservan su transcript',
+    (tester) async {
+      final support = Directory.systemTemp.createTempSync('chat-server-stt-');
+      addTearDown(() {
+        if (support.existsSync()) support.deleteSync(recursive: true);
+      });
+      const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProvider, (_) async => support.path);
+      addTearDown(
+        () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProvider, null),
+      );
+      final transport = _ScreenServerTransport();
+      final server = ServerSttEngine(
+        baseUrl: 'wss://speech.invalid',
+        enableGhostGate: false,
+        recorderFactory: transport.createRecorder,
+        connector: transport.connect,
+      );
+      final stt = _ScreenServerSttEngine(server);
+      await pumpChat(tester, stt: stt);
+
+      Future<void> pumpUntil(bool Function() predicate, String reason) async {
+        for (var attempt = 0; attempt < 100 && !predicate(); attempt++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 1)),
+          );
+          await tester.pump(const Duration(milliseconds: 10));
+        }
+        expect(predicate(), isTrue, reason: reason);
+      }
+
+      for (var turn = 1; turn <= 2; turn++) {
+        await tester.tap(find.byKey(const ValueKey('mic')));
+        await tester.pump();
+        await pumpUntil(
+          () =>
+              transport.recorders.length == turn &&
+              transport.recorders.last.startCalls == 1,
+          'recording $turn did not acquire its own recorder',
+        );
+
+        transport.recorders.last.audio.add(
+          Uint8List.fromList(const [0, 100, 0, 100]),
+        );
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('dictation-stop')));
+        await tester.pump();
+        await pumpUntil(
+          () =>
+              transport.sessions.length == turn &&
+              transport.sessions.last.eofReceived &&
+              transport.recorders.last.stopCalls == 1,
+          'recording $turn did not stop cleanly',
+        );
+        transport.sessions.last.sendFinal();
+        await tester.pump();
+        await pumpUntil(
+          () => find.byKey(const ValueKey('recording')).evaluate().isEmpty,
+          'recording $turn did not finish',
+        );
+      }
+
+      expect(transport.sessions, hasLength(2));
+      expect(transport.recorders, hasLength(2));
+      expect(
+        transport.sessions.every((session) => !session.abnormalClose),
+        isTrue,
+        reason: 'the client must request a normal close before cancelling reads',
+      );
+      expect(
+        transport.sessions.map((session) => session.poisoned),
+        everyElement(isFalse),
+      );
+      for (final session in transport.sessions) {
+        expect(session.sent.first, '{"type":"reset"}');
+        expect(session.sent.whereType<Uint8List>(), hasLength(1));
+        expect(
+          session.sent.where((frame) => frame == '{"type":"eof"}'),
+          hasLength(1),
+        );
+        expect(session.normalCloseStarted, isTrue);
+      }
+      expect(
+        transport.recorders.every((recorder) => recorder.disposed),
+        isTrue,
+      );
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'Recording 1 Recording 2',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'dictado conserva el transcript fuera del controller hasta parar',
