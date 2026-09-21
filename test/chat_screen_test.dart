@@ -14392,6 +14392,10 @@ void main() {
   testWidgets(
     'proceso en segundo plano sigue visible tras acabar el turno y se retira al salir',
     (tester) async {
+      tester.view
+        ..physicalSize = const Size(1080, 1920)
+        ..devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
       final gateway = _StableRefreshGateway(subagents: const []);
       gateway.processSnapshot = const AgentCenterSnapshot(
         snapshots: [],
@@ -14411,9 +14415,7 @@ void main() {
         tester,
         connection: _remoteConn('background-process-status'),
         desktopGateway: gateway,
-        messages: const [
-          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
-        ],
+        messages: scrollableChatHistory('background process clearance'),
       );
       expect(
         await chat.send(
@@ -14440,6 +14442,21 @@ void main() {
       );
       expect(find.textContaining('dart run worker.dart'), findsOneWidget);
       expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
+      await tester.pump();
+      final finalAnswer = find.ancestor(
+        of: find.text('PUBLIC_PARENT_DONE'),
+        matching: find.byType(ChatAnswerAnchor),
+      );
+      final processPill = find.byKey(
+        const ValueKey('chat-background-process-status'),
+      );
+      expect(
+        tester.getRect(finalAnswer).bottom,
+        lessThanOrEqualTo(tester.getRect(processPill).top),
+      );
+      final activeBottomPadding =
+          (tester.widget<ListView>(chatListFinder()).padding! as EdgeInsets)
+              .bottom;
       await tester.tap(
         find.descendant(
           of: find.byKey(
@@ -14460,6 +14477,27 @@ void main() {
         tester.element(find.text('READY_SAFE')),
       ).pop();
       await tester.pump(const Duration(milliseconds: 300));
+
+      final list = chatListFinder();
+      final controller = tester.widget<ListView>(list).controller!;
+      controller.jumpTo(controller.position.maxScrollExtent * 0.55);
+      await tester.pump();
+      final viewport = tester.getRect(list);
+      RenderBox? readerAnchor;
+      for (final element in find
+          .descendant(of: list, matching: find.byType(ChatAnswerAnchor))
+          .evaluate()) {
+        final candidate = element.renderObject! as RenderBox;
+        final rect = candidate.localToGlobal(Offset.zero) & candidate.size;
+        if (rect.bottom > viewport.top && rect.top < viewport.bottom) {
+          readerAnchor = candidate;
+          break;
+        }
+      }
+      expect(readerAnchor, isNotNull);
+      final readerAnchorY = readerAnchor!.localToGlobal(Offset.zero).dy;
+      final readingBottomPadding =
+          (tester.widget<ListView>(list).padding! as EdgeInsets).bottom;
 
       gateway.processSnapshot = const AgentCenterSnapshot(
         snapshots: [],
@@ -14483,9 +14521,83 @@ void main() {
         find.byKey(const ValueKey('chat-background-process-status')),
         findsNothing,
       );
+      await tester.pump();
+      final idleBottomPadding =
+          (tester.widget<ListView>(chatListFinder()).padding! as EdgeInsets)
+              .bottom;
+      expect(idleBottomPadding, lessThan(readingBottomPadding));
+      expect(idleBottomPadding, lessThan(activeBottomPadding));
+      expect(
+        readerAnchor.localToGlobal(Offset.zero).dy,
+        closeTo(readerAnchorY, 1),
+      );
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('la lista reserva todas las filas de actividad flotante', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(1080, 1920)
+      ..devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final gateway = _StableRefreshGateway(subagents: const [])
+      ..processSnapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-stacked',
+            status: AgentCenterStatus.running,
+            uptimeSeconds: 20,
+            command: 'sleep 300',
+          ),
+        ],
+      );
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('background-process-stacked'),
+      desktopGateway: gateway,
+      messages: const [
+        {'role': 'user', 'content': 'PUBLIC_STACK_REQUEST'},
+      ],
+    );
+    expect(
+      await chat.send(
+        fullText: 'PUBLIC_STACK_PARENT_REQUEST',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('subagent.start', const {
+      'subagent_id': 'stacked-child',
+      'status': 'running',
+    });
+    gateway.emit('message.complete', const {'text': 'PUBLIC_STACK_DONE'});
+    gateway.emit('status.update', const {
+      'kind': 'process',
+      'text': 'PUBLIC_STACK_PROCESS',
+    });
+    await tester.pump();
+    await tester.pump();
+
+    final finalAnswer = find.ancestor(
+      of: find.text('PUBLIC_STACK_DONE'),
+      matching: find.byType(ChatAnswerAnchor),
+    );
+    final processPill = find.byKey(
+      const ValueKey('chat-background-process-status'),
+    );
+    expect(processPill, findsOneWidget);
+    expect(find.byKey(const ValueKey('chat-subagent-status')), findsOneWidget);
+    expect(
+      tester.getRect(finalAnswer).bottom,
+      lessThanOrEqualTo(tester.getRect(processPill).top),
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'status loop reúne control proceso y tareas en una sola actividad',
