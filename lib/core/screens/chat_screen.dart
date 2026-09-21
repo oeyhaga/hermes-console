@@ -91,6 +91,7 @@ import '../services/session_deletion.dart';
 import '../services/subagent_transcript_projection.dart';
 import '../services/tui_gateway_client.dart'
     show TuiGatewayClient, TuiGatewayRpcError;
+import '../widgets/chat_connection_recovery_row.dart';
 import '../widgets/hermes_notice.dart';
 import 'foreground_conversation_reader.dart';
 import '../services/voice/conversation/native_voice.dart';
@@ -8575,12 +8576,18 @@ class _ChatScreenState extends State<ChatScreen>
   /// Cabecera de la ThinkingTraceCard mientras aún no hay herramientas.
   String _traceHeadline() {
     final s = Strings.of(context);
-    return switch (_pipelineState) {
+    final activityHeadline = switch (_pipelineState) {
       ChatPipelineState.connecting => s.chaPipelineConnecting,
       ChatPipelineState.executing => s.chaPipelineExecuting,
       ChatPipelineState.streaming => s.chaPipelineStreaming,
       _ => s.chaPipelineThinking,
     };
+    return chatActivityHeadlineForTransport(
+      status: _chat.transportStatus,
+      authRequired: _chat.dashboardAuthRequired,
+      activityHeadline: activityHeadline,
+      reconnectingHeadline: s.chaConnectionLostReconnecting,
+    );
   }
 
   // ─── Attachment handling ──────────────────────────────────────────────────
@@ -9329,6 +9336,20 @@ class _ChatScreenState extends State<ChatScreen>
                             _DesktopAuthRequiredBanner(
                               message: str.chaDesktopAuthRequiredBanner,
                             ),
+                          ValueListenableBuilder<ChatTransportStatus>(
+                            valueListenable: _chat.transportStatusListenable,
+                            builder: (_, status, _) =>
+                                ChatConnectionRecoveryRow(
+                                  status: status,
+                                  activeTurn: _chat.isStreaming,
+                                  authRequired: _chat.dashboardAuthRequired,
+                                  appForeground: _appInForeground,
+                                  offlineLabel: str.chaConnectionOffline,
+                                  reconnectingLabel:
+                                      str.chaConnectionReconnecting,
+                                  recoveredLabel: str.chaConnectionRecovered,
+                                ),
+                          ),
                           if (_chat.localTranscriptOlderHistoryTruncated)
                             _LocalTranscriptTruncationNotice(
                               message: str.chaLocalTranscriptTruncated,
@@ -12924,20 +12945,23 @@ class _ChatScreenState extends State<ChatScreen>
     // indeterminada pareciese bloqueada. El composer conserva el único estado
     // vivo hasta que Desktop reconcilia el transcript.
     if (_compressingSession) return const SizedBox.shrink();
-    return ThinkingTraceCard(
-      events: _trace,
-      active: true,
-      headline: _traceHeadline(),
-      // El indicador de estado del turno activo es la mascota del Companion
-      // (corriendo/fallo) en lugar del spinner, si la presencia está activa.
-      companion: context.findAncestorStateOfType<HermesAppState>()?.companion,
-      // Mood de la mascota según el estado real del pipeline: conectando /
-      // esperando / pensando (ejecutando o haciendo streaming).
-      activeMood: switch (_pipelineState) {
-        ChatPipelineState.connecting => HermesSparkMood.connecting,
-        ChatPipelineState.waiting => HermesSparkMood.waiting,
-        _ => HermesSparkMood.thinking,
-      },
+    return ValueListenableBuilder<ChatTransportStatus>(
+      valueListenable: _chat.transportStatusListenable,
+      builder: (context, _, _) => ThinkingTraceCard(
+        events: _trace,
+        active: true,
+        headline: _traceHeadline(),
+        // El indicador de estado del turno activo es la mascota del Companion
+        // (corriendo/fallo) en lugar del spinner, si la presencia está activa.
+        companion: context.findAncestorStateOfType<HermesAppState>()?.companion,
+        // Mood de la mascota según el estado real del pipeline: conectando /
+        // esperando / pensando (ejecutando o haciendo streaming).
+        activeMood: switch (_pipelineState) {
+          ChatPipelineState.connecting => HermesSparkMood.connecting,
+          ChatPipelineState.waiting => HermesSparkMood.waiting,
+          _ => HermesSparkMood.thinking,
+        },
+      ),
     );
   }
 
