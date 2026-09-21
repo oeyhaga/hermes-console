@@ -39,6 +39,7 @@ import 'session_detail_screen.dart';
 import '../widgets/hermes_app_bar.dart';
 
 const sessionLibraryRefreshGap = Duration(seconds: 10);
+const sessionLibrarySafetyRefreshInterval = Duration(seconds: 60);
 
 bool isSessionLibraryRefreshEvent(TuiGatewayEvent event) =>
     event.type == 'sessions.changed';
@@ -128,6 +129,7 @@ class SessionListScreen extends StatefulWidget {
   final GlobalActivityAggregate? globalActivityOverride;
   final Future<DesktopActiveSessionList> Function()? activeSessionListLoader;
   final Future<void> Function()? eventReconnectOverride;
+  final double Function()? eventReconnectRandomOverride;
   const SessionListScreen({
     required this.connection,
     required this.connManager,
@@ -138,6 +140,7 @@ class SessionListScreen extends StatefulWidget {
     @visibleForTesting this.globalActivityOverride,
     @visibleForTesting this.activeSessionListLoader,
     @visibleForTesting this.eventReconnectOverride,
+    @visibleForTesting this.eventReconnectRandomOverride,
     super.key,
   });
 
@@ -156,8 +159,10 @@ class _SessionListScreenState extends State<SessionListScreen>
   StreamSubscription<ChatDraftChange>? _draftSubscription;
   Timer? _eventRefreshTimer;
   Timer? _eventReconnectTimer;
+  Timer? _eventStableTimer;
+  Timer? _sessionSafetyTimer;
   Timer? _staleExpiryTimer;
-  int _eventReconnectAttempt = 0;
+  late final GatewayReconnectBackoff _eventReconnectBackoff;
   bool _recoveringTransport = false;
   DateTime? _lastEventRefreshAt;
   int _sessionChangeEpoch = 0;
@@ -237,6 +242,15 @@ class _SessionListScreenState extends State<SessionListScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _eventReconnectBackoff = GatewayReconnectBackoff(
+      random: widget.eventReconnectRandomOverride,
+    );
+    _sessionSafetyTimer = Timer.periodic(
+      sessionLibrarySafetyRefreshInterval,
+      (_) {
+        if (_libraryRefreshAllowed) unawaited(_fetchSessions(showLoader: false));
+      },
+    );
     _activeChats = widget.activeChatsOverride;
     _globalActivity = widget.globalActivityOverride;
     _client =
@@ -306,6 +320,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (mounted) setState(() {});
   }
 
+  bool get _libraryRefreshAllowed =>
+      mounted && _foreground && _route?.isCurrent != false;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
@@ -315,6 +332,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     } else {
       _eventReconnectTimer?.cancel();
       _eventReconnectTimer = null;
+      _eventStableTimer?.cancel();
+      _eventStableTimer = null;
       _staleExpiryTimer?.cancel();
       _staleExpiryTimer = null;
       if (state == AppLifecycleState.paused ||
@@ -392,6 +411,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     _searchTimer?.cancel();
     _eventRefreshTimer?.cancel();
     _eventReconnectTimer?.cancel();
+    _eventStableTimer?.cancel();
+    _sessionSafetyTimer?.cancel();
     _staleExpiryTimer?.cancel();
     unawaited(_eventSubscription?.cancel());
     unawaited(_historyCleanupSubscription?.cancel());
@@ -410,6 +431,8 @@ class _SessionListScreenState extends State<SessionListScreen>
     _eventSubscription = stream?.listen(
       _onSessionLibraryEvent,
       onError: (_) {
+        _eventStableTimer?.cancel();
+        _eventStableTimer = null;
         // Preserve the last authoritative projection while reconnect/refresh
         // rebuilds the roster cut; never flash a false idle state.
         _globalActivity?.beginRecovery(
@@ -435,9 +458,17 @@ class _SessionListScreenState extends State<SessionListScreen>
       } else {
         await client!.connect();
       }
-      _eventReconnectAttempt = 0;
-      await _refreshRemoteActivity();
+      _eventStableTimer?.cancel();
+      _eventStableTimer = Timer(GatewayReconnectBackoff.stableInterval, () {
+        _eventStableTimer = null;
+        if (mounted && _foreground) _eventReconnectBackoff.markHealthy();
+      });
+      if (await _refreshRemoteActivity()) {
+        _eventReconnectBackoff.markHealthy();
+      }
     } catch (_) {
+      _eventStableTimer?.cancel();
+      _eventStableTimer = null;
       _globalActivity?.beginRecovery(
         widget.connection.id,
         Session.profileOwner(_libraryQuery.profile),
@@ -452,11 +483,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (_ownedActivityClient == null && widget.eventReconnectOverride == null) {
       return;
     }
-    final exponent = _eventReconnectAttempt.clamp(0, 5);
     final delay = immediate
         ? Duration.zero
-        : Duration(milliseconds: 250 * (1 << exponent));
-    _eventReconnectAttempt += 1;
+        : _eventReconnectBackoff.nextDelay();
     _eventReconnectTimer = Timer(delay, () {
       _eventReconnectTimer = null;
       if (mounted && _foreground) unawaited(_connectEventClient());
@@ -506,14 +535,14 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
   }
 
-  Future<void> _refreshRemoteActivity() async {
+  Future<bool> _refreshRemoteActivity() async {
     final aggregate = _globalActivity;
     final loader =
         widget.activeSessionListLoader ??
         (_ownedActivityClient == null
             ? null
             : () => _ownedActivityClient!.listActiveSessions());
-    if (aggregate == null || loader == null) return;
+    if (aggregate == null || loader == null) return false;
     final profile = Session.profileOwner(_libraryQuery.profile);
     final generation = aggregate.beginRosterRequest(
       widget.connection.id,
@@ -521,7 +550,7 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
     try {
       final roster = await loader();
-      if (!mounted) return;
+      if (!mounted) return false;
       aggregate.applyRoster(
         connectionId: widget.connection.id,
         profile: profile,
@@ -569,9 +598,11 @@ class _SessionListScreenState extends State<SessionListScreen>
           );
         }
       }
+      return true;
     } catch (_) {
       aggregate.markTransportStale(widget.connection.id, profile);
       _scheduleStaleExpiry();
+      return false;
     }
   }
 

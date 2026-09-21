@@ -10,7 +10,7 @@ import 'bot_profile_client.dart';
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' show min;
+import 'dart:math' show Random, min;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -140,6 +140,33 @@ final class _SanitizedRpcFailure extends TuiGatewayRpcError {
     super.origin,
     super.failureKind,
   });
+}
+
+class GatewayReconnectBackoff {
+  static const stableInterval = Duration(seconds: 30);
+  static const _baseDelay = Duration(seconds: 1);
+  static const _maximumDelay = Duration(seconds: 60);
+
+  final double Function() _random;
+  int _attempt = 0;
+
+  GatewayReconnectBackoff({double Function()? random})
+    : _random = random ?? Random().nextDouble;
+
+  Duration nextDelay() {
+    final exponent = _attempt.clamp(0, 6);
+    _attempt += 1;
+    final ceilingMs = min(
+      _baseDelay.inMilliseconds * (1 << exponent),
+      _maximumDelay.inMilliseconds,
+    );
+    final floorMs = ceilingMs * 3 ~/ 4;
+    final spreadMs = ceilingMs - floorMs;
+    final jitter = (_random().clamp(0.0, 1.0) * spreadMs).floor();
+    return Duration(milliseconds: floorMs + jitter);
+  }
+
+  void markHealthy() => _attempt = 0;
 }
 
 class TuiGatewayEvent {

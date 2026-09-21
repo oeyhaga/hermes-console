@@ -115,7 +115,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   TuiGatewayClient? _ownedActivityClient;
   StreamSubscription<TuiGatewayEvent>? _activityEventSubscription;
   Timer? _activityEventRefreshTimer;
+  Timer? _activityReconnectTimer;
+  Timer? _activityStableTimer;
   Timer? _activityStaleExpiryTimer;
+  final GatewayReconnectBackoff _activityReconnectBackoff =
+      GatewayReconnectBackoff();
   DateTime? _lastActivityEventRefreshAt;
   String? _activityConnectionId;
   bool _foreground = true;
@@ -141,6 +145,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     _refreshStatusEpoch++;
     _previewHydrationEpoch++;
     _activityEventRefreshTimer?.cancel();
+    _activityReconnectTimer?.cancel();
+    _activityStableTimer?.cancel();
     _activityStaleExpiryTimer?.cancel();
     unawaited(_activityEventSubscription?.cancel());
     unawaited(_ownedActivityClient?.close());
@@ -196,12 +202,17 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     // gancho para esto — se dispara siempre que esta pantalla vuelve a ser
     // visible, sin depender de qué call site abrió la pantalla anterior.
     unawaited(_refreshStatus());
+    _scheduleActivityReconnect(immediate: true);
   }
 
   @override
   void didPushNext() {
     _activityEventRefreshTimer?.cancel();
     _activityEventRefreshTimer = null;
+    _activityReconnectTimer?.cancel();
+    _activityReconnectTimer = null;
+    _activityStableTimer?.cancel();
+    _activityStableTimer = null;
     unawaited(DrawerGestureExclusion.setEnabled(false));
   }
 
@@ -243,6 +254,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     _activityConnectionId = connection?.id;
     _activityEventRefreshTimer?.cancel();
     _activityEventRefreshTimer = null;
+    _activityReconnectTimer?.cancel();
+    _activityReconnectTimer = null;
+    _activityStableTimer?.cancel();
+    _activityStableTimer = null;
+    _activityReconnectBackoff.markHealthy();
     _lastActivityEventRefreshAt = null;
     unawaited(_activityEventSubscription?.cancel());
     _activityEventSubscription = null;
@@ -270,24 +286,56 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   ) async {
     try {
       await client.connect();
-      if (_activityConnectionId == connectionId && _activityRefreshAllowed) {
-        final connection = _active;
-        if (connection != null) {
+      if (_activityConnectionId != connectionId || !_activityRefreshAllowed) {
+        return;
+      }
+      _activityStableTimer?.cancel();
+      _activityStableTimer = Timer(GatewayReconnectBackoff.stableInterval, () {
+        _activityStableTimer = null;
+        if (_activityConnectionId == connectionId && _activityRefreshAllowed) {
+          _activityReconnectBackoff.markHealthy();
+        }
+      });
+      final connection = _active;
+      if (connection != null &&
           await _refreshRemoteActivity(
             connection,
             Session.profileOwner(
               widget.connManager.activeProfileFor(connection.id),
             ),
-          );
-        }
+          )) {
+        _activityReconnectBackoff.markHealthy();
       }
     } catch (_) {
       _markActivityTransportStale(connectionId);
     }
   }
 
+  void _scheduleActivityReconnect({bool immediate = false}) {
+    final client = _ownedActivityClient;
+    final connectionId = _activityConnectionId;
+    if (!_activityRefreshAllowed ||
+        client == null ||
+        connectionId == null ||
+        client.isConnected ||
+        _activityReconnectTimer != null) {
+      return;
+    }
+    final delay = immediate
+        ? Duration.zero
+        : _activityReconnectBackoff.nextDelay();
+    _activityReconnectTimer = Timer(delay, () {
+      _activityReconnectTimer = null;
+      if (_activityRefreshAllowed && _activityConnectionId == connectionId) {
+        unawaited(_connectActivityClient(client, connectionId));
+      }
+    });
+  }
+
   void _markActivityTransportStale(String connectionId) {
     if (_activityConnectionId != connectionId) return;
+    _activityStableTimer?.cancel();
+    _activityStableTimer = null;
     final profile = Session.profileOwner(
       widget.connManager.activeProfileFor(connectionId),
     );
@@ -300,6 +348,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         if (mounted) setState(() {});
       },
     );
+    _scheduleActivityReconnect();
   }
 
   void _onActivityEvent(TuiGatewayEvent event) {
@@ -341,7 +390,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     );
   }
 
-  Future<void> _refreshRemoteActivity(
+  Future<bool> _refreshRemoteActivity(
     SavedConnection connection,
     String profile,
   ) async {
@@ -351,12 +400,14 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         (_ownedActivityClient == null
             ? null
             : () => _ownedActivityClient!.listActiveSessions());
-    if (!_activityRefreshAllowed || aggregate == null || loader == null) return;
+    if (!_activityRefreshAllowed || aggregate == null || loader == null) {
+      return false;
+    }
     final generation = aggregate.beginRosterRequest(connection.id, profile);
     try {
       final roster = await loader();
       if (!_activityRefreshAllowed || _activityConnectionId != connection.id) {
-        return;
+        return false;
       }
       aggregate.applyRoster(
         connectionId: connection.id,
@@ -371,8 +422,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         _activityStaleExpiryTimer?.cancel();
         _activityStaleExpiryTimer = null;
       }
+      return true;
     } catch (_) {
       _markActivityTransportStale(connection.id);
+      return false;
     }
   }
 
@@ -394,6 +447,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (!_foreground) {
       _activityEventRefreshTimer?.cancel();
       _activityEventRefreshTimer = null;
+      _activityReconnectTimer?.cancel();
+      _activityReconnectTimer = null;
+      _activityStableTimer?.cancel();
+      _activityStableTimer = null;
       _activityStaleExpiryTimer?.cancel();
       _activityStaleExpiryTimer = null;
       return;
@@ -402,6 +459,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     // sigue viva (p.ej. el agente local con wake-lock) vuelve a "online" sola,
     // sin obligar al usuario a reconectar a mano cada vez que reabre la app.
     if (_active != null && !_checking) _refreshStatus();
+    _scheduleActivityReconnect(immediate: true);
   }
 
   /// Re-resolve connections + active gateway from storage, then refresh
