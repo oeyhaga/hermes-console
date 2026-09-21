@@ -11,6 +11,8 @@ import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 
+import 'support/rpc_frame_helpers.dart';
+
 class _Dashboard extends DashboardClient {
   _Dashboard() : super(host: '127.0.0.1', port: 1, manualToken: 'unused');
   @override
@@ -141,7 +143,9 @@ class _Fixture {
         },
         _ => <String, dynamic>{},
       };
-  List<Object?> get methods => frames.map((f) => f['method']).toList();
+  List<Object?> get methods => framesWithoutClientCapabilities(
+    frames,
+  ).map((frame) => frame['method']).toList();
   void trace(String label, DesktopCompressionPresentation? result) {}
 
   Future<void> close() async {

@@ -15,6 +15,7 @@ import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/models/desktop_compression_outcome.dart';
 
 import 'support/projected_compression_reply.dart';
+import 'support/rpc_frame_helpers.dart';
 
 class _TicketDashboardClient extends DashboardClient {
   _TicketDashboardClient()
@@ -809,6 +810,10 @@ void main() {
       );
       await for (final raw in socket) {
         final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (isClientCapabilitiesFrame(frame)) {
+          socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+          continue;
+        }
         methods.add(frame['method'] as String);
         // Deliberately leave gateway.capabilities unanswered so the real
         // JSON-RPC timer produces the transport classification.
@@ -866,6 +871,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           methods.add(frame['method'] as String);
           await socket.close();
         }
@@ -921,6 +930,10 @@ void main() {
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
           final method = frame['method'] as String;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           methods.add(method);
           if (method == 'gateway.capabilities') {
             socket.add(
@@ -992,6 +1005,10 @@ void main() {
         try {
           await for (final raw in socket) {
             final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+            if (isClientCapabilitiesFrame(frame)) {
+              socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+              continue;
+            }
             requests.add(frame);
             final method = frame['method'] as String;
             final params = Map<String, dynamic>.from(frame['params'] as Map);
@@ -1154,6 +1171,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           requests.add(frame);
           final method = frame['method'] as String;
           final result = switch (method) {
@@ -1392,6 +1413,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           requests.add(frame);
           socket.add(
             jsonEncode({
@@ -1505,6 +1530,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           requests.add(frame);
           socket.add(
             jsonEncode({
@@ -1650,6 +1679,10 @@ void main() {
       );
       await for (final raw in socket) {
         final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (isClientCapabilitiesFrame(frame)) {
+          socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+          continue;
+        }
         requests.add(frame);
         socket.add(
           jsonEncode({
@@ -1726,6 +1759,10 @@ void main() {
       );
       await for (final raw in socket) {
         final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (isClientCapabilitiesFrame(frame)) {
+          socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+          continue;
+        }
         requests.add(frame);
         final method = frame['method'] as String;
         socket.add(
@@ -2022,7 +2059,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 80));
 
       expect(client.isConnected, isTrue);
-      expect(received, isEmpty);
+      expect(framesWithoutClientCapabilities(received), isEmpty);
     },
   );
 
@@ -2091,6 +2128,10 @@ void main() {
       );
       await for (final raw in socket) {
         final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (isClientCapabilitiesFrame(frame)) {
+          socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+          continue;
+        }
         requests.add(frame);
         final method = frame['method'] as String;
         final result = switch (method) {
@@ -2211,6 +2252,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           requests.add(frame);
           socket.add(
             jsonEncode({
@@ -2285,6 +2330,10 @@ void main() {
         );
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           requests.add(frame);
           socket.add(
             jsonEncode({
@@ -2431,6 +2480,10 @@ void main() {
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
           final method = frame['method'] as String;
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+            continue;
+          }
           methods.add(method);
           void reply() => socket.add(
             jsonEncode({
