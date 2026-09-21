@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../l10n/app_localizations.dart';
-import '../companion/render/companion_status_indicator.dart';
 import '../companion/state/companion_controller.dart';
 import '../models/agent_task_list.dart';
 import '../services/approval_policy.dart';
@@ -1399,6 +1398,9 @@ enum TraceOutcome {
   /// El run sigue trabajando.
   working,
 
+  /// El usuario detuvo el turno.
+  stopped,
+
   /// Terminó sin ningún fallo.
   completed,
 
@@ -1415,7 +1417,9 @@ enum TraceOutcome {
 TraceOutcome traceOutcome({
   required List<ChatTraceEvent> events,
   required bool active,
+  bool stopped = false,
 }) {
+  if (stopped) return TraceOutcome.stopped;
   if (active) return TraceOutcome.working;
   final anyFailed = events.any((e) => e.isFailed);
   if (!anyFailed) return TraceOutcome.completed;
@@ -1428,11 +1432,7 @@ TraceOutcome traceOutcome({
 /// respuesta/run activo. Sustituye al apilado de líneas `terminal — done`
 /// (PRIORIDAD 2): los eventos actualizan ESTA tarjeta, no crean mensajes.
 class ThinkingTraceCard extends StatefulWidget {
-  /// La mascota conserva protagonismo aquí mientras el run sigue activo.
-  /// Son tamaños base: la escala elegida por el usuario se aplica después en
-  /// [CompanionView].
-  static const double activeCompanionSize = 50;
-  static const double activeWithEventsCompanionSize = 42;
+  static const double statusIconSize = 17;
   static const double statusFontSize = 12;
   static const double statusLetterSpacing = 0.35;
 
@@ -1445,15 +1445,14 @@ class ThinkingTraceCard extends StatefulWidget {
   /// "Conectando…", "Pensando…", "Ejecutando…").
   final String headline;
 
-  /// Controller del Companion (006). Cuando la presencia está activa, el
-  /// indicador de estado del turno es la **mascota** (corriendo/fallo) en vez
-  /// del spinner clásico. Null o presencia apagada → indicador clásico.
-  final CompanionController? companion;
-
-  /// Estado de ánimo de la mascota mientras el turno está activo, derivado del
-  /// estado real del pipeline (conectando/esperando/pensando). Si es null se
-  /// usa `thinking`. Al terminar manda el desenlace de la traza.
+  /// Estado vivo del pipeline, usado para elegir el icono y su color.
   final HermesSparkMood? activeMood;
+
+  /// El runtime está bloqueado esperando una aclaración o aprobación.
+  final bool waitingForUser;
+
+  /// El usuario interrumpió este turno.
+  final bool stopped;
 
   final Duration? duration;
 
@@ -1461,8 +1460,9 @@ class ThinkingTraceCard extends StatefulWidget {
     required this.events,
     required this.active,
     this.headline = 'Pensando…',
-    this.companion,
     this.activeMood,
+    this.waitingForUser = false,
+    this.stopped = false,
     this.duration,
     super.key,
   });
@@ -1560,6 +1560,74 @@ class _TraceStatusWord extends StatelessWidget {
   }
 }
 
+class _TraceStateIcon extends StatefulWidget {
+  const _TraceStateIcon({
+    required this.icon,
+    required this.color,
+    required this.animate,
+  });
+
+  final IconData icon;
+  final Color color;
+  final bool animate;
+
+  @override
+  State<_TraceStateIcon> createState() => _TraceStateIconState();
+}
+
+class _TraceStateIconState extends State<_TraceStateIcon>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+    value: 0.5,
+  );
+  late final Animation<double> _scale = Tween<double>(begin: 0.94, end: 1.04)
+      .animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TraceStateIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.animate != widget.animate) _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (widget.animate && !reduceMotion) {
+      _controller.repeat(reverse: true);
+    } else {
+      _controller
+        ..stop()
+        ..value = 0.5;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = Icon(
+      widget.icon,
+      key: const ValueKey('thinking-trace-state-icon'),
+      color: widget.color,
+      size: ThinkingTraceCard.statusIconSize,
+    );
+    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (!widget.animate || reduceMotion) return icon;
+    return ScaleTransition(scale: _scale, child: icon);
+  }
+}
+
 class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
   /// null = expansión automática (expandido mientras hay una herramienta en
   /// curso, colapsado cuando todas terminan). Un toque del usuario fija un
@@ -1568,8 +1636,11 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
 
   /// Desenlace del trace: distingue "falló un paso pero el turno se recuperó"
   /// (ruido interno, no accionable) de "el turno terminó en error" (accionable).
-  TraceOutcome get _outcome =>
-      traceOutcome(events: widget.events, active: widget.active);
+  TraceOutcome get _outcome => traceOutcome(
+    events: widget.events,
+    active: widget.active,
+    stopped: widget.stopped,
+  );
 
   /// Estado de expansión efectivo: colapsada por defecto (la línea de resumen
   /// ya informa del progreso en vivo); solo el toque del usuario la expande.
@@ -1591,6 +1662,7 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         ChatTraceEventKind.skill => s.chatActivityRunningSkill,
       };
     }
+    if (_outcome == TraceOutcome.stopped) return s.cevTraceStopped;
     if (widget.events.any(
       (event) => event.kind == ChatTraceEventKind.reasoning,
     )) {
@@ -1604,24 +1676,101 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         return s.cevTraceFailed;
       case TraceOutcome.recovered:
         return s.cevTraceRecovered;
+      case TraceOutcome.stopped:
+        return s.cevTraceStopped;
       case TraceOutcome.working:
       case TraceOutcome.completed:
         return s.cevTraceCompleted;
     }
   }
 
-  /// Mood de la mascota mientras trabaja, derivado del pipeline real.
-  HermesSparkMood get _liveMood =>
-      widget.activeMood ?? HermesSparkMood.thinking;
-
-  Widget _finishedIndicator(HermesThemeColors colors) {
-    final (icon, color) = switch (_outcome) {
-      TraceOutcome.recovered => (Icons.warning_amber_rounded, colors.warning),
-      TraceOutcome.failed => (Icons.error_outline, colors.error),
-      TraceOutcome.working ||
-      TraceOutcome.completed => (Icons.check_circle, colors.success),
+  ({IconData icon, Color color, bool animate}) _indicatorSpec(
+    HermesThemeColors colors,
+  ) {
+    if (!widget.active) {
+      return switch (_outcome) {
+        TraceOutcome.stopped => (
+          icon: Icons.stop_circle,
+          color: colors.textSecondary,
+          animate: false,
+        ),
+        TraceOutcome.recovered => (
+          icon: Icons.warning_amber_rounded,
+          color: colors.warning,
+          animate: false,
+        ),
+        TraceOutcome.failed => (
+          icon: Icons.error_outline,
+          color: colors.error,
+          animate: false,
+        ),
+        TraceOutcome.working || TraceOutcome.completed => (
+          icon: Icons.check_circle,
+          color: colors.success,
+          animate: false,
+        ),
+      };
+    }
+    if (widget.waitingForUser) {
+      return (
+        icon: Icons.help_outline_rounded,
+        color: colors.textSecondary,
+        animate: false,
+      );
+    }
+    final mood = widget.activeMood ?? HermesSparkMood.thinking;
+    if (mood == HermesSparkMood.offline) {
+      return (
+        icon: Icons.cloud_off_rounded,
+        color: colors.warning,
+        animate: false,
+      );
+    }
+    if (widget.events.isEmpty) {
+      return switch (mood) {
+        HermesSparkMood.connecting || HermesSparkMood.waiting => (
+          icon: Icons.cloud_queue_rounded,
+          color: colors.accent,
+          animate: false,
+        ),
+        HermesSparkMood.error => (
+          icon: Icons.error_outline,
+          color: colors.error,
+          animate: false,
+        ),
+        HermesSparkMood.success => (
+          icon: Icons.check_circle,
+          color: colors.success,
+          animate: false,
+        ),
+        _ => (
+          icon: Icons.psychology_alt_rounded,
+          color: colors.textSecondary,
+          animate: true,
+        ),
+      };
+    }
+    final current = widget.events.lastWhere(
+      (event) => !event.isDone && !event.isFailed,
+      orElse: () => widget.events.last,
+    );
+    return switch (current.kind) {
+      ChatTraceEventKind.reasoning => (
+        icon: Icons.psychology_alt_rounded,
+        color: colors.textSecondary,
+        animate: true,
+      ),
+      ChatTraceEventKind.tool => (
+        icon: Icons.terminal_rounded,
+        color: colors.textSecondary,
+        animate: false,
+      ),
+      ChatTraceEventKind.skill => (
+        icon: Icons.auto_awesome_rounded,
+        color: colors.textSecondary,
+        animate: false,
+      ),
     };
-    return Icon(icon, color: color, size: 24, semanticLabel: _summary);
   }
 
   void _copyTrace() {
@@ -1686,34 +1835,32 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
     final colors = Theme.of(context).hermes;
     final hasEvents = widget.events.isNotEmpty;
     final tasks = hasEvents ? _ownedTasks : null;
+    final indicator = _indicatorSpec(colors);
 
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
 
-    // Antes de las herramientas, la mascota sigue siendo el rostro del agente.
-    // El texto cambia solo cuando cambia el estado real del pipeline; no hay
-    // puntos, porcentaje inventado ni una barra lateral decorativa.
     if (widget.active && !hasEvents) {
       return Padding(
-        padding: const EdgeInsets.only(left: 12, right: 16, top: 7, bottom: 3),
+        padding: const EdgeInsets.only(left: 12, right: 16, top: 3, bottom: 1),
         child: Align(
           alignment: Alignment.centerLeft,
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 380),
+            constraints: const BoxConstraints(maxWidth: 380, minHeight: 48),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CompanionStatusIndicator(
-                  companion: widget.companion,
-                  size: ThinkingTraceCard.activeCompanionSize,
-                  mood: _liveMood,
+                _TraceStateIcon(
+                  icon: indicator.icon,
+                  color: indicator.color,
+                  animate: indicator.animate,
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Flexible(
                   child: HermesShimmerText(
                     _cleanTraceStatus(widget.headline),
                     key: const ValueKey('thinking-shimmer'),
                     style: TextStyle(
-                      color: colors.textSecondary,
+                      color: indicator.color,
                       fontSize: ThinkingTraceCard.statusFontSize,
                       fontWeight: FontWeight.w700,
                       letterSpacing: ThinkingTraceCard.statusLetterSpacing,
@@ -1749,15 +1896,12 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
                   constraints: const BoxConstraints(minHeight: 48),
                   child: Row(
                     children: [
-                      if (widget.active)
-                        CompanionStatusIndicator(
-                          companion: widget.companion,
-                          size: ThinkingTraceCard.activeWithEventsCompanionSize,
-                          mood: _liveMood,
-                        )
-                      else
-                        _finishedIndicator(colors),
-                      const SizedBox(width: 10),
+                      _TraceStateIcon(
+                        icon: indicator.icon,
+                        color: indicator.color,
+                        animate: indicator.animate,
+                      ),
+                      const SizedBox(width: 8),
                       Flexible(
                         child: widget.active
                             ? HermesShimmerText(
@@ -1766,7 +1910,7 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
                                   'trace-current-${_cleanTraceStatus(_summary)}',
                                 ),
                                 style: TextStyle(
-                                  color: colors.textSecondary,
+                                  color: indicator.color,
                                   fontSize: ThinkingTraceCard.statusFontSize,
                                   fontWeight: FontWeight.w700,
                                   letterSpacing:
@@ -1775,7 +1919,7 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
                               )
                             : _TraceStatusWord(
                                 label: _summary,
-                                color: colors.textSecondary,
+                                color: indicator.color,
                                 reduceMotion: reduceMotion,
                               ),
                       ),

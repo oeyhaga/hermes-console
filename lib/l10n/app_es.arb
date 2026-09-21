@@ -1620,6 +1620,7 @@
   },
   "cevTraceFailed": "Error · ver detalles",
   "cevTraceRecovered": "Completado · se reintentó (ver detalles)",
+  "cevTraceStopped": "Detenido",
   "cevTraceCompleted": "Completado",
   "cevTraceCompletedActions": "Completado · {count, plural, =1{1 acción} other{{count} acciones}}",
   "@cevTraceCompletedActions": {
@@ -5447,6 +5448,7 @@
   "chaContinueReading": "Continuar lectura",
   "chaReadAloud": "Leer en voz alta",
   "chaScrollToBottom": "Ir al final de la conversación",
+  "chaScrollToTop": "Ir al inicio de la conversación",
   "chaLoadEarlierMessages": "Cargar mensajes anteriores",
   "chaEarlierMessagesError": "No se pudieron cargar los mensajes anteriores. Inténtalo de nuevo.",
   "chaScrollToPreviousAnswer": "Ir a la respuesta anterior",

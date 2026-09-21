@@ -1,53 +1,28 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'package:hermes_android/core/companion/data/companion_preferences.dart';
-import 'package:hermes_android/core/companion/data/companion_repository.dart';
-import 'package:hermes_android/core/companion/models/companion.dart';
-import 'package:hermes_android/core/companion/models/companion_presence_level.dart';
 import 'package:hermes_android/core/companion/render/companion_status_indicator.dart';
 import 'package:hermes_android/core/companion/render/companion_view.dart';
-import 'package:hermes_android/core/companion/state/companion_controller.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/hermes_status_indicator.dart';
+import 'package:hermes_android/core/widgets/hermes_spark_mascot.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/hermes_pill.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
-
-class _CompanionRepository extends CompanionRepository {
-  @override
-  Future<Directory?> importedRoot() async => null;
-
-  @override
-  Future<List<Companion>> loadAll() async => const [];
-}
-
-Future<CompanionController> _fullPresenceCompanion() async {
-  SharedPreferences.setMockInitialValues({});
-  final preferences = CompanionPreferences(
-    await SharedPreferences.getInstance(),
-  );
-  final companion = CompanionController(_CompanionRepository(), preferences);
-  await companion.init();
-  await companion.setPresenceLevel(CompanionPresenceLevel.full);
-  return companion;
-}
 
 Widget _cardHost({
   required ThinkingTraceCard card,
   double width = 800,
   double textScale = 1,
+  bool disableAnimations = true,
+  ThemeData? theme,
 }) => MaterialApp(
   locale: const Locale('en'),
   localizationsDelegates: Strings.localizationsDelegates,
   supportedLocales: Strings.supportedLocales,
-  theme: AppTheme.hermesRedDark,
+  theme: theme ?? AppTheme.hermesRedDark,
   home: MediaQuery(
     data: MediaQueryData(
-      disableAnimations: true,
+      disableAnimations: disableAnimations,
       textScaler: TextScaler.linear(textScale),
     ),
     child: Scaffold(body: SizedBox(width: width, child: card)),
@@ -83,13 +58,101 @@ void main() {
     expect(find.text('LIVE'), findsNothing);
     expect(find.byKey(const ValueKey('thinking-shimmer')), findsOneWidget);
     expect(find.byKey(const ValueKey('search-wave-indicator')), findsNothing);
-    final companion = tester.widget<CompanionStatusIndicator>(
-      find.byType(CompanionStatusIndicator),
+    expect(find.byType(CompanionStatusIndicator), findsNothing);
+    expect(find.byType(CompanionView), findsNothing);
+    final icon = tester.widget<Icon>(
+      find.byKey(const ValueKey('thinking-trace-state-icon')),
     );
-    expect(companion.size, ThinkingTraceCard.activeCompanionSize);
+    expect(icon.icon, Icons.psychology_alt_rounded);
+    expect(icon.size, 17);
     final status = tester.widget<Text>(find.text('Pensando'));
     expect(status.style?.fontSize, 12);
     expect(status.style?.letterSpacing, 0.35);
+  });
+
+  testWidgets('estados vivos usan iconos compactos veraces', (tester) async {
+    Future<void> expectState({
+      required HermesSparkMood mood,
+      required IconData icon,
+      bool waitingForUser = false,
+    }) async {
+      await tester.pumpWidget(
+        _cardHost(
+          card: ThinkingTraceCard(
+            events: const [],
+            active: true,
+            activeMood: mood,
+            waitingForUser: waitingForUser,
+          ),
+        ),
+      );
+      await tester.pump();
+      final stateIcon = tester.widget<Icon>(
+        find.byKey(const ValueKey('thinking-trace-state-icon')),
+      );
+      expect(stateIcon.icon, icon);
+      expect(stateIcon.size, 17);
+      expect(find.byType(CompanionStatusIndicator), findsNothing);
+    }
+
+    await expectState(
+      mood: HermesSparkMood.connecting,
+      icon: Icons.cloud_queue_rounded,
+    );
+    await expectState(
+      mood: HermesSparkMood.waiting,
+      icon: Icons.cloud_queue_rounded,
+    );
+    await expectState(
+      mood: HermesSparkMood.waiting,
+      icon: Icons.help_outline_rounded,
+      waitingForUser: true,
+    );
+    await expectState(
+      mood: HermesSparkMood.offline,
+      icon: Icons.cloud_off_rounded,
+    );
+  });
+
+  testWidgets('solo pensamiento pulsa y respeta movimiento reducido', (
+    tester,
+  ) async {
+    Finder stateIcon() =>
+        find.byKey(const ValueKey('thinking-trace-state-icon'));
+    Finder iconScale() => find.ancestor(
+      of: stateIcon(),
+      matching: find.byType(ScaleTransition),
+    );
+
+    await tester.pumpWidget(
+      _cardHost(
+        disableAnimations: false,
+        card: const ThinkingTraceCard(events: [], active: true),
+      ),
+    );
+    await tester.pump();
+    expect(iconScale(), findsOneWidget);
+
+    await tester.pumpWidget(
+      _cardHost(
+        disableAnimations: false,
+        card: const ThinkingTraceCard(
+          events: [],
+          active: true,
+          activeMood: HermesSparkMood.connecting,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(iconScale(), findsNothing);
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: const ThinkingTraceCard(events: [], active: true),
+      ),
+    );
+    await tester.pump();
+    expect(iconScale(), findsNothing);
   });
 
   testWidgets('el shimmer sustituye el estado anterior sin duplicar texto', (
@@ -123,7 +186,7 @@ void main() {
     expect(find.text('Respondiendo'), findsOneWidget);
   });
 
-  testWidgets('la mascota sigue destacando cuando ya hay herramientas', (
+  testWidgets('una herramienta activa usa un icono compacto de terminal', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -152,14 +215,17 @@ void main() {
     );
     await tester.pump();
 
-    final companion = tester.widget<CompanionStatusIndicator>(
-      find.byType(CompanionStatusIndicator),
-    );
+    expect(find.byType(CompanionStatusIndicator), findsNothing);
+    expect(find.byType(CompanionView), findsNothing);
     expect(find.text('Running tool'), findsOneWidget);
     expect(find.text('Terminal'), findsNothing);
     expect(find.text('TERMINAL'), findsNothing);
     expect(find.text('Running tools · 0 completed'), findsNothing);
-    expect(companion.size, ThinkingTraceCard.activeWithEventsCompanionSize);
+    final icon = tester.widget<Icon>(
+      find.byKey(const ValueKey('thinking-trace-state-icon')),
+    );
+    expect(icon.icon, Icons.terminal_rounded);
+    expect(icon.size, 17);
     expect(find.text('pwd && ls'), findsNothing);
 
     final status = tester.widget<Text>(find.text('Running tool'));
@@ -197,13 +263,14 @@ void main() {
 
     expect(find.text('Ejecutando skill'), findsOneWidget);
     expect(find.text('review_changes'), findsNothing);
+    final icon = tester.widget<Icon>(
+      find.byKey(const ValueKey('thinking-trace-state-icon')),
+    );
+    expect(icon.icon, Icons.auto_awesome_rounded);
+    expect(icon.size, 17);
   });
 
-  testWidgets('terminado usa check funcional aunque la presencia esté activa', (
-    tester,
-  ) async {
-    final companion = await _fullPresenceCompanion();
-
+  testWidgets('terminado usa un check funcional', (tester) async {
     await tester.pumpWidget(
       _cardHost(
         card: ThinkingTraceCard(
@@ -215,7 +282,6 @@ void main() {
             ),
           ],
           active: false,
-          companion: companion,
         ),
       ),
     );
@@ -229,14 +295,12 @@ void main() {
       icon.color,
       AppTheme.hermesRedDark.extension<HermesThemeColors>()!.success,
     );
-    expect(icon.size, 24);
+    expect(icon.size, 17);
   });
 
   testWidgets('recuperado y fallido usan warning y error funcionales', (
     tester,
   ) async {
-    final companion = await _fullPresenceCompanion();
-
     await tester.pumpWidget(
       _cardHost(
         card: ThinkingTraceCard(
@@ -245,7 +309,6 @@ void main() {
             ChatTraceEvent(id: 'done', label: 'Retry', status: 'completed'),
           ],
           active: false,
-          companion: companion,
         ),
       ),
     );
@@ -260,7 +323,6 @@ void main() {
             ChatTraceEvent(id: 'failed', label: 'Read', status: 'failed'),
           ],
           active: false,
-          companion: companion,
         ),
       ),
     );
@@ -269,31 +331,27 @@ void main() {
     expect(find.byType(CompanionView), findsNothing);
   });
 
-  testWidgets('presencia off conserva pulso activo y check terminado', (
+  testWidgets('los iconos de actividad y terminado son independientes', (
     tester,
   ) async {
-    final companion = await _fullPresenceCompanion();
-    await companion.setPresenceLevel(CompanionPresenceLevel.off);
-
     await tester.pumpWidget(
       _cardHost(
         card: ThinkingTraceCard(
           events: const [],
           active: true,
-          companion: companion,
         ),
       ),
     );
     await tester.pump();
     expect(find.byType(CompanionView), findsNothing);
-    expect(find.byType(HermesStatusPulse), findsOneWidget);
+    expect(find.byType(HermesStatusPulse), findsNothing);
+    expect(find.byIcon(Icons.psychology_alt_rounded), findsOneWidget);
 
     await tester.pumpWidget(
       _cardHost(
         card: ThinkingTraceCard(
           events: const [],
           active: false,
-          companion: companion,
         ),
       ),
     );
@@ -325,6 +383,34 @@ void main() {
 
     expect(find.text('Completed'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('estado compacto renderiza en temas claro y oscuro', (
+    tester,
+  ) async {
+    for (final theme in [AppTheme.hermesRedLight, AppTheme.hermesRedDark]) {
+      await tester.pumpWidget(
+        _cardHost(
+          width: 320,
+          textScale: 2,
+          theme: theme,
+          card: const ThinkingTraceCard(
+            events: [],
+            active: true,
+            activeMood: HermesSparkMood.connecting,
+            headline: 'Connecting',
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final icon = tester.widget<Icon>(
+        find.byKey(const ValueKey('thinking-trace-state-icon')),
+      );
+      expect(icon.icon, Icons.cloud_queue_rounded);
+      expect(icon.color, theme.extension<HermesThemeColors>()!.accent);
+      expect(tester.takeException(), isNull);
+    }
   });
 
   testWidgets('razonamiento terminado queda plegado en la misma tarjeta', (

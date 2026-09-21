@@ -9375,22 +9375,24 @@ class _ChatScreenState extends State<ChatScreen>
                                       : latestAgentTaskStepId(_messages),
                                   child: _buildBody(),
                                 ),
-                                if (_chat.hasEarlierMessages)
-                                  Positioned(
-                                    top: 8,
-                                    left: 0,
-                                    right: 0,
-                                    height: 48,
-                                    child: Center(
-                                      child: _LoadEarlierMessagesButton(
-                                        key: const ValueKey(
-                                          'chat-load-earlier',
-                                        ),
-                                        loading: _loadingEarlierMessages,
-                                        onTap: _loadEarlierMessages,
-                                      ),
-                                    ),
+                                Positioned(
+                                  top: 8,
+                                  left: 0,
+                                  right: 0,
+                                  height: 48,
+                                  child: _ChatTopButton(
+                                    controller: _scrollController,
+                                    hasEarlierMessages:
+                                        _chat.hasEarlierMessages,
+                                    loading: _loadingEarlierMessages,
+                                    transcriptOverlayExtent: () =>
+                                        _activityPillExtent.value +
+                                        (_scrollToBottomVisibility.value
+                                            ? 48
+                                            : 0),
+                                    onLoadEarlier: _loadEarlierMessages,
                                   ),
+                                ),
                                 // Bottom overlay of the transcript. The
                                 // scroll-to-bottom arrow and the floating
                                 // activity pills share one bottom-centre
@@ -12939,6 +12941,23 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  bool get _turnWaitsForUser =>
+      _chat.pendingApproval != null || _chat.pendingInteractivePrompt != null;
+
+  HermesSparkMood _liveCompanionMood() {
+    final transport = _chat.transportStatus.state;
+    if (transport == ChatTransportState.offline ||
+        transport == ChatTransportState.reconnecting) {
+      return HermesSparkMood.offline;
+    }
+    if (_turnWaitsForUser) return HermesSparkMood.waiting;
+    return switch (_pipelineState) {
+      ChatPipelineState.connecting => HermesSparkMood.connecting,
+      ChatPipelineState.waiting => HermesSparkMood.waiting,
+      _ => HermesSparkMood.thinking,
+    };
+  }
+
   Widget _buildActiveThinkingState() {
     // La compresión no es actividad del modelo. Mostrar a la vez esta tarjeta,
     // el estado del composer y el uso de contexto hacía que una operación
@@ -12947,21 +12966,23 @@ class _ChatScreenState extends State<ChatScreen>
     if (_compressingSession) return const SizedBox.shrink();
     return ValueListenableBuilder<ChatTransportStatus>(
       valueListenable: _chat.transportStatusListenable,
-      builder: (context, _, _) => ThinkingTraceCard(
-        events: _trace,
-        active: true,
-        headline: _traceHeadline(),
-        // El indicador de estado del turno activo es la mascota del Companion
-        // (corriendo/fallo) en lugar del spinner, si la presencia está activa.
-        companion: context.findAncestorStateOfType<HermesAppState>()?.companion,
-        // Mood de la mascota según el estado real del pipeline: conectando /
-        // esperando / pensando (ejecutando o haciendo streaming).
-        activeMood: switch (_pipelineState) {
-          ChatPipelineState.connecting => HermesSparkMood.connecting,
-          ChatPipelineState.waiting => HermesSparkMood.waiting,
-          _ => HermesSparkMood.thinking,
-        },
-      ),
+      builder: (context, _, _) {
+        final mood = _liveCompanionMood();
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _AssistantLiveHeader(agentName: _agentName, mood: mood),
+            ThinkingTraceCard(
+              events: _trace,
+              active: true,
+              headline: _traceHeadline(),
+              activeMood: mood,
+              waitingForUser: _turnWaitsForUser,
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -13213,6 +13234,8 @@ class _ChatScreenState extends State<ChatScreen>
           ReadAloudStopBehavior.pauseAndResume,
       agentName: _agentName,
       isStreaming: isStreaming,
+      companionMood: isStreaming || isPipeline ? _liveCompanionMood() : null,
+      waitingForUser: (isStreaming || isPipeline) && _turnWaitsForUser,
       assistantSlice: displaySlice,
       terminalProjection: terminalProjection,
       technicalDetails: operationalProjection.technicalDetails,
@@ -13301,6 +13324,8 @@ class _ChatScreenState extends State<ChatScreen>
           ReadAloudStopBehavior.pauseAndResume,
       agentName: _agentName,
       isStreaming: frame.isStreaming,
+      companionMood: frame.isStreaming ? _liveCompanionMood() : null,
+      waitingForUser: frame.isStreaming && _turnWaitsForUser,
       compact: compact,
       performanceProbe: widget.performanceProbe,
     );
@@ -14487,22 +14512,9 @@ class _ErrorBubbleState extends State<_ErrorBubble> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Presencia (006): el Companion muestra su estado de error
-                // cuando el turno falla y no se puede continuar. Decorativo,
-                // invisible si la presencia está apagada.
-                Builder(
-                  builder: (ctx) {
-                    final app = ctx.findAncestorStateOfType<HermesAppState>();
-                    if (app == null) return const SizedBox.shrink();
-                    return Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: CompanionMessagePresence(
-                        companion: app.companion,
-                        mood: HermesSparkMood.error,
-                        size: 32,
-                      ),
-                    );
-                  },
+                const _AssistantHeaderCompanion(
+                  mood: HermesSparkMood.error,
+                  animate: false,
                 ),
                 Text(
                   '▸ hermes',
@@ -14896,6 +14908,8 @@ class _MessageBubble extends StatelessWidget {
   final ReadAloudStopBehavior readAloudStopBehavior;
   final String agentName;
   final bool isStreaming;
+  final HermesSparkMood? companionMood;
+  final bool waitingForUser;
   final _AssistantRenderSlice? assistantSlice;
   final _AssistantTerminalProjection? terminalProjection;
   final List<String> technicalDetails;
@@ -14919,6 +14933,8 @@ class _MessageBubble extends StatelessWidget {
     this.readAloudStopBehavior = ReadAloudStopBehavior.pauseAndResume,
     this.agentName = 'hermes',
     this.isStreaming = false,
+    this.companionMood,
+    this.waitingForUser = false,
     this.assistantSlice,
     this.terminalProjection,
     this.technicalDetails = const [],
@@ -14952,6 +14968,8 @@ class _MessageBubble extends StatelessWidget {
             readAloudStopBehavior: readAloudStopBehavior,
             agentName: agentName,
             isStreaming: isStreaming,
+            companionMood: companionMood,
+            waitingForUser: waitingForUser,
             slice: assistantSlice,
             terminalProjection: terminalProjection,
             technicalDetails: technicalDetails,
@@ -16193,6 +16211,82 @@ Duration? _assistantActivityDuration(Map<String, dynamic> metadata) {
   return Duration(milliseconds: (raw * 1000).round());
 }
 
+const double _assistantHeaderCompanionSize = 44;
+
+class _AssistantHeaderCompanion extends StatelessWidget {
+  const _AssistantHeaderCompanion({required this.mood, required this.animate});
+
+  final HermesSparkMood mood;
+  final bool animate;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.findAncestorStateOfType<HermesAppState>();
+    if (app == null) return const SizedBox.shrink();
+    final companion = app.companion;
+    return AnimatedBuilder(
+      animation: companion,
+      builder: (context, _) {
+        final visible =
+            companion.isInitialized &&
+            companion.enabled &&
+            companion.presenceLevel.showsStatusPresence;
+        if (!visible) return const SizedBox.shrink();
+        return SizedBox(
+          width: 50,
+          height: _assistantHeaderCompanionSize,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: CompanionStatusIndicator(
+              key: const ValueKey('assistant-header-companion'),
+              companion: companion,
+              mood: mood,
+              size: _assistantHeaderCompanionSize,
+              animate: animate,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AssistantLiveHeader extends StatelessWidget {
+  const _AssistantLiveHeader({required this.agentName, required this.mood});
+
+  final String agentName;
+  final HermesSparkMood mood;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 7, 16, 0),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Row(
+          children: [
+            _AssistantHeaderCompanion(mood: mood, animate: true),
+            Expanded(
+              child: Text(
+                '>_ ${agentName.toUpperCase()}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: colors.accent,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AssistantMessage extends StatelessWidget {
   final String content;
   final bool verbose;
@@ -16206,6 +16300,8 @@ class _AssistantMessage extends StatelessWidget {
   final ReadAloudStopBehavior readAloudStopBehavior;
   final String agentName;
   final bool isStreaming;
+  final HermesSparkMood? companionMood;
+  final bool waitingForUser;
   final _AssistantRenderSlice? slice;
   final _AssistantTerminalProjection? terminalProjection;
   final List<String> technicalDetails;
@@ -16227,6 +16323,8 @@ class _AssistantMessage extends StatelessWidget {
     this.readAloudStopBehavior = ReadAloudStopBehavior.pauseAndResume,
     this.agentName = 'hermes',
     this.isStreaming = false,
+    this.companionMood,
+    this.waitingForUser = false,
     this.slice,
     this.terminalProjection,
     this.technicalDetails = const [],
@@ -16262,6 +16360,21 @@ class _AssistantMessage extends StatelessWidget {
     final activityActive =
         activityEvents.isNotEmpty &&
         (isStreaming || metadata['_pipeline'] == true);
+    final stopped = metadata['_stopped'] == true;
+    final activityOutcome = traceOutcome(
+      events: activityEvents,
+      active: activityActive,
+      stopped: stopped,
+    );
+    final headerMood = companionMood ??
+        switch (activityOutcome) {
+          TraceOutcome.working => HermesSparkMood.thinking,
+          TraceOutcome.stopped => HermesSparkMood.idle,
+          TraceOutcome.failed => HermesSparkMood.error,
+          TraceOutcome.completed || TraceOutcome.recovered =>
+            HermesSparkMood.success,
+        };
+    final headerAnimated = isStreaming || metadata['_pipeline'] == true;
     final structuredImages = _structuredGeneratedImages(metadata);
     final structuredVideos = _structuredGeneratedVideos(metadata);
     final textualGeneratedBasenames = <String, int>{};
@@ -16515,35 +16628,9 @@ class _AssistantMessage extends StatelessWidget {
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Row(
                   children: [
-                    Builder(
-                      builder: (ctx) {
-                        final app = ctx
-                            .findAncestorStateOfType<HermesAppState>();
-                        if (app == null) return const SizedBox.shrink();
-                        final companion = app.companion;
-                        return AnimatedBuilder(
-                          animation: companion,
-                          builder: (context, _) {
-                            final showsAvatar =
-                                companion.isInitialized &&
-                                companion.enabled &&
-                                companion.presenceLevel.showsStatusPresence;
-                            if (!showsAvatar) return const SizedBox.shrink();
-                            // El bloque activo posee la mascota; el hueco evita saltos.
-                            return SizedBox(
-                              width: 38,
-                              height: 32,
-                              child: activityActive
-                                  ? null
-                                  : CompanionMessagePresence(
-                                      companion: companion,
-                                      mood: HermesSparkMood.idle,
-                                      size: 32,
-                                    ),
-                            );
-                          },
-                        );
-                      },
+                    _AssistantHeaderCompanion(
+                      mood: headerMood,
+                      animate: headerAnimated,
                     ),
                     Expanded(
                       child: Text(
@@ -16634,16 +16721,15 @@ class _AssistantMessage extends StatelessWidget {
               ),
             if (showHeader && metaLines.isNotEmpty)
               _MetaBlock(lines: metaLines, onDark: false),
-            if (showHeader && activityEvents.isNotEmpty)
+            if (showHeader && (activityEvents.isNotEmpty || stopped))
               ThinkingTraceCard(
                 key: const ValueKey('assistant-activity-trace'),
                 events: activityEvents,
                 active: isStreaming || metadata['_pipeline'] == true,
                 headline: Strings.of(context).chatActivityThinking,
-                companion: context
-                    .findAncestorStateOfType<HermesAppState>()
-                    ?.companion,
-                activeMood: HermesSparkMood.thinking,
+                activeMood: headerMood,
+                waitingForUser: activityActive && waitingForUser,
+                stopped: stopped,
                 duration: _assistantActivityDuration(metadata),
               ),
             if (answer.isNotEmpty) ...answerWidgets(),
@@ -17949,23 +18035,132 @@ class _ScrollToBottomButton extends StatelessWidget {
   );
 }
 
-class _LoadEarlierMessagesButton extends StatelessWidget {
-  const _LoadEarlierMessagesButton({
+class _ChatTopButton extends StatefulWidget {
+  const _ChatTopButton({
+    required this.controller,
+    required this.hasEarlierMessages,
     required this.loading,
-    required this.onTap,
-    super.key,
+    required this.transcriptOverlayExtent,
+    required this.onLoadEarlier,
   });
 
+  final ScrollController controller;
+  final bool hasEarlierMessages;
   final bool loading;
-  final VoidCallback onTap;
+  final ValueGetter<double> transcriptOverlayExtent;
+  final VoidCallback onLoadEarlier;
 
   @override
-  Widget build(BuildContext context) => _ChatScrollButton(
-    onTap: loading ? null : onTap,
-    label: Strings.of(context).chaLoadEarlierMessages,
-    icon: Icons.keyboard_arrow_up_rounded,
-    iconSize: 20,
-    loading: loading,
+  State<_ChatTopButton> createState() => _ChatTopButtonState();
+}
+
+class _ChatTopButtonState extends State<_ChatTopButton> {
+  late bool _visible;
+
+  @override
+  void initState() {
+    super.initState();
+    _visible = widget.hasEarlierMessages;
+    widget.controller.addListener(_syncVisibility);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncVisibility());
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatTopButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_syncVisibility);
+      widget.controller.addListener(_syncVisibility);
+    }
+    if (widget.hasEarlierMessages) _visible = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncVisibility());
+  }
+
+  void _syncVisibility() {
+    if (!mounted) return;
+    final position = widget.controller.hasClients
+        ? widget.controller.position
+        : null;
+    final contentTop = position == null
+        ? 0.0
+        : position.maxScrollExtent - widget.transcriptOverlayExtent();
+    final canReachTop =
+        position != null &&
+        position.hasContentDimensions &&
+        contentTop > position.minScrollExtent + 1 &&
+        position.pixels < contentTop - 1;
+    final visible = widget.hasEarlierMessages || canReachTop;
+    if (_visible != visible) setState(() => _visible = visible);
+  }
+
+  void _activate() {
+    if (widget.hasEarlierMessages) {
+      widget.onLoadEarlier();
+      return;
+    }
+    unawaited(_scrollToTop());
+  }
+
+  Future<void> _scrollToTop() async {
+    if (!widget.controller.hasClients) return;
+    final position = widget.controller.position;
+    final target = position.maxScrollExtent - widget.transcriptOverlayExtent();
+    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (reduceMotion) {
+      widget.controller.jumpTo(target);
+    } else {
+      await widget.controller.animateTo(
+        target,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_syncVisibility);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: AnimatedSwitcher(
+      duration: const Duration(milliseconds: 160),
+      reverseDuration: const Duration(milliseconds: 120),
+      transitionBuilder: (child, animation) => AnimatedBuilder(
+        animation: animation,
+        builder: (context, child) {
+          final exiting = animation.status == AnimationStatus.reverse;
+          return IgnorePointer(
+            ignoring: exiting,
+            child: ExcludeSemantics(
+              excluding: exiting,
+              child: FadeTransition(
+                opacity: animation,
+                alwaysIncludeSemantics: !exiting,
+                child: child,
+              ),
+            ),
+          );
+        },
+        child: child,
+      ),
+      child: _visible
+          ? _ChatScrollButton(
+              key: const ValueKey('chat-load-earlier'),
+              onTap: widget.loading ? null : _activate,
+              label: widget.hasEarlierMessages
+                  ? Strings.of(context).chaLoadEarlierMessages
+                  : Strings.of(context).chaScrollToTop,
+              icon: Icons.keyboard_arrow_up_rounded,
+              iconSize: 20,
+              loading: widget.loading,
+            )
+          : const SizedBox.shrink(
+              key: ValueKey('chat-top-button-hidden'),
+            ),
+    ),
   );
 }
 
@@ -17977,6 +18172,7 @@ class _ChatScrollButton extends StatelessWidget {
   final bool loading;
 
   const _ChatScrollButton({
+    super.key,
     required this.onTap,
     required this.label,
     required this.icon,
