@@ -26,12 +26,47 @@ class GeneratedMediaDownloadCancelled implements Exception {
   String toString() => 'generated_media_download_cancelled';
 }
 
+class GeneratedMediaAutoLoadCancellation {
+  bool _isCancelled = false;
+  final Set<void Function()> _listeners = {};
+
+  bool get isCancelled => _isCancelled;
+
+  void cancel() {
+    if (_isCancelled) return;
+    _isCancelled = true;
+    final listeners = _listeners.toList(growable: false);
+    _listeners.clear();
+    for (final listener in listeners) {
+      listener();
+    }
+  }
+
+  void _addListener(void Function() listener) {
+    if (_isCancelled) {
+      listener();
+      return;
+    }
+    _listeners.add(listener);
+  }
+
+  void _removeListener(void Function() listener) {
+    _listeners.remove(listener);
+  }
+}
+
+class _GeneratedMediaAutoLoadWaiter {
+  final Completer<void> completer = Completer<void>();
+}
+
 class GeneratedMediaReference {
   final String source;
   final GeneratedMediaKind kind;
   final GeneratedMediaSourceKind sourceKind;
   final String displayName;
   final String mimeType;
+  final int? sizeBytes;
+  final DateTime? modifiedAt;
 
   const GeneratedMediaReference({
     required this.source,
@@ -39,6 +74,8 @@ class GeneratedMediaReference {
     required this.sourceKind,
     this.displayName = 'file',
     this.mimeType = 'application/octet-stream',
+    this.sizeBytes,
+    this.modifiedAt,
   });
 }
 
@@ -64,6 +101,12 @@ class GeneratedMediaService {
   static const int maxImageBytes = 25 * 1024 * 1024;
   static const int maxVideoBytes = 100 * 1024 * 1024;
   static const int maxFileBytes = 100 * 1024 * 1024;
+  static const int maxAutoImageBytes = 15 * 1024 * 1024;
+  static const int maxAutoTextBytes = 2 * 1024 * 1024;
+  static const int maxAutoPdfBytes = 20 * 1024 * 1024;
+  static const int maxAutoAudioBytes = 25 * 1024 * 1024;
+  static const int maxAutoVideoBytes = 60 * 1024 * 1024;
+  static const int maxConcurrentAutoLoads = 2;
   static const int _maxCacheBytes = 512 * 1024 * 1024;
   static const int _maxRedirects = 3;
 
@@ -135,6 +178,118 @@ class GeneratedMediaService {
   };
 
   static final Map<String, Future<File>> _inFlight = {};
+  static final List<_GeneratedMediaAutoLoadWaiter> _autoLoadWaiters = [];
+  static int _activeAutoLoads = 0;
+
+  static bool isTextLike(GeneratedMediaReference reference) {
+    final lower = reference.displayName.toLowerCase();
+    final dot = lower.lastIndexOf('.');
+    final extension = dot < 0 ? '' : lower.substring(dot);
+    return reference.mimeType.startsWith('text/') ||
+        const {
+          '.txt',
+          '.md',
+          '.log',
+          '.json',
+          '.yaml',
+          '.yml',
+          '.csv',
+          '.py',
+          '.dart',
+          '.js',
+          '.ts',
+          '.sh',
+          '.xml',
+          '.html',
+          '.toml',
+          '.ini',
+        }.contains(extension);
+  }
+
+  static ({String connectionKey, String fileKey})? cacheLocator(File file) {
+    final fileName = file.uri.pathSegments.isEmpty
+        ? ''
+        : file.uri.pathSegments.last;
+    final dot = fileName.indexOf('.');
+    final fileKey = dot < 0 ? fileName : fileName.substring(0, dot);
+    final parentSegments = file.parent.uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList();
+    final rootSegments = file.parent.parent.uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .toList();
+    final connectionKey = parentSegments.isEmpty ? '' : parentSegments.last;
+    final rootName = rootSegments.isEmpty ? '' : rootSegments.last;
+    final sha256Key = RegExp(r'^[a-f0-9]{64}$');
+    if (rootName != 'generated_media' ||
+        !sha256Key.hasMatch(connectionKey) ||
+        !sha256Key.hasMatch(fileKey)) {
+      return null;
+    }
+    return (connectionKey: connectionKey, fileKey: fileKey);
+  }
+
+  static int autoLoadLimit(GeneratedMediaReference reference) {
+    if (reference.kind == GeneratedMediaKind.image) return maxAutoImageBytes;
+    if (reference.kind == GeneratedMediaKind.video) return maxAutoVideoBytes;
+    if (reference.kind == GeneratedMediaKind.audio) return maxAutoAudioBytes;
+    if (isTextLike(reference)) return maxAutoTextBytes;
+    if (reference.mimeType == 'application/pdf' ||
+        reference.displayName.toLowerCase().endsWith('.pdf')) {
+      return maxAutoPdfBytes;
+    }
+    return maxAutoPdfBytes;
+  }
+
+  static Future<T> runAutoLoad<T>(
+    Future<T> Function() load, {
+    GeneratedMediaAutoLoadCancellation? cancellation,
+    bool Function()? isCancelled,
+  }) async {
+    bool cancelled() =>
+        cancellation?.isCancelled == true || (isCancelled?.call() ?? false);
+
+    if (cancelled()) throw const GeneratedMediaDownloadCancelled();
+
+    if (_activeAutoLoads < maxConcurrentAutoLoads) {
+      _activeAutoLoads++;
+    } else {
+      final waiter = _GeneratedMediaAutoLoadWaiter();
+      void cancelWaiter() {
+        if (_autoLoadWaiters.remove(waiter)) {
+          waiter.completer.completeError(
+            const GeneratedMediaDownloadCancelled(),
+          );
+        }
+      }
+
+      cancellation?._addListener(cancelWaiter);
+      _autoLoadWaiters.add(waiter);
+      try {
+        await waiter.completer.future;
+      } finally {
+        cancellation?._removeListener(cancelWaiter);
+      }
+      if (cancelled()) {
+        _releaseAutoLoadSlot();
+        throw const GeneratedMediaDownloadCancelled();
+      }
+    }
+
+    try {
+      return await load();
+    } finally {
+      _releaseAutoLoadSlot();
+    }
+  }
+
+  static void _releaseAutoLoadSlot() {
+    _activeAutoLoads--;
+    if (_autoLoadWaiters.isEmpty) return;
+    final waiter = _autoLoadWaiters.removeAt(0);
+    _activeAutoLoads++;
+    waiter.completer.complete();
+  }
 
   static List<GeneratedMediaSegment> parseSegments(String content) {
     if (content.isEmpty || !content.contains('MEDIA:')) {
@@ -498,7 +653,12 @@ class GeneratedMediaService {
     }
     final root = baseDir ?? await getApplicationSupportDirectory();
     final connectionHash = sha256.convert(utf8.encode(connectionId)).toString();
-    final sourceHash = sha256.convert(utf8.encode(reference.source)).toString();
+    final cacheIdentity = [
+      reference.source,
+      reference.sizeBytes?.toString() ?? '',
+      reference.modifiedAt?.toUtc().microsecondsSinceEpoch.toString() ?? '',
+    ].join('\u0000');
+    final sourceHash = sha256.convert(utf8.encode(cacheIdentity)).toString();
     final suffix = _extensionFor(reference.displayName, reference.kind);
     final directory = Directory('${root.path}/generated_media/$connectionHash');
     await directory.create(recursive: true);

@@ -6928,7 +6928,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de documento solo pinta tarjeta y oculta la ruta del servidor',
+    'MEDIA de documento inicia la carga y oculta la ruta del servidor',
     (tester) async {
       const source = '/workspace/private/qa_documento.txt';
       await pumpChat(
@@ -6941,7 +6941,8 @@ void main() {
 
       expect(find.byType(AttachmentCard), findsOneWidget);
       expect(find.text('qa_documento.txt'), findsOneWidget);
-      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -6949,7 +6950,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de audio solo pinta tarjeta de audio sin filtrar la ruta',
+    'MEDIA de audio inicia carga sin filtrar la ruta ni reproducir',
     (tester) async {
       const source = '/workspace/private/resumen.mp3';
       await pumpChat(
@@ -6965,7 +6966,8 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('resumen.mp3'), findsOneWidget);
-      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
@@ -6974,7 +6976,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de imagen solo en historial pinta la tarjeta de consentimiento',
+    'MEDIA de imagen en historial inicia la carga automáticamente',
     (tester) async {
       const source = '/workspace/generated/circle.png';
       await pumpChat(
@@ -6986,10 +6988,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-image-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -6997,7 +7000,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de imagen solo tras message.complete pinta el mismo consentimiento',
+    'MEDIA de imagen tras message.complete inicia la carga automáticamente',
     (tester) async {
       const source = '/workspace/generated/circle.png';
       final gateway = _UiRewindGateway();
@@ -7018,12 +7021,14 @@ void main() {
       );
       gateway.emit('message.complete', const {'text': 'MEDIA:$source'});
       await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump();
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-image-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -7031,7 +7036,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de vídeo crea tarjeta privada y oculta la ruta del servidor',
+    'MEDIA de vídeo inicia carga privada y oculta la ruta del servidor',
     (tester) async {
       const source = '/home/hermes/workspace/private-generated-clip.mp4';
       await pumpChat(
@@ -7046,10 +7051,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-video-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       final renderedKeys = tester.allWidgets
           .map((widget) => widget.key?.toString() ?? '')
@@ -7072,7 +7078,7 @@ void main() {
   );
 
   testWidgets(
-    'video_generate estructurado pinta tarjeta aunque la respuesta no incluya ruta',
+    'video_generate estructurado inicia carga sin mostrar la ruta',
     (tester) async {
       const source = '/home/hermes/.hermes/cache/videos/tool-result.mp4';
       await pumpChat(
@@ -7096,10 +7102,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-video-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(tester.takeException(), isNull);
     },

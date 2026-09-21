@@ -39,7 +39,6 @@ import 'package:image_picker_platform_interface/image_picker_platform_interface.
 import 'package:markdown/markdown.dart' as md;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
 
@@ -16619,82 +16618,7 @@ class _GeneratedMediaSlot extends StatefulWidget {
 }
 
 class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
-  late GeneratedImageStatus _status;
-  File? _file;
-  int _receivedBytes = 0;
-  int? _totalBytes;
-  String? _errorLabel;
-  bool _cancelled = false;
-
-  @override
-  void initState() {
-    super.initState();
-    // MEDIA text is model-controlled. Even authenticated server paths may
-    // point at an unrelated private image/video, so fetching always requires
-    // an explicit tap. Legacy structured generated images keep their existing
-    // trusted-tool auto-download path in [_GeneratedImageSlot].
-    _status = GeneratedImageStatus.unsupported;
-  }
-
-  @override
-  void dispose() {
-    _cancelled = true;
-    super.dispose();
-  }
-
-  Future<void> _start() async {
-    final state = context.findAncestorStateOfType<_ChatScreenState>();
-    if (state == null) {
-      if (mounted) setState(() => _status = GeneratedImageStatus.error);
-      return;
-    }
-    if (mounted) {
-      setState(() {
-        _cancelled = false;
-        _receivedBytes = 0;
-        _totalBytes = null;
-        _errorLabel = null;
-        _status = GeneratedImageStatus.downloading;
-        _file = null;
-      });
-    }
-    try {
-      final file = await state.downloadGeneratedMedia(
-        widget.reference,
-        onProgress: (received, total) {
-          if (!mounted || _cancelled) return;
-          setState(() {
-            _receivedBytes = received;
-            _totalBytes = total;
-          });
-        },
-        isCancelled: () => _cancelled || !mounted,
-      );
-      if (!mounted || _cancelled) return;
-      final length = await file.length();
-      if (!mounted || _cancelled) return;
-      setState(() {
-        _file = file;
-        _receivedBytes = length;
-        _totalBytes = length;
-        _status = GeneratedImageStatus.ready;
-      });
-    } on GeneratedMediaDownloadCancelled {
-      if (!mounted) return;
-      setState(() => _status = GeneratedImageStatus.unsupported);
-    } on DashboardDownloadCancelled {
-      if (!mounted) return;
-      setState(() => _status = GeneratedImageStatus.unsupported);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _errorLabel = _downloadErrorLabel(error);
-        _status = GeneratedImageStatus.error;
-      });
-    }
-  }
-
-  String _downloadErrorLabel(Object error) {
+  String _downloadErrorLabel(BuildContext context, Object error) {
     final strings = Strings.of(context);
     if (error is DashboardHttpException) {
       if (error.statusCode == 401 || error.statusCode == 403) {
@@ -16713,51 +16637,32 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
     return strings.genMediaError;
   }
 
-  void _cancel() {
-    if (_status != GeneratedImageStatus.downloading) return;
-    setState(() {
-      _cancelled = true;
-      _status = GeneratedImageStatus.unsupported;
-      _receivedBytes = 0;
-      _totalBytes = null;
-    });
-  }
-
-  Future<void> _share() async {
-    final file = _file;
-    if (file == null) return;
-    try {
-      await Share.shareXFiles([
-        XFile(
-          file.path,
-          name: widget.reference.displayName,
-          mimeType: widget.reference.mimeType,
+  Future<void> _open(
+    BuildContext context,
+    File file,
+    int length,
+    VoidCallback onOpenExternal,
+    VoidCallback onShare,
+    VoidCallback onSave,
+  ) async {
+    final isPdf = widget.reference.mimeType == 'application/pdf' ||
+        widget.reference.displayName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => GeneratedFileViewerScreen(
+            name: widget.reference.displayName,
+            mimeType: widget.reference.mimeType,
+            sizeBytes: length,
+            onOpenWith: onOpenExternal,
+            onShare: onShare,
+            onSave: onSave,
+          ),
         ),
-      ]);
-    } catch (_) {
-      if (mounted) _showActionError();
-    }
-  }
-
-  Future<void> _save() async {
-    final file = _file;
-    if (file == null) return;
-    try {
-      await FilePicker.platform.saveFile(
-        dialogTitle: 'Hermes Console',
-        fileName: widget.reference.displayName,
-        bytes: await file.readAsBytes(),
       );
-    } catch (_) {
-      if (mounted) _showActionError();
+      return;
     }
-  }
-
-  Future<void> _open() async {
-    final file = _file;
-    if (file == null) return;
     try {
-      final length = await file.length();
       final digest = (await sha256.bind(file.openRead()).first).toString();
       var reference = AttachmentHistoryReference(
         index: 0,
@@ -16790,7 +16695,7 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
           }
         }
       }
-      if (!mounted) return;
+      if (!context.mounted) return;
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
           builder: (_) => AttachmentBytesPreviewScreen(
@@ -16798,112 +16703,70 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
             sizeLabel: _formatGeneratedFileBytes(length),
             reference: reference,
             file: previewFile,
+            onOpenExternal: onOpenExternal,
+            onShare: onShare,
+            onSave: onSave,
           ),
         ),
       );
     } catch (_) {
-      if (mounted) _showActionError();
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).genMediaError)),
+      );
     }
-  }
-
-  void _showActionError() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(Strings.of(context).genMediaError)),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final file = _file;
-    final kind = widget.reference.kind;
-    final strings = Strings.of(context);
-    if (kind == GeneratedMediaKind.audio &&
-        _status == GeneratedImageStatus.ready &&
-        file != null) {
-      return GeneratedAudioPlayerCard(
-        file: file,
-        name: widget.reference.displayName,
-        mimeType: widget.reference.mimeType,
-        sizeBytes: _receivedBytes,
-        onShare: _share,
-        onSave: _save,
-      );
-    }
-    if (kind == GeneratedMediaKind.file || kind == GeneratedMediaKind.audio) {
-      final fileStatus = switch (_status) {
-        GeneratedImageStatus.unsupported => GeneratedFileStatus.consent,
-        GeneratedImageStatus.downloading => GeneratedFileStatus.downloading,
-        GeneratedImageStatus.ready => GeneratedFileStatus.ready,
-        GeneratedImageStatus.error || GeneratedImageStatus.gone =>
-          GeneratedFileStatus.error,
-      };
-      return GeneratedFileCard(
-        key: kind == GeneratedMediaKind.audio
-            ? const ValueKey<String>('generated-audio-card')
-            : null,
-        name: widget.reference.displayName,
-        mimeType: widget.reference.mimeType,
-        status: fileStatus,
-        receivedBytes: _receivedBytes,
-        totalBytes: _totalBytes,
-        errorLabel: _errorLabel,
-        onDownload: _start,
-        onCancel: _cancel,
-        onOpen: file == null ? null : _open,
-        onShare: file == null ? null : _share,
-        onSave: file == null ? null : _save,
-      );
-    }
-    if (_status == GeneratedImageStatus.ready && file != null) {
-      return kind == GeneratedMediaKind.image
-          ? GeneratedImageCard(status: GeneratedImageStatus.ready, file: file)
-          : GeneratedVideoCard(file: file);
-    }
-    final colors = Theme.of(context).hermes;
-    final loading = _status == GeneratedImageStatus.downloading;
-    final awaitingConsent = _status == GeneratedImageStatus.unsupported;
-    final domain = widget.reference.sourceKind == GeneratedMediaSourceKind.https
-        ? Uri.parse(widget.reference.source).host
-        : '';
-    return Semantics(
-      container: true,
-      liveRegion: loading,
-      label: loading
-          ? strings.genMediaLoading
-          : awaitingConsent
-          ? domain.isEmpty
-                ? strings.genMediaLoad
-                : strings.genMediaLoadFrom(domain)
-          : strings.genMediaError,
-      child: Container(
-        key: const ValueKey<String>('generated-media-placeholder'),
-        width: double.infinity,
-        constraints: const BoxConstraints(minHeight: 128),
-        decoration: BoxDecoration(
-          color: colors.surfaceVariant,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: colors.divider),
-        ),
-        child: Center(
-          child: loading
-              ? const CircularProgressIndicator(strokeWidth: 2)
-              : TextButton.icon(
-                  onPressed: _start,
-                  icon: Icon(
-                    awaitingConsent
-                        ? Icons.cloud_download_outlined
-                        : Icons.refresh_rounded,
-                  ),
-                  label: Text(
-                    awaitingConsent
-                        ? domain.isEmpty
-                              ? strings.genMediaLoad
-                              : strings.genMediaLoadFrom(domain)
-                        : strings.commonRetry,
-                  ),
-                ),
-        ),
+    final state = context.findAncestorStateOfType<_ChatScreenState>();
+    if (state == null) return const SizedBox.shrink();
+    return GeneratedMediaAttachmentCard(
+      reference: widget.reference,
+      autoLoad:
+          widget.reference.sourceKind == GeneratedMediaSourceKind.serverPath,
+      load: (onProgress, isCancelled) => state.downloadGeneratedMedia(
+        widget.reference,
+        onProgress: onProgress,
+        isCancelled: isCancelled,
       ),
+      errorLabelBuilder: _downloadErrorLabel,
+      onOpen: _open,
+      readyBuilder: (
+        context,
+        file,
+        sizeBytes,
+        onOpenExternal,
+        onShare,
+        onSave,
+      ) {
+        if (widget.reference.mimeType == 'application/pdf' ||
+            widget.reference.displayName.toLowerCase().endsWith('.pdf')) {
+          return GeneratedPdfPreviewCard(
+            file: file,
+            name: widget.reference.displayName,
+            sizeBytes: sizeBytes,
+            onOpen: () => _open(
+              context,
+              file,
+              sizeBytes,
+              onOpenExternal,
+              onShare,
+              onSave,
+            ),
+            onShare: onShare,
+            onSave: onSave,
+          );
+        }
+        return switch (widget.reference.kind) {
+          GeneratedMediaKind.image => GeneratedImageCard(
+            status: GeneratedImageStatus.ready,
+            file: file,
+          ),
+          GeneratedMediaKind.video => GeneratedVideoCard(file: file),
+          GeneratedMediaKind.audio || GeneratedMediaKind.file => null,
+        };
+      },
     );
   }
 }
