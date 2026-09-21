@@ -1428,7 +1428,7 @@ TraceOutcome traceOutcome({
 /// respuesta/run activo. Sustituye al apilado de líneas `terminal — done`
 /// (PRIORIDAD 2): los eventos actualizan ESTA tarjeta, no crean mensajes.
 class ThinkingTraceCard extends StatefulWidget {
-  /// La mascota debe conservar protagonismo dentro de la burbuja del run.
+  /// La mascota conserva protagonismo aquí mientras el run sigue activo.
   /// Son tamaños base: la escala elegida por el usuario se aplica después en
   /// [CompanionView].
   static const double activeCompanionSize = 50;
@@ -1610,16 +1610,18 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
     }
   }
 
-  /// Mood de la mascota: mientras trabaja, el del pipeline real (o `thinking`);
-  /// al terminar, el desenlace de la traza (éxito/error).
-  HermesSparkMood get _liveMood {
-    if (widget.active) return widget.activeMood ?? HermesSparkMood.thinking;
-    return switch (_outcome) {
-      TraceOutcome.failed => HermesSparkMood.error,
-      TraceOutcome.recovered ||
-      TraceOutcome.completed => HermesSparkMood.success,
-      TraceOutcome.working => HermesSparkMood.thinking,
+  /// Mood de la mascota mientras trabaja, derivado del pipeline real.
+  HermesSparkMood get _liveMood =>
+      widget.activeMood ?? HermesSparkMood.thinking;
+
+  Widget _finishedIndicator(HermesThemeColors colors) {
+    final (icon, color) = switch (_outcome) {
+      TraceOutcome.recovered => (Icons.warning_amber_rounded, colors.warning),
+      TraceOutcome.failed => (Icons.error_outline, colors.error),
+      TraceOutcome.working ||
+      TraceOutcome.completed => (Icons.check_circle, colors.success),
     };
+    return Icon(icon, color: color, size: 24, semanticLabel: _summary);
   }
 
   void _copyTrace() {
@@ -1747,13 +1749,14 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
                   constraints: const BoxConstraints(minHeight: 48),
                   child: Row(
                     children: [
-                      CompanionStatusIndicator(
-                        companion: widget.companion,
-                        size: widget.active
-                            ? ThinkingTraceCard.activeWithEventsCompanionSize
-                            : 30,
-                        mood: _liveMood,
-                      ),
+                      if (widget.active)
+                        CompanionStatusIndicator(
+                          companion: widget.companion,
+                          size: ThinkingTraceCard.activeWithEventsCompanionSize,
+                          mood: _liveMood,
+                        )
+                      else
+                        _finishedIndicator(colors),
                       const SizedBox(width: 10),
                       Flexible(
                         child: widget.active

@@ -1,11 +1,58 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:hermes_android/core/companion/data/companion_preferences.dart';
+import 'package:hermes_android/core/companion/data/companion_repository.dart';
+import 'package:hermes_android/core/companion/models/companion.dart';
+import 'package:hermes_android/core/companion/models/companion_presence_level.dart';
 import 'package:hermes_android/core/companion/render/companion_status_indicator.dart';
+import 'package:hermes_android/core/companion/render/companion_view.dart';
+import 'package:hermes_android/core/companion/state/companion_controller.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
+import 'package:hermes_android/core/widgets/hermes_status_indicator.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/hermes_pill.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
+
+class _CompanionRepository extends CompanionRepository {
+  @override
+  Future<Directory?> importedRoot() async => null;
+
+  @override
+  Future<List<Companion>> loadAll() async => const [];
+}
+
+Future<CompanionController> _fullPresenceCompanion() async {
+  SharedPreferences.setMockInitialValues({});
+  final preferences = CompanionPreferences(
+    await SharedPreferences.getInstance(),
+  );
+  final companion = CompanionController(_CompanionRepository(), preferences);
+  await companion.init();
+  await companion.setPresenceLevel(CompanionPresenceLevel.full);
+  return companion;
+}
+
+Widget _cardHost({
+  required ThinkingTraceCard card,
+  double width = 800,
+  double textScale = 1,
+}) => MaterialApp(
+  locale: const Locale('en'),
+  localizationsDelegates: Strings.localizationsDelegates,
+  supportedLocales: Strings.supportedLocales,
+  theme: AppTheme.hermesRedDark,
+  home: MediaQuery(
+    data: MediaQueryData(
+      disableAnimations: true,
+      textScaler: TextScaler.linear(textScale),
+    ),
+    child: Scaffold(body: SizedBox(width: width, child: card)),
+  ),
+);
 
 void main() {
   testWidgets('actividad muestra el estado limpio sin puntos ni LIVE', (
@@ -150,6 +197,134 @@ void main() {
 
     expect(find.text('Ejecutando skill'), findsOneWidget);
     expect(find.text('review_changes'), findsNothing);
+  });
+
+  testWidgets('terminado usa check funcional aunque la presencia esté activa', (
+    tester,
+  ) async {
+    final companion = await _fullPresenceCompanion();
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(
+              id: 'tool-complete',
+              label: 'Terminal',
+              status: 'completed',
+            ),
+          ],
+          active: false,
+          companion: companion,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(CompanionStatusIndicator), findsNothing);
+    expect(find.byType(CompanionView), findsNothing);
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    final icon = tester.widget<Icon>(find.byIcon(Icons.check_circle));
+    expect(
+      icon.color,
+      AppTheme.hermesRedDark.extension<HermesThemeColors>()!.success,
+    );
+    expect(icon.size, 24);
+  });
+
+  testWidgets('recuperado y fallido usan warning y error funcionales', (
+    tester,
+  ) async {
+    final companion = await _fullPresenceCompanion();
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(id: 'failed', label: 'Read', status: 'failed'),
+            ChatTraceEvent(id: 'done', label: 'Retry', status: 'completed'),
+          ],
+          active: false,
+          companion: companion,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+    expect(find.byType(CompanionView), findsNothing);
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(id: 'failed', label: 'Read', status: 'failed'),
+          ],
+          active: false,
+          companion: companion,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(find.byType(CompanionView), findsNothing);
+  });
+
+  testWidgets('presencia off conserva pulso activo y check terminado', (
+    tester,
+  ) async {
+    final companion = await _fullPresenceCompanion();
+    await companion.setPresenceLevel(CompanionPresenceLevel.off);
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: const [],
+          active: true,
+          companion: companion,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(CompanionView), findsNothing);
+    expect(find.byType(HermesStatusPulse), findsOneWidget);
+
+    await tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: const [],
+          active: false,
+          companion: companion,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byType(CompanionView), findsNothing);
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+  });
+
+  testWidgets('320dp con escala 2 no desborda el estado terminado', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _cardHost(
+        width: 320,
+        textScale: 2,
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(
+              id: 'tool-complete',
+              label: 'Terminal',
+              status: 'completed',
+            ),
+          ],
+          active: false,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Completed'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('razonamiento terminado queda plegado en la misma tarjeta', (

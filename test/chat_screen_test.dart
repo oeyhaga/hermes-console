@@ -36,6 +36,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:record/record.dart';
 
 import 'package:hermes_android/main.dart';
+import 'package:hermes_android/core/companion/models/companion_presence_level.dart';
+import 'package:hermes_android/core/companion/render/companion_status_indicator.dart';
+import 'package:hermes_android/core/companion/render/companion_view.dart';
 import 'package:hermes_android/core/config/flavor.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/models/agent_profile.dart';
@@ -2222,6 +2225,39 @@ void main() {
       await tester.pump();
     });
     return chat;
+  }
+
+  void mockCompanionStorage() {
+    final support = Directory.systemTemp.createTempSync(
+      'chat-single-sprite-companion-',
+    );
+    const channel = MethodChannel('plugins.flutter.io/path_provider');
+    TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async => support.path);
+    addTearDown(() {
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      if (support.existsSync()) support.deleteSync(recursive: true);
+    });
+  }
+
+  Future<void> enableFullCompanion(WidgetTester tester) async {
+    final companion = tester
+        .state<HermesAppState>(find.byType(HermesApp))
+        .companion;
+    for (
+      var attempt = 0;
+      attempt < 100 && !companion.isInitialized;
+      attempt++
+    ) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    expect(companion.isInitialized, isTrue);
+    await companion.setPresenceLevel(CompanionPresenceLevel.full);
+    await tester.pump();
   }
 
   void mentionRoster(String id, {String title = 'Research Buddy'}) {
@@ -14790,6 +14826,116 @@ void main() {
     expect(find.text('Pregunta segura'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'historial terminado muestra check en actividad y una mascota en cabecera',
+    (tester) async {
+      mockCompanionStorage();
+      await pumpChat(
+        tester,
+        initialPreferences: const {'companion.presence_level': 'full'},
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': 'PUBLIC_HISTORY_DONE',
+            '_activity_trace': [
+              {
+                'kind': 'tool',
+                'label': 'read_file',
+                'status': 'completed',
+                'id': 'call-history-done',
+              },
+            ],
+          },
+          {'role': 'user', 'content': 'PUBLIC_HISTORY_REQUEST'},
+        ],
+      );
+      await enableFullCompanion(tester);
+
+      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      expect(find.byType(CompanionStatusIndicator), findsNothing);
+      expect(find.byType(CompanionView), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ThinkingTraceCard),
+          matching: find.byType(CompanionView),
+        ),
+        findsNothing,
+      );
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'cabecera cede la mascota a actividad sin mover contenido al terminar',
+    (tester) async {
+      mockCompanionStorage();
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('single-sprite-transition'),
+        messagesLoaded: true,
+        initialStoredSessionId: 'sess-single-sprite',
+        acquireDesktopRuntimeBeforeMount: true,
+        initialPreferences: const {'companion.presence_level': 'full'},
+      );
+      await enableFullCompanion(tester);
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_SINGLE_SPRITE_REQUEST',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('tool.start', const {
+        'id': 'call-single-sprite',
+        'name': 'terminal',
+      });
+      gateway.emit('message.delta', const {'text': 'PUBLIC_ACTIVE_ANSWER'});
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      expect(find.byType(CompanionStatusIndicator), findsOneWidget);
+      expect(find.byType(CompanionView), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ThinkingTraceCard),
+          matching: find.byType(CompanionView),
+        ),
+        findsOneWidget,
+      );
+      final activeHeader = tester.getRect(find.text('>_ HERMES CONSOLE'));
+      final activeAnswer = tester.getRect(
+        find.textContaining('PUBLIC_ACTIVE_ANSWER'),
+      );
+      expect(tester.takeException(), isNull);
+
+      gateway.emit('tool.complete', const {
+        'id': 'call-single-sprite',
+        'name': 'terminal',
+        'status': 'completed',
+      });
+      gateway.emit('message.complete', const {'text': 'PUBLIC_ACTIVE_ANSWER'});
+      await tester.pump(const Duration(milliseconds: 700));
+
+      expect(find.byType(CompanionStatusIndicator), findsNothing);
+      expect(find.byType(CompanionView), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      expect(
+        tester.getRect(find.text('>_ HERMES CONSOLE')).left,
+        closeTo(activeHeader.left, 0.5),
+      );
+      expect(
+        tester.getRect(find.textContaining('PUBLIC_ACTIVE_ANSWER')).left,
+        closeTo(activeAnswer.left, 0.5),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('turno tool-only usa una sola tarjeta de actividad', (
     tester,
