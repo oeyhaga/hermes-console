@@ -9,6 +9,8 @@ import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/recovery_proof.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 
+import 'support/rpc_frame_helpers.dart';
+
 class _TicketDashboardClient extends DashboardClient {
   _TicketDashboardClient()
     : super(host: '127.0.0.1', port: 1, manualToken: 'unused');
@@ -822,7 +824,9 @@ void main() {
         await for (final raw in socket) {
           final frame = jsonDecode(raw as String) as Map<String, dynamic>;
           final method = frame['method'];
-          if (method == 'gateway.ping') {
+          if (isClientCapabilitiesFrame(frame)) {
+            socket.add(jsonEncode(clientCapabilitiesResponse(frame)));
+          } else if (method == 'gateway.ping') {
             pingCalls += 1;
             socket.add(
               jsonEncode({
