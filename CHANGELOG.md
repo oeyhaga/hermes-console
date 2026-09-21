@@ -6,82 +6,109 @@ are not releases.
 ## 1.2.12 (9010) — 2026-09-21
 
 Reliability and long-session release. Hermes kept working when Console was
-closed or lost its connection; what failed was what Console showed afterwards.
-This version makes Console show what Hermes is really doing, without losing or
-duplicating content, in the same way Hermes Desktop does.
+closed, stopped or lost its connection; what failed was what Console showed
+and what its controls did afterwards. This version follows Hermes Desktop's own
+behaviour for Stop, editing, queueing and reconnecting instead of a bespoke
+one, and it was checked on a real Android device and emulator against a live
+Hermes backend.
+
+### Stop, edit and queue (Desktop parity)
+- Stop always reaches the server, like Desktop: it is no longer blocked by a
+  local ownership check or by a failed disk write, it settles from the
+  gateway's real terminal signal, and it escalates within a bounded eight
+  seconds instead of hanging on "Stopping…".
+- Stop is available whenever Hermes is busy for any reason — a running turn, a
+  background process, a subagent, a loop or work started elsewhere — from the
+  chat composer and from the working rows on Home and in the list. It also
+  stops the background processes, refreshes their state right away, and a
+  stopped turn now says "Stopped" instead of "Completed". A session that was
+  left running from an earlier auto-continue shows a one-tap "Stop this
+  session" banner.
+- Sending right after Stop interrupts first (Desktop's three-second window).
+- Editing a message resolves the row by content like Desktop, sends the row
+  ids the gateway needs so consecutive edits work, restores the transcript
+  cleanly if an edit fails, and never leaves an orphan bubble.
+- Queue and "force": a redirect the backend declines because the turn had just
+  finished is no longer reported as a failure — the message simply stays
+  queued, like Desktop; drained messages are flagged as queued; "Steer now" is
+  hidden where the connection cannot steer.
+
+### Reconnecting and network loss
+- After losing the network mid-turn the chat now recovers on its own: retries
+  back off with full jitter up to fifteen seconds, wake up as soon as Android
+  reports the network is back or the app returns to the foreground, mint a
+  fresh gateway ticket on every attempt, treat only a confirmed sign-in
+  failure as final, and adopt the finished answer from the stored transcript
+  when the turn ended while the app was offline. While the connection is down
+  the chat says so calmly instead of claiming the model is thinking, and
+  announces "Reconnected" once.
+- The conversation lists refresh from gateway events with one slow safety
+  poll, and the chat's own background polls are event-driven with adaptive
+  backstops, like Desktop. Reconnect backoff only resets after a stable
+  connection and replayed events are not applied twice.
+- Approvals, clarifying questions, sudo and secret prompts work again: Console
+  now tells the gateway it can answer server requests (#42).
 
 ### Chat
-- One assistant bubble per turn. Reasoning and tool/skill steps now live in a
-  single activity block inside that bubble: it shows the current step while the
-  turn runs ("Thinking…", "Running tool…") and collapses into one expandable
-  entry when the turn ends. Reopened conversations rebuild the same single
-  bubble from the stored history instead of showing one bubble per step.
+- One assistant bubble per turn. Its header always carries the companion
+  sprite, larger and reacting to the turn's state, and a single activity block
+  holds the reasoning and tool/skill steps with a small state icon (thinking,
+  tool, skill, waiting, done, stopped, failed, offline). It collapses into one
+  entry when the turn ends, and a reopened conversation rebuilds the same
+  bubble.
+- The agent's task list shows as a "Tasks n/m" pill with a live checklist card
+  and a checklist inside the turn's activity block, rebuilt after a reconnect.
 - Files and media Hermes delivers (`MEDIA:`) load by themselves and open in
-  in-app viewers: images (zoom), video (player with controls), PDF (first-page
-  preview and a page viewer, rendered natively on Android) and text files
-  (inline preview and a selectable full-text viewer), plus audio playback and
-  Save/Share for every kind. Only paths that Hermes announces are fetched, the
-  server stays the authority over what can be downloaded, large files show
-  their size and one tap instead of loading automatically, and previews are
-  cached on disk.
-- Editing a message while a turn runs interrupts the turn and retries the
-  rewind, like Desktop, instead of leaving two bubbles. A queued message that
-  the backend refuses to redirect now says why.
-- A turn that Hermes starts by itself (for example after a background process
-  finishes) appears as its own message instead of overwriting the previous one.
-  Background-process completions are shown as their own row.
+  in-app viewers: images (zoom), video, PDF (first-page preview and page
+  viewer rendered natively on Android), text files (inline preview and a
+  selectable viewer), audio, plus Save and Share. Only paths Hermes announces
+  are fetched, the server stays the authority, large files ask for a tap and
+  previews are cached on disk.
+- Background work stays visible: running subagents and processes, watch
+  patterns and hits, loops, heartbeats and goals show as one compact pill in
+  the chat and as a "Background · N" chip on Home and in the list, and clear
+  only when the backend confirms they are gone. Home and the list keep showing
+  what Hermes is working on after the app was closed completely.
+- Reopening the app mid-turn no longer duplicates your message or sticks on
+  "Connecting"; a turn Hermes starts by itself appears as its own message and
+  no longer overwrites the previous one.
+- Transient messages float at the top in one calm style (no coloured side
+  bar) and never cover the composer; the floating activity pills reserve their
+  own space; the "scroll up" arrow appears only when it has something to
+  reach; internal rows (personality switch, auto-continue, process completion)
+  no longer appear as your messages; conversation previews show readable text
+  instead of raw tool-call JSON.
 - Silence no longer fails a turn: a long foreground tool no longer produces a
-  false "Modelo sin respuesta"; after five minutes without activity Console
-  shows a non-terminal hint.
-- The floating activity pills reserve their own space below the transcript, so
-  they never cover the last message; in-app notices follow the app theme, have
-  no coloured side bar and stay clear of the composer.
-- Internal rows stored as user messages (personality switch, auto-continue,
-  process completion) are no longer shown as your own messages.
+  false "Modelo sin respuesta" (a hint appears after five minutes).
 
-### Working state, closing and reopening the app
-- Reopening the app while a turn is running no longer duplicates your message
-  or sticks on "Connecting", and it ends on the final reply. A viewer that lost
-  its channel recovers from the stored transcript without taking the runtime
-  over. This also fixes a finished reply that stayed hidden until the app was
-  restarted.
-- After closing the app completely, Home and the conversation list show which
-  session Hermes is still working on, keyed by the durable session id, and the
-  indicator does not flap between refreshes.
-- Background work stays visible: running subagents and processes, with watch
-  patterns and the latest watch hit, recurring loops, heartbeats, goals and task
-  progress appear as one compact pill in the chat and as a "Background · N"
-  chip on Home and in the list, and clear only when the backend confirms they
-  are gone.
+### Fixes from GitHub issues
+- #42 approval and prompt requests were withdrawn by the gateway (see above).
+- #39 voice transcription became unreliable from the second recording: the
+  speech socket is now closed cleanly before the next recording starts.
+- #37 the composer draft: covered by regression tests for normal, new, Bot
+  Chat and room conversations, restarts and quick exits; drafts are shown on
+  the list row.
 
-### Connection and long sessions
-- Reconnection backs off with jitter and only resets after a stable socket or a
-  successful call; replayed events are not applied twice; the conversation list
-  refreshes on `sessions.changed` with one slow safety poll instead of frequent
-  polling.
-- Older history stays reachable: after a compaction the earlier messages remain
-  available through "load earlier", a short active-history page can no longer
-  replace a longer stored transcript, and the local transcript cache keeps the
-  newest 1,000 messages (2 MiB) and says when it is truncated.
-- Conversation previews show the last readable text instead of raw tool-call
-  JSON.
-
-### Other fixes
-- Sharing a link to Console pastes only the link (no page title or preview
-  image), and an empty shared session no longer fails with "session not found".
-- The scroll-to-bottom button is no longer hidden behind the activity pills.
-- Bot Chat sessions with the canonical source resume their stored conversation
-  instead of starting a new one, and an explicit "no companion" choice persists
-  instead of falling back to the global default.
+### Other
+- Long history stays reachable after a compaction and the local transcript
+  cache keeps the newest 1,000 messages (2 MiB), telling you when it is
+  truncated.
+- Sharing a link to Console pastes only the link; an empty shared session no
+  longer fails. Bot Chat resumes its stored conversation and the "no companion"
+  choice persists.
+- The app now declares the normal `ACCESS_NETWORK_STATE` permission so it can
+  reconnect the moment Android reports the network is back.
 
 ### Known limits
-- Notifications for work finishing on another device (for example a tablet) are
-  not included: Hermes routes those events only to the surface that owns the
-  session.
+- Notifications for work finishing on another device (for example a tablet)
+  are not included: Hermes routes those events only to the surface that owns
+  the session.
+- The gateway does not yet give exactly-once certainty when the connection
+  drops while a message is being submitted, and a turn that produces no
+  activity for ten minutes while detached can be interrupted by the server.
 - Console and Hermes Desktop still cannot continue the same live turn across
-  clients (cross-process lease on the server).
-- Force-stopping the app from Android settings stops all delivery until it is
-  opened again.
+  clients (cross-process lease on the server), and force-stopping the app from
+  Android settings stops all delivery until it is opened again.
 
 ## 1.2.11 (9009) — 2026-09-19
 

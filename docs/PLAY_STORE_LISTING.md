@@ -97,11 +97,11 @@ sponsored by, or maintained by Nous Research or the Hermes Agent authors.
 
 ### Español (máximo 500 caracteres)
 
-Fiabilidad en sesiones largas: una sola burbuja por turno con un bloque de actividad que reúne razonamiento y herramientas; archivos, PDF, imágenes, vídeo y texto se ven solos y se abren en visores propios; el trabajo en segundo plano (procesos, bucles, subagentes) se ve en el chat, Inicio y la lista; reabrir la app sin duplicados ni bloqueos; reconexión más estable, menos consultas e historial largo accesible.
+Como Hermes Desktop: Stop llega siempre al servidor y está disponible mientras haya trabajo (también desde Inicio y la lista); editar, cola y «forzar» sin fallos falsos; el chat se recupera solo tras perder la red; una burbuja por turno con sprite que reacciona al estado; lista de tareas del agente; archivos con visor propio; aprobaciones y voz arreglados.
 
 ### English (maximum 500 characters)
 
-Long-session reliability: one bubble per turn with a single activity block for reasoning and tools; files, PDFs, images, video and text load by themselves and open in built-in viewers; background work (processes, loops, subagents) is visible in the chat, Home and the list; reopening the app no longer duplicates or sticks; steadier reconnection, fewer polls and long history stays reachable.
+Like Hermes Desktop: Stop always reaches the server and is available whenever there is work (also from Home and the list); edit, queue and force without false failures; the chat recovers on its own after losing the network; one bubble per turn with a state-aware sprite; the agent's task list; built-in file viewers; approvals and voice fixed.
 
 ## Novedades anteriores — `1.2.11 (9009)`
 

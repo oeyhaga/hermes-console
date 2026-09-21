@@ -1,51 +1,48 @@
 # Hermes Console 1.2.12 — notas de publicación
 
-Build candidata: `1.2.12+9010` (2026-09-21). La validación física en Pixel 9 Pro queda
-pendiente antes de cualquier publicación; nada se sube sin ese visto bueno del propietario.
-Las pruebas de esta versión se hicieron en emulador Android 35 conectado a la instancia real
-de Hermes y, antes de las últimas mejoras, en el Pixel.
+Build candidata: `1.2.12+9010` (2026-09-21). La validación física final en Pixel 9 Pro queda
+pendiente del propietario antes de cualquier publicación; nada se sube sin su visto bueno.
+Pruebas hechas: suite completa, emulador Android 35 y Pixel 9 Pro conectados a la instancia real
+de Hermes (con el plugin de enrutado Laya activo), incluidos cortes de red reales por `adb`.
 
 ## Lo más importante frente a 1.2.11
 
-- **Una sola burbuja por turno.** El razonamiento y los pasos de herramientas/skills viven en
-  un único bloque de actividad dentro de la burbuja: muestra el paso actual mientras trabaja
-  («Pensando…», «Ejecutando herramienta…») y queda plegado en una sola entrada al terminar.
-  Al reabrir una conversación se reconstruye la misma burbuja desde el historial.
-- **Archivos y medios que se ven solos.** Lo que Hermes entrega con `MEDIA:` se precarga y se
-  abre en visores propios: imagen con zoom, vídeo con controles, PDF (miniatura y visor de
-  páginas con renderizador nativo de Android), texto (vista previa y visor seleccionable),
-  audio, y Guardar/Compartir en todos. Solo se descargan rutas anunciadas por Hermes, el
-  servidor sigue mandando sobre lo descargable, los archivos grandes piden un toque y hay caché
-  en disco.
-- **Trabajo en segundo plano visible.** Procesos (con patrones de vigilancia y último acierto),
-  bucles, latidos, objetivos, avance de tareas y subagentes aparecen como una píldora compacta
-  en el chat y como chip «En segundo plano · N» en Inicio y en la lista.
-- **Cerrar y reabrir la app.** Sin mensaje duplicado, sin quedarse en «Conectando» y con la
-  respuesta final; tras cerrar del todo, Inicio y la lista muestran qué sesión sigue trabajando.
-- **Sin falsos «Modelo sin respuesta».** El silencio deja de fallar el turno; a los cinco
-  minutos solo aparece un aviso.
-- **Edición y cola.** Editar durante un turno interrumpe y reintenta el rewind como Desktop; si el
-  backend rechaza redirigir un mensaje en cola, ahora lo explica.
-- **Conexión y sesiones largas.** Backoff con jitter que solo se reinicia con un socket estable,
-  eventos repetidos sin duplicar, refresco por `sessions.changed` con un sondeo lento de
-  seguridad; el historial anterior sigue accesible tras compactar y la caché local conserva los
-  1.000 mensajes más recientes (2 MiB) avisando si recorta.
-- Mensajes internos (cambio de personalidad, auto-continuar, proceso terminado) ya no aparecen
-  como tuyos; las vistas previas de la lista muestran texto legible en vez de JSON de llamadas.
-- Android Share pega solo el enlace; la sesión vacía compartida ya no da «session not found»;
-  el botón de bajar no queda tapado; los avisos flotantes siguen el tema y no cubren el
-  composer; Bot Chat canónico reanuda su conversación y la elección «sin sprite» se conserva.
+- **Stop como en Desktop.** Llega siempre al servidor (ya no lo bloquea una comprobación local
+  de propiedad ni un fallo al escribir en disco), se confirma con la señal real del gateway y
+  escala con un límite de 8 s en vez de quedarse en «Deteniendo…». Está disponible mientras
+  haya trabajo, sea cual sea (turno, proceso en segundo plano, subagente, bucle o sesión
+  arrancada en otro sitio), desde el chat y desde las filas de Inicio y la lista; también
+  detiene los procesos en segundo plano; un turno interrumpido dice «Detenido»; y una sesión
+  colgada por auto-continuar muestra un banner «Detener esta sesión».
+- **Editar, cola y forzar como en Desktop.** La fila se resuelve por contenido, las ediciones
+  consecutivas funcionan, un fallo restaura el historial sin burbujas huérfanas, y un «forzar»
+  que el backend declina porque el turno acababa de terminar ya no se anuncia como fallo: el
+  mensaje sigue en cola.
+- **Pérdida de red.** El chat se recupera solo: reintentos con jitter hasta 15 s, aviso
+  inmediato cuando Android detecta la red o la app vuelve a primer plano, ticket nuevo en cada
+  intento, y si el turno terminó mientras estabas sin conexión se adopta la respuesta final del
+  historial. Mientras dura, el chat lo dice con calma y avisa con «Reconectado».
+- **Aprobaciones y preguntas del agente (#42), voz desde la segunda grabación (#39) y borrador
+  (#37, con pruebas de regresión).**
+- **Una burbuja por turno,** con el sprite siempre en la cabecera (más grande y reaccionando al
+  estado) y un bloque de actividad con iconos de estado; **lista de tareas del agente**
+  («Tareas 3/7»); **archivos con visor propio** (imagen, vídeo, PDF, texto, audio);
+  **trabajo en segundo plano visible** en el chat, Inicio y la lista; avisos flotantes arriba;
+  flecha de subir solo cuando sirve.
+- Sondeos del chat y de las listas guiados por eventos con respaldo lento; backoff estable;
+  historial largo accesible tras compactar; nueva autorización normal `ACCESS_NETWORK_STATE`.
 
 ## Límites conocidos
 
-- Las notificaciones de trabajo que termina en otro dispositivo (p. ej. la tablet) no están: Hermes
-  las enruta solo a la superficie dueña de la sesión.
-- Console y Hermes Desktop siguen sin poder continuar el mismo turno en vivo entre clientes
-  (lease entre procesos en el servidor).
-- Forzar la detención desde los ajustes de Android corta toda entrega hasta volver a abrir la app.
+- Las notificaciones de trabajo que termina en otro dispositivo (p. ej. la tablet) no están.
+- Sin certeza de «exactamente una vez» si la conexión cae justo al enviar un mensaje (el
+  backend actual ignora `client_turn_id`); un turno sin actividad durante 10 min separado del
+  cliente puede ser interrumpido por el servidor.
+- Console y Desktop siguen sin poder continuar el mismo turno en vivo entre clientes.
 
 ## Pendiente de validar en el Pixel
 
-Reproducir en el Pixel: turno largo con herramientas y cierre forzado, proceso en segundo plano
-y subagente con chips en Inicio, archivos (TXT, PDF, imagen, vídeo) con sus visores, edición y
-cola con forzar, Android Share con enlace y avisos flotantes sobre el composer.
+Turno largo con herramientas y cierre forzado; corte de red real (modo avión 90 s) con el turno
+en marcha; Stop con proceso en segundo plano y desde Inicio; editar y cola con «forzar»; sprite,
+iconos de estado y flecha; archivos (TXT, PDF, imagen, vídeo); tareas del agente; aprobaciones
+(`clarify`); voz con dos grabaciones seguidas contra un STT del servidor.
