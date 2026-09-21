@@ -5416,10 +5416,28 @@ class TuiGatewayClient
     required String sourceText,
     required int expectedOrdinal,
   }) async {
-    // session.history is active-only after compaction and therefore cannot prove
-    // the row identity for a destructive rewind. ActiveChat uses row IDs from
-    // its durable REST/resume projection; absence remains a fail-closed null.
-    return null;
+    try {
+      final page = await sessionHistory(sessionId: runtimeSessionId);
+      final durableUsers = page.messages.where((message) {
+        final displayKind = message['display_kind']?.toString().trim() ?? '';
+        final rowId = message['row_id'];
+        return message['role'] == 'user' &&
+            displayKind.isEmpty &&
+            rowId is int &&
+            rowId > 0;
+      }).toList(growable: false);
+      if (expectedOrdinal < 0 || expectedOrdinal >= durableUsers.length) {
+        return null;
+      }
+      final target = durableUsers[expectedOrdinal];
+      final durableText = (target['text'] ?? target['content'] ?? '')
+          .toString()
+          .trim();
+      if (durableText != sourceText.trim()) return null;
+      return target['row_id'] as int;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override

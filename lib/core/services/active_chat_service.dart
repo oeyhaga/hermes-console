@@ -90,6 +90,9 @@ const activeChatVoiceBargeSettleTimeout = Duration(seconds: 5);
 @visibleForTesting
 const activeChatStopAdmissionSettleTimeout = Duration(seconds: 3);
 
+const _activeChatRewindBusyRetryInterval = Duration(milliseconds: 150);
+const _activeChatRewindBusyRetryTimeout = Duration(seconds: 6);
+
 @visibleForTesting
 String activeChatDesktopRecoveryUiMessage(Object _) =>
     'No se pudo recuperar el turno. Inténtalo de nuevo.';
@@ -14096,6 +14099,40 @@ class ActiveChat {
           }
         }
 
+        Future<DesktopRewindAck> submitRewindAfterBusy(
+          String targetRuntimeId,
+        ) async {
+          try {
+            return await submitRewindWithOrdinalRepair(targetRuntimeId);
+          } on TuiGatewayRpcError catch (error) {
+            if (error.code != 4009) rethrow;
+          }
+
+          // A rewind must retain its cut; interrupt the old turn and retry the
+          // same truncating submit until the gateway releases its running gate.
+          _discardLateInterruptTerminal = true;
+          try {
+            await gateway.interrupt(targetRuntimeId);
+          } catch (_) {}
+
+          final deadline = DateTime.now().add(
+            _activeChatRewindBusyRetryTimeout,
+          );
+          while (DateTime.now().isBefore(deadline)) {
+            await Future<void>.delayed(_activeChatRewindBusyRetryInterval);
+            try {
+              return await submitRewindWithOrdinalRepair(targetRuntimeId);
+            } on TuiGatewayRpcError catch (error) {
+              if (error.code != 4009) rethrow;
+            }
+          }
+          throw const TuiGatewayRpcError(
+            'prompt.submit',
+            'session busy',
+            code: 4009,
+          );
+        }
+
         if (!await _beginTurnTransport(
           turnEpoch,
           PreparedTurnTransport.desktop,
@@ -14106,7 +14143,7 @@ class ActiveChat {
         captureRuntimeAttempt(runtimeId);
         late DesktopRewindAck rewindAck;
         try {
-          rewindAck = await submitRewindWithOrdinalRepair(runtimeId);
+          rewindAck = await submitRewindAfterBusy(runtimeId);
         } on TuiGatewayRpcError catch (error) {
           if (!_isRecoverablePromptSessionRejection(error)) rethrow;
           await _activeTurnDelivery?.markRejectedBeforeAcceptance();
@@ -14155,7 +14192,7 @@ class ActiveChat {
             return false;
           }
           runtimeId = reboundRuntimeId;
-          rewindAck = await submitRewindWithOrdinalRepair(runtimeId);
+          rewindAck = await submitRewindAfterBusy(runtimeId);
         }
         _rebindSurvivorUserRowIds(rewindAck);
         _rewindRollbackMessages = null;

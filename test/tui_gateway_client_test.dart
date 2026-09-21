@@ -2192,7 +2192,7 @@ void main() {
   });
 
   test(
-    'durable row resolver never consults active-only session.history',
+    'durable row resolver refreshes once and selects by user ordinal',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(server.close);
@@ -2217,20 +2217,21 @@ void main() {
               'jsonrpc': '2.0',
               'id': frame['id'],
               'result': {
+                'count': 8,
                 'messages': [
                   {'role': 'user', 'row_id': 0, 'text': 'cero'},
                   {
                     'role': 'user',
                     'row_id': 72,
-                    'text': 'pregunta original',
-                    'display_kind': '   ',
+                    'text': 'duplicada',
+                    'display_kind': 'notice',
                   },
-                  {'role': 'user', 'row_id': 73, 'text': ' pregunta original '},
-                  {'role': 'user', 'row_id': 75, 'text': 'duplicada'},
-                  {'role': 'user', 'row_id': 76, 'text': ' duplicada '},
-                  {'role': 'user', 'row_id': 77, 'text': 'última única'},
-                  {'role': 'user', 'row_id': 78, 'text': 'duplicada'},
+                  {'role': 'user', 'row_id': 73, 'text': 'duplicada'},
                   {'role': 'assistant', 'row_id': 74, 'text': 'respuesta'},
+                  {'role': 'user', 'row_id': 75, 'text': 'duplicada'},
+                  {'role': 'user', 'text': 'optimista sin id'},
+                  {'role': 'user', 'row_id': 76, 'text': 'última'},
+                  {'role': 'assistant', 'row_id': 77, 'text': 'respuesta'},
                 ],
               },
             }),
@@ -2250,16 +2251,17 @@ void main() {
         dashboard: _TicketDashboardClient(),
       );
       addTearDown(client.close);
+      await client.connect();
 
       expect(
         await client.resolveDurableUserRowId(
           'runtime-history',
-          sourceText: 'última única',
-          expectedOrdinal: 0,
+          sourceText: 'duplicada',
+          expectedOrdinal: 1,
         ),
-        isNull,
+        75,
       );
-      expect(requests, isEmpty);
+      expect(requests.map((request) => request['method']), ['session.history']);
     },
   );
 
