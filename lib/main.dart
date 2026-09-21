@@ -195,7 +195,12 @@ MissionControlOpenTarget? missionControlTargetForNotification(
 
 MissionControlOpenTarget? missionControlTargetForSession(Session session) {
   final source = session.source.trim().toLowerCase();
-  if (!const {'mobile-bot', 'bot-mode', 'bot-mode-local'}.contains(source)) {
+  if (!const {
+    'mobile-bot',
+    'bot-mode',
+    'bot-mode-local',
+    'bot-mode-canonical',
+  }.contains(source)) {
     return null;
   }
   return MissionControlOpenTarget.bot(

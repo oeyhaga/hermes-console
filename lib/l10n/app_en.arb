@@ -2981,6 +2981,7 @@
   "sesMessagesError": "Could not load messages",
   "sesMessagesRetry": "retry",
   "sesNoMessages": "session has no messages",
+  "sessionPreviewUnavailable": "No visible messages",
   "sesMetricMessages": "messages",
   "sesMetricToolCalls": "tool calls",
   "sesMetricTokens": "tokens",

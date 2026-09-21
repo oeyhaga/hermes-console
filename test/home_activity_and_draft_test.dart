@@ -120,6 +120,25 @@ void main() {
       expect(find.byKey(const ValueKey('home-draft-chat-2')), findsNothing);
     });
 
+    testWidgets('nunca muestra JSON de tools y usa una etiqueta localizada', (
+      tester,
+    ) async {
+      const rawToolCall = '[{"id":"call_latest","type":"function"}]';
+      await tester.pumpWidget(
+        host(
+          const HomeRecentSessionTileForTesting(
+            sessionId: 'chat-tool',
+            title: 'Deploy a staging',
+            assistantPreview: rawToolCall,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(rawToolCall), findsNothing);
+      expect(find.text('Sin mensajes visibles'), findsOneWidget);
+    });
+
     testWidgets(
       'la actividad se distingue del título: tinte propio, punto y peso',
       (tester) async {

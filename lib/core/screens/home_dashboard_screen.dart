@@ -2504,8 +2504,8 @@ class _RecentSessionTile extends StatelessWidget {
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    final userPreview = summary.user;
-    final assistantPreview = summary.assistant;
+    final userPreview = humanReadableSessionPreview(summary.user);
+    final assistantPreview = humanReadableSessionPreview(summary.assistant);
     final assistantText = assistantPreview == null
         ? null
         : projectAssistantOperationalArtifacts(
@@ -2525,6 +2525,7 @@ class _RecentSessionTile extends StatelessWidget {
             ?basePreview,
           ].join(' · ')
         : basePreview;
+    final visiblePreview = previewText ?? strings.sessionPreviewUnavailable;
 
     // Fila ligera: jerarquía por texto y divisor, sin cards pesadas.
     // Semantics compone una descripción legible para TalkBack (título, turno
@@ -2536,6 +2537,8 @@ class _RecentSessionTile extends StatelessWidget {
         strings.homeSemanticChat(title, session.messageCount),
         ?userPreview,
         ?assistantOrActivity,
+        if (userPreview == null && assistantOrActivity == null)
+          strings.sessionPreviewUnavailable,
         if (session.hasLocalDraft) strings.slDraftBadge,
       ].join(', '),
       child: InkWell(
@@ -2592,13 +2595,11 @@ class _RecentSessionTile extends StatelessWidget {
                                     label: activityLabel!,
                                   ),
                                 )
-                              : previewText == null
-                              ? const SizedBox.shrink()
                               : Padding(
-                                  key: ValueKey('preview-$previewText'),
+                                  key: ValueKey('preview-$visiblePreview'),
                                   padding: const EdgeInsets.only(top: 3),
                                   child: Text(
-                                    previewText,
+                                    visiblePreview,
                                     key: session.hasLocalDraft
                                         ? ValueKey('home-draft-${session.id}')
                                         : null,
