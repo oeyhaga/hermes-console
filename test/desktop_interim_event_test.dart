@@ -618,7 +618,7 @@ void main() {
     );
 
     test(
-      'un final sin relación con el interim queda como otro segmento',
+      'un final sin relación con el interim comparte la misma burbuja',
       () async {
         final fixture = await _startChat();
         addTearDown(fixture.dispose);
@@ -630,9 +630,9 @@ void main() {
           'text': 'Aquí tienes el resumen final.',
         });
 
+        expect(_internalAssistantMessages(fixture.chat), hasLength(1));
         expect(_nonEmptyAssistantTexts(fixture.chat), [
-          'Aquí tienes el resumen final.',
-          'Estoy revisando el proyecto.',
+          'Estoy revisando el proyecto.\n\nAquí tienes el resumen final.',
         ]);
       },
     );

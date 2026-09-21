@@ -4201,6 +4201,18 @@
   "extErrServer": "Server error (5xx) — the provider failed internally.",
   "voiceSaveTest": "Save and test",
   "chatCopyTrace": "Copy trace",
+  "chatActivityThinking": "Thinking…",
+  "chatActivityRunningTool": "Running tool…",
+  "chatActivityRunningSkill": "Running skill…",
+  "chatActivityReasoning": "Reasoning",
+  "chatActivityThoughtFor": "Thought for {seconds}s",
+  "@chatActivityThoughtFor": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "chatInstallBridgeModels": "Install the Mobile Bridge to see all your models (one tap, one token)",
   "connectTitle": "Connect your Hermes",
   "connectSimpleQuestion": "How do you want to connect?",

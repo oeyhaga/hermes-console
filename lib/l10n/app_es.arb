@@ -5168,6 +5168,18 @@
   },
   "voiceSaveTest": "Guardar y probar",
   "chatCopyTrace": "Copiar trace",
+  "chatActivityThinking": "Pensando…",
+  "chatActivityRunningTool": "Ejecutando herramienta…",
+  "chatActivityRunningSkill": "Ejecutando skill…",
+  "chatActivityReasoning": "Razonamiento",
+  "chatActivityThoughtFor": "Razonó durante {seconds}s",
+  "@chatActivityThoughtFor": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
   "chatInstallBridgeModels": "Instalar Mobile Bridge para ver todos tus modelos (un toque, un solo token)",
   "connectTitle": "Conecta tu Hermes",
   "connectSimpleQuestion": "¿Cómo quieres conectar?",

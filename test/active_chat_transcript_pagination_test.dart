@@ -12,6 +12,7 @@ import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
+import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/services/subagent_transcript_projection.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
@@ -1325,8 +1326,12 @@ void main() {
         '0',
         '120',
       ]);
+      final reasoningMessages = chat.messages
+          .where((row) => row['reasoning'] != null)
+          .toList(growable: false);
+      expect(reasoningMessages, hasLength(1));
       expect(
-        chat.messages.where((row) => row['reasoning'] != null),
+        reasoningMessages.single[assistantActivityTraceKey],
         hasLength(40),
       );
       expect(
@@ -1335,7 +1340,7 @@ void main() {
       );
       expect(
         ChatRenderProjection.build(chat.internalMessagesForTesting).units,
-        hasLength(160),
+        hasLength(121),
       );
       expect(chat.hasEarlierMessages, isTrue);
 

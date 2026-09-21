@@ -502,11 +502,22 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   if (role == 'user' && !retainUserMentionNote) {
     content = stripBotMentionNote(content);
   }
+  final activity = role == 'assistant'
+      ? normalizeAssistantActivityTrace(message[assistantActivityTraceKey])
+      : const <Map<String, dynamic>>[];
   final normalized = <String, dynamic>{
     'role': role,
     'content': content,
     if (reasoning.isNotEmpty) 'reasoning': reasoning,
+    if (activity.isNotEmpty) assistantActivityTraceKey: activity,
   };
+  final activityDuration = message['_activity_duration_seconds'];
+  if (activityDuration is num &&
+      activityDuration.isFinite &&
+      activityDuration > 0 &&
+      activityDuration <= 604800) {
+    normalized['_activity_duration_seconds'] = activityDuration;
+  }
   for (final key in const ['id', 'message_id', 'row_id']) {
     final value = message[key];
     if (value is int && value > 0) {
@@ -596,6 +607,15 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   if (generatedImages.isNotEmpty) {
     normalized[_generatedImagesMetadataKey] = generatedImages;
   }
+  final toolResultEvidence = message[assistantToolResultEvidenceKey];
+  if (retainMediaEvidence &&
+      role == 'assistant' &&
+      toolResultEvidence is List) {
+    normalized[assistantToolResultEvidenceKey] = toolResultEvidence
+        .whereType<Map>()
+        .map(Map<String, dynamic>.from)
+        .toList(growable: false);
+  }
   if (retainProjectionState) {
     for (final key in const [
       '_pipeline',
@@ -657,6 +677,7 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
       assistantToolCalls is List && assistantToolCalls.isNotEmpty;
   if (content.trim().isEmpty &&
       reasoning.isEmpty &&
+      activity.isEmpty &&
       generatedImages.isEmpty &&
       !isEditorial &&
       !isLivePlaceholder &&
@@ -813,7 +834,9 @@ List<Map<String, dynamic>> _projectTranscriptForInternalState(
       index += 1;
     }
   }
-  return projected;
+  return coalesceAssistantTurnsNewestFirst(
+    _associateGeneratedImagesNewestFirst(projected),
+  );
 }
 
 List<Map<String, dynamic>> _normalizedNewestFirst(
@@ -1056,6 +1079,45 @@ List<Map<String, dynamic>> _associateGeneratedImagesNewestFirst(
   final pending = <Map<String, dynamic>>[];
   final additions = <int, List<Map<String, dynamic>>>{};
 
+  void collectToolResult(Map<String, dynamic> message) {
+    final callId = _toolCallId(message);
+    if (callId == null) return;
+    final name = _toolName(message) ?? mediaCallNames[callId];
+    final rawResult =
+        message['result'] ?? message['output'] ?? message['content'];
+    final isVideoResult =
+        _isVideoGenerateName(name) ||
+        (name == null && _looksLikeGeneratedVideoResult(rawResult));
+    final videoReferences = isVideoResult
+        ? GeneratedMediaService.referencesFromToolResult(
+            'video_generate',
+            rawResult,
+          )
+        : const <GeneratedMediaReference>[];
+    if (videoReferences.isNotEmpty &&
+        (mediaCallNames.containsKey(callId) ||
+            _isVideoGenerateName(name) ||
+            _looksLikeGeneratedVideoResult(rawResult))) {
+      for (final reference in videoReferences) {
+        pending.add(_generatedVideoMetadata(reference, callId));
+      }
+      return;
+    }
+
+    final references = GeneratedImageService.imageReferencesFromResult(
+      rawResult,
+    );
+    if (references.isEmpty ||
+        (!mediaCallNames.containsKey(callId) &&
+            !_isImageGenerateName(name) &&
+            !_looksLikeGeneratedImageResult(rawResult))) {
+      return;
+    }
+    for (final reference in references) {
+      pending.add(_generatedImageMetadata(reference, callId));
+    }
+  }
+
   for (var index = messages.length - 1; index >= 0; index--) {
     final message = messages[index];
     final role = message['role']?.toString().trim().toLowerCase();
@@ -1078,49 +1140,34 @@ List<Map<String, dynamic>> _associateGeneratedImagesNewestFirst(
           mediaCallNames[call.id] = call.name;
         }
       }
-      continue;
-    }
-    if (role != 'tool') continue;
-    final callId = _toolCallId(message);
-    if (callId == null) continue;
-    final name = _toolName(message) ?? mediaCallNames[callId];
-    final rawResult =
-        message['result'] ?? message['output'] ?? message['content'];
-    final isVideoResult =
-        _isVideoGenerateName(name) ||
-        (name == null && _looksLikeGeneratedVideoResult(rawResult));
-    final videoReferences = isVideoResult
-        ? GeneratedMediaService.referencesFromToolResult(
-            'video_generate',
-            rawResult,
-          )
-        : const <GeneratedMediaReference>[];
-    if (videoReferences.isNotEmpty &&
-        (mediaCallNames.containsKey(callId) ||
-            _isVideoGenerateName(name) ||
-            _looksLikeGeneratedVideoResult(rawResult))) {
-      for (final reference in videoReferences) {
-        pending.add(_generatedVideoMetadata(reference, callId));
+      final nestedResults = message[assistantToolResultEvidenceKey];
+      if (nestedResults is List) {
+        for (final raw in nestedResults) {
+          if (raw is Map) collectToolResult(Map<String, dynamic>.from(raw));
+        }
+        final content = message['content'];
+        if (pending.isNotEmpty &&
+            message['_pipeline'] != true &&
+            content is String &&
+            content.trim().isNotEmpty) {
+          additions[index] = List<Map<String, dynamic>>.of(pending);
+          pending.clear();
+        }
       }
       continue;
     }
-
-    final references = GeneratedImageService.imageReferencesFromResult(
-      rawResult,
-    );
-    if (references.isEmpty ||
-        (!mediaCallNames.containsKey(callId) &&
-            !_isImageGenerateName(name) &&
-            !_looksLikeGeneratedImageResult(rawResult))) {
-      continue;
-    }
-    for (final reference in references) {
-      pending.add(_generatedImageMetadata(reference, callId));
-    }
+    if (role != 'tool') continue;
+    collectToolResult(message);
   }
 
-  if (additions.isEmpty) return messages;
   final projected = List<Map<String, dynamic>>.of(messages);
+  for (var index = 0; index < projected.length; index++) {
+    if (!projected[index].containsKey(assistantToolResultEvidenceKey)) continue;
+    final sanitized = Map<String, dynamic>.from(projected[index])
+      ..remove(assistantToolResultEvidenceKey);
+    projected[index] = Map<String, dynamic>.unmodifiable(sanitized);
+  }
+  if (additions.isEmpty) return projected;
   for (final entry in additions.entries) {
     final message = projected[entry.key];
     final merged = _mergeGeneratedImageMetadata(
@@ -2283,7 +2330,9 @@ class ActiveTurnDelivery {
     String updateProjection(String source) => source.startsWith(_current.text)
         ? '$normalized${source.substring(_current.text.length)}'
         : normalized;
-    final mentions = BotMentionRoster.shared.resolver(_current.connectionId, _current.profile).resolve(normalized);
+    final mentions = BotMentionRoster.shared
+        .resolver(_current.connectionId, _current.profile)
+        .resolve(normalized);
     final next = _current.copyWith(
       updatedAtMs: _nowMs(),
       mentions: List.unmodifiable(mentions),
@@ -2759,12 +2808,7 @@ class QueuedPreparedTurn {
 
 enum QueuedEntryKind { desktopAccepted, text, prepared }
 
-enum QueuedSteerOutcome {
-  accepted,
-  rejected,
-  unconfirmed,
-  queueRemovalFailed,
-}
+enum QueuedSteerOutcome { accepted, rejected, unconfirmed, queueRemovalFailed }
 
 /// Proyección única y estable de la cola. La UI y el drenaje consumen el mismo
 /// `queueOrder`; `id` no depende de la posición visible.
@@ -4994,9 +5038,7 @@ class ActiveChat {
       next.add(
         SessionActivityProcess(
           id: row.opaqueId,
-          command: row.command.isEmpty
-              ? current?.command ?? ''
-              : row.command,
+          command: row.command.isEmpty ? current?.command ?? '' : row.command,
           notifyOnComplete: row.notifyOnComplete,
           startedAt:
               row.startedAt ??
@@ -5010,7 +5052,8 @@ class ActiveChat {
       );
     }
     for (final current in _backgroundProcesses) {
-      if (activeRows.containsKey(current.id) || terminalIds.contains(current.id)) {
+      if (activeRows.containsKey(current.id) ||
+          terminalIds.contains(current.id)) {
         _backgroundProcessAbsenceStreaks.remove(current.id);
         continue;
       }
@@ -5024,10 +5067,12 @@ class ActiveChat {
       }
     }
     next.sort((left, right) => left.id.compareTo(right.id));
-    final changed = next.length != _backgroundProcesses.length ||
+    final changed =
+        next.length != _backgroundProcesses.length ||
         List.generate(
           next.length,
-          (index) => !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
+          (index) =>
+              !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
         ).any((different) => different);
     final staleChanged = _backgroundProcessesStale;
     _backgroundProcessesObservedAt = now;
@@ -5865,19 +5910,24 @@ class ActiveChat {
   }
 
   List<String> get queuedTextMessages => List<String>.unmodifiable([
-    if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
+    if (_desktopAcceptedQueuedPrompt != null)
+      stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
     ..._messageQueue.map((item) => stripBotMentionNote(item.text)),
   ]);
 
   List<String> get queuedMessages {
     final local = <({int order, String text})>[
-      ..._messageQueue.map((item) => (order: item.queueOrder, text: stripBotMentionNote(item.text))),
+      ..._messageQueue.map(
+        (item) =>
+            (order: item.queueOrder, text: stripBotMentionNote(item.text)),
+      ),
       ..._preparedTurnQueue.map(
         (item) => (order: item.queueOrder, text: item.turn.text),
       ),
     ]..sort((left, right) => left.order.compareTo(right.order));
     return List<String>.unmodifiable([
-      if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
+      if (_desktopAcceptedQueuedPrompt != null)
+        stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
       ...local.map((item) => item.text),
     ]);
   }
@@ -10823,13 +10873,18 @@ class ActiveChat {
         profile = turn.profile;
         nativeAttachments = turn.activeAttachments;
         fullText = appendBotMentionNote(turn.fullText, turn.mentionAnnotation);
-        desktopText = turn.desktopText == null ? null
+        desktopText = turn.desktopText == null
+            ? null
             : appendBotMentionNote(turn.desktopText!, turn.mentionAnnotation);
       }
     } else if (!mentionsFrozen) {
-      final annotation = buildBotMentionAnnotation(mentionResolver.resolve(fullText));
+      final annotation = buildBotMentionAnnotation(
+        mentionResolver.resolve(fullText),
+      );
       fullText = appendBotMentionNote(fullText, annotation);
-      if (desktopText != null) desktopText = appendBotMentionNote(desktopText, annotation);
+      if (desktopText != null) {
+        desktopText = appendBotMentionNote(desktopText, annotation);
+      }
     }
     final pendingManualProbeClientTurnId =
         _pendingManualOwnershipProbeClientTurnId;
@@ -11404,8 +11459,10 @@ class ActiveChat {
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.rewind');
     }
-    final mentionPayload = appendBotMentionNote(text,
-        buildBotMentionAnnotation(mentionResolver.resolve(text)));
+    final mentionPayload = appendBotMentionNote(
+      text,
+      buildBotMentionAnnotation(mentionResolver.resolve(text)),
+    );
     final capturedLifecycle = _localConversationLifecycle;
     if (_activeRewrite != null) {
       throw StateError('Another conversation rewrite is already active');
@@ -12332,7 +12389,8 @@ class ActiveChat {
   }
 
   BotMentionResolver get mentionResolver => BotMentionRoster.shared.resolver(
-    connection.id, sessionProfile.isEmpty ? 'default' : sessionProfile,
+    connection.id,
+    sessionProfile.isEmpty ? 'default' : sessionProfile,
   );
 
   Future<void>? _mentionRosterLoad;
@@ -12346,8 +12404,16 @@ class ActiveChat {
     try {
       final gateway = _desktopGateway;
       if (gateway is! BotMentionRosterGateway) return;
-      final profiles = await (gateway as BotMentionRosterGateway).loadMentionProfiles();
-      if (!_disposed) BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+      final profiles = await (gateway as BotMentionRosterGateway)
+          .loadMentionProfiles();
+      if (!_disposed) {
+        BotMentionRoster.shared.replace(
+          connection.id,
+          connection.label,
+          profiles,
+          expectedGeneration: rosterGeneration,
+        );
+      }
     } catch (_) {
       // A cold/unavailable roster must never block ordinary chat admission.
     } finally {
@@ -14690,8 +14756,7 @@ class ActiveChat {
   }
 
   void _scheduleAutomaticDesktopReattach(HermesDesktopGateway gateway) {
-    if ((!_attachDesktopRuntimeOnLoad &&
-            !_viewerTurnConvergenceIsCurrent) ||
+    if ((!_attachDesktopRuntimeOnLoad && !_viewerTurnConvergenceIsCurrent) ||
         gateway is! HermesDesktopRecoverySessionLifecycleGateway ||
         _disposed ||
         (isStreaming && !_viewerTurnConvergenceIsCurrent) ||
@@ -16110,7 +16175,12 @@ class ActiveChat {
           : '\n⟦adjunto⟧\n';
       fallbackText = '$fallbackText$separator${refs.join('\n')}';
     }
-    return _startRemoteRun(appendBotMentionNote(fallbackText, mentionAnnotation), model, history, turnEpoch);
+    return _startRemoteRun(
+      appendBotMentionNote(fallbackText, mentionAnnotation),
+      model,
+      history,
+      turnEpoch,
+    );
   }
 
   void _onDesktopEvent(TuiGatewayEvent event) {
@@ -16330,6 +16400,9 @@ class ActiveChat {
       'message.start',
       'message.delta',
       'message.interim',
+      'reasoning.delta',
+      'reasoning.available',
+      'thinking.delta',
       'tool.start',
       'tool.progress',
       'tool.generating',
@@ -16359,12 +16432,30 @@ class ActiveChat {
         _desktopTurnStartedAt = DateTime.now();
         state = ChatPipelineState.waiting;
         _emit(ActiveChatEvent.waiting);
+      case 'reasoning.delta':
+      case 'thinking.delta':
+        final delta = payload['text'] ?? payload['delta'];
+        if (delta is String && delta.isNotEmpty) {
+          _retireDesktopInterimSegment();
+          _appendAssistantReasoningActivity(delta);
+          state = ChatPipelineState.executing;
+          _emit(ActiveChatEvent.toolProgress);
+        }
+      case 'reasoning.available':
+        final reasoning = payload['text'] ?? payload['reasoning'];
+        if (reasoning is String && reasoning.trim().isNotEmpty) {
+          _retireDesktopInterimSegment();
+          _appendAssistantReasoningActivity(reasoning, authoritative: true);
+          state = ChatPipelineState.executing;
+          _emit(ActiveChatEvent.toolProgress);
+        }
       case 'message.delta':
         final deltaText = payload['text'];
         final narratable =
             deltaText is String &&
             _isNarrableDesktopAssistantPayload(event.type, payload);
         if (!narratable) break;
+        _prepareDesktopPostInterimSegment();
         if (!_streamingConfirmed) {
           _streamingConfirmed = true;
           ConnectionManager.markStreamingSupported(connection.id);
@@ -16385,6 +16476,7 @@ class ActiveChat {
       case 'tool.start':
       case 'tool.progress':
       case 'tool.generating':
+        _retireDesktopInterimSegment();
         _flushTokenBuffer();
         state = ChatPipelineState.executing;
         if (event.type == 'tool.start') {
@@ -16399,8 +16491,14 @@ class ActiveChat {
           'tool': payload['name'] ?? payload['tool'] ?? payload['tool_id'],
           'preview': payload['preview'] ?? payload['input'] ?? '',
         }, running: true);
+        _upsertAssistantToolActivity(
+          payload,
+          running: true,
+          startsNew: event.type == 'tool.start',
+        );
         _emit(ActiveChatEvent.toolProgress);
       case 'tool.complete':
+        _retireDesktopInterimSegment();
         _flushTokenBuffer();
         _captureDesktopGeneratedImage(payload);
         _handleLegacyDelegateEvent(event.type, runtimeId, payload);
@@ -16410,6 +16508,7 @@ class ActiveChat {
           'preview': payload['preview'] ?? payload['input'] ?? '',
           'error': payload['error'] != null || payload['status'] == 'error',
         }, running: false);
+        _upsertAssistantToolActivity(payload, running: false, startsNew: false);
         _emit(ActiveChatEvent.toolProgress);
       case 'approval.request':
         _flushTokenBuffer();
@@ -16441,14 +16540,16 @@ class ActiveChat {
           break;
         }
         _recordTerminalWarning(payload['warning']);
-        if (narratable) {
-          _settleDesktopInterim(
-            text,
-            responsePreviewed: payload['response_previewed'] == true,
-          );
-        }
+        final settledText = narratable
+            ? _settleDesktopInterim(
+                text,
+                responsePreviewed: payload['response_previewed'] == true,
+              )
+            : text;
         _completeRun(
-          finalOutput: narratable && text.isNotEmpty ? text : null,
+          finalOutput: narratable && settledText.isNotEmpty
+              ? settledText
+              : null,
           finalReasoning: reasoning.isNotEmpty ? reasoning : null,
           finalOutputNarratable: narratable,
         );
@@ -17295,6 +17396,205 @@ class ActiveChat {
     return true;
   }
 
+  int _assistantActivityMessageIndex() => _messages.indexWhere(
+    (message) =>
+        message['role'] == 'assistant' &&
+        (message['display_kind']?.toString().trim().isEmpty ?? true),
+  );
+
+  void _appendAssistantReasoningActivity(
+    String incoming, {
+    bool authoritative = false,
+  }) {
+    if (incoming.trim().isEmpty) return;
+    var index = _assistantActivityMessageIndex();
+    if (index < 0) {
+      _messages.insert(0, {
+        'role': 'assistant',
+        'content': '',
+        '_pipeline': true,
+      });
+      index = 0;
+    }
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: true);
+    final lastReasoningIndex = activity.lastIndexWhere(
+      (step) => step['kind'] == 'reasoning' && step['status'] == 'running',
+    );
+    final canUpdateLatest =
+        lastReasoningIndex >= 0 && lastReasoningIndex == activity.length - 1;
+    if (canUpdateLatest) {
+      final current = activity[lastReasoningIndex]['text']?.toString() ?? '';
+      final text = authoritative
+          ? incoming.startsWith(current)
+                ? incoming
+                : current.startsWith(incoming)
+                ? current
+                : incoming
+          : '$current$incoming';
+      activity[lastReasoningIndex] = {
+        ...activity[lastReasoningIndex],
+        'text': text,
+      };
+    } else {
+      activity.add({
+        'kind': 'reasoning',
+        'text': incoming,
+        'status': 'running',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    final reasoning = activity
+        .where((step) => step['kind'] == 'reasoning')
+        .map((step) => step['text']?.toString().trim() ?? '')
+        .where((text) => text.isNotEmpty)
+        .join('\n\n');
+    _messages[index] = {
+      ...message,
+      'reasoning': reasoning,
+      assistantActivityTraceKey: activity,
+    };
+  }
+
+  void _upsertAssistantToolActivity(
+    Map<String, dynamic> payload, {
+    required bool running,
+    required bool startsNew,
+  }) {
+    var index = _assistantActivityMessageIndex();
+    if (index < 0) {
+      _messages.insert(0, {
+        'role': 'assistant',
+        'content': '',
+        '_pipeline': true,
+      });
+      index = 0;
+    }
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: true);
+    final rawId =
+        payload['tool_call_id'] ??
+        payload['call_id'] ??
+        payload['tool_id'] ??
+        payload['id'];
+    final id = rawId?.toString().trim();
+    final rawLabel =
+        payload['skill'] ??
+        payload['name'] ??
+        payload['tool'] ??
+        payload['tool_id'];
+    final label = rawLabel?.toString().trim() ?? '';
+    if (label.isEmpty) return;
+    final rawKind = (payload['kind'] ?? payload['type'])
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    final kind =
+        rawKind == 'skill' ||
+            payload.containsKey('skill') ||
+            label.toLowerCase() == 'skill'
+        ? 'skill'
+        : 'tool';
+    var activityIndex = id == null || id.isEmpty
+        ? -1
+        : activity.lastIndexWhere(
+            (step) =>
+                (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+                step['id'] == id,
+          );
+    if (activityIndex < 0 && !startsNew) {
+      activityIndex = activity.lastIndexWhere(
+        (step) =>
+            (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+            step['label'] == label &&
+            step['status'] == 'running',
+      );
+    }
+    final status = running
+        ? 'running'
+        : payload['error'] != null || payload['status'] == 'error'
+        ? 'failed'
+        : 'completed';
+    if (activityIndex >= 0) {
+      activity[activityIndex] = {
+        ...activity[activityIndex],
+        'label': label,
+        'status': status,
+      };
+    } else {
+      activity.add({
+        'kind': kind,
+        'label': label,
+        'status': status,
+        if (id != null && id.isNotEmpty) 'id': id,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    _messages[index] = {...message, assistantActivityTraceKey: activity};
+  }
+
+  void _settleAssistantActivity(String? finalReasoning) {
+    if (finalReasoning?.trim().isNotEmpty == true) {
+      _appendAssistantReasoningActivity(finalReasoning!, authoritative: true);
+    }
+    final index = _assistantActivityMessageIndex();
+    if (index < 0) return;
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: false);
+    if (activity.isEmpty) return;
+    for (var step = 0; step < activity.length; step++) {
+      if (activity[step]['status'] == 'running') {
+        activity[step] = {...activity[step], 'status': 'completed'};
+      }
+    }
+    final firstTimestamp = activity
+        .map((step) => step['timestamp'])
+        .whereType<num>()
+        .firstOrNull;
+    final durationSeconds = firstTimestamp == null
+        ? null
+        : ((DateTime.now().millisecondsSinceEpoch - firstTimestamp) / 1000)
+              .clamp(0, 604800);
+    _messages[index] = {
+      ...message,
+      assistantActivityTraceKey: activity,
+      '_activity_duration_seconds': ?durationSeconds,
+    };
+  }
+
+  void _retireDesktopInterimSegment() {
+    if (_messages.isEmpty ||
+        _messages.first['role'] != 'assistant' ||
+        _messages.first['_desktopReplaceInterimOnDelta'] != true) {
+      return;
+    }
+    _messages[0] = Map<String, dynamic>.from(_messages.first)
+      ..remove('_desktopPreserveInterimOnDelta');
+  }
+
+  void _prepareDesktopPostInterimSegment() {
+    if (_messages.isEmpty ||
+        _messages.first['role'] != 'assistant' ||
+        _messages.first['_desktopReplaceInterimOnDelta'] != true) {
+      return;
+    }
+    final preserve =
+        _messages.first['_desktopPreserveInterimOnDelta'] == true;
+    final current = (_messages.first['content'] as String?) ?? '';
+    final next = Map<String, dynamic>.from(_messages.first)
+      ..['content'] = preserve && current.isNotEmpty ? '$current\n\n' : ''
+      ..['_desktopInterimWasPreserved'] = preserve
+      ..remove('_desktopReplaceInterimOnDelta')
+      ..remove('_desktopPreserveInterimOnDelta');
+    _messages[0] = next;
+  }
+
   void _sealDesktopInterim(
     Map<String, dynamic> payload, {
     required bool narratable,
@@ -17310,103 +17610,81 @@ class ActiveChat {
       _messages[0] = {
         ..._messages[0],
         'content': rawText,
-        '_pipeline': false,
+        '_pipeline': true,
         '_desktopInterim': true,
         '_desktopInterimPublic': narratable,
         '_desktopInterimKey': key,
+        '_desktopInterimText': rawText,
+        '_desktopReplaceInterimOnDelta': true,
+        '_desktopPreserveInterimOnDelta': true,
       };
     } else {
       _messages.insert(0, {
         'role': 'assistant',
         'content': rawText,
-        '_pipeline': false,
+        '_pipeline': true,
         '_desktopInterim': true,
         '_desktopInterimPublic': narratable,
         '_desktopInterimKey': key,
+        '_desktopInterimText': rawText,
+        '_desktopReplaceInterimOnDelta': true,
+        '_desktopPreserveInterimOnDelta': true,
       });
     }
-    // Subsequent deltas belong to a new assistant segment while the same turn
-    // keeps running. The event remains visual for chat, while Voz observes the
-    // separate monotonic narration projection populated above.
-    _messages.insert(0, {
-      'role': 'assistant',
-      'content': '',
-      '_pipeline': true,
-      '_desktopPostInterimKey': key,
-    });
     _pendingDesktopInterimKey = key;
     state = ChatPipelineState.executing;
     _emit(ActiveChatEvent.toolProgress);
   }
 
-  bool _settleDesktopInterim(
+  String _settleDesktopInterim(
     String finalText, {
     required bool responsePreviewed,
   }) {
     final key = _pendingDesktopInterimKey;
     _pendingDesktopInterimKey = null;
-    if (key == null || finalText.trim().isEmpty) {
-      return false;
-    }
+    if (key == null || finalText.trim().isEmpty) return finalText;
     final interimIndex = _messages.indexWhere(
       (message) => message['_desktopInterimKey'] == key,
     );
-    if (interimIndex < 0) return false;
-    final interimText = (_messages[interimIndex]['content'] as String? ?? '')
-        .trim();
-    if (interimText.isEmpty) return false;
+    if (interimIndex < 0) return finalText;
+    final message = _messages[interimIndex];
+    final interimText =
+        (message['_desktopInterimText'] as String? ??
+                message['content'] as String? ??
+                '')
+            .trim();
+    if (interimText.isEmpty) return finalText;
     final trimmedFinal = finalText.trim();
-    // Continuidad, no igualdad exacta (paridad con Desktop, fix #63679): el
-    // streaming puede perder caracteres y el terminal añadir un delta final,
-    // así que un prefijo en cualquier dirección cuenta como el MISMO mensaje.
-    // `responsePreviewed` sigue cubriendo el caso verify-on-stop aunque el
-    // final reescrito ya no comparta prefijo con el preview.
     final finalContinuesInterim =
         trimmedFinal == interimText ||
         trimmedFinal.startsWith(interimText) ||
         interimText.startsWith(trimmedFinal);
-    if (!responsePreviewed && !finalContinuesInterim) return false;
-    final retainedGeneratedMedia = _messages
-        .where((message) => message['_desktopPostInterimKey'] == key)
-        .expand(_generatedImageMetadataOf)
-        .toList(growable: false);
-    _messages.removeWhere(
-      (message) => message['_desktopPostInterimKey'] == key,
-    );
-    final settledIndex = _messages.indexWhere(
-      (message) => message['_desktopInterimKey'] == key,
-    );
-    if (settledIndex < 0) return false;
-    if (trimmedFinal.startsWith(interimText)) {
-      // Conserva el prefijo que ya estaba visible: _completeRun encola el
-      // sufijo autoritativo y lo revela con la misma cadencia que los deltas.
-      _messages[settledIndex] = {
-        ..._messages[settledIndex],
-        '_pipeline': false,
-        '_responsePreviewed': true,
-        if (retainedGeneratedMedia.isNotEmpty)
-          '_generatedImages': _mergeGeneratedImageMetadata(
-            _generatedImageMetadataOf(_messages[settledIndex]),
-            retainedGeneratedMedia,
-          ),
-      };
-    } else {
-      // Final reescrito o más corto que el preview: el texto autoritativo
-      // sustituye al interim entero. Conservar el prefijo aquí dejaría en el
-      // transcript caracteres que el servidor nunca produjo.
-      _messages[settledIndex] = {
-        ..._messages[settledIndex],
-        'content': finalText,
-        '_pipeline': false,
-        '_responsePreviewed': true,
-        if (retainedGeneratedMedia.isNotEmpty)
-          '_generatedImages': _mergeGeneratedImageMetadata(
-            _generatedImageMetadataOf(_messages[settledIndex]),
-            retainedGeneratedMedia,
-          ),
-      };
-    }
-    return true;
+    final preserveInterim =
+        !responsePreviewed &&
+        !finalContinuesInterim &&
+        (message['_desktopPreserveInterimOnDelta'] == true ||
+            message['_desktopInterimWasPreserved'] == true);
+    final currentText = ((message['content'] as String?) ?? '').trim();
+    final settledText = preserveInterim
+        ? currentText.startsWith(interimText) &&
+                  currentText.endsWith(trimmedFinal)
+              ? currentText
+              : '$interimText\n\n$trimmedFinal'
+        : finalText;
+    final streamFinalTail =
+        currentText == interimText &&
+        trimmedFinal.startsWith(interimText) &&
+        trimmedFinal.length > interimText.length;
+    final settled = Map<String, dynamic>.from(message)
+      ..['content'] = streamFinalTail ? currentText : settledText
+      ..['_pipeline'] = false
+      ..['_responsePreviewed'] = true
+      ..remove('_desktopInterimText')
+      ..remove('_desktopReplaceInterimOnDelta')
+      ..remove('_desktopPreserveInterimOnDelta')
+      ..remove('_desktopInterimWasPreserved');
+    _messages[interimIndex] = settled;
+    return settledText;
   }
 
   /// Lanza el turno remoto vía `/v1/runs` (motor de runs con aprobaciones
@@ -17988,7 +18266,10 @@ class ActiveChat {
     final queueOrder = _nextQueueOrder++;
     _messageQueue.add(
       _QueuedTextTurn(
-        appendBotMentionNote(trimmed, buildBotMentionAnnotation(mentionResolver.resolve(trimmed))),
+        appendBotMentionNote(
+          trimmed,
+          buildBotMentionAnnotation(mentionResolver.resolve(trimmed)),
+        ),
         queueOrder,
         id: 'text:$queueOrder',
         // Solo un turno vivo o en admisión puede transferir su policy. Una cola
@@ -18283,7 +18564,10 @@ class ActiveChat {
     if (textIndex >= 0) {
       final target = textItems[textIndex];
       final replacement = _QueuedTextTurn(
-        appendBotMentionNote(text.trim(), buildBotMentionAnnotation(mentionResolver.resolve(text.trim()))),
+        appendBotMentionNote(
+          text.trim(),
+          buildBotMentionAnnotation(mentionResolver.resolve(text.trim())),
+        ),
         target.queueOrder,
         id: target.id,
         allowTransportFallback: target.allowTransportFallback,
@@ -18363,7 +18647,9 @@ class ActiveChat {
               prepared.first.turn.fullText,
               prepared.first.turn.mentionAnnotation,
             )
-          : legacy.isNotEmpty ? legacy.first.text : entry.text;
+          : legacy.isNotEmpty
+          ? legacy.first.text
+          : entry.text;
       await steer(payload, mentionsFrozen: true);
     } catch (error) {
       return activeChatSteerFailureIsSafeToQueue(error)
@@ -18938,16 +19224,31 @@ class ActiveChat {
           ConnectionManager.markStreamingSupported(connection.id);
         }
         _enqueueToken((event['delta'] ?? '').toString());
+      case 'reasoning.delta':
+      case 'thinking.delta':
+        final delta = event['text'] ?? event['delta'];
+        if (delta is String && delta.isNotEmpty) {
+          _appendAssistantReasoningActivity(delta);
+          _emit(ActiveChatEvent.toolProgress);
+        }
+      case 'reasoning.available':
+        final reasoning = event['text'] ?? event['reasoning'];
+        if (reasoning is String && reasoning.trim().isNotEmpty) {
+          _appendAssistantReasoningActivity(reasoning, authoritative: true);
+          _emit(ActiveChatEvent.toolProgress);
+        }
       case 'tool.started':
         _flushTokenBuffer();
         state = ChatPipelineState.executing;
         _trackVoiceToolEvent(event, running: true, startsNew: true);
         _upsertRunTool(event, running: true);
+        _upsertAssistantToolActivity(event, running: true, startsNew: true);
         _emit(ActiveChatEvent.toolProgress);
       case 'tool.completed':
         _flushTokenBuffer();
         _trackVoiceToolEvent(event, running: false, startsNew: false);
         _upsertRunTool(event, running: false);
+        _upsertAssistantToolActivity(event, running: false, startsNew: false);
         _emit(ActiveChatEvent.toolProgress);
       case 'approval.request':
         _flushTokenBuffer();
@@ -20104,6 +20405,7 @@ class ActiveChat {
     }
     if (!_isCurrentEpoch(completingEpoch)) return;
     _flushTokenBuffer();
+    _settleAssistantActivity(invocationReasoning);
     if (pendingApproval != null) {
       _cancelApprovalNotification(pendingApproval!, terminal: true);
     }
@@ -20603,12 +20905,14 @@ class ActiveChat {
       accepts: (message) => message['display_kind'] == 'process_complete',
     );
     if (resolved.kind != _TranscriptIdentityResolutionKind.unique) return false;
-    return newestFirst.take(resolved.index).any(
-      (message) =>
-          message['role'] == 'assistant' &&
-          _hasDurableTranscriptIdentity(message) &&
-          (message['content'] ?? '').toString().trim().isNotEmpty,
-    );
+    return newestFirst
+        .take(resolved.index)
+        .any(
+          (message) =>
+              message['role'] == 'assistant' &&
+              _hasDurableTranscriptIdentity(message) &&
+              (message['content'] ?? '').toString().trim().isNotEmpty,
+        );
   }
 
   /// Prefix comparison remains a projection concern; terminal semantics come
@@ -21857,8 +22161,10 @@ class ActiveChat {
   /// `session.steer` únicamente cuando no publican el RPC moderno.
   Future<void> steer(String fullText, {bool mentionsFrozen = false}) async {
     if (!mentionsFrozen) {
-      fullText = appendBotMentionNote(fullText,
-          buildBotMentionAnnotation(mentionResolver.resolve(fullText)));
+      fullText = appendBotMentionNote(
+        fullText,
+        buildBotMentionAnnotation(mentionResolver.resolve(fullText)),
+      );
     }
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.redirect');

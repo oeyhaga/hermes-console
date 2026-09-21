@@ -1359,12 +1359,15 @@ class _ApprovalButton extends StatelessWidget {
 // ThinkingTraceCard — UNA tarjeta por respuesta/run con el progreso agregado
 // ─────────────────────────────────────────────────────────────────────────────
 
+enum ChatTraceEventKind { reasoning, tool, skill }
+
 /// Un evento agregado del trace de pensamiento/herramientas.
 class ChatTraceEvent {
   final String id;
   final String label;
   String status; // running | completed | finished | failed | error
   final String emoji;
+  final ChatTraceEventKind kind;
 
   /// Vista previa REAL del argumento de la herramienta (query, ruta, comando…)
   /// tal como la mandó el agente en `tool.started`. Pertenece exclusivamente a
@@ -1378,6 +1381,7 @@ class ChatTraceEvent {
     required this.status,
     this.emoji = '🔧',
     this.preview = '',
+    this.kind = ChatTraceEventKind.tool,
   });
 
   bool get isDone => status == 'completed' || status == 'finished';
@@ -1449,12 +1453,15 @@ class ThinkingTraceCard extends StatefulWidget {
   /// usa `thinking`. Al terminar manda el desenlace de la traza.
   final HermesSparkMood? activeMood;
 
+  final Duration? duration;
+
   const ThinkingTraceCard({
     required this.events,
     required this.active,
     this.headline = 'Pensando…',
     this.companion,
     this.activeMood,
+    this.duration,
     super.key,
   });
 
@@ -1576,7 +1583,19 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         (event) => !event.isDone && !event.isFailed,
         orElse: () => widget.events.last,
       );
-      return current.label.trim().isEmpty ? widget.headline : current.label;
+      return switch (current.kind) {
+        ChatTraceEventKind.reasoning => s.chatActivityThinking,
+        ChatTraceEventKind.tool => s.chatActivityRunningTool,
+        ChatTraceEventKind.skill => s.chatActivityRunningSkill,
+      };
+    }
+    if (widget.events.any(
+      (event) => event.kind == ChatTraceEventKind.reasoning,
+    )) {
+      final seconds = widget.duration?.inSeconds ?? 0;
+      return seconds > 0
+          ? s.chatActivityThoughtFor(seconds)
+          : s.chatActivityReasoning;
     }
     switch (_outcome) {
       case TraceOutcome.failed:
@@ -1812,9 +1831,14 @@ class _TraceEventLine extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '${event.label} · ${event.status}',
+                  event.kind == ChatTraceEventKind.reasoning
+                      ? event.label
+                      : '${event.label} · ${event.status}',
                   style: TextStyle(
                     fontSize: 11,
+                    fontWeight: event.kind == ChatTraceEventKind.reasoning
+                        ? FontWeight.w600
+                        : null,
                     color: event.isDone
                         ? colors.textDisabled
                         : colors.textSecondary,
@@ -1824,11 +1848,19 @@ class _TraceEventLine extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     event.preview.trim(),
-                    maxLines: 4,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: event.kind == ChatTraceEventKind.reasoning
+                        ? null
+                        : 4,
+                    overflow: event.kind == ChatTraceEventKind.reasoning
+                        ? TextOverflow.visible
+                        : TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 10.5,
+                      fontFamily: event.kind == ChatTraceEventKind.reasoning
+                          ? null
+                          : 'monospace',
+                      fontSize: event.kind == ChatTraceEventKind.reasoning
+                          ? 12
+                          : 10.5,
                       height: 1.3,
                       color: colors.textDisabled,
                     ),
