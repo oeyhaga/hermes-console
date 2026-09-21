@@ -1000,7 +1000,7 @@ void main() {
             eventReconnectOverride: () async {
               reconnects += 1;
             },
-            eventReconnectRandomOverride: () => 0,
+            eventReconnectRandomOverride: () => 0.75,
             activeSessionListLoader: () async {
               rosterReads += 1;
               if (rosterFails) throw StateError('RPC unavailable');

@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Rect
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -47,6 +49,7 @@ class MainActivity : FlutterFragmentActivity() {
     private val fullDuplexCaptureEventsName = "hermes/full_duplex_capture_events"
     private val documentPreviewChannelName = "hermes/document_preview"
     private val memoryChannelName = "hermes/memory"
+    private val networkAvailabilityEventsName = "hermes/network_availability"
     private val platformInfoChannelName = "hermes/platform_info"
     private val foregroundRestartContractChannelName =
         "hermes/foreground_restart_contract"
@@ -63,6 +66,17 @@ class MainActivity : FlutterFragmentActivity() {
     private var pendingNewSessionLaunch: Map<String, Any?>? = null
     private var pendingExternalDataSyncStop = false
     private var externalDataSyncStopReceiverRegistered = false
+    private var networkAvailabilitySink: EventChannel.EventSink? = null
+    private var networkCallbackRegistered = false
+    private val networkCallback =
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val sink = networkAvailabilitySink ?: return
+                runOnUiThread {
+                    if (networkAvailabilitySink === sink) sink.success(null)
+                }
+            }
+        }
     private val externalDataSyncStopReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -158,6 +172,21 @@ class MainActivity : FlutterFragmentActivity() {
         memoryChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             memoryChannelName,
+        )
+        stopNetworkAvailabilityEvents()
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            networkAvailabilityEventsName,
+        ).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    startNetworkAvailabilityEvents(events)
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    stopNetworkAvailabilityEvents()
+                }
+            },
         )
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -391,6 +420,7 @@ class MainActivity : FlutterFragmentActivity() {
         externalDataSyncChannel = null
         newSessionLaunchChannel = null
         memoryChannel = null
+        stopNetworkAvailabilityEvents()
         documentPreviewHandler?.close()
         documentPreviewHandler = null
         fullDuplexCaptureHandler?.close()
@@ -398,6 +428,33 @@ class MainActivity : FlutterFragmentActivity() {
         pcmStreamHandler?.close()
         pcmStreamHandler = null
         super.onDestroy()
+    }
+
+    private fun startNetworkAvailabilityEvents(events: EventChannel.EventSink) {
+        stopNetworkAvailabilityEvents()
+        networkAvailabilitySink = events
+        val connectivityManager =
+            getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+        } catch (_: SecurityException) {
+            networkAvailabilitySink = null
+            events.error("network_state_unavailable", null, null)
+        }
+    }
+
+    private fun stopNetworkAvailabilityEvents() {
+        networkAvailabilitySink = null
+        if (!networkCallbackRegistered) return
+        val connectivityManager =
+            getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        try {
+            connectivityManager.unregisterNetworkCallback(networkCallback)
+        } catch (_: IllegalArgumentException) {
+            // The platform already removed the callback with the Activity.
+        }
+        networkCallbackRegistered = false
     }
 
     private fun deliverExternalDataSyncStop() {

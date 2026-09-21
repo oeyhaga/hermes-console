@@ -2836,6 +2836,11 @@ class DashboardClient {
         DashboardWebSocketAuthFailureCode.unavailable,
         cause: DashboardWebSocketAuthFailureCause.transport,
       );
+    } on HandshakeException {
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
     } on http.ClientException {
       throw const DashboardWebSocketAuthException(
         DashboardWebSocketAuthFailureCode.unavailable,

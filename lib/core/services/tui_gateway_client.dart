@@ -145,7 +145,7 @@ final class _SanitizedRpcFailure extends TuiGatewayRpcError {
 class GatewayReconnectBackoff {
   static const stableInterval = Duration(seconds: 30);
   static const _baseDelay = Duration(seconds: 1);
-  static const _maximumDelay = Duration(seconds: 60);
+  static const _maximumDelay = Duration(seconds: 15);
 
   final double Function() _random;
   int _attempt = 0;
@@ -160,10 +160,8 @@ class GatewayReconnectBackoff {
       _baseDelay.inMilliseconds * (1 << exponent),
       _maximumDelay.inMilliseconds,
     );
-    final floorMs = ceilingMs * 3 ~/ 4;
-    final spreadMs = ceilingMs - floorMs;
-    final jitter = (_random().clamp(0.0, 1.0) * spreadMs).floor();
-    return Duration(milliseconds: floorMs + jitter);
+    final jitter = (_random().clamp(0.0, 1.0) * ceilingMs).floor();
+    return Duration(milliseconds: jitter);
   }
 
   void markHealthy() => _attempt = 0;

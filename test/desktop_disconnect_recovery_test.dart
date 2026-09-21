@@ -651,6 +651,108 @@ class _ActivityLifecycleRecoverableGateway extends _LifecycleRecoverableGateway
   }
 }
 
+class _TicketSocketOutageFixture {
+  late final HttpServer server;
+  final sockets = <WebSocket>{};
+  final issuedTickets = <String>[];
+  final upgradeTickets = <String>[];
+  int ticketRequests = 0;
+  int upgradeRequests = 0;
+  int ticketFailuresRemaining = 0;
+  int upgradeFailuresRemaining = 0;
+
+  Future<http.Response> dashboardRequest(http.Request request) async {
+    ticketRequests += 1;
+    if (ticketFailuresRemaining > 0) {
+      ticketFailuresRemaining -= 1;
+      throw const SocketException('ticket endpoint unavailable');
+    }
+    final ticket = 'ticket-$ticketRequests';
+    issuedTickets.add(ticket);
+    return http.Response(jsonEncode({'ticket': ticket}), 200);
+  }
+
+  Future<void> start() async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      upgradeRequests += 1;
+      upgradeTickets.add(request.uri.queryParameters['ticket'] ?? '');
+      if (upgradeFailuresRemaining > 0) {
+        upgradeFailuresRemaining -= 1;
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+        return;
+      }
+      final socket = await WebSocketTransformer.upgrade(request);
+      sockets.add(socket);
+      socket.done.whenComplete(() => sockets.remove(socket));
+      socket.add(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'method': 'event',
+          'params': {
+            'type': 'gateway.ready',
+            'payload': {'replay_epoch': 'network-recovery-epoch'},
+          },
+        }),
+      );
+      await for (final raw in socket) {
+        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        if (socket.readyState != WebSocket.open) break;
+        try {
+          socket.add(
+            jsonEncode({
+              'jsonrpc': '2.0',
+              'id': frame['id'],
+              'result': frame['method'] == 'gateway.capabilities'
+                  ? <String, dynamic>{'per_session_exclusive_submit': true}
+                  : <String, dynamic>{},
+            }),
+          );
+        } on StateError {
+          break;
+        }
+      }
+    });
+  }
+
+  Future<void> dropSockets() async {
+    for (final socket in sockets.toList(growable: false)) {
+      await socket.close(WebSocketStatus.goingAway, 'network unavailable');
+    }
+  }
+
+  Future<void> close() async {
+    await dropSockets();
+    await server.close(force: true);
+  }
+}
+
+class _RealTransportRecoverableGateway extends _RecoverableDesktopGateway {
+  _RealTransportRecoverableGateway(this.transport);
+
+  final TuiGatewayClient transport;
+
+  @override
+  Stream<TuiGatewayEvent> get events => transport.events;
+
+  @override
+  bool get isConnected => transport.isConnected;
+
+  @override
+  Future<void> connect() async {
+    connectCalls += 1;
+    await transport.connect();
+    _connected = true;
+  }
+
+  @override
+  Future<void> close() async {
+    await transport.close();
+    await super.close();
+  }
+}
+
 class _StaticTicketDashboardClient extends DashboardClient {
   _StaticTicketDashboardClient()
     : super(host: '127.0.0.1', port: 1, manualToken: 'unused');
@@ -855,15 +957,19 @@ class _CountingRealLifecycleGateway
 }
 
 class _TicketTransportOnceGateway extends _ActivityLifecycleRecoverableGateway {
-  _TicketTransportOnceGateway(this.dashboard);
+  _TicketTransportOnceGateway(
+    this.dashboard, {
+    this.ticketFailureAttempts = 1,
+  });
 
   final DashboardClient dashboard;
+  final int ticketFailureAttempts;
   int ticketConnectAttempts = 0;
 
   @override
   Future<void> connect() async {
     ticketConnectAttempts += 1;
-    if (ticketConnectAttempts == 1) {
+    if (ticketConnectAttempts <= ticketFailureAttempts) {
       await dashboard.mintWsTicket();
     }
     await super.connect();
@@ -2304,6 +2410,66 @@ void main() {
         chat.desktopRuntimeSessionId,
         'runtime-ws-ticket-transport-timeout',
       );
+      _expectNoViewerAttachmentMutations(gateway, api);
+    },
+  );
+
+  test(
+    'online signal wakes delayed viewer ticket recovery without takeover',
+    () async {
+      final dashboard = DashboardClient(
+        host: 'hermes.local',
+        manualToken: 'unused',
+        httpClientOverride: MockClient(
+          (_) async => throw TimeoutException('synthetic ticket timeout'),
+        ),
+      );
+      addTearDown(dashboard.close);
+      final api = _RestFallbackApiClient();
+      const id = 'ws-ticket-online-wake';
+      final gateway = _TicketTransportOnceGateway(
+        dashboard,
+        ticketFailureAttempts: 2,
+      )..recoveryAdvertisedRuntimeSessionId = 'runtime-ws-ticket-online-wake'
+        ..recoverySnapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-ws-ticket-online-wake',
+          storedSessionId: 'session-ws-ticket-online-wake',
+          created: false,
+        );
+      final chat = _productionAttachChat(
+        id,
+        gateway,
+        api: api,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'ws-ticket-online-wake-history',
+            'role': 'assistant',
+            'content': 'durable history',
+          },
+        ],
+        desktopRecoveryBackoff: const [Duration(hours: 1)],
+        desktopRecoveryRandom: () => 1.0,
+      );
+      addTearDown(chat.dispose);
+      final viewer = chat.changes.listen((_) {});
+      addTearDown(viewer.cancel);
+
+      await chat.loadMessages(profile: 'owner-profile');
+      await _waitUntil(() => gateway.ticketConnectAttempts == 2);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      chat.requestImmediateTransportRecovery();
+      await _waitUntil(
+        () =>
+            chat.desktopRuntimeSessionId == 'runtime-ws-ticket-online-wake',
+      );
+
+      expect(gateway.ticketConnectAttempts, 3);
+      expect(
+        chat.desktopRuntimeSessionId,
+        'runtime-ws-ticket-online-wake',
+      );
+      expect(gateway.resumeExistingStoredIds, ['session-ws-ticket-online-wake']);
+      expect(gateway.viewerAttachmentCommits, 1);
       _expectNoViewerAttachmentMutations(gateway, api);
     },
   );
@@ -7767,7 +7933,7 @@ void main() {
     },
   );
 
-  test('reconnect full jitter is injectable and capped at thirty seconds', () {
+  test('reconnect full jitter is injectable and capped at fifteen seconds', () {
     final samples = <double>[0.5, 1.0].iterator;
     final chat = _recoverableChat(
       'coverage-jitter-cap',
@@ -7788,7 +7954,175 @@ void main() {
       chat.desktopRecoveryDelayForTesting(1),
       const Duration(milliseconds: 50),
     );
-    expect(chat.desktopRecoveryDelayForTesting(2), const Duration(seconds: 30));
+    expect(chat.desktopRecoveryDelayForTesting(2), const Duration(seconds: 15));
+  });
+
+  test(
+    'foreground resume wakes active turn recovery and adopts durable terminal',
+    () async {
+      final gateway = _RecoverableDesktopGateway()
+        ..recoveryConnectFailuresRemaining = 1;
+      final chat = _recoverableChat(
+        'coverage-foreground-wake',
+        gateway,
+        desktopRecoveryBackoff: const [
+          Duration.zero,
+          Duration(hours: 1),
+        ],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'coverage-foreground-user',
+            'role': 'user',
+            'content': 'run sleep 70, answer LISTO-NET',
+          },
+          {
+            'message_id': 'coverage-foreground-final',
+            'role': 'assistant',
+            'content': 'LISTO-NET',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'run sleep 70, answer LISTO-NET',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('coverage-foreground-wake', _NoopOutbox()),
+      );
+      gateway.drop();
+      await _waitUntil(() => gateway.connectCalls == 2);
+      gateway.recoveredState = DesktopTurnState.terminal;
+
+      await chat.reconcileAfterResume();
+      await _waitUntil(() => chat.state == ChatPipelineState.completed);
+
+      expect(gateway.connectCalls, 3);
+      expect(gateway.submitCalls, 1);
+      expect(
+        chat.messages.where((message) => message['content'] == 'LISTO-NET'),
+        hasLength(1),
+      );
+      expect(chat.transportStatus.state, ChatTransportState.connected);
+    },
+  );
+
+  test(
+    'ticket and socket outage beyond capped retries adopts one durable final',
+    () async {
+      final fixture = _TicketSocketOutageFixture();
+      await fixture.start();
+      addTearDown(fixture.close);
+      final dashboard = DashboardClient(
+        host: '127.0.0.1',
+        port: fixture.server.port,
+        manualToken: 'fixture-session',
+        httpClientOverride: MockClient(fixture.dashboardRequest),
+      );
+      final transport = TuiGatewayClient(
+        SavedConnection(
+          id: 'network-outage-transport',
+          label: 'Network outage transport',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'fixture-key',
+          dashboardUrl: 'http://127.0.0.1:${fixture.server.port}',
+        ),
+        dashboard: dashboard,
+        heartbeatInterval: const Duration(hours: 1),
+        heartbeatDeadline: const Duration(hours: 2),
+      );
+      final gateway = _RealTransportRecoverableGateway(transport);
+      const id = 'network-outage-durable';
+      final chat = _recoverableChat(
+        id,
+        gateway,
+        desktopRecoveryBackoff: const [Duration(milliseconds: 15)],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'network-outage-user',
+            'role': 'user',
+            'content': 'run sleep 70 in the terminal, answer LISTO-NET',
+            'client_turn_id': 'turn-network-outage-durable',
+          },
+          {
+            'message_id': 'network-outage-final',
+            'role': 'assistant',
+            'content': 'LISTO-NET',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'run sleep 70 in the terminal, answer LISTO-NET',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery(id, _NoopOutbox()),
+      );
+      expect(gateway.submitCalls, 1);
+      expect(fixture.ticketRequests, 1);
+      expect(fixture.upgradeRequests, 1);
+
+      fixture.ticketFailuresRemaining = 3;
+      fixture.upgradeFailuresRemaining = 2;
+      gateway.recoveredState = DesktopTurnState.terminal;
+      await fixture.dropSockets();
+      await _waitUntil(() => chat.state == ChatPipelineState.completed);
+
+      expect(gateway.connectCalls, 7);
+      expect(fixture.ticketRequests, 7);
+      expect(fixture.upgradeRequests, 4);
+      expect(fixture.upgradeTickets, fixture.issuedTickets);
+      expect(fixture.issuedTickets.toSet(), hasLength(4));
+      expect(gateway.resumedStoredIds, everyElement('session-$id'));
+      expect(gateway.submitCalls, 1);
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['content'] ==
+              'run sleep 70 in the terminal, answer LISTO-NET',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.where((message) => message['content'] == 'LISTO-NET'),
+        hasLength(1),
+      );
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.transportStatus.state, ChatTransportState.connected);
+    },
+  );
+
+  test('active turn ticket 401 and 403 stop with sign-in required', () async {
+    for (final status in const [401, 403]) {
+      final gateway = _RecoverableDesktopGateway()
+        ..recoveryConnectError = DashboardWebSocketAuthException(
+          DashboardWebSocketAuthFailureCode.unavailable,
+          statusCode: status,
+        );
+      final chat = _recoverableChat(
+        'coverage-ticket-auth-$status',
+        gateway,
+        desktopRecoveryBackoff: const [Duration.zero],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'do not retry authentication failures',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('coverage-ticket-auth-$status', _NoopOutbox()),
+      );
+      gateway.drop();
+      await _waitUntil(() => chat.state == ChatPipelineState.failed);
+
+      expect(gateway.connectCalls, 2, reason: 'HTTP $status');
+      expect(chat.dashboardAuthRequired, isTrue, reason: 'HTTP $status');
+      expect(gateway.submitCalls, 1, reason: 'HTTP $status');
+    }
   });
 
   test('HTTP 404 de sesión es terminal para recovery', () async {

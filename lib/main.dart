@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show MethodChannel;
+import 'package:flutter/services.dart' show EventChannel, MethodChannel;
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -397,6 +397,20 @@ class AppLocales {
       all.firstWhere((o) => o.id == id, orElse: () => all.first);
 }
 
+@visibleForTesting
+final class NetworkAvailabilityRecoveryListener {
+  NetworkAvailabilityRecoveryListener({
+    required Stream<dynamic> events,
+    required VoidCallback onAvailable,
+  }) {
+    _subscription = events.listen((_) => onAvailable(), onError: (_) {});
+  }
+
+  late final StreamSubscription<dynamic> _subscription;
+
+  Future<void> dispose() => _subscription.cancel();
+}
+
 class HermesApp extends StatefulWidget {
   final ConnectionManager connManager;
   final AppLockService appLock;
@@ -488,6 +502,10 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
   static const MethodChannel _externalDataSyncControl = MethodChannel(
     'hermes/foreground_external_data_sync',
   );
+  static const EventChannel _networkAvailabilityEvents = EventChannel(
+    'hermes/network_availability',
+  );
+  NetworkAvailabilityRecoveryListener? _networkAvailabilityListener;
 
   Timer? _deferredNotificationInitTimer;
 
@@ -1102,6 +1120,12 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
       _scheduleHomeInitialLoad();
     }
     WidgetsBinding.instance.addObserver(this);
+    if (Platform.isAndroid) {
+      _networkAvailabilityListener = NetworkAvailabilityRecoveryListener(
+        events: _networkAvailabilityEvents.receiveBroadcastStream(),
+        onAvailable: widget.activeChats.requestImmediateTransportRecovery,
+      );
+    }
     // `didHaveMemoryPressure` no lleva nivel y también se dispara al pasar a
     // background: MainActivity reenvía onTrimMemory con su nivel para que la
     // voz solo evacúe modelos pesados ante presión real del sistema.
@@ -2193,6 +2217,7 @@ class HermesAppState extends State<HermesApp> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_networkAvailabilityListener?.dispose());
     _homeInitialLoadTimer?.cancel();
     _homeReadyTimer?.cancel();
     _startupProgress.dispose();
