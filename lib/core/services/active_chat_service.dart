@@ -3864,6 +3864,7 @@ class ActiveChat {
   DesktopSessionRuntimeInfo _desktopRuntimeInfo =
       const DesktopSessionRuntimeInfo();
   String? _desktopLiveStatus;
+  bool _offerStaleResumedSessionStop = false;
   ChatActivityKind? _lastLiveActivityKind;
   // `snapshot.started_at` es el inicio del runtime, no del turno actual.
   DateTime? _desktopStartedAt;
@@ -3929,6 +3930,14 @@ class ActiveChat {
   DesktopSessionRuntimeInfo get desktopRuntimeInfo => _desktopRuntimeInfo;
   String? get desktopRuntimeSessionId => _desktopRuntimeSessionId;
   String? get desktopLiveStatus => _desktopLiveStatus;
+  bool get offerStaleResumedSessionStop => _offerStaleResumedSessionStop;
+
+  void clearStaleResumedSessionStopOffer() {
+    if (!_offerStaleResumedSessionStop) return;
+    _offerStaleResumedSessionStop = false;
+    _emit(ActiveChatEvent.sessionInfo);
+  }
+
   bool get conflictReadOnly =>
       _ownershipMutationAdmission != _OwnershipMutationAdmission.open;
   bool get ownershipRecheckInFlight =>
@@ -4101,12 +4110,30 @@ class ActiveChat {
     });
   }
 
-  void _rememberDesktopLiveStatus(String? value, {required bool running}) {
+  static const _staleResumedTurnWindow = Duration(minutes: 15);
+
+  void _rememberDesktopLiveStatus(
+    String? value, {
+    required bool running,
+    DateTime? turnStartedAt,
+    bool coldOpen = false,
+  }) {
     final normalized = value?.trim();
     if (normalized != null && normalized.isNotEmpty) {
       _desktopLiveStatus = normalized;
     } else if (!running) {
       _desktopLiveStatus = null;
+    }
+    if (!running) {
+      _offerStaleResumedSessionStop = false;
+    } else if (coldOpen) {
+      final startedAt = turnStartedAt;
+      _offerStaleResumedSessionStop =
+          startedAt != null &&
+          DateTime.fromMillisecondsSinceEpoch(
+            _wallClockMs(),
+          ).difference(startedAt) >=
+              _staleResumedTurnWindow;
     }
   }
 
@@ -4291,6 +4318,28 @@ class ActiveChat {
   bool get remoteSurfaceOwnsLiveTurn =>
       !isStreaming &&
       _passiveRemoteActivityState == DesktopPassiveActivityState.busy;
+
+  bool get canStopSessionWork {
+    final schedules = sessionActivity.schedules;
+    return isStreaming ||
+        remoteSurfaceOwnsLiveTurn ||
+        safeActiveSubagentCount > 0 ||
+        _backgroundProcesses.isNotEmpty ||
+        schedules.any(
+          (schedule) => !const {
+            'paused',
+            'stopped',
+            'completed',
+            'failed',
+            'cancelled',
+            'idle',
+            'cleared',
+          }.contains(schedule.status.trim().toLowerCase()),
+        );
+  }
+
+  bool get gatewayConnected =>
+      _desktopGateway?.isConnected ?? _transportStatus.isConnected;
 
   bool get hasAuthoritativePassiveRemoteActivity => remoteSurfaceOwnsLiveTurn;
 
@@ -4811,9 +4860,20 @@ class ActiveChat {
 
   Future<void> sendSessionControlAction(String action) async {
     final runtimeId = _desktopRuntimeSessionId;
+    if (runtimeId == null) {
+      throw const TuiGatewayRpcError(
+        'session.control',
+        'No live runtime is available',
+        code: 4007,
+      );
+    }
     final gateway = _desktopGateway;
-    if (runtimeId == null || gateway is! HermesDesktopSessionControlGateway) {
-      return;
+    if (gateway is! HermesDesktopSessionControlGateway) {
+      throw const TuiGatewayRpcError(
+        'session.control',
+        'Session controls are unavailable',
+        code: -32601,
+      );
     }
     await (gateway as HermesDesktopSessionControlGateway)
         .sendSessionControlAction(runtimeId, action);
@@ -4821,12 +4881,56 @@ class ActiveChat {
 
   Future<void> stopBackgroundProcess(String processId) async {
     final runtimeId = _desktopRuntimeSessionId;
+    if (runtimeId == null) {
+      throw const TuiGatewayRpcError(
+        'process.kill',
+        'No live runtime is available',
+        code: 4007,
+      );
+    }
     final gateway = _desktopGateway;
-    if (runtimeId == null || gateway is! HermesDesktopControlGateway) return;
+    if (gateway is! HermesDesktopControlGateway) {
+      throw const TuiGatewayRpcError(
+        'process.kill',
+        'Background process controls are unavailable',
+        code: -32601,
+      );
+    }
     await (gateway as HermesDesktopControlGateway).killBackgroundProcess(
       runtimeId,
       processId,
     );
+    await refreshBackgroundProcesses();
+  }
+
+  Future<void> stopBackgroundProcessesAfterSessionStop(
+    Iterable<String> processIds, {
+    String? runtimeSessionId,
+  }) async {
+    final ids = processIds.map((id) => id.trim()).where((id) => id.isNotEmpty);
+    if (ids.isEmpty) return;
+    final runtimeId = runtimeSessionId ?? _desktopRuntimeSessionId;
+    if (runtimeId == null) {
+      throw const TuiGatewayRpcError(
+        'process.stop',
+        'No live runtime is available',
+        code: 4007,
+      );
+    }
+    final gateway = _desktopGateway;
+    if (gateway is! HermesDesktopControlGateway) {
+      throw const TuiGatewayRpcError(
+        'process.stop',
+        'Background process controls are unavailable',
+        code: -32601,
+      );
+    }
+    for (final processId in ids.toSet()) {
+      await (gateway as HermesDesktopControlGateway).killBackgroundProcess(
+        runtimeId,
+        processId,
+      );
+    }
     await refreshBackgroundProcesses();
   }
 
@@ -7421,6 +7525,7 @@ class ActiveChat {
     bool Function()? stillOwningVisible,
   }) async {
     final loadEpoch = ++_messageLoadEpoch;
+    final coldOpen = !messagesLoaded;
     if (expectedMessageCount != null && expectedMessageCount > 0) {
       _hardExpectedStoredMessageCount = expectedMessageCount;
     }
@@ -7931,6 +8036,8 @@ class ActiveChat {
         _rememberDesktopLiveStatus(
           projection.status,
           running: projection.running,
+          turnStartedAt: snapshot.resolvedTurnStartedAt,
+          coldOpen: coldOpen,
         );
         _desktopStartedAt = snapshot.startedAt;
         _desktopTurnStartedAt = projection.running
@@ -23332,6 +23439,62 @@ class ActiveChatService {
   /// Devuelve el chat activo por su ID móvil o por el ID persistido de Hermes.
   ActiveChat? of(String connectionId, String sessionId, {String? profile}) =>
       _entryFor(connectionId, sessionId, profile: profile)?.value;
+
+  Future<void> stopSessionWork({
+    required SavedConnection connection,
+    required Session session,
+    @visibleForTesting HermesDesktopGateway? desktopGateway,
+    @visibleForTesting ApiClient? api,
+    @visibleForTesting StoredSessionMessageLoader? storedMessageLoader,
+  }) async {
+    final owner = Session.profileOwner(session.profile);
+    final existing = of(connection.id, session.id, profile: owner);
+    final attachedForStop = existing == null;
+    final chat =
+        existing ??
+        attach(
+          connection: connection,
+          sessionId: session.id,
+          logicalSessionId: session.logicalId,
+          sessionTitle: session.displayTitle,
+          sessionSnapshot: session,
+          sessionProfile: owner,
+          initialStoredSessionId: session.id,
+          desktopGateway: desktopGateway,
+          api: api,
+          storedMessageLoader: storedMessageLoader,
+          attachDesktopRuntimeOnLoad: true,
+          allowUnownedDesktopSnapshotForTesting: desktopGateway != null,
+        );
+    try {
+      if (!chat.hasDesktopRuntime) {
+        await chat.loadMessages(
+          expectedMessageCount: session.messageCount,
+          profile: owner,
+        );
+      }
+      if (!chat.hasDesktopRuntime) {
+        throw const TuiGatewayRpcError(
+          'session.interrupt',
+          'No live runtime is available',
+          code: 4007,
+        );
+      }
+      final runtimeSessionId = chat.desktopRuntimeSessionId;
+      final processIds = chat.backgroundProcesses
+          .map((process) => process.id)
+          .toList(growable: false);
+      await chat.cancel();
+      await chat.stopBackgroundProcessesAfterSessionStop(
+        processIds,
+        runtimeSessionId: runtimeSessionId,
+      );
+    } finally {
+      if (attachedForStop) {
+        release(connection.id, session.id, profile: owner);
+      }
+    }
+  }
 
   /// ¿La sesión tiene un stream en curso?
   bool isActive(String connectionId, String sessionId, {String? profile}) {

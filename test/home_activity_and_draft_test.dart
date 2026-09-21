@@ -104,6 +104,44 @@ void main() {
       );
     });
 
+    testWidgets(
+      'actividad viva ofrece Stop compacto sin overflow',
+      (tester) async {
+        tester.view.physicalSize = const Size(320, 800);
+        tester.view.devicePixelRatio = 1;
+        tester.platformDispatcher.textScaleFactorTestValue = 2;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+        var stopCalls = 0;
+
+        for (final themeId in ['light', 'dark']) {
+          await tester.pumpWidget(
+            host(
+              HomeRecentSessionTileForTesting(
+                sessionId: 'chat-stop',
+                title: 'Sesión trabajando',
+                activityLabel: 'trabajando',
+                onStop: () async => stopCalls++,
+              ),
+              themeId: themeId,
+            ),
+          );
+          await tester.pump();
+          expect(
+            find.byKey(const ValueKey('session-row-stop')),
+            findsOneWidget,
+            reason: themeId,
+          );
+          expect(tester.takeException(), isNull, reason: themeId);
+        }
+
+        await tester.tap(find.byKey(const ValueKey('session-row-stop')));
+        await tester.pump();
+        expect(stopCalls, 1);
+      },
+    );
+
     testWidgets('sin borrador la vista previa queda intacta', (tester) async {
       await tester.pumpWidget(
         host(

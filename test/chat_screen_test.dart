@@ -1455,6 +1455,82 @@ class _SubmissionGateway
   }
 }
 
+class _OrderedSubmissionGateway extends _SubmissionGateway {
+  _OrderedSubmissionGateway({this.turnStartedAt});
+
+  final operations = <String>[];
+  final DateTime? turnStartedAt;
+  bool running = true;
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) async => DesktopSessionSnapshot(
+    runtimeSessionId: 'runtime-submission-test',
+    storedSessionId: storedSessionId,
+    created: false,
+    running: running,
+    status: running ? 'working' : 'idle',
+    turnStartedAt: turnStartedAt,
+    inflight: running
+        ? DesktopInflightTurn(user: 'old turn', streaming: true)
+        : null,
+  );
+
+  @override
+  Future<void> interrupt(String runtimeSessionId) async {
+    operations.add('interrupt');
+    running = false;
+  }
+
+  @override
+  Future<void> submitPrompt(String runtimeSessionId, String text) async {
+    operations.add('submit');
+    await super.submitPrompt(runtimeSessionId, text);
+  }
+}
+
+class _RosterSubmissionGateway extends _SubmissionGateway
+    implements HermesDesktopSessionActivityGateway {
+  _RosterSubmissionGateway({this.connected = true});
+
+  final bool connected;
+
+  @override
+  bool get isConnected => connected;
+
+  @override
+  DesktopGatewayCapabilityState capabilityState(
+    DesktopGatewayCapability capability,
+  ) => DesktopGatewayCapabilityState.supported;
+
+  @override
+  Future<DesktopSessionSnapshot> activateSession(
+    String runtimeSessionId, {
+    required String storedSessionId,
+  }) async => DesktopSessionSnapshot(
+    runtimeSessionId: runtimeSessionId,
+    storedSessionId: storedSessionId,
+    created: false,
+  );
+
+  @override
+  Future<DesktopActiveSessionList> listActiveSessions({
+    String currentRuntimeSessionId = '',
+  }) async => const DesktopActiveSessionList(
+    sessions: [
+      DesktopActiveSession(
+        runtimeSessionId: 'runtime-roster-owner',
+        storedSessionId: 'sess-test',
+        status: 'working',
+      ),
+    ],
+  );
+}
+
 class _ReasonedPromptRejection extends TuiGatewayRpcError {
   const _ReasonedPromptRejection({required this.reason})
     : super(
@@ -8811,6 +8887,107 @@ void main() {
     },
   );
 
+  testWidgets('roster remoto muestra Stop y permite interrumpir', (tester) async {
+    final gateway = _RosterSubmissionGateway();
+    var cancelCalls = 0;
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      cancelStreamOverride: () async => cancelCalls++,
+    );
+
+    await chat.refreshPassiveRemoteActivity();
+    await tester.pump();
+
+    expect(chat.sending, isFalse);
+    expect(chat.canStopSessionWork, isTrue);
+    expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('stop')));
+    await tester.pump();
+    expect(cancelCalls, 1);
+    await tester.pump(const Duration(milliseconds: 1300));
+  });
+
+  testWidgets('turno frío antiguo ofrece banner Stop de un toque', (tester) async {
+    final gateway = _OrderedSubmissionGateway(
+      turnStartedAt: DateTime.now().subtract(const Duration(minutes: 16)),
+    );
+    var cancelCalls = 0;
+    await pumpChat(
+      tester,
+      messagesLoaded: false,
+      desktopGateway: gateway,
+      storedMessageLoader: (_, _) async => const [],
+      cancelStreamOverride: () async => cancelCalls++,
+    );
+    final banner = find.byKey(
+      const ValueKey('stale-running-session-stop-banner'),
+    );
+    for (var attempt = 0;
+        attempt < 30 && banner.evaluate().isEmpty;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(banner, findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('stale-running-session-stop')),
+    );
+    await tester.pump();
+    expect(cancelCalls, 1);
+    expect(banner, findsNothing);
+    await tester.pump(const Duration(milliseconds: 1300));
+  });
+
+  testWidgets('enviar justo después de Stop interrumpe antes de enviar', (
+    tester,
+  ) async {
+    final gateway = _OrderedSubmissionGateway();
+    await pumpChat(
+      tester,
+      chatState: ChatPipelineState.streaming,
+      desktopGateway: gateway,
+      acquireDesktopRuntimeBeforeMount: true,
+      cancelStreamOverride: () async {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('stop')));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField).last, 'nuevo turno');
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('send')));
+    for (var attempt = 0;
+        attempt < 30 && gateway.operations.length < 2;
+        attempt++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    expect(gateway.operations.take(2), ['interrupt', 'submit']);
+    gateway.emitComplete();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1300));
+  });
+
+  testWidgets('gateway desconectado deja Stop visible pero deshabilitado', (
+    tester,
+  ) async {
+    final gateway = _RosterSubmissionGateway(connected: false);
+    var cancelCalls = 0;
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      cancelStreamOverride: () async => cancelCalls++,
+    );
+
+    await chat.refreshPassiveRemoteActivity();
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('stop')));
+    await tester.pump();
+    expect(cancelCalls, 0);
+  });
+
   testWidgets('el botón único cambia a Enviar al escribir durante streaming', (
     tester,
   ) async {
@@ -8831,15 +9008,7 @@ void main() {
     expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
   });
 
-  testWidgets('un Stop lento suelta el composer sin esperar la cancelación', (
-    tester,
-  ) async {
-    // La escalera de `_recoverAndInterruptStop` puede tardar decenas de
-    // segundos en una red mala. La valla del composer duraba todo ese rato y
-    // dejaba la pantalla sin salida: ni enviar, ni reintentar, ni escapar.
-    // Desktop nunca llega ahí (`cancelRun` baja `busy` de forma síncrona y
-    // espera el `session.interrupt` después), así que la valla se suelta
-    // acotada mientras la cancelación sigue corriendo por detrás.
+  testWidgets('un Stop lento no bloquea el composer', (tester) async {
     final cancelGate = Completer<void>();
     var cancelCalls = 0;
     await pumpChat(
@@ -8854,10 +9023,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('stop')).last);
     await tester.pump();
     expect(cancelCalls, 1);
-    // Valla puesta: el botón muestra el spinner en lugar del icono de Stop.
-    expect(find.byIcon(Icons.stop_rounded), findsNothing);
+    expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
 
-    // La cancelación sigue en vuelo, pero el composer ya vuelve a responder.
     await tester.pump(const Duration(seconds: 3));
     expect(cancelGate.isCompleted, isFalse);
     expect(find.byIcon(Icons.stop_rounded), findsOneWidget);
@@ -8981,7 +9148,7 @@ void main() {
     expect(find.byKey(const ValueKey('chat-queue-stuck-snackbar')), findsOne);
   });
 
-  testWidgets('Stop en vuelo bloquea steering hasta quedar durable', (
+  testWidgets('Stop en vuelo permite un envío nuevo sin steering', (
     tester,
   ) async {
     final cancelGate = Completer<void>();
@@ -9015,6 +9182,8 @@ void main() {
     await tester.pump();
 
     expect(gateway.steers, isEmpty);
+    expect(gateway.submissions, ['steering pendiente']);
+    gateway.emitComplete();
     cancelGate.complete();
     await tester.pump(const Duration(milliseconds: 1300));
   });
@@ -15916,7 +16085,7 @@ void main() {
         find.descendant(of: stableCard, matching: find.byType(Semantics)).first,
       );
       expect(backgroundSemantics.properties.label, 'Trabajo en segundo plano');
-      expect(find.byKey(const ValueKey('stop')), findsNothing);
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
 
       gateway.emit('subagent.complete', const {
@@ -15930,7 +16099,7 @@ void main() {
       expect(stableCard, findsOneWidget);
       expect(tester.element(stableCard), same(stableElement));
       expect(find.textContaining('completado'), findsWidgets);
-      expect(find.byKey(const ValueKey('stop')), findsNothing);
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -16227,7 +16396,7 @@ void main() {
 
       expect(chat.isStreaming, isFalse);
       expect(find.text('PUBLIC_PARENT_DONE'), findsOneWidget);
-      expect(find.byKey(const ValueKey('stop')), findsNothing);
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(
         find.byKey(const ValueKey('chat-subagent-status')),
         findsOneWidget,

@@ -35,6 +35,7 @@ import '../widgets/hermes_ui.dart';
 import '../widgets/read_only.dart';
 import '../widgets/session_deletion_dialogs.dart';
 import '../widgets/session_title_editor_route.dart';
+import '../widgets/session_row_stop_control.dart';
 import 'chat_screen.dart';
 import 'mission_control_screen.dart';
 import 'session_detail_screen.dart';
@@ -1364,6 +1365,29 @@ class _SessionListScreenState extends State<SessionListScreen>
     _openChat(session);
   }
 
+  Future<void> _stopSession(Session session) async {
+    final activeChats = _activeChats;
+    if (activeChats == null) {
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).chaStopFailed)),
+        kind: HermesNoticeKind.error,
+      );
+      return;
+    }
+    try {
+      await activeChats.stopSessionWork(
+        connection: widget.connection,
+        session: session,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).chaStopFailed)),
+        kind: HermesNoticeKind.error,
+      );
+    }
+  }
+
   Future<void> _openChat(Session session) async {
     final ownedTarget = missionControlTargetForSession(session);
     if (ownedTarget != null) {
@@ -1903,6 +1927,20 @@ class _SessionListScreenState extends State<SessionListScreen>
     final archived = _isArchived(session);
     final pinned = _isPinned(session);
     final localActivity = _localChatForSession(session)?.sessionActivity;
+    final streamActive =
+        localActivity?.active == true ||
+        (_globalActivity?.isActive(
+              widget.connection.id,
+              Session.profileOwner(session.profile),
+              session.id,
+            ) ??
+            false) ||
+        (_globalActivity?.isActive(
+              widget.connection.id,
+              Session.profileOwner(session.profile),
+              session.logicalId,
+            ) ??
+            false);
     return Dismissible(
       key: ValueKey('${session.id}-$archived'),
       direction: DismissDirection.horizontal,
@@ -1932,20 +1970,8 @@ class _SessionListScreenState extends State<SessionListScreen>
         pinned: pinned,
         activity: _globalForSession(session),
         localActivity: localActivity,
-        streamActive:
-            localActivity?.active == true ||
-            (_globalActivity?.isActive(
-                  widget.connection.id,
-                  Session.profileOwner(session.profile),
-                  session.id,
-                ) ??
-                false) ||
-            (_globalActivity?.isActive(
-                  widget.connection.id,
-                  Session.profileOwner(session.profile),
-                  session.logicalId,
-                ) ??
-                false),
+        streamActive: streamActive,
+        onStop: streamActive ? () => _stopSession(session) : null,
         onTap: () => _openChat(session),
         onLongPress: () => _showSessionContextMenu(session),
       ),
@@ -2565,6 +2591,7 @@ class _SessionTile extends StatelessWidget {
   final bool streamActive;
   final GlobalActivity? activity;
   final SessionActivity? localActivity;
+  final Future<void> Function()? onStop;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
@@ -2576,6 +2603,7 @@ class _SessionTile extends StatelessWidget {
     this.streamActive = false,
     this.activity,
     this.localActivity,
+    this.onStop,
     required this.onTap,
     required this.onLongPress,
   });
@@ -2731,6 +2759,10 @@ class _SessionTile extends StatelessWidget {
                   ],
                 ),
               ),
+              if (onStop != null) ...[
+                const SizedBox(width: 8),
+                SessionRowStopControl(onStop: onStop!),
+              ],
               const SizedBox(width: 12),
               Text(
                 formattedTime,

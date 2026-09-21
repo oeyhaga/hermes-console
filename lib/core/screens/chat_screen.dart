@@ -78,6 +78,7 @@ import '../services/chat_preference_store.dart';
 import '../services/desktop_gateway_capabilities.dart';
 import '../services/mission_bot_chat_store.dart';
 import '../services/notifications/notification_service.dart';
+import '../services/recent_interrupt_guard.dart';
 import '../services/drawer_gesture_exclusion.dart';
 import '../services/turn_outbox_store.dart';
 import '../services/generated_image_service.dart';
@@ -93,6 +94,7 @@ import '../services/tui_gateway_client.dart'
     show TuiGatewayClient, TuiGatewayRpcError;
 import '../widgets/chat_connection_recovery_row.dart';
 import '../widgets/hermes_notice.dart';
+import '../widgets/stale_running_session_banner.dart';
 import 'foreground_conversation_reader.dart';
 import '../services/voice/conversation/native_voice.dart';
 import '../services/voice/conversation/native_voice_session_configurator.dart';
@@ -1318,8 +1320,7 @@ class _ChatScreenState extends State<ChatScreen>
   // sustituye `_sending`: después del ACK el composer vuelve a aceptar texto y
   // Hermes puede tratarlo como steering durante el run actual.
   bool _composerSubmissionInFlight = false;
-  // Suelta acotada de la valla anterior durante un Stop. Ver `_cancelStream`.
-  Timer? _composerStopLockTimer;
+  final RecentInterruptGuard _recentInterrupt = RecentInterruptGuard();
   bool _imagePickerOpen = false;
   bool _documentPickerOpen = false;
   static const int _maxPendingImages = 10;
@@ -5364,8 +5365,18 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<void> _cancelInteractivePrompt() async {
     if (_resolvingInteractivePrompt) return;
+    _recentInterrupt.markInterrupted();
+    final runtimeSessionId = _chat.desktopRuntimeSessionId;
+    final processIds = _chat.backgroundProcesses
+        .map((process) => process.id)
+        .toList(growable: false);
     try {
       await _chat.cancel();
+      await _chat.stopBackgroundProcessesAfterSessionStop(
+        processIds,
+        runtimeSessionId: runtimeSessionId,
+      );
+      _chat.clearStaleResumedSessionStopOffer();
     } catch (_) {
       if (!mounted) return;
       HermesNotice.of(context).showSnackBar(
@@ -5419,8 +5430,6 @@ class _ChatScreenState extends State<ChatScreen>
     _voice?.voiceConsent.removeListener(_onVoicePreferenceChanged);
     _vcUnavailableSub?.cancel();
     _slashCompletionDebounce?.cancel();
-    _composerStopLockTimer?.cancel();
-    _composerStopLockTimer = null;
     _stopFallback?.cancel();
     // Detén SOLO el dictado del composer (el de esta pantalla), no el TTS del
     // modo voz: ese debe seguir si está hablando en segundo plano.
@@ -6241,6 +6250,17 @@ class _ChatScreenState extends State<ChatScreen>
         _compressingSession) {
       return false;
     }
+    try {
+      await _recentInterrupt.interruptBeforeSend(_chat.cancel);
+    } catch (_) {
+      if (mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(content: Text(Strings.of(context).chaStopFailed)),
+          kind: HermesNoticeKind.error,
+        );
+      }
+      return false;
+    }
     _passiveConversationReader?.setVisible(false);
     _invalidatePassiveMessageRefresh();
     widget.sendAttemptObserver?.call();
@@ -6840,75 +6860,37 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
-  /// Techo de la valla del composer durante un Stop.
-  ///
-  /// Desktop no tiene esta valla en absoluto: `cancelRun`
-  /// (`use-prompt-actions/index.ts`) baja `busy` de forma **síncrona** y solo
-  /// después espera `session.interrupt`, de modo que un stop lento o fallido
-  /// nunca congela el input; el fallo se cuenta con un toast (`copy.stopFailed`)
-  /// y el turno ya quedó cerrado en la UI.
-  ///
-  /// Aquí `_chat.cancel()` hace bastante más (tombstone durable +
-  /// `_recoverAndInterruptStop`, que en una red mala recorre la escalera de
-  /// backoff durante decenas de segundos). Mantener la valla durante TODO ese
-  /// tiempo dejaba el composer muerto sin ninguna salida. Se conserva solo lo
-  /// justo para serializar el doble tap del caso rápido (que se resuelve en
-  /// milisegundos) y luego se suelta, mientras la cancelación sigue en segundo
-  /// plano: `_buildStopStatusStrip` ya narra stopping/retrying y ofrece
-  /// «Reintentar Stop» al fallar, así que la señal no se pierde al soltar.
-  static const Duration _composerStopLockTimeout = Duration(seconds: 2);
-
   Future<void> _cancelStream() async {
-    if (_composerSubmissionInFlight) return;
-    if (mounted) {
-      setState(() => _composerSubmissionInFlight = true);
-    } else {
-      _composerSubmissionInFlight = true;
-    }
-    var lockReleased = false;
-    void releaseComposerLock() {
-      if (lockReleased) return;
-      lockReleased = true;
-      _composerStopLockTimer?.cancel();
-      _composerStopLockTimer = null;
-      if (mounted) {
-        setState(() => _composerSubmissionInFlight = false);
-      } else {
-        _composerSubmissionInFlight = false;
-      }
-    }
-
-    _composerStopLockTimer?.cancel();
-    _composerStopLockTimer = Timer(
-      _composerStopLockTimeout,
-      releaseComposerLock,
-    );
+    if (!_chat.gatewayConnected) return;
+    _recentInterrupt.markInterrupted();
+    final runtimeSessionId = _chat.desktopRuntimeSessionId;
+    final processIds = _chat.backgroundProcesses
+        .map((process) => process.id)
+        .toList(growable: false);
     var cancelled = false;
-    // La cancelación no se confirma visualmente hasta que el tombstone cifrado
-    // queda durable; así un cierre inmediato no puede resucitar la respuesta.
-    // Un segundo tap tras la suelta acotada es inofensivo: `cancel()` devuelve
-    // el `_durableCancelFlight` en curso en lugar de abrir otro Stop.
     try {
       final override = widget.cancelStreamOverride;
       if (override != null) {
         await override();
       } else {
         await _chat.cancel();
+        await _chat.stopBackgroundProcessesAfterSessionStop(
+          processIds,
+          runtimeSessionId: runtimeSessionId,
+        );
       }
+      _chat.clearStaleResumedSessionStopOffer();
       cancelled = true;
     } catch (_) {
       if (mounted) {
         HermesNotice.of(context).showSnackBar(
-          SnackBar(content: Text(Strings.of(context).chaStopPersistenceFailed)),
+          SnackBar(content: Text(Strings.of(context).chaStopFailed)),
           kind: HermesNoticeKind.error,
         );
       }
-    } finally {
-      releaseComposerLock();
     }
     if (!cancelled || !mounted) return;
     setState(() {});
-    // Reset to idle after a moment
     Future.delayed(const Duration(milliseconds: 1200), () {
       if (mounted && _pipelineState == ChatPipelineState.cancelled) {
         setState(() => _pipelineState = ChatPipelineState.idle);
@@ -9674,6 +9656,11 @@ class _ChatScreenState extends State<ChatScreen>
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                if (_chat.offerStaleResumedSessionStop)
+                                  StaleRunningSessionBanner(
+                                    enabled: _chat.gatewayConnected,
+                                    onStop: _cancelStream,
+                                  ),
                                 // Ownership conflicts keep the transcript and composer
                                 // mounted while fencing every mutation.
                                 if (_chat.conflictReadOnly)
@@ -12078,6 +12065,7 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   Widget _buildComposerPrimaryAction(HermesThemeColors colors) {
+    final showStop = _chat.canStopSessionWork && _nothingToSend;
     return AnimatedSwitcher(
       key: const ValueKey('composer-primary-action-switcher'),
       duration: _reduceMotion
@@ -12099,7 +12087,7 @@ class _ChatScreenState extends State<ChatScreen>
           (kVoiceRuntimeEnabled &&
               _allowsDedicatedVoiceLaunch &&
               _nothingToSend &&
-              !_sending &&
+              !showStop &&
               !_composerSubmissionInFlight &&
               !_compressingSession &&
               !_isRecording)
@@ -12117,22 +12105,21 @@ class _ChatScreenState extends State<ChatScreen>
               ),
             )
           : KeyedSubtree(
-              key: ValueKey(_sending && _nothingToSend ? 'stop' : 'send'),
+              key: ValueKey(showStop ? 'stop' : 'send'),
               child: _SendButton(
                 busy:
-                    _composerSubmissionInFlight ||
-                    _attachmentSubmitting ||
-                    _compressingSession,
-                mode: _sending && _nothingToSend
-                    ? _SendMode.stop
-                    : _SendMode.send,
-                enabled:
-                    !_composerSubmissionInFlight &&
-                    !_attachmentSubmitting &&
-                    !_compressingSession &&
-                    (!_attachmentMutationInFlight ||
-                        (_sending && _nothingToSend)) &&
-                    (_sending || !_nothingToSend),
+                    !showStop &&
+                    (_composerSubmissionInFlight ||
+                        _attachmentSubmitting ||
+                        _compressingSession),
+                mode: showStop ? _SendMode.stop : _SendMode.send,
+                enabled: showStop
+                    ? _chat.gatewayConnected
+                    : !_composerSubmissionInFlight &&
+                          !_attachmentSubmitting &&
+                          !_compressingSession &&
+                          !_attachmentMutationInFlight &&
+                          !_nothingToSend,
                 onSend: _sendMessage,
                 onStop: _cancelStream,
               ),
