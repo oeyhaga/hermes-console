@@ -203,9 +203,10 @@ class _AttachmentBytesPreviewScreenState
             ),
         ],
       ),
-      body: FutureBuilder<Uint8List>(
-        future: _bytes,
-        builder: (context, snapshot) {
+      body: SafeArea(
+        child: FutureBuilder<Uint8List>(
+          future: _bytes,
+          builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
             return Center(
               child: Column(
@@ -244,7 +245,8 @@ class _AttachmentBytesPreviewScreenState
               ),
             ],
           );
-        },
+          },
+        ),
       ),
     );
   }

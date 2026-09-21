@@ -943,7 +943,7 @@
   "genMediaOffline": "Sin conexión — vuelve a conectarte para cargar este archivo",
   "genMediaLoad": "Cargar contenido generado",
   "genMediaLoadFrom": "Cargar contenido generado desde {domain}",
-  "genMediaTextSummary": "{lineCount} líneas · {size}",
+  "genMediaTextSummary": "{lineCount, plural, =1{1 línea} other{{lineCount} líneas}} · {size}",
   "@genMediaTextSummary": {"placeholders": {"lineCount": {"type": "int"}, "size": {"type": "String"}}},
   "genMediaViewFullText": "Ver texto completo",
   "genMediaOpenWith": "Abrir con…",

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:crypto/crypto.dart';
@@ -1230,6 +1231,7 @@ class GeneratedTextViewerScreen extends StatelessWidget {
       ),
       body: SafeArea(
         child: SingleChildScrollView(
+          key: const ValueKey<String>('generated-text-viewer-safe-area'),
           padding: const EdgeInsets.all(16),
           child: SelectableText(
             text,
@@ -1272,7 +1274,7 @@ class GeneratedPdfPreviewCard extends StatefulWidget {
 
 class _GeneratedPdfPreviewCardState extends State<GeneratedPdfPreviewCard> {
   static const _channel = MethodChannel('hermes/document_preview');
-  late Future<({Uint8List bytes, int pageCount})?> _preview;
+  late Future<({Uint8List bytes, int pageCount, double aspectRatio})?> _preview;
 
   @override
   void initState() {
@@ -1288,7 +1290,7 @@ class _GeneratedPdfPreviewCardState extends State<GeneratedPdfPreviewCard> {
     }
   }
 
-  Future<({Uint8List bytes, int pageCount})?> _loadPreview() async {
+  Future<({Uint8List bytes, int pageCount, double aspectRatio})?> _loadPreview() async {
     final locator = GeneratedMediaService.cacheLocator(widget.file);
     if (locator == null) return null;
     try {
@@ -1310,7 +1312,17 @@ class _GeneratedPdfPreviewCardState extends State<GeneratedPdfPreviewCard> {
           pageCount <= 0) {
         return null;
       }
-      return (bytes: bytes, pageCount: pageCount);
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      final aspectRatio = image.width / image.height;
+      image.dispose();
+      codec.dispose();
+      return (
+        bytes: bytes,
+        pageCount: pageCount,
+        aspectRatio: aspectRatio,
+      );
     } catch (_) {
       return null;
     }
@@ -1322,7 +1334,9 @@ class _GeneratedPdfPreviewCardState extends State<GeneratedPdfPreviewCard> {
     final colors = Theme.of(context).hermes;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
-      child: FutureBuilder<({Uint8List bytes, int pageCount})?>(
+      child: FutureBuilder<
+        ({Uint8List bytes, int pageCount, double aspectRatio})?
+      >(
         future: _preview,
         builder: (context, snapshot) {
           final preview = snapshot.data;
@@ -1353,56 +1367,66 @@ class _GeneratedPdfPreviewCardState extends State<GeneratedPdfPreviewCard> {
               onSave: widget.onSave,
             );
           }
+          final aspectRatio = preview.aspectRatio.clamp(0.5, 2.4).toDouble();
+          final previewWidth = math.min(260.0, 320.0 * aspectRatio);
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              InkWell(
-                onTap: widget.onOpen,
-                borderRadius: BorderRadius.circular(12),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Stack(
-                    children: [
-                      Image.memory(
-                        preview.bytes,
-                        key: const ValueKey<String>('generated-pdf-thumbnail'),
-                        width: 260,
-                        height: 220,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                      ),
-                      Positioned(
-                        left: 8,
-                        right: 8,
-                        bottom: 8,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.68),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            child: Text(
-                              '${widget.name} · ${strings.genMediaPages(preview.pageCount)} · ${_formatFileBytes(widget.sizeBytes)}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
+              SizedBox(
+                key: const ValueKey<String>('generated-pdf-preview-card'),
+                width: previewWidth,
+                child: Material(
+                  color: colors.surfaceVariant,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: colors.divider),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: widget.onOpen,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AspectRatio(
+                          aspectRatio: aspectRatio,
+                          child: ColoredBox(
+                            color: colors.surface,
+                            child: Image.memory(
+                              preview.bytes,
+                              key: const ValueKey<String>(
+                                'generated-pdf-thumbnail',
                               ),
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
                             ),
                           ),
                         ),
-                      ),
-                    ],
+                        Container(
+                          key: const ValueKey<String>('generated-pdf-caption'),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 7,
+                          ),
+                          color: colors.surfaceVariant,
+                          child: Text(
+                            '${widget.name} · ${strings.genMediaPages(preview.pageCount)} · ${_formatFileBytes(widget.sizeBytes)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
               Wrap(
+                key: const ValueKey<String>('generated-pdf-actions'),
                 spacing: 4,
                 children: [
                   TextButton.icon(
@@ -1852,6 +1876,7 @@ class _GeneratedImageViewerState extends State<_GeneratedImageViewer> {
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Stack(
+          key: const ValueKey<String>('generated-image-viewer-safe-area'),
           children: [
             Positioned.fill(
               child: GestureDetector(
