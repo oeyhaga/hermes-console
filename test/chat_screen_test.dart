@@ -11396,7 +11396,7 @@ void main() {
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       wireGate.complete(projectedCompressionReply());
       for (var frame = 0; frame < 12; frame++) {
@@ -11458,7 +11458,7 @@ void main() {
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       final reply = projectedCompressionReply();
       reply['after_messages'] = (reply['messages'] as List).length;
@@ -11803,7 +11803,7 @@ void main() {
       expect(gateway.dispatchCalls, isEmpty);
       expect(gateway.submissions, isEmpty);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(find.text('Optimizando la conversación…'), findsNothing);
       expect(find.text('2%'), findsNothing);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
@@ -11813,7 +11813,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 350));
 
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
       expect(chat.storedSessionId, 'sess-test');
       expect(find.textContaining('Contexto listo'), findsNothing);
@@ -12060,7 +12060,7 @@ void main() {
       // Sin turno vivo: la compactación manda en la pastilla, y la paleta de
       // comandos ya no la tapa.
       expect(chat.desktopCompressionInFlight, isTrue);
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(find.byKey(const ValueKey('chat-slash-palette')), findsNothing);
       expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
       // Sin spinner en ningún sitio: ni en la barra ni en el botón de envío.
@@ -12085,7 +12085,7 @@ void main() {
         'text': '⠋ compressing 22 messages (~21,000 tok)…',
       });
       await tester.pump();
-      expect(_dockText('22 mensajes · ~21k tokens'), findsOneWidget);
+      expect(_dockText('22 msj · ~21k tok'), findsOneWidget);
 
       // Llega el final tardío: el composer se limpia, el contexto conserva su
       // porcentaje (nunca salta a los tokens acumulados) y la pastilla enseña
@@ -12148,8 +12148,18 @@ void main() {
       await gateway.compressionEntered.future;
       await tester.pump(const Duration(seconds: 30));
       expect(chat.desktopCompressionInFlight, isTrue);
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(find.byKey(const ValueKey('chat-slash-palette')), findsNothing);
+      // Con el envío del /compress aún en vuelo, el botón muestra su icono
+      // normal deshabilitado: la barra es el único indicador de progreso.
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('send')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
       // La barra va pegada sobre el input, dentro del compositor.
       final dockRect = tester.getRect(
         find.byKey(const ValueKey('compaction-dock')),
@@ -16197,7 +16207,7 @@ void main() {
       expect(chat.desktopAutoCompacting, isTrue);
       // Hermes no publica porcentaje: solo tiempo y una línea honesta que se
       // mueve, sin spinner y sin número inventado.
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
       expect(
         find.byKey(const ValueKey('compaction-line-moving')),
@@ -16214,7 +16224,7 @@ void main() {
         'text': 'Compacting context — still summarizing',
       });
       await tester.pump();
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
 
       gateway.emit('status.update', const {
         'kind': 'compacted',
@@ -16272,7 +16282,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(chat.isStreaming, isTrue);
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       // La pastilla del turno sigue viva y no se solapa con la barra.
       final pill = tester.getRect(find.byKey(const ValueKey('activity-pill')));
       final dock = tester.getRect(
@@ -16320,7 +16330,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(chat.desktopAutoCompacting, isTrue);
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
       // La compactación acabó mientras estaba desconectada y solo llega el
       // reposo real de la sesión: la barra se retira SIN inventar un éxito.
@@ -16357,7 +16367,7 @@ void main() {
       // 1) La señal real de reposo la cierra.
       gateway.emit('status.update', compacting);
       await tester.pump();
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       gateway.emit('status.update', const {'kind': 'ready', 'text': 'ready'});
       await tester.pump();
       await tester.pump(const Duration(seconds: 4));
@@ -16408,7 +16418,7 @@ void main() {
       }
       // 6 minutos de compactación real con latidos cada 60 s: sigue en marcha.
       expect(chat.desktopAutoCompacting, isTrue);
-      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando'), findsOneWidget);
       gateway.emit('status.update', const {
         'kind': 'compacted',
         'text': 'done',
@@ -16417,6 +16427,64 @@ void main() {
       expect(_dockText('Compactado · '), findsOneWidget);
       await tester.pump(const Duration(seconds: 7));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'una respuesta sin texto y sin nada que desplegar no pinta ni la cabecera',
+    (tester) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_AFTER_COMPACTION'},
+          {
+            'role': 'assistant',
+            'content': '',
+            '_activity_trace': [
+              {'kind': 'tool', 'label': 'tool_search', 'status': 'completed'},
+              {
+                'kind': 'tool',
+                'label': 'tool_call',
+                'status': 'completed',
+                'id': 'bridge-only',
+              },
+            ],
+          },
+        ].reversed.toList(),
+      );
+      // Solo herramientas puente: nada que enseñar, así que ni burbuja ni
+      // cabecera vacía «Hermes / Completado».
+      expect(find.byKey(const ValueKey('assistant-header-name')), findsNothing);
+      expect(find.textContaining('Completado'), findsNothing);
+      expect(find.text('PUBLIC_AFTER_COMPACTION'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // Con una herramienta real (o razonamiento) sí hay algo que desplegar:
+      // la cabecera con su resumen se conserva.
+      await pumpChat(
+        tester,
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': '',
+            '_activity_trace': [
+              {
+                'kind': 'tool',
+                'label': 'terminal',
+                'status': 'completed',
+                'id': 'real-tool',
+                'detail': 'sleep',
+              },
+            ],
+          },
+          {'role': 'user', 'content': 'PUBLIC_REAL_TOOL'},
+        ],
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-header-name')),
+        findsOneWidget,
+      );
+      expect(find.byIcon(Icons.expand_more), findsOneWidget);
     },
   );
 

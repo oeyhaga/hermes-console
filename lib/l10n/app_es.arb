@@ -7086,9 +7086,7 @@
   "skillsNoMatch": "sin coincidencias",
   "skillsNoMatchBody": "ninguna skill coincide con tu búsqueda",
   "skillsSearchHubHint": "buscar en skills.sh…",
-  "liveCompacting": "Compactando conversación",
-  "liveCompactionMessages": "{count, plural, =1{1 mensaje} other{{count} mensajes}}",
-  "@liveCompactionMessages": {"placeholders": {"count": {"type": "int"}}},
+  "liveCompacting": "Compactando",
   "liveWaitingForUser": "Esperando tu respuesta",
   "liveMoreBackground": "+{count} en segundo plano",
   "@liveMoreBackground": {"placeholders": {"count": {"type": "int"}}},
@@ -7124,8 +7122,10 @@
   "@liveCompactionMessagesChange": {"placeholders": {"before": {"type": "int"}, "after": {"type": "int"}}},
   "liveCompactionTokensChange": "{before} → {after} tokens",
   "@liveCompactionTokensChange": {"placeholders": {"before": {}, "after": {}}},
-  "liveCompactionTokensApprox": "~{tokens} tokens",
-  "@liveCompactionTokensApprox": {"placeholders": {"tokens": {}}},
   "liveCompactionChunks": "parte {index} de {count}",
-  "@liveCompactionChunks": {"placeholders": {"index": {"type": "int"}, "count": {"type": "int"}}}
+  "@liveCompactionChunks": {"placeholders": {"index": {"type": "int"}, "count": {"type": "int"}}},
+  "liveCompactionMessagesShort": "{count} msj",
+  "@liveCompactionMessagesShort": {"placeholders": {"count": {"type": "int"}}},
+  "liveCompactionTokensShort": "~{tokens} tok",
+  "@liveCompactionTokensShort": {"placeholders": {"tokens": {}}}
 }

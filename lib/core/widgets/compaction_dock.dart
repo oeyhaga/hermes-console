@@ -22,9 +22,9 @@ String formatCompactionDuration(Duration value, {String languageCode = 'en'}) {
 List<String> compactionFacts(Strings strings, CompactionProgress compaction) =>
     [
       if (compaction.messagesBefore != null)
-        strings.liveCompactionMessages(compaction.messagesBefore!),
+        strings.liveCompactionMessagesShort(compaction.messagesBefore!),
       if (compaction.tokensBefore != null)
-        strings.liveCompactionTokensApprox(
+        strings.liveCompactionTokensShort(
           formatCompactTokens(compaction.tokensBefore!),
         ),
       if (compaction.chunkIndex != null && compaction.chunkCount != null)
@@ -120,6 +120,32 @@ class _DockBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
     final finished = compaction.isFinished;
+    final bigText = MediaQuery.textScalerOf(context).scale(13) / 13 >= 1.6;
+    const textStyle = TextStyle(fontSize: 12.5, height: 1.3);
+    final titleText = Text(
+      label,
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: textStyle.copyWith(
+        fontWeight: FontWeight.w700,
+        color: finished ? colors.textSecondary : colors.textPrimary,
+      ),
+    );
+    final spans = <InlineSpan>[
+      TextSpan(
+        text: label,
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: finished ? colors.textSecondary : colors.textPrimary,
+        ),
+      ),
+      if (facts.isNotEmpty)
+        TextSpan(
+          text: ' · ${facts.join(' · ')}',
+          style: TextStyle(color: colors.textSecondary),
+        ),
+    ];
     return Semantics(
       key: ValueKey(
         finished ? 'compaction-result' : 'desktop-session-compression-progress',
@@ -145,27 +171,35 @@ class _DockBody extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text.rich(
-                    TextSpan(
-                      children: [
-                        TextSpan(
-                          text: label,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: finished
-                                ? colors.textSecondary
-                                : colors.textPrimary,
-                          ),
+                  child: bigText
+                      // Con texto grande se permite partir la línea.
+                      ? Text.rich(TextSpan(children: spans), style: textStyle)
+                      // A ancho de móvil: una línea; se recortan antes los
+                      // recuentos que el título.
+                      : Row(
+                          children: [
+                            // El título no se recorta mientras haya recuentos
+                            // que recortar; el resultado final (sin recuentos)
+                            // es el que cede con elipsis.
+                            if (facts.isEmpty)
+                              Flexible(child: titleText)
+                            else
+                              titleText,
+                            if (facts.isNotEmpty)
+                              Flexible(
+                                child: Text(
+                                  ' · ${facts.join(' · ')}',
+                                  key: const ValueKey('compaction-facts'),
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textStyle.copyWith(
+                                    color: colors.textSecondary,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
-                        if (facts.isNotEmpty)
-                          TextSpan(
-                            text: ' · ${facts.join(' · ')}',
-                            style: TextStyle(color: colors.textSecondary),
-                          ),
-                      ],
-                    ),
-                    style: const TextStyle(fontSize: 12.5, height: 1.3),
-                  ),
                 ),
                 if (!finished) ...[
                   const SizedBox(width: 10),

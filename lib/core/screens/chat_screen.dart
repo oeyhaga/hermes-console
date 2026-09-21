@@ -12157,6 +12157,7 @@ class _ChatScreenState extends State<ChatScreen>
                 // sobre el compositor es la única señal viva.
                 busy:
                     !showStop &&
+                    !_compressingSession &&
                     (_composerSubmissionInFlight || _attachmentSubmitting),
                 mode: showStop ? _SendMode.stop : _SendMode.send,
                 enabled: showStop
@@ -13195,6 +13196,27 @@ class _ChatScreenState extends State<ChatScreen>
             suggestionsEnabled: suggestionsEnabled,
           )
         : null;
+    // Nunca una burbuja vacía: una respuesta terminada sin texto visible, sin
+    // medios y cuya traza no tiene nada que desplegar (solo herramientas puente
+    // de Hermes, sin razonamiento ni tareas) no pinta ni siquiera la cabecera.
+    if (role == 'assistant' &&
+        !isStreaming &&
+        !isCancelled &&
+        !isPipeline &&
+        msg['_stopped'] != true &&
+        displayContent.trim().isEmpty &&
+        operationalProjection.technicalDetails.isEmpty &&
+        _structuredGeneratedImages(msg).isEmpty &&
+        _structuredGeneratedVideos(msg).isEmpty &&
+        !_assistantActivityEvents(context, msg, '').any(
+          (event) =>
+              event.kind == ChatTraceEventKind.reasoning ||
+              !isInternalActivityLabel(event.label),
+        ) &&
+        !(msg['reasoning'] is String &&
+            (msg['reasoning'] as String).trim().isNotEmpty)) {
+      return const SizedBox.shrink();
+    }
     if (role == 'assistant' && isCancelled && content.isNotEmpty) {
       // El parcial cancelado largo llega ya troceado (displaySlice): cada
       // slice pinta su parte y solo el cierre lleva la marca 'cancelled'.

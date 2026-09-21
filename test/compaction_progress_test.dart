@@ -232,11 +232,8 @@ void main() {
           clock,
         ),
       );
-      expect(find.textContaining('Compactando conversación'), findsOneWidget);
-      expect(
-        find.textContaining('22 mensajes · ~21.5k tokens'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('Compactando'), findsOneWidget);
+      expect(find.textContaining('22 msj · ~21.5k tok'), findsOneWidget);
       expect(
         tester
             .widget<Text>(find.byKey(const ValueKey('compaction-elapsed')))
@@ -261,6 +258,84 @@ void main() {
       final first = painter().t as double?;
       await tester.pump(const Duration(milliseconds: 600));
       expect(painter().t as double?, isNot(first));
+    });
+
+    testWidgets('a ancho de móvil el título y los recuentos van en UNA línea', (
+      tester,
+    ) async {
+      await loadInterFont();
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final progress = CompactionProgress(
+        startedAt: _t0,
+        manual: true,
+        messagesBefore: 12,
+        tokensBefore: 21600,
+      );
+      await tester.pumpWidget(
+        app(progress, _Clock(_t0.add(const Duration(seconds: 30)))),
+      );
+      expect(find.textContaining('Compactando conversación'), findsNothing);
+      final title = tester.getRect(find.text('Compactando'));
+      final facts = tester.getRect(
+        find.byKey(const ValueKey('compaction-facts')),
+      );
+      final timer = tester.getRect(
+        find.byKey(const ValueKey('compaction-elapsed')),
+      );
+      expect(find.textContaining('12 msj · ~21.6k tok'), findsOneWidget);
+      // Misma línea: alturas de un solo renglón y alineados en horizontal.
+      expect(facts.height, lessThan(20));
+      expect((facts.center.dy - title.center.dy).abs(), lessThan(4));
+      expect(timer.left, greaterThan(facts.right));
+
+      // Si no cabe, se recortan los recuentos ANTES que el título.
+      tester.view.physicalSize = const Size(200, 800);
+      await tester.pump();
+      final narrowTitle = tester.widget<Text>(find.text('Compactando'));
+      expect(narrowTitle.softWrap, isFalse);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('compaction-facts')))
+            .overflow,
+        TextOverflow.ellipsis,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('con texto grande sí puede partirse en dos líneas', (
+      tester,
+    ) async {
+      await loadInterFont();
+      tester.view.physicalSize = const Size(320, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          theme: AppTheme.hermesRedDark,
+          home: MediaQuery(
+            data: const MediaQueryData(
+              textScaler: TextScaler.linear(2),
+              disableAnimations: true,
+            ),
+            child: Scaffold(
+              body: CompactionDock(
+                compaction: CompactionProgress(
+                  startedAt: _t0,
+                  manual: true,
+                  messagesBefore: 12,
+                  tokensBefore: 21600,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.byKey(const ValueKey('compaction-facts')), findsNothing);
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('con movimiento reducido la línea queda quieta', (
