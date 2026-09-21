@@ -7430,6 +7430,28 @@ void main() {
     },
   );
 
+  testWidgets('read-only chat does not rewrite an existing encrypted draft', (
+    tester,
+  ) async {
+    final connection = _remoteConn('read-only-draft').copyWith(readOnly: true);
+    final session = _session().copyWith(id: 'read-only-draft-session');
+    final key = ChatDraftStore.keyForTesting(connection.id, session.id);
+    final raw = jsonEncode({
+      'savedAt': DateTime.now().millisecondsSinceEpoch,
+      'text': 'Keep encrypted draft unchanged',
+      'attachments': const <Object>[],
+    });
+    secureStore[key] = raw;
+
+    await pumpChat(tester, connection: connection, session: session);
+    await tester.pump(const Duration(milliseconds: 400));
+    Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(secureStore[key], raw);
+  });
+
   testWidgets(
     'INDEPENDENT same provisional route reattach can save canonical draft',
     (tester) async {
@@ -7589,6 +7611,143 @@ void main() {
       );
     });
   }
+
+  testWidgets(
+    'release Bot Chat draft rehydrates by stable owner across canonical refresh',
+    (tester) async {
+      final connection = _remoteConn('draft-bot-owner');
+      const stableId = 'mob-bot-manager';
+      final first = _session().copyWith(
+        id: stableId,
+        lineageRootId: 'canonical-bot-old',
+        source: 'bot-mode-canonical',
+        messageCount: 1,
+        profile: 'manager',
+      );
+      await pumpChat(
+        tester,
+        connection: connection,
+        session: first,
+        initialStoredSessionId: 'canonical-bot-old',
+        desktopGateway: _UiRewindGateway(),
+      );
+      await tester.enterText(
+        find.byType(TextField).last,
+        'Draft owned by Bot Chat',
+      );
+      Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      final refreshed = first.copyWith(
+        lineageRootId: 'canonical-bot-new',
+        messageCount: 2,
+      );
+      await pumpChat(
+        tester,
+        connection: connection,
+        session: refreshed,
+        initialStoredSessionId: 'canonical-bot-new',
+        desktopGateway: _UiRewindGateway(),
+      );
+
+      expect(
+        tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+        'Draft owned by Bot Chat',
+      );
+      final store = tester
+          .widget<ChatScreen>(find.byType(ChatScreen))
+          .draftStoreOverride!;
+      expect(
+        (await store.load(connection.id, stableId, profile: 'manager')).text,
+        'Draft owned by Bot Chat',
+      );
+      expect(
+        (await store.load(
+          connection.id,
+          'canonical-bot-old',
+          profile: 'manager',
+        )).text,
+        isEmpty,
+      );
+      expect(
+        (await store.load(
+          connection.id,
+          'canonical-bot-new',
+          profile: 'manager',
+        )).text,
+        isEmpty,
+      );
+    },
+  );
+
+  testWidgets('release /new draft reopens from its conversation-list row', (
+    tester,
+  ) async {
+    final connection = _conn();
+    await pumpChat(tester, connection: connection);
+    final app = tester.state<HermesAppState>(find.byType(HermesApp));
+    Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    final listApi = ApiClient(
+      baseUrl: connection.baseUrl,
+      apiKey: connection.apiKey,
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/health') return http.Response('{}', 200);
+        if (request.url.path == '/api/sessions') {
+          return http.Response(
+            jsonEncode({'data': const <Object>[], 'has_more': false}),
+            200,
+          );
+        }
+        return http.Response('{}', 404);
+      }),
+    );
+    addTearDown(listApi.close);
+    Navigator.of(tester.element(find.byType(Navigator).first)).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SessionListScreen(
+          connection: connection,
+          connManager: app.connManager,
+          clientOverride: listApi,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.tap(find.byTooltip('Nueva sesión'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    final provisional = tester
+        .widget<ChatScreen>(find.byType(ChatScreen))
+        .session;
+    expect(provisional.isUnpersistedMobileDraft, isTrue);
+    await tester.enterText(
+      find.byType(TextField).last,
+      'Draft created through the real new-chat entry point',
+    );
+    Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final draftRow = find.byKey(ValueKey('session-draft-${provisional.id}'));
+    expect(draftRow, findsOneWidget);
+    await tester.tap(
+      find.ancestor(of: draftRow, matching: find.byType(InkWell)).first,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final reopened = tester.widget<ChatScreen>(find.byType(ChatScreen));
+    expect(reopened.session.id, provisional.id);
+    expect(
+      tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+      'Draft created through the real new-chat entry point',
+    );
+  });
+
   testWidgets('release drafts survive direct conversation replacement', (
     tester,
   ) async {
@@ -7649,6 +7808,62 @@ void main() {
     });
   }
 
+  testWidgets('release draft survives a fresh store after cold restart', (
+    tester,
+  ) async {
+    final connection = _remoteConn('draft-cold-restart');
+    final session = _session().copyWith(id: 'cold-restart-session');
+    await pumpChat(tester, connection: connection, session: session);
+    final firstStore = tester
+        .widget<ChatScreen>(find.byType(ChatScreen))
+        .draftStoreOverride!;
+    await tester.enterText(
+      find.byType(TextField).last,
+      'Draft after process death',
+    );
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+
+    SharedPreferences.setMockInitialValues({});
+    await pumpChat(tester, connection: connection, session: session);
+    final reopened = tester.widget<ChatScreen>(find.byType(ChatScreen));
+
+    expect(reopened.draftStoreOverride, isNot(same(firstStore)));
+    expect(
+      tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+      'Draft after process death',
+    );
+  });
+
+  testWidgets('release draft survives rotation and remains persisted', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await pumpChat(tester);
+    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+
+    await tester.enterText(find.byType(TextField).last, 'Rotate this draft');
+    tester.view.physicalSize = const Size(800, 360);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(
+      tester.widget<TextField>(find.byType(TextField).last).controller!.text,
+      'Rotate this draft',
+    );
+    expect(
+      (await screen.draftStoreOverride!.load(
+        screen.connection.id,
+        screen.session.id,
+      )).text,
+      'Rotate this draft',
+    );
+  });
+
   testWidgets('draft identity: new chat saves under canonical id and reopens', (
     tester,
   ) async {
@@ -7682,6 +7897,19 @@ void main() {
     gateway.emitComplete('canonical history');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
+    final postSendStore = ChatDraftStore(
+      await SharedPreferences.getInstance(),
+      secureStorage: _MemoryDraftSecureStorage(secureStore),
+    );
+    expect(
+      (await postSendStore.load(connection.id, provisional.id)).text,
+      isEmpty,
+    );
+    expect(
+      (await postSendStore.load(connection.id, 'stored-submission-test')).text,
+      isEmpty,
+    );
+    expect(await postSendStore.listForConnection(connection.id), isEmpty);
     await tester.enterText(field, 'second canonical turn');
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('send')));
@@ -7817,6 +8045,27 @@ void main() {
         await tester.pump(const Duration(milliseconds: 10));
       }
 
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'texto compartido desde otra app',
+      );
+      expect(find.byType(AttachmentCard), findsOneWidget);
+      Navigator.of(tester.element(find.byType(ChatScreen))).pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await pumpChat(
+        tester,
+        session: provisional,
+        connection: connection,
+        desktopGateway: _SubmissionGateway(),
+      );
+      for (
+        var frame = 0;
+        frame < 20 && find.byType(AttachmentCard).evaluate().isEmpty;
+        frame++
+      ) {
+        await tester.pump(const Duration(milliseconds: 10));
+      }
       expect(
         tester.widget<TextField>(find.byType(TextField).first).controller!.text,
         'texto compartido desde otra app',
