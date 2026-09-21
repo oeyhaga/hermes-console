@@ -2873,6 +2873,18 @@ enum ChatPipelineState {
   cancelled,
 }
 
+enum ChatTransportState { connected, reconnecting, offline }
+
+@immutable
+final class ChatTransportStatus {
+  const ChatTransportStatus(this.state, {this.disconnectedSince});
+
+  final ChatTransportState state;
+  final DateTime? disconnectedSince;
+
+  bool get isConnected => state == ChatTransportState.connected;
+}
+
 enum StopConfirmationState { idle, stopping, retrying, confirmed, failed }
 
 enum QueueLease { active, parked, resumeRequested }
@@ -6165,6 +6177,30 @@ class ActiveChat {
   bool _rewindDashboardAuthRequired = false;
   bool _dashboardAuthRequired = false;
   int _dashboardAuthAttemptEpoch = 0;
+  ChatTransportStatus _transportStatus = const ChatTransportStatus(
+    ChatTransportState.connected,
+  );
+  final ValueNotifier<ChatTransportStatus> _transportStatusListenable =
+      ValueNotifier(
+        const ChatTransportStatus(ChatTransportState.connected),
+      );
+
+  ChatTransportStatus get transportStatus => _transportStatus;
+  ValueListenable<ChatTransportStatus> get transportStatusListenable =>
+      _transportStatusListenable;
+
+  void _publishTransportState(ChatTransportState state) {
+    if (_disposed || _transportStatus.state == state) return;
+    final disconnectedSince = state == ChatTransportState.connected
+        ? null
+        : _transportStatus.disconnectedSince ??
+              DateTime.fromMillisecondsSinceEpoch(_wallClockMs());
+    _transportStatus = ChatTransportStatus(
+      state,
+      disconnectedSince: disconnectedSince,
+    );
+    _transportStatusListenable.value = _transportStatus;
+  }
 
   /// El transcript puede seguir siendo legible por REST aunque el Dashboard no
   /// permita reanudar el canal vivo. La UI observa esta señal no destructiva.
@@ -14860,6 +14896,7 @@ class ActiveChat {
         _desktopSessionEpoch == expectedSessionEpoch &&
         _desktopRuntimeSessionId == null;
 
+    _publishTransportState(ChatTransportState.offline);
     var attempt = 0;
     while (isCurrent()) {
       final delay = _desktopRecoveryDelayForAttempt(attempt);
@@ -14872,6 +14909,7 @@ class ActiveChat {
         await Future<void>.delayed(Duration.zero);
         if (!isCurrent()) return;
       }
+      _publishTransportState(ChatTransportState.reconnecting);
       try {
         DesktopRosterBoundRecovery? recovery;
         late final DesktopSessionSnapshot snapshot;
@@ -14906,6 +14944,7 @@ class ActiveChat {
           _closeViewerRecovery(gateway);
           return;
         }
+        _publishTransportState(ChatTransportState.connected);
         if (_viewerTurnConvergenceIsCurrent) {
           // Unproven post-cut viewers may publish only durable privacy vetoes.
           if (_recordDurablePrivateTranscriptVetoes(snapshot.messages)) {
@@ -14934,6 +14973,11 @@ class ActiveChat {
         return;
       } catch (error) {
         if (!isCurrent()) return;
+        _publishTransportState(
+          gateway.isConnected
+              ? ChatTransportState.reconnecting
+              : ChatTransportState.offline,
+        );
         if (_viewerAttachmentDisposition(error) !=
             _ViewerAttachmentDisposition.retryTransient) {
           _closeViewerRecovery(gateway);
@@ -15179,6 +15223,7 @@ class ActiveChat {
     _recoveringDesktopTurnEpoch = turnEpoch;
     _activityWatchdogTimer?.cancel();
     _activityWatchdogTimer = null;
+    _publishTransportState(ChatTransportState.offline);
     state = ChatPipelineState.connecting;
     _emit(ActiveChatEvent.connected);
     try {
@@ -15238,6 +15283,7 @@ class ActiveChat {
           if (!elapsed || !_canRecoverTurn(turnEpoch)) return;
         }
         if (!_canRecoverTurn(turnEpoch)) return;
+        _publishTransportState(ChatTransportState.reconnecting);
         try {
           final connected = await _desktopRecoveryOperationBeforeDeadline(
             gateway.connect().then((_) => true),
@@ -15343,6 +15389,11 @@ class ActiveChat {
           }
         } catch (error) {
           if (!_canRecoverTurn(turnEpoch)) return;
+          _publishTransportState(
+            gateway.isConnected
+                ? ChatTransportState.reconnecting
+                : ChatTransportState.offline,
+          );
           lastError = error;
           if (_isTerminalDesktopRecoveryError(error)) break;
         }
@@ -15352,6 +15403,9 @@ class ActiveChat {
         _failRun(activeChatDesktopRecoveryUiMessage(lastError));
       }
     } finally {
+      if (gateway.isConnected) {
+        _publishTransportState(ChatTransportState.connected);
+      }
       if (_recoveringDesktopTurnEpoch == turnEpoch) {
         _recoveringDesktopTurnEpoch = null;
       }
@@ -22737,6 +22791,7 @@ class ActiveChat {
     _retireDesktopRuntime();
     unawaited(_desktopGateway?.close());
     _api.close();
+    _transportStatusListenable.dispose();
     _changes.close();
   }
 }
