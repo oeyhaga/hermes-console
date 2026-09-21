@@ -1,12 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../models/agent_task_list.dart';
 import '../services/session_reconciler.dart';
 import '../theme/app_theme.dart';
-import 'hermes_premium_ui.dart';
 
 /// Etiquetas con las que el gateway nombra la herramienta de lista de tareas
 /// (`todo_list`; `todo` en transcripts anteriores al renombrado).
@@ -75,242 +72,12 @@ class AgentTaskScope extends InheritedWidget {
       !identical(oldWidget.tasks, tasks);
 }
 
-double _textScale(BuildContext context) =>
-    MediaQuery.textScalerOf(context).scale(13) / 13;
-
 String _statusWord(Strings s, AgentTaskStatus status) => switch (status) {
   AgentTaskStatus.pending => s.agentTasksStatusPending,
   AgentTaskStatus.inProgress => s.agentTasksStatusInProgress,
   AgentTaskStatus.completed => s.agentTasksStatusCompleted,
   AgentTaskStatus.cancelled => s.agentTasksStatusCancelled,
 };
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Píldora «Tareas 3/7»
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Píldora flotante de la lista de tareas del agente.
-///
-/// Sigue el lenguaje de `TurnActivityPill`/`SubagentActivityCard`: vive en la
-/// columna de píldoras sobre el compositor (dentro del stack del transcript,
-/// nunca encima del input) y colapsa a cero cuando no hay nada que contar.
-///
-/// Ciclo de vida (mismas reglas que Desktop, `store/todos.ts`):
-///  * visible mientras la lista tiene elementos abiertos Y hay un turno vivo;
-///  * al terminar el turno con la lista a medias desaparece (la lista sigue en
-///    el bloque de actividad del turno, marcada «incompleta»);
-///  * al completarse mientras se ve, muestra el check y se queda
-///    [lingerAfterFinished] para que se vea cómo cae la última marca.
-class AgentTaskPill extends StatefulWidget {
-  const AgentTaskPill({
-    required this.tasks,
-    required this.turnActive,
-    required this.onTap,
-    this.lingerAfterFinished = const Duration(seconds: 4),
-    super.key,
-  });
-
-  final AgentTaskList tasks;
-  final bool turnActive;
-  final VoidCallback onTap;
-  final Duration lingerAfterFinished;
-
-  @override
-  State<AgentTaskPill> createState() => _AgentTaskPillState();
-}
-
-class _AgentTaskPillState extends State<AgentTaskPill> {
-  Timer? _lingerTimer;
-  bool _lingering = false;
-
-  bool _shown(AgentTaskList tasks, bool turnActive, bool lingering) =>
-      tasks.isNotEmpty &&
-      ((tasks.hasOpen && turnActive) || (tasks.isFinished && lingering));
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.tasks.isFinished && widget.turnActive) _startLinger();
-  }
-
-  @override
-  void didUpdateWidget(AgentTaskPill oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final tasks = widget.tasks;
-    if (!tasks.isFinished) {
-      _cancelLinger();
-      return;
-    }
-    if (!oldWidget.tasks.isFinished &&
-        (widget.turnActive ||
-            _shown(oldWidget.tasks, oldWidget.turnActive, _lingering))) {
-      _startLinger();
-    }
-  }
-
-  void _startLinger() {
-    _lingerTimer?.cancel();
-    _lingering = true;
-    _lingerTimer = Timer(widget.lingerAfterFinished, () {
-      _lingerTimer = null;
-      if (!mounted) return;
-      setState(() => _lingering = false);
-    });
-  }
-
-  void _cancelLinger() {
-    _lingerTimer?.cancel();
-    _lingerTimer = null;
-    _lingering = false;
-  }
-
-  @override
-  void dispose() {
-    _lingerTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tasks = widget.tasks;
-    final visible = _shown(tasks, widget.turnActive, _lingering);
-    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    return AnimatedSwitcher(
-      duration: reduceMotion
-          ? Duration.zero
-          : const Duration(milliseconds: 180),
-      switchInCurve: Curves.easeOutCubic,
-      switchOutCurve: Curves.easeInCubic,
-      layoutBuilder: (current, previous) => Stack(
-        alignment: Alignment.bottomCenter,
-        children: [...previous, ?current],
-      ),
-      transitionBuilder: (child, animation) => FadeTransition(
-        opacity: animation,
-        child: SizeTransition(sizeFactor: animation, child: child),
-      ),
-      child: visible
-          ? _PillBody(
-              key: const ValueKey('agent-task-pill'),
-              tasks: tasks,
-              onTap: widget.onTap,
-            )
-          : const SizedBox.shrink(key: ValueKey('agent-task-pill-idle')),
-    );
-  }
-}
-
-class _PillBody extends StatelessWidget {
-  const _PillBody({required this.tasks, required this.onTap, super.key});
-
-  final AgentTaskList tasks;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final s = Strings.of(context);
-    final finished = tasks.isFinished;
-    final title = s.agentTasksPillTitle(tasks.done, tasks.total);
-    final currentItem =
-        tasks.current ??
-        tasks.rows.map((row) => row.item).where((i) => i.isOpen).firstOrNull;
-    final subtitle = finished ? s.agentTasksAllDone : currentItem?.content;
-    // A escala de texto grande la píldora se queda en UNA línea: el subtítulo
-    // sigue disponible para lectores de pantalla en la etiqueta semántica.
-    final showSubtitle =
-        subtitle != null && subtitle.isNotEmpty && _textScale(context) < 1.6;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      child: Semantics(
-        button: true,
-        container: true,
-        label: [title, ?subtitle].join('. '),
-        hint: s.agentTasksShowList,
-        onTap: onTap,
-        excludeSemantics: true,
-        child: Material(
-          color: colors.surface,
-          shape: StadiumBorder(
-            side: BorderSide(color: colors.divider, width: 0.8),
-          ),
-          clipBehavior: Clip.antiAlias,
-          elevation: 10,
-          shadowColor: Colors.black.withValues(alpha: 0.45),
-          child: InkWell(
-            onTap: onTap,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 48, maxWidth: 320),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 6, 10, 6),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: finished
-                          ? Icon(
-                              Icons.check_circle_rounded,
-                              key: const ValueKey('agent-task-pill-done'),
-                              size: 22,
-                              color: colors.success,
-                            )
-                          : CircularProgressIndicator(
-                              key: const ValueKey('agent-task-pill-ring'),
-                              value: tasks.progress,
-                              strokeWidth: 2.6,
-                              backgroundColor: colors.divider,
-                              color: colors.accent,
-                            ),
-                    ),
-                    const SizedBox(width: 10),
-                    Flexible(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            title,
-                            key: const ValueKey('agent-task-pill-title'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: colors.textPrimary,
-                            ),
-                          ),
-                          if (showSubtitle)
-                            Text(
-                              subtitle,
-                              key: const ValueKey('agent-task-pill-subtitle'),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: colors.textSecondary,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      size: 18,
-                      color: colors.textSecondary,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lista + tarjeta
@@ -568,24 +335,6 @@ class AgentTaskCardBody extends StatelessWidget {
   }
 }
 
-/// Abre la tarjeta flotante. Se actualiza en vivo con [changes] (los eventos
-/// del chat) leyendo la lista actual con [read].
-Future<void> showAgentTaskCard(
-  BuildContext context, {
-  required Stream<Object?> changes,
-  required AgentTaskList Function() read,
-}) {
-  return showHermesFloatingSurface<void>(
-    context: context,
-    surfaceKey: const ValueKey('agent-task-card'),
-    maxWidth: 480,
-    builder: (_) => StreamBuilder<Object?>(
-      stream: changes,
-      builder: (context, _) => AgentTaskCardBody(tasks: read()),
-    ),
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Dentro del bloque de actividad del turno
 // ─────────────────────────────────────────────────────────────────────────────
@@ -627,39 +376,6 @@ class AgentTaskChip extends StatelessWidget {
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Lista dentro del bloque de actividad desplegado del turno.
-class AgentTaskActivitySection extends StatelessWidget {
-  const AgentTaskActivitySection({
-    required this.tasks,
-    required this.turnActive,
-    super.key,
-  });
-
-  final AgentTaskList tasks;
-  final bool turnActive;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      key: const ValueKey('agent-task-activity-section'),
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AgentTaskHeader(
-            tasks: tasks,
-            dense: true,
-            incomplete: !turnActive && tasks.hasOpen,
-          ),
-          const SizedBox(height: 6),
-          AgentTaskChecklist(tasks: tasks, dense: true),
         ],
       ),
     );

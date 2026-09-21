@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../widgets/chat_event_cards.dart';
+import '../models/activity_snapshot.dart' show activityToolDetail;
 import '../models/agent_task_list.dart';
 import '../models/attachment_draft.dart';
 import '../models/command_descriptor.dart';
@@ -3875,6 +3876,9 @@ class ActiveChat {
   _PendingDesktopCompression? _pendingDesktopCompression;
   Timer? _desktopCompressionReconciliationTimer;
   bool _desktopAutoCompacting = false;
+  DateTime? _desktopCompactionStartedAt;
+  int? _desktopCompactionTokensBefore;
+  int? _desktopCompactionMessagesBefore;
   bool _suppressTerminalHydrationAfterCompaction = false;
   String? _desktopCompactionLineageId;
   SessionConfigScope? _sessionConfigScope;
@@ -4619,6 +4623,19 @@ class ActiveChat {
   bool get desktopCompressionInFlight =>
       _desktopCompressionInFlight || _desktopAutoCompacting;
   bool get desktopAutoCompacting => _desktopAutoCompacting;
+
+  /// Inicio (reloj local) de la compactación en curso, automática o manual;
+  /// `null` si no hay ninguna. Hermes no publica progreso: la pastilla mide el
+  /// tiempo desde aquí y estima el resto del historial local.
+  DateTime? get desktopCompactionStartedAt =>
+      desktopCompressionInFlight ? _desktopCompactionStartedAt : null;
+
+  /// Tamaño de partida que Hermes fija en la línea `compressing N messages
+  /// (~T tok)` del `/compress` en curso.
+  int? get desktopCompactionTokensBefore =>
+      desktopCompressionInFlight ? _desktopCompactionTokensBefore : null;
+  int? get desktopCompactionMessagesBefore =>
+      desktopCompressionInFlight ? _desktopCompactionMessagesBefore : null;
   String get desktopCompactionLineageId =>
       _desktopCompactionLineageId ?? logicalSessionId;
   bool get canLoadDesktopContextBreakdown =>
@@ -13474,6 +13491,11 @@ class ActiveChat {
       );
     }
     _durableCompressionFence = durableRecord;
+    if (!desktopCompressionInFlight) {
+      _desktopCompactionStartedAt = DateTime.now();
+      _desktopCompactionTokensBefore = null;
+      _desktopCompactionMessagesBefore = null;
+    }
     _desktopCompressionInFlight = true;
     _emit(ActiveChatEvent.sessionInfo);
     if (!compressionFenceStillValid()) {
@@ -17373,6 +17395,10 @@ class ActiveChat {
       _clearDesktopCompactingIndicator();
       return;
     }
+    if (kind == 'compressing') {
+      _noteDesktopCompressingText(payload['text']);
+      return;
+    }
     if (kind != 'compacting') return;
 
     final rawLineage =
@@ -17384,11 +17410,38 @@ class ActiveChat {
     // resultado de rotar un id provisional, así que se adopta en vez de
     // rechazarla por no coincidir todavía con la identidad local.
     _desktopCompactionLineageId = lineage.isEmpty ? logicalSessionId : lineage;
+    // Los latidos periódicos repiten `compacting`: solo el primero marca inicio.
+    if (!desktopCompressionInFlight) {
+      _desktopCompactionStartedAt = DateTime.now();
+      _desktopCompactionTokensBefore = null;
+      _desktopCompactionMessagesBefore = null;
+    }
     _desktopAutoCompacting = true;
     _suppressTerminalHydrationAfterCompaction = true;
     // Cualquier snapshot iniciado antes del evento ya es potencialmente
     // obsoleto y no puede reemplazar la proyección viva.
     _messageLoadEpoch += 1;
+    _emit(ActiveChatEvent.sessionInfo);
+  }
+
+  static final RegExp _compressingLine = RegExp(
+    r'compressing\s+(\d+)\s+messages?\s*\(~\s*([\d.,]+)\s*tok',
+    caseSensitive: false,
+  );
+
+  /// `status.update(compressing)` fija «compressing N messages (~T tok)»: es la
+  /// única cifra viva de un `/compress`; el resto llega en el resultado.
+  void _noteDesktopCompressingText(Object? text) {
+    if (text is! String) return;
+    final match = _compressingLine.firstMatch(text);
+    if (match == null) return;
+    final messages = int.tryParse(match.group(1) ?? '');
+    final tokens = int.tryParse(
+      (match.group(2) ?? '').replaceAll(RegExp(r'[.,]'), ''),
+    );
+    if (tokens == null && messages == null) return;
+    _desktopCompactionMessagesBefore = messages;
+    _desktopCompactionTokensBefore = tokens;
     _emit(ActiveChatEvent.sessionInfo);
   }
 
@@ -18270,11 +18323,26 @@ class ActiveChat {
         : payload['error'] != null || payload['status'] == 'error'
         ? 'failed'
         : 'completed';
+    // Detalle SEGURO para la pastilla/el panel (ejecutable, nombre de archivo,
+    // host…): nunca el argumento crudo. `tool.start` trae `args`; `tool.complete`
+    // trae además `duration_s`, con lo que el «Hecho» del panel mide de verdad.
+    final detail = activityToolDetail(label, payload['args']);
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final durationS = payload['duration_s'];
     if (activityIndex >= 0) {
+      final previous = activity[activityIndex];
+      final startedMs = previous['timestamp'];
+      final completedAt = running
+          ? null
+          : (startedMs is num && durationS is num && durationS.isFinite
+                ? startedMs.round() + (durationS * 1000).round()
+                : nowMs);
       activity[activityIndex] = {
-        ...activity[activityIndex],
+        ...previous,
         'label': label,
         'status': status,
+        if (detail != null && previous['detail'] == null) 'detail': detail,
+        'completed_at': ?completedAt,
       };
     } else {
       activity.add({
@@ -18282,7 +18350,13 @@ class ActiveChat {
         'label': label,
         'status': status,
         if (id != null && id.isNotEmpty) 'id': id,
-        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'detail': ?detail,
+        // Un fin sin inicio visto solo se mide si el gateway trae la duración.
+        'timestamp': !running && durationS is num && durationS.isFinite
+            ? nowMs - (durationS * 1000).round()
+            : nowMs,
+        if (!running && durationS is num && durationS.isFinite)
+          'completed_at': nowMs,
       });
     }
     _messages[index] = {...message, assistantActivityTraceKey: activity};
@@ -18301,7 +18375,12 @@ class ActiveChat {
     if (activity.isEmpty) return;
     for (var step = 0; step < activity.length; step++) {
       if (activity[step]['status'] == 'running') {
-        activity[step] = {...activity[step], 'status': 'completed'};
+        activity[step] = {
+          ...activity[step],
+          'status': 'completed',
+          if (activity[step]['kind'] != 'reasoning')
+            'completed_at': DateTime.now().millisecondsSinceEpoch,
+        };
       }
     }
     final firstTimestamp = activity

@@ -48,6 +48,7 @@ import '../companion/render/companion_message_presence.dart';
 import '../companion/render/companion_status_indicator.dart';
 import '../companion/models/companion_presence_level.dart';
 import '../config/flavor.dart';
+import '../models/activity_snapshot.dart';
 import '../models/attachment_draft.dart';
 import '../models/agent_profile.dart';
 import '../models/chat_preferences.dart';
@@ -67,6 +68,7 @@ import '../navigation/chat_route.dart';
 import '../models/desktop_control_center.dart' show SessionGoalSnapshot;
 import '../services/active_chat_service.dart';
 import '../services/approval_policy.dart';
+import '../services/compaction_tracker.dart';
 import '../services/session_reconciler.dart';
 import '../services/artifact_export_service.dart';
 import '../services/attachment_uploader.dart';
@@ -151,6 +153,7 @@ import '../widgets/hermes_file_tree.dart';
 import '../widgets/hermes_bot_face.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_suggestions.dart';
+import '../widgets/message_avatar_header.dart';
 import '../widgets/hermes_ui.dart';
 import '../widgets/hermes_spark_mascot.dart';
 import '../widgets/interactive_prompt_card.dart';
@@ -158,7 +161,7 @@ import '../widgets/markdown_table.dart';
 import '../widgets/mission_profile_avatar.dart';
 import '../widgets/motion_entrance.dart';
 import '../widgets/subagent_activity_card.dart';
-import '../widgets/turn_activity_pill.dart';
+import '../widgets/activity_panel.dart';
 import '../widgets/platform_setup_commands.dart';
 import '../widgets/read_only.dart';
 import '../widgets/read_aloud_button.dart';
@@ -1383,6 +1386,15 @@ class _ChatScreenState extends State<ChatScreen>
   // Alto medido del hueco de las pastillas de actividad. Notifier aparte por
   // la misma razón que la flecha: cambiar no reconstruye la pantalla.
   final ValueNotifier<double> _activityPillExtent = ValueNotifier(0);
+
+  /// Compactación (automática o manual) de la sesión abierta: mide el tiempo,
+  /// aprende la duración típica y conserva el resultado unos segundos. La
+  /// pastilla de actividad la enseña como una actividad más.
+  final CompactionTracker _compaction = CompactionTracker();
+  final SubagentActivityController _subagentController =
+      SubagentActivityController();
+  Map<String, dynamic>? _consumedCompressionResult;
+  int? _compactionTokensBefore;
   void _setActivityPillExtent(double value) {
     if (_disposed || _activityPillExtent.value == value) return;
     _recordTranscriptOverlayExtentChange(
@@ -1693,6 +1705,7 @@ class _ChatScreenState extends State<ChatScreen>
     _textController = _SlashAccentTextEditingController();
     _attachmentListener = _applyAttachmentProjection;
     _sessionUsageSnapshot = widget.session;
+    _compaction.addListener(_onCompactionChanged);
     WidgetsBinding.instance.addObserver(this);
     _loadPrefs();
     _loadActiveModel();
@@ -2903,6 +2916,24 @@ class _ChatScreenState extends State<ChatScreen>
     return friendlyModelName(model);
   }
 
+  /// Modelo activo para la segunda línea de la cabecera («gpt-5.5 · 12:04»).
+  String? get _headerModelLabel {
+    final model = _displayedSessionModel?.modelId ?? _activeModel?.model;
+    if (model == null || model.isEmpty || model == 'hermes-agent') return null;
+    return friendlyModelName(model);
+  }
+
+  Object? get _newestAssistantStamp {
+    for (final message in _messages) {
+      if (message['role'] != 'assistant') continue;
+      if (message['display_kind']?.toString().trim().isNotEmpty ?? false) {
+        continue;
+      }
+      return _messageStamp(message);
+    }
+    return null;
+  }
+
   void _syncDesktopSessionConfig() {
     if (!_chatBound) return;
     final info = _chat.desktopRuntimeInfo;
@@ -3708,6 +3739,7 @@ class _ChatScreenState extends State<ChatScreen>
       // resume en frío) no llega ningún evento nuevo hasta el siguiente frame
       // del agente, así que sin esto el cronómetro del turno nunca arrancaba.
       _syncTurnActivityClock();
+      _syncCompaction();
       unawaited(_persistBotChatPin());
       unawaited(_loadChatPreferences());
       app.voice.voiceConsent.addListener(_onVoicePreferenceChanged);
@@ -4341,90 +4373,14 @@ class _ChatScreenState extends State<ChatScreen>
   /// Reacciona a un cambio del chat activo (token, herramienta, fin, error):
   /// re-renderiza desde el estado del servicio. La parte de voz la maneja el
   /// controlador de conversación, suscrito al mismo chat por su cuenta.
-  /// Origen del cronómetro de [TurnActivityPill]. El servicio solo publica
+  /// Origen del cronómetro de la pastilla de actividad. El servicio solo publica
   /// `desktopTurnStartedAt` para los turnos que nacen en el runtime remoto, así
   /// que el turno local se marca aquí, donde llegan todas las transiciones.
   DateTime? _turnActivityStartedAt;
 
-  /// Un turno está «trabajando sin contarlo» mientras sigue vivo y aún no emite
-  /// texto. Tras el primer token, la misma pastilla reaparece solo cuando el
-  /// servicio lleva cinco minutos sin recibir actividad del runtime.
-  bool get _turnWorkingWithoutOutput =>
-      _chat.noActivityHint ||
-      (_chat.isStreaming &&
-          (_pipelineState == ChatPipelineState.connecting ||
-              _pipelineState == ChatPipelineState.waiting ||
-              _pipelineState == ChatPipelineState.executing));
-
-  /// La pastilla de subagentes ya narra su propia espera con su duración. Dos
-  /// pastillas contando lo mismo es la doble narración que Desktop evita con
-  /// `toolNarratesWait`; gana la más específica.
-  ///
-  /// Esta pastilla sigue viva pase lo que pase con el scroll: avisa que el turno
-  /// continúa y, tras una pausa larga, que no hubo actividad reciente. Lo que sí
-  /// depende del scroll es si repite la palabra de estado: ver
-  /// `_turnActivityPillLabel`.
-  bool get _showTurnActivityPill =>
-      _turnWorkingWithoutOutput &&
-      _turnActivityStartedAt != null &&
-      !_compressingSession &&
-      _displaySubagentActivities.isEmpty &&
-      !_chat.hasRecentPassiveRemoteActivity &&
-      _chat.safeActiveSubagentCount <= 0;
-
-  /// Palabra de estado que muestra la pastilla, o `null` para omitirla y dejar
-  /// solo el spinner + cronómetro. Mientras el transcript sigue el fondo
-  /// (`_autoFollowStreaming`), la `ThinkingTraceCard` en vivo —mascota grande
-  /// + la misma palabra, animada— ya está a la vista en el sitio exacto donde
-  /// va a salir la respuesta; repetirla en la pastilla es la doble narración
-  /// reportada en dispositivo real. El aviso de inactividad sí se muestra
-  /// siempre porque comunica un estado distinto.
-  String? get _turnActivityPillLabel => _chat.noActivityHint
-      ? Strings.of(context).chaNoRecentActivity
-      : _autoFollowStreaming
-      ? null
-      : _traceHeadline();
-
-  String get _backgroundProcessPillLabel {
-    final strings = Strings.of(context);
-    final activity = _chat.sessionActivity;
-    final command = activity.processCommand;
-    final String status;
-    if (activity.backgroundItemCount == 1 && activity.processes.length == 1) {
-      status = command == null
-          ? strings.chaBackgroundProcessRunning
-          : strings.chaBackgroundProcessCommand(command);
-    } else {
-      status = strings.chaBackgroundActivityCount(activity.backgroundItemCount);
-    }
-    final notify = activity.willNotifyLater
-        ? ' · ${strings.chaBackgroundProcessWillNotify}'
-        : '';
-    final stale = activity.stale
-        ? ' · ${strings.chaBackgroundActivityStale}'
-        : '';
-    return '$status$notify$stale';
-  }
-
-  String _backgroundTime(DateTime value) => MaterialLocalizations.of(
-    context,
-  ).formatTimeOfDay(TimeOfDay.fromDateTime(value.toLocal()));
-
-  String _backgroundDuration(Duration value) {
-    if (value.inHours > 0 && value.inMinutes % 60 == 0) {
-      return '${value.inHours} h';
-    }
-    if (value.inMinutes > 0) return '${value.inMinutes} min';
-    return '${value.inSeconds} s';
-  }
-
-  String _backgroundStatusLabel(String value) => switch (value) {
-    'active' => Strings.of(context).chaBackgroundStatusActive,
-    'paused' => Strings.of(context).chaBackgroundStatusPaused,
-    'waiting' => Strings.of(context).chaBackgroundStatusWaiting,
-    'done' => Strings.of(context).chaBackgroundStatusDone,
-    _ => value,
-  };
+  /// Hay un turno propio vivo: lo que mantiene encendida la pastilla de
+  /// actividad. El texto del turno ya no vive en la burbuja.
+  bool get _turnLive => _chat.isStreaming;
 
   Future<void> _runBackgroundAction(Future<void> Function() action) async {
     try {
@@ -4440,285 +4396,169 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
-  Future<void> _showAgentTaskCard() => showAgentTaskCard(
-    context,
-    changes: _chat.changes,
-    read: () => _chat.agentTasks,
+  /// Pasos (herramientas/skills) del turno vivo, del mensaje-placeholder que el
+  /// servicio va actualizando. Se memoiza por identidad de la lista para no
+  /// renormalizar 256 pasos en cada token.
+  Object? _activityStepsSource;
+  ({ActivityStep? current, List<ActivityStep> done}) _activitySteps = (
+    current: null,
+    done: const <ActivityStep>[],
   );
 
-  Future<void> _showBackgroundActivitySheet() async {
+  ({ActivityStep? current, List<ActivityStep> done}) _liveActivitySteps() {
+    Map<String, dynamic>? live;
+    for (final message in _messages) {
+      if (message['role'] != 'assistant') continue;
+      if ((message['display_kind']?.toString().trim().isNotEmpty ?? false)) {
+        continue;
+      }
+      if (message['_pipeline'] == true) live = message;
+      break;
+    }
+    final source = live?[assistantActivityTraceKey];
+    if (live == null) {
+      _activityStepsSource = null;
+      return (current: null, done: const <ActivityStep>[]);
+    }
+    if (!identical(source, _activityStepsSource)) {
+      _activityStepsSource = source;
+      _activitySteps = ActivitySnapshot.splitSteps(
+        normalizeAssistantActivityTrace(source),
+      );
+    }
+    return _activitySteps;
+  }
+
+  /// Un solo valor con todo lo que está vivo: turno, tareas, compactación,
+  /// segundo plano y subagentes. La pastilla y el panel se pintan desde aquí.
+  ActivitySnapshot _buildActivitySnapshot() {
+    final turnActive = _turnLive;
     final activity = _chat.sessionActivity;
-    if (activity.backgroundItemCount == 0) return;
-    final colors = Theme.of(context).hermes;
-    final s = Strings.of(context);
-    await showHermesFloatingSurface<void>(
-      context: context,
-      surfaceKey: const ValueKey('chat-background-activity-sheet'),
-      maxWidth: 560,
-      builder: (sheetContext) {
-        Widget detailRow(String value, {Key? key, Color? color}) => Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            value,
-            key: key,
-            style: Theme.of(sheetContext).textTheme.bodySmall?.copyWith(
-              color: color ?? colors.textSecondary,
-            ),
-          ),
-        );
-
-        Widget section({
-          required Widget title,
-          required List<Widget> children,
-          List<Widget> actions = const [],
-        }) => Container(
-          margin: const EdgeInsets.only(top: 10),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: colors.surfaceVariant,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: colors.divider),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              title,
-              ...children,
-              if (actions.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(spacing: 8, runSpacing: 4, children: actions),
-              ],
-            ],
-          ),
-        );
-
-        Widget actionButton(
-          String label,
-          Future<void> Function() action, {
-          Key? key,
-        }) => TextButton(
-          key: key,
-          onPressed: () async {
-            await _runBackgroundAction(action);
-            if (sheetContext.mounted) Navigator.of(sheetContext).pop();
-          },
-          child: Text(label),
-        );
-
-        final rows = <Widget>[];
-        if (activity.stale) {
-          rows.add(
-            detailRow(
-              s.chaBackgroundActivityStale,
-              color: colors.warning,
-            ),
-          );
-        }
-        if (activity.goal case final goal?) {
-          final goalActions = <Widget>[
-            TextButton(
-              onPressed: () {
-                Navigator.of(sheetContext).pop();
-                final snapshot = _chat.goal;
-                if (snapshot != null) unawaited(_showGoalSheet(snapshot));
-              },
-              child: Text(s.chaBackgroundGoalDetails),
-            ),
-          ];
-          if (_chat.canControlGoal) {
-            if (goal.status == 'active') {
-              goalActions.add(
-                actionButton(
-                  s.chaGoalActionPause,
-                  () => _chat.sendGoalAction('goal.pause'),
-                ),
-              );
-            } else if (goal.status == 'paused') {
-              goalActions.add(
-                actionButton(
-                  s.chaGoalActionResume,
-                  () => _chat.sendGoalAction('goal.resume'),
-                ),
-              );
-            } else if (goal.status == 'waiting') {
-              goalActions.add(
-                actionButton(
-                  s.chaGoalActionResumeNow,
-                  () => _chat.sendGoalAction('goal.unwait'),
-                ),
-              );
-            }
-            goalActions.add(
-              actionButton(
-                s.chaGoalActionClear,
-                () => _chat.sendGoalAction('goal.clear'),
-              ),
-            );
-          }
-          rows.add(
-            section(
-              title: Text(
-                goal.title.isEmpty ? s.chaGoalSheetTitle : goal.title,
-                style: Theme.of(sheetContext).textTheme.titleSmall,
-              ),
-              children: [
-                detailRow(
-                  s.chaBackgroundStatus(_backgroundStatusLabel(goal.status)),
-                ),
-              ],
-              actions: goalActions,
-            ),
-          );
-        }
-        for (final schedule in activity.schedules) {
-          final isLoop = schedule.kind == SessionActivityScheduleKind.loop;
-          final actions = <Widget>[];
-          if (_chat.canControlSessionActivity) {
-            if (schedule.status == 'paused') {
-              actions.add(
-                actionButton(
-                  s.chaBackgroundActionResume,
-                  () => _chat.sendSessionControlAction(
-                    isLoop ? 'loop.resume' : 'heartbeat.resume',
-                  ),
-                  key: ValueKey(
-                    isLoop
-                        ? 'background-loop-resume'
-                        : 'background-heartbeat-resume',
-                  ),
-                ),
-              );
-            } else if (schedule.status == 'active') {
-              actions.add(
-                actionButton(
-                  s.chaBackgroundActionPause,
-                  () => _chat.sendSessionControlAction(
-                    isLoop ? 'loop.pause' : 'heartbeat.pause',
-                  ),
-                  key: ValueKey(
-                    isLoop
-                        ? 'background-loop-pause'
-                        : 'background-heartbeat-pause',
-                  ),
-                ),
-              );
-            }
-            actions.add(
-              actionButton(
-                isLoop
-                    ? s.chaBackgroundActionStop
-                    : s.chaBackgroundActionClear,
-                () => _chat.sendSessionControlAction(
-                  isLoop ? 'loop.stop' : 'heartbeat.clear',
-                ),
-                key: ValueKey(
-                  isLoop
-                      ? 'background-loop-stop'
-                      : 'background-heartbeat-clear',
-                ),
-              ),
-            );
-          }
-          rows.add(
-            section(
-              title: Text(
-                isLoop
-                    ? s.chaBackgroundLoop
-                    : s.chaBackgroundHeartbeat,
-                style: Theme.of(sheetContext).textTheme.titleSmall,
-              ),
-              children: [
-                detailRow(
-                  s.chaBackgroundStatus(
-                    _backgroundStatusLabel(schedule.status),
-                  ),
-                ),
-                detailRow(
-                  s.chaBackgroundInterval(
-                    _backgroundDuration(schedule.interval),
-                  ),
-                ),
-                if (schedule.nextDueAt case final nextDue?)
-                  detailRow(
-                    s.chaBackgroundNextDue(_backgroundTime(nextDue)),
-                  ),
-                if (schedule.lastRunAt case final lastRun?)
-                  detailRow(
-                    s.chaBackgroundLastRun(_backgroundTime(lastRun)),
-                  ),
-                detailRow(s.chaBackgroundRunCount(schedule.runCount)),
-                if (schedule.awaitingResponse)
-                  detailRow(s.chaBackgroundAwaitingResponse),
-                if (schedule.deferredByGoal)
-                  detailRow(s.chaBackgroundDeferredByGoal),
-              ],
-              actions: actions,
-            ),
-          );
-        }
-        for (final process in activity.processes) {
-          final watches = process.watchPatterns;
-          rows.add(
-            section(
-              title: Text(
-                process.command.isEmpty
-                    ? s.chaBackgroundProcessRunning
-                    : process.command,
-                style: Theme.of(sheetContext).textTheme.titleSmall,
-              ),
-              children: [
-                if (watches.isNotEmpty) ...[
-                  detailRow(s.chaBackgroundWatchPatterns),
-                  for (final pattern in watches)
-                    detailRow(pattern, key: ValueKey('process-watch-$pattern')),
-                ],
-                if (process.watchHit)
-                  detailRow(
-                    s.chaBackgroundWatchHit,
-                    color: colors.success,
-                  ),
-                if (process.notifyOnComplete)
-                  detailRow(s.chaBackgroundProcessWillNotify),
-              ],
-              actions: _chat.canStopBackgroundProcesses
-                  ? [
-                      actionButton(
-                        s.chaBackgroundActionStop,
-                        () => _chat.stopBackgroundProcess(process.id),
-                        key: ValueKey('background-process-stop-${process.id}'),
-                      ),
-                    ]
-                  : const [],
-            ),
-          );
-        }
-        return ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-          children: [
-            Text(
-              s.chaBackgroundActivityTitle,
-              style: Theme.of(sheetContext).textTheme.titleMedium,
-            ),
-            ...rows,
-          ],
-        );
-      },
+    final steps = turnActive
+        ? _liveActivitySteps()
+        : (current: null, done: const <ActivityStep>[]);
+    final passiveTotal = _chat.hasRecentPassiveRemoteActivity
+        ? _chat.passiveActivityAggregate.total
+        : 0;
+    final subagents = _displaySubagentActivities;
+    return ActivitySnapshot(
+      turnActive: turnActive,
+      tasksActive: turnActive || _chat.remoteSurfaceOwnsLiveTurn,
+      turnStartedAt: turnActive
+          ? (_turnActivityStartedAt ?? _chat.desktopTurnStartedAt)
+          : null,
+      headline: turnActive ? _traceHeadline() : null,
+      waitingForUser: turnActive && _turnWaitsForUser,
+      noActivityHint: turnActive && _chat.noActivityHint,
+      current: steps.current,
+      done: steps.done,
+      tasks: _chat.agentTasks,
+      compaction: _compaction.current,
+      processes: activity.processes,
+      schedules: activity.schedules,
+      goal: activity.goal,
+      processesStale: activity.stale,
+      backgroundStartedAt: activity.startedAt,
+      subagents: subagents,
+      subagentGenericCount: math.max(
+        _chat.safeActiveSubagentCount,
+        passiveTotal,
+      ),
+      passiveRemote:
+          _chat.hasRecentPassiveRemoteActivity ||
+          _chat.safeActiveSubagentCount > 0,
     );
   }
 
-  /// Mismo principio que `_showTurnActivityPill` de arriba, aplicado a la
-  /// cabecera del Bot Chat: su subtítulo («@nombre · Pensando») y esta
-  /// pastilla narraban el mismo estado a la vez una vez el turno pasaba de
-  /// unos 3 s (reportado en dispositivo real: "la píldora y la burbuja
-  /// general... hacen lo mismo"). Antes de esos 3 s la pastilla de
-  /// `TurnActivityPill` (`revealAfter`) todavía no se ha revelado, así que la
-  /// cabecera sigue siendo la única señal de un turno recién empezado; solo
-  /// se calla la palabra de estado justo cuando la pastilla ya se ve.
+  /// Las acciones por elemento del panel: los mismos controladores que tenían
+  /// las hojas de segundo plano y de subagentes.
+  ActivityPanelActions _buildActivityActions() => ActivityPanelActions(
+    canStopProcesses: _chat.canStopBackgroundProcesses,
+    stopProcess: (id) =>
+        _runBackgroundAction(() => _chat.stopBackgroundProcess(id)),
+    canControlSchedules: _chat.canControlSessionActivity,
+    scheduleAction: (schedule, action) {
+      final isLoop = schedule.kind == SessionActivityScheduleKind.loop;
+      final name = switch (action) {
+        ActivityScheduleAction.pause =>
+          isLoop ? 'loop.pause' : 'heartbeat.pause',
+        ActivityScheduleAction.resume =>
+          isLoop ? 'loop.resume' : 'heartbeat.resume',
+        ActivityScheduleAction.stop => isLoop ? 'loop.stop' : 'heartbeat.clear',
+      };
+      return _runBackgroundAction(() => _chat.sendSessionControlAction(name));
+    },
+    canControlGoal: _chat.canControlGoal,
+    goalAction: (action) =>
+        _runBackgroundAction(() => _chat.sendGoalAction(action)),
+    goalDetails: () {
+      final snapshot = _chat.goal;
+      if (snapshot != null) unawaited(_showGoalSheet(snapshot));
+    },
+    openSubagent: _subagentController.open,
+    dismissSubagents: _dismissSubagentPill,
+  );
+
+  /// Sincroniza el seguimiento de compactación con el servicio. Barato e
+  /// idempotente: se llama en cada evento del chat.
+  void _onCompactionChanged() {
+    if (_disposed || !mounted) return;
+    setState(() {});
+  }
+
+  void _syncCompaction() {
+    if (!_chatBound) return;
+    final active =
+        _chat.desktopCompressionInFlight || _compressionCommandInFlight;
+    final manual =
+        _chat.desktopManualCompressionInFlight || _compressionCommandInFlight;
+    final used = _sessionContextMetrics.value.contextUsed;
+    // El tamaño de partida es el último uso de contexto ANTES de compactar: se
+    // congela al empezar para que la bajada posterior no lo pise.
+    if (!active && !_compaction.running) _compactionTokensBefore = used;
+    Map<String, dynamic>? head;
+    for (final message in _messages) {
+      if (message['display_kind'] == 'compression_result') {
+        head = message;
+        break;
+      }
+    }
+    if (!active && !_compaction.running) _consumedCompressionResult = head;
+    final model = _displayedSessionModel?.modelId ?? _activeModel?.model ?? '';
+    _compaction.sync(
+      active: active,
+      manual: manual,
+      historyKey: CompactionHistoryStore.keyFor(_chat.connection.id, model),
+      startedAt: _chat.desktopCompactionStartedAt,
+      tokensBefore:
+          _chat.desktopCompactionTokensBefore ?? _compactionTokensBefore,
+      messagesBefore: _chat.desktopCompactionMessagesBefore,
+    );
+    if (head != null && !identical(head, _consumedCompressionResult)) {
+      _consumedCompressionResult = head;
+      final meta = head['display_metadata'];
+      if (meta is Map && meta['noop'] != true) {
+        int? number(String key) =>
+            meta[key] is num ? (meta[key] as num).toInt() : null;
+        _compaction.reportResult(
+          tokensBefore: number('before_tokens'),
+          tokensAfter: number('after_tokens'),
+          messagesBefore: number('before_messages'),
+          messagesAfter: number('after_messages'),
+        );
+      }
+    }
+    _compaction.observeContextTokens(used);
+  }
+
+  /// La cabecera del Bot Chat («@nombre · Pensando») y la pastilla de actividad
+  /// narraban el mismo estado a la vez (reportado en dispositivo real). Antes de
+  /// que la pastilla se revele —los 2 s del antiparpadeo— la cabecera sigue
+  /// siendo la única señal de un turno recién empezado; después se calla.
   bool get _turnActivityPillRevealed {
     final startedAt = _turnActivityStartedAt;
-    if (!_showTurnActivityPill || startedAt == null) return false;
-    return DateTime.now().difference(startedAt) >= const Duration(seconds: 3);
+    if (!_turnLive || startedAt == null) return false;
+    return DateTime.now().difference(startedAt) >= const Duration(seconds: 2);
   }
 
   void _syncTurnActivityClock() {
@@ -4744,6 +4584,7 @@ class _ChatScreenState extends State<ChatScreen>
       _subagentPillDismissed = false;
     }
     _syncTurnActivityClock();
+    _syncCompaction();
     _syncSubagentPolling();
     final passiveTerminalEvent =
         event == ActiveChatEvent.done ||
@@ -5515,6 +5356,7 @@ class _ChatScreenState extends State<ChatScreen>
     _liveAssistantFrame.dispose();
     _scrollToBottomVisibility.dispose();
     _activityPillExtent.dispose();
+    _compaction.dispose();
     _sessionContextMetrics.dispose();
     super.dispose();
   }
@@ -9510,12 +9352,16 @@ class _ChatScreenState extends State<ChatScreen>
                           Expanded(
                             child: Stack(
                               children: [
-                                AgentTaskScope(
-                                  tasks: _chat.agentTasks,
-                                  ownerStepId: _chat.agentTasks.isEmpty
-                                      ? null
-                                      : latestAgentTaskStepId(_messages),
-                                  child: _buildBody(),
+                                _AssistantModelScope(
+                                  label: _headerModelLabel,
+                                  newest: _newestAssistantStamp,
+                                  child: AgentTaskScope(
+                                    tasks: _chat.agentTasks,
+                                    ownerStepId: _chat.agentTasks.isEmpty
+                                        ? null
+                                        : latestAgentTaskStepId(_messages),
+                                    child: _buildBody(),
+                                  ),
                                 ),
                                 Positioned(
                                   top: 8,
@@ -9621,60 +9467,22 @@ class _ChatScreenState extends State<ChatScreen>
                                       _BottomGapWhenVisible(
                                         gap: 12,
                                         onExtent: _setActivityPillExtent,
-                                        // Se excluyen entre sí (ver
-                                        // `_showTurnActivityPill`), así que la que no
-                                        // toca colapsa a cero y la columna no crece.
+                                        // Una sola pastilla para todo lo vivo
+                                        // (turno, tareas, segundo plano,
+                                        // subagentes, compactación): un único
+                                        // hueco medido, un único cronómetro. El
+                                        // panel sale de ella al tocarla.
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            AgentTaskPill(
+                                            ActivityPillHost(
                                               key: const ValueKey(
-                                                'chat-agent-tasks',
+                                                'chat-activity-pill',
                                               ),
-                                              tasks: _chat.agentTasks,
-                                              turnActive:
-                                                  _chat.isStreaming ||
-                                                  _chat.remoteSurfaceOwnsLiveTurn,
-                                              onTap: _showAgentTaskCard,
+                                              snapshot:
+                                                  _buildActivitySnapshot(),
+                                              actions: _buildActivityActions(),
                                             ),
-                                            TurnActivityPill(
-                                              key: const ValueKey(
-                                                'chat-turn-activity',
-                                              ),
-                                              active: _showTurnActivityPill,
-                                              startedAt: _turnActivityStartedAt,
-                                              statusLabel:
-                                                  _turnActivityPillLabel,
-                                              reassureAfter:
-                                                  _chat.noActivityHint
-                                                  ? const Duration(days: 1)
-                                                  : const Duration(seconds: 20),
-                                            ),
-                                            if (_chat
-                                                    .sessionActivity
-                                                    .backgroundItemCount >
-                                                0)
-                                              TurnActivityPill(
-                                                key: const ValueKey(
-                                                  'chat-background-process-status',
-                                                ),
-                                                active: true,
-                                                startedAt: _chat
-                                                    .sessionActivity
-                                                    .startedAt,
-                                                statusLabel:
-                                                    _backgroundProcessPillLabel,
-                                                revealAfter: Duration.zero,
-                                                reassureAfter: const Duration(
-                                                  days: 1,
-                                                ),
-                                                showElapsed: _chat
-                                                        .sessionActivity
-                                                        .startedAt !=
-                                                    null,
-                                                onTap:
-                                                    _showBackgroundActivitySheet,
-                                              ),
                                             KeyedSubtree(
                                               key: const ValueKey(
                                                 'chat-session-activity',
@@ -9683,6 +9491,8 @@ class _ChatScreenState extends State<ChatScreen>
                                                 key: const ValueKey(
                                                   'chat-subagent-status',
                                                 ),
+                                                hidden: true,
+                                                controller: _subagentController,
                                                 activities:
                                                     _displaySubagentActivities,
                                                 onDismiss: _dismissSubagentPill,
@@ -12478,7 +12288,13 @@ class _ChatScreenState extends State<ChatScreen>
                           onRetry: (localId) =>
                               unawaited(_retryPendingAttachment(localId)),
                         ),
-                      if (_compressingSession)
+                      // La compactación en marcha la cuenta la pastilla de
+                      // actividad; esta fila solo queda para los estados que
+                      // exigen atención (pendiente de confirmar, incierto).
+                      if (_compressingSession &&
+                          (_chat.desktopCompressionNeedsConfirmation ||
+                              _chat.desktopCompressionTransportUncertain ||
+                              _chat.desktopCompressionAwaitingReconciliation))
                         Semantics(
                           key: const ValueKey(
                             'desktop-session-compression-progress',
@@ -13126,10 +12942,15 @@ class _ChatScreenState extends State<ChatScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            _AssistantLiveHeader(agentName: _agentName, mood: mood),
+            _AssistantLiveHeader(
+              agentName: _agentName,
+              mood: mood,
+              model: _headerModelLabel,
+            ),
             ThinkingTraceCard(
               events: _trace,
               active: true,
+              liveInPill: true,
               headline: _traceHeadline(),
               activeMood: mood,
               waitingForUser: _turnWaitsForUser,
@@ -16343,6 +16164,7 @@ List<ChatTraceEvent> _assistantActivityEvents(
         ? s.chatActivityReasoning
         : step['label']?.toString().trim() ?? '';
     if (label.isEmpty) continue;
+    final measured = ActivityStep.fromTrace(step, index: index);
     events.add(
       ChatTraceEvent(
         id: step['id']?.toString() ?? 'activity-$index',
@@ -16350,6 +16172,9 @@ List<ChatTraceEvent> _assistantActivityEvents(
         status: step['status']?.toString() ?? 'completed',
         preview: preview,
         kind: kind,
+        detail: measured?.detail,
+        startedAt: measured?.startedAt,
+        duration: measured?.duration,
       ),
     );
   }
@@ -16414,37 +16239,118 @@ class _AssistantHeaderCompanion extends StatelessWidget {
   }
 }
 
-class _AssistantLiveHeader extends StatelessWidget {
-  const _AssistantLiveHeader({required this.agentName, required this.mood});
+/// Cabecera de un mensaje del asistente: avatar-chip con la mascota (si la
+/// presencia está activa) o un avatar neutro, más «Hermes» y «modelo · hora».
+class _AssistantAvatarHeader extends StatelessWidget {
+  const _AssistantAvatarHeader({
+    required this.name,
+    required this.mood,
+    required this.animate,
+    required this.ring,
+    this.model,
+    this.time,
+    this.actions = const [],
+  });
 
-  final String agentName;
+  final String name;
+  final String? model;
+  final String? time;
   final HermesSparkMood mood;
+  final bool animate;
+  final AvatarRingState ring;
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
+    final s = Strings.of(context);
+    final stateLabel = switch (ring) {
+      AvatarRingState.live => s.liveAvatarStateLive,
+      AvatarRingState.success => s.liveAvatarStateDone,
+      AvatarRingState.warning => s.liveAvatarStateRecovered,
+      AvatarRingState.error => s.liveAvatarStateFailed,
+      AvatarRingState.neutral => null,
+    };
+    Widget header(Widget? mascot) => MessageAvatarHeader(
+      name: name,
+      model: model,
+      time: time,
+      state: ring,
+      mascot: mascot,
+      stateLabel: stateLabel,
+      actions: actions,
+    );
+    final app = context.findAncestorStateOfType<HermesAppState>();
+    if (app == null) return header(null);
+    final companion = app.companion;
+    return AnimatedBuilder(
+      animation: companion,
+      builder: (context, _) {
+        final visible =
+            companion.isInitialized &&
+            companion.enabled &&
+            companion.presenceLevel.showsStatusPresence;
+        return header(
+          visible
+              ? CompanionStatusIndicator(
+                  key: const ValueKey('assistant-header-companion'),
+                  companion: companion,
+                  mood: mood,
+                  size: kAvatarMascotSize,
+                  animate: animate,
+                )
+              : null,
+        );
+      },
+    );
+  }
+}
+
+/// Modelo activo de la sesión y sello de la última respuesta, sin añadir
+/// parámetros a los envoltorios de mensaje del chat.
+class _AssistantModelScope extends InheritedWidget {
+  const _AssistantModelScope({
+    required this.label,
+    required this.newest,
+    required super.child,
+  });
+
+  final String? label;
+
+  /// Sello (`created_at`/`timestamp`) de la respuesta más reciente.
+  final Object? newest;
+
+  static _AssistantModelScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_AssistantModelScope>();
+
+  @override
+  bool updateShouldNotify(_AssistantModelScope oldWidget) =>
+      oldWidget.label != label || oldWidget.newest != newest;
+}
+
+Object? _messageStamp(Map<String, dynamic> message) =>
+    message['created_at'] ?? message['timestamp'] ?? message['createdAt'];
+
+class _AssistantLiveHeader extends StatelessWidget {
+  const _AssistantLiveHeader({
+    required this.agentName,
+    required this.mood,
+    this.model,
+  });
+
+  final String agentName;
+  final HermesSparkMood mood;
+  final String? model;
+
+  @override
+  Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 7, 16, 0),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
-        child: Row(
-          children: [
-            _AssistantHeaderCompanion(mood: mood, animate: true),
-            Expanded(
-              child: Text(
-                '>_ ${agentName.toUpperCase()}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700,
-                  color: colors.accent,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-          ],
-        ),
+      child: _AssistantAvatarHeader(
+        name: agentName,
+        model: model,
+        mood: mood,
+        animate: true,
+        ring: AvatarRingState.live,
       ),
     );
   }
@@ -16538,6 +16444,28 @@ class _AssistantMessage extends StatelessWidget {
             HermesSparkMood.success,
         };
     final headerAnimated = isStreaming || metadata['_pipeline'] == true;
+    // Anillo del avatar: acento mientras vive; al terminar refleja el desenlace
+    // del turno. Una respuesta sin herramientas no lleva color: neutro.
+    final headerRing = headerAnimated
+        ? AvatarRingState.live
+        : stopped || activityEvents.isEmpty
+        ? AvatarRingState.neutral
+        : switch (activityOutcome) {
+            TraceOutcome.completed => AvatarRingState.success,
+            TraceOutcome.recovered => AvatarRingState.warning,
+            TraceOutcome.failed => AvatarRingState.error,
+            TraceOutcome.stopped ||
+            TraceOutcome.working => AvatarRingState.neutral,
+          };
+    // El modelo solo se conoce del turno vivo y de la última respuesta: el
+    // resto del historial no dice con qué modelo se generó.
+    final modelScope = _AssistantModelScope.maybeOf(context);
+    final stamp = _messageStamp(metadata);
+    final showModel =
+        headerAnimated ||
+        (stamp != null &&
+            modelScope?.newest != null &&
+            stamp == modelScope!.newest);
     final structuredImages = _structuredGeneratedImages(metadata);
     final structuredVideos = _structuredGeneratedVideos(metadata);
     final textualGeneratedBasenames = <String, int>{};
@@ -16789,25 +16717,14 @@ class _AssistantMessage extends StatelessWidget {
             if (showHeader)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Row(
-                  children: [
-                    _AssistantHeaderCompanion(
-                      mood: headerMood,
-                      animate: headerAnimated,
-                    ),
-                    Expanded(
-                      child: Text(
-                        '>_ ${agentName.toUpperCase()}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: colors.accent,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                    ),
+                child: _AssistantAvatarHeader(
+                  name: agentName,
+                  model: showModel ? modelScope?.label : null,
+                  time: timestamp,
+                  mood: headerMood,
+                  animate: headerAnimated,
+                  ring: headerRing,
+                  actions: [
                     if (onSpeak != null && readAloudMessageKey != null) ...[
                       const SizedBox(width: 6),
                       ReadAloudButton(
@@ -16889,6 +16806,7 @@ class _AssistantMessage extends StatelessWidget {
                 key: const ValueKey('assistant-activity-trace'),
                 events: activityEvents,
                 active: isStreaming || metadata['_pipeline'] == true,
+                liveInPill: true,
                 headline: Strings.of(context).chatActivityThinking,
                 activeMood: headerMood,
                 waitingForUser: activityActive && waitingForUser,
@@ -16917,7 +16835,6 @@ class _AssistantMessage extends StatelessWidget {
                   );
                 },
               ),
-            if (showFooter && timestamp != null) _MessageTimestamp(timestamp),
           ],
         ),
       ),
@@ -18098,9 +18015,9 @@ class _QueuedRow extends StatelessWidget {
 /// Reserves [gap] pixels BELOW its child, but only while the child actually
 /// occupies height.
 ///
-/// The floating activity pills (`TurnActivityPill`, `SubagentActivityCard`)
-/// collapse to `SizedBox.shrink` when there is nothing to report, so a plain
-/// `Padding` would keep their breathing room reserved forever and leave the
+/// The floating activity pill (`ActivityPillHost`, the one pill for everything
+/// live) collapses to `SizedBox.shrink` when there is nothing to report, so a
+/// plain `Padding` would keep its breathing room reserved forever and leave the
 /// scroll-to-bottom arrow stranded [gap] pixels above its resting offset.
 /// Resolving it during layout (instead of measuring in one frame and
 /// repositioning in the next) means the arrow never jumps and never spends a

@@ -117,9 +117,9 @@ final class SessionActivity {
   List<SessionActivityTask> get pendingTasks =>
       tasks.where((task) => task.pending).toList(growable: false);
 
-  /// Trabajo de fondo que enseña la píldora «En segundo plano». Las tareas
-  /// pendientes del agente NO cuentan aquí: tienen su propia píldora y tarjeta
-  /// («Tareas 3/7», `AgentTaskPill`); contarlas también aquí las narraba dos
+  /// Trabajo de fondo que enseña la pastilla de actividad («En segundo plano»).
+  /// Las tareas pendientes del agente NO cuentan aquí: tienen su propia sección
+  /// y su progreso «2/4» en la pastilla; contarlas también aquí las narraba dos
   /// veces. Sí siguen contando como actividad ([active], [kind]).
   int get backgroundItemCount =>
       processes.length + schedules.length + (goal == null ? 0 : 1);

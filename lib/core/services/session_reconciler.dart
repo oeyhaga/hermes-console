@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../models/activity_snapshot.dart' show activityToolDetail;
 import '../models/desktop_session_snapshot.dart';
 import '../models/transcript_privacy_state.dart';
 import '../utils/assistant_content.dart';
@@ -66,12 +67,19 @@ Map<String, dynamic>? normalizeAssistantActivityStep(Object? raw) {
     'failed' || 'error' => 'failed',
     _ => 'completed',
   };
+  final rawDetail = raw['detail'];
+  final detail = rawDetail is String ? rawDetail.trim() : '';
   return Map<String, dynamic>.unmodifiable({
     'kind': kind,
     'label': label,
     'status': status,
     if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
     if (raw['timestamp'] is num) 'timestamp': raw['timestamp'],
+    if (raw['completed_at'] is num) 'completed_at': raw['completed_at'],
+    if (detail.isNotEmpty &&
+        detail.length <= 96 &&
+        !detail.contains(_unsafeDisplayTextPattern))
+      'detail': detail,
   });
 }
 
@@ -107,12 +115,23 @@ List<Map<String, dynamic>> assistantActivityFromToolCalls(
             value['type']?.toString().trim().toLowerCase() == 'skill'
         ? 'skill'
         : 'tool';
+    Object? arguments = function is Map
+        ? function['arguments']
+        : value['arguments'];
+    if (arguments is String) {
+      try {
+        arguments = jsonDecode(arguments);
+      } catch (_) {
+        arguments = null;
+      }
+    }
     final step = normalizeAssistantActivityStep({
       'kind': kind,
       'label': label,
       'status': status,
       if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
       'timestamp': ?timestamp,
+      'detail': ?activityToolDetail(label, arguments),
     });
     if (step != null) steps.add(step);
   }

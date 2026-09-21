@@ -5,12 +5,14 @@ import 'package:flutter/services.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../companion/state/companion_controller.dart';
+import '../models/activity_snapshot.dart';
 import '../models/agent_task_list.dart';
 import '../services/approval_policy.dart';
 import '../services/command_risk.dart';
 import '../services/connection_manager.dart';
 import '../theme/app_theme.dart';
 import '../theme/component_profile.dart';
+import 'activity_sections.dart';
 import 'agent_task_widgets.dart';
 import 'hermes_premium_ui.dart';
 import 'hermes_spark_mascot.dart';
@@ -1376,6 +1378,13 @@ class ChatTraceEvent {
   /// porque puede contener rutas, comandos o secretos. Vacío si no viene.
   final String preview;
 
+  /// Detalle SEGURO del paso (ejecutable, nombre de archivo, host…) y sus
+  /// tiempos medidos, cuando el trace los trae. Alimentan las mismas filas
+  /// «✓ terminal · date  0.7 s» del panel en vivo.
+  final String? detail;
+  final DateTime? startedAt;
+  final Duration? duration;
+
   ChatTraceEvent({
     required this.id,
     required this.label,
@@ -1383,6 +1392,9 @@ class ChatTraceEvent {
     this.emoji = '🔧',
     this.preview = '',
     this.kind = ChatTraceEventKind.tool,
+    this.detail,
+    this.startedAt,
+    this.duration,
   });
 
   bool get isDone => status == 'completed' || status == 'finished';
@@ -1456,6 +1468,11 @@ class ThinkingTraceCard extends StatefulWidget {
 
   final Duration? duration;
 
+  /// El estado vivo del turno lo cuenta la pastilla de actividad sobre el
+  /// compositor: mientras [active] la tarjeta no pinta NADA (ni fila de estado
+  /// ni shimmer) y solo aparece, plegada, cuando el turno termina.
+  final bool liveInPill;
+
   const ThinkingTraceCard({
     required this.events,
     required this.active,
@@ -1464,6 +1481,7 @@ class ThinkingTraceCard extends StatefulWidget {
     this.waitingForUser = false,
     this.stopped = false,
     this.duration,
+    this.liveInPill = false,
     super.key,
   });
 
@@ -1794,6 +1812,29 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
 
   Widget _buildTraceDetails(HermesThemeColors colors, AgentTaskList? tasks) {
     final s = Strings.of(context);
+    final now = DateTime.now();
+    final steps = widget.events.reversed
+        .map(
+          (event) => ActivityStep(
+            id: event.id,
+            kind: switch (event.kind) {
+              ChatTraceEventKind.reasoning => ActivityStepKind.reasoning,
+              ChatTraceEventKind.skill => ActivityStepKind.skill,
+              ChatTraceEventKind.tool => ActivityStepKind.tool,
+            },
+            label: event.label,
+            status: event.isFailed
+                ? ActivityStepStatus.failed
+                : event.isDone
+                ? ActivityStepStatus.done
+                : ActivityStepStatus.running,
+            detail: event.detail,
+            startedAt: event.startedAt,
+            duration: event.duration,
+            text: event.preview.trim().isEmpty ? null : event.preview.trim(),
+          ),
+        )
+        .toList(growable: false);
     return Padding(
       padding: const EdgeInsets.only(left: 40, top: 2),
       child: Column(
@@ -1801,8 +1842,13 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (tasks != null)
-            AgentTaskActivitySection(tasks: tasks, turnActive: widget.active),
-          ...widget.events.map((event) => _TraceEventLine(event: event)),
+            ActivityTasksSection(
+              tasks: tasks,
+              dense: true,
+              incomplete: !widget.active && tasks.hasOpen,
+            ),
+          if (steps.isNotEmpty)
+            ActivityDoneSection(steps: steps, now: now, dense: true),
           const SizedBox(height: 6),
           Semantics(
             button: true,
@@ -1838,6 +1884,13 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
     final indicator = _indicatorSpec(colors);
 
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+
+    // El estado vivo lo cuenta la pastilla de actividad, no la burbuja.
+    if (widget.active && widget.liveInPill) {
+      return const SizedBox.shrink(
+        key: ValueKey('thinking-trace-live-in-pill'),
+      );
+    }
 
     if (widget.active && !hasEvents) {
       return Padding(
@@ -1961,78 +2014,6 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
             ],
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _TraceEventLine extends StatelessWidget {
-  final ChatTraceEvent event;
-  const _TraceEventLine({required this.event});
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final color = event.isFailed
-        ? colors.error
-        : event.isDone
-        ? colors.success.withValues(alpha: 0.8)
-        : colors.accent;
-    final glyph = event.isFailed
-        ? '✕ '
-        : event.isDone
-        ? '✓ '
-        : '◐ ';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 3),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(glyph, style: TextStyle(fontSize: 11, color: color)),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  event.kind == ChatTraceEventKind.reasoning
-                      ? event.label
-                      : '${event.label} · ${event.status}',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: event.kind == ChatTraceEventKind.reasoning
-                        ? FontWeight.w600
-                        : null,
-                    color: event.isDone
-                        ? colors.textDisabled
-                        : colors.textSecondary,
-                  ),
-                ),
-                if (event.preview.trim().isNotEmpty) ...[
-                  const SizedBox(height: 2),
-                  Text(
-                    event.preview.trim(),
-                    maxLines: event.kind == ChatTraceEventKind.reasoning
-                        ? null
-                        : 4,
-                    overflow: event.kind == ChatTraceEventKind.reasoning
-                        ? TextOverflow.visible
-                        : TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontFamily: event.kind == ChatTraceEventKind.reasoning
-                          ? null
-                          : 'monospace',
-                      fontSize: event.kind == ChatTraceEventKind.reasoning
-                          ? 12
-                          : 10.5,
-                      height: 1.3,
-                      color: colors.textDisabled,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

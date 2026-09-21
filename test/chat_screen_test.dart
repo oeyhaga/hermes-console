@@ -99,6 +99,7 @@ import 'package:hermes_android/core/widgets/attachment_card.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/generated_image_card.dart';
+import 'package:hermes_android/core/widgets/activity_panel.dart';
 import 'package:hermes_android/core/widgets/hermes_notice.dart';
 import 'package:hermes_android/core/widgets/reasoning_block.dart';
 import 'package:hermes_android/core/widgets/hermes_premium_ui.dart';
@@ -106,9 +107,8 @@ import 'package:hermes_android/core/widgets/mission_profile_avatar.dart';
 import 'package:hermes_android/core/widgets/motion_entrance.dart';
 import 'package:hermes_android/core/widgets/session_context_usage.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
-import 'package:hermes_android/core/widgets/compact_pill_text.dart';
 import 'package:hermes_android/core/widgets/subagent_activity_card.dart';
-import 'package:hermes_android/core/widgets/turn_activity_pill.dart';
+
 import 'support/inter_font.dart';
 
 AgentProfileAvatar _testProfileAvatar() => AgentProfileAvatar.fromDataUri(
@@ -1820,7 +1820,10 @@ ApiClient _safeApi() => ApiClient(
 /// not fit; the full copy stays in `semanticsLabel`.
 Finder _pillLabel(String full) => find.byWidgetPredicate(
   (widget) =>
-      widget is Text && (widget.data == full || widget.semanticsLabel == full),
+      widget is Text &&
+      (widget.data == full ||
+          widget.semanticsLabel == full ||
+          widget.textSpan?.toPlainText() == full),
 );
 
 Finder get _subagentPillFinder =>
@@ -1831,16 +1834,24 @@ Finder get _subagentPillFinder =>
 List<SubagentActivity> _subagentPillRows(WidgetTester tester) =>
     tester.widget<SubagentActivityCard>(_subagentPillFinder).activities;
 
-/// Texto completo de la pastilla (`CompactPillText` puede pintar la versión
-/// corta si no cabe, pero `label` siempre lleva la copia íntegra).
-String _subagentPillLabel(WidgetTester tester) => tester
-    .widget<CompactPillText>(
-      find.descendant(
-        of: _subagentPillFinder,
-        matching: find.byType(CompactPillText),
-      ),
-    )
-    .label;
+/// Texto de acción de la pastilla de actividad unificada (una sola línea).
+String _subagentPillLabel(WidgetTester tester) {
+  final action = tester
+      .widget<Text>(find.byKey(const ValueKey('activity-pill-text')))
+      .textSpan!
+      .toPlainText();
+  final extras = find.byKey(const ValueKey('activity-pill-extras'));
+  return extras.evaluate().isEmpty
+      ? action
+      : '$action ${tester.widget<Text>(extras).data}';
+}
+
+/// Abre el panel que sale de la pastilla de actividad.
+Future<void> _openActivityPanel(WidgetTester tester) async {
+  await tester.tap(find.byKey(const ValueKey('activity-pill')));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -2823,13 +2834,7 @@ void main() {
       );
       expect(loads, greaterThanOrEqualTo(2));
       expect(find.text('Turno externo durable'), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('chat-session-activity')),
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.text('PRIVATE_REMOTE_PREVIEW'), findsNothing);
       expect(find.text('PRIVATE_REMOTE_TITLE'), findsNothing);
       expect(gateway.activationCalls, activationCallsBeforeExternalTurn);
@@ -4537,11 +4542,9 @@ void main() {
         ),
         findsOneWidget,
       );
-      // El pill genérico (sin `activities` detallados) muestra el conteo
-      // agregado de actividad pasiva observada — "Trabajo en segundo plano"
-      // ahora solo vive en el `semanticLabel` de accesibilidad del pill, no
-      // como texto visible (ver subagent_activity_card.dart, `build()`).
-      expect(_pillLabel('1 activo · 0 cerrados'), findsOneWidget);
+      // La pastilla de actividad unificada (sin `activities` detallados)
+      // muestra el conteo agregado de actividad pasiva observada.
+      expect(_pillLabel('1 subagente trabajando'), findsOneWidget);
       expect(gateway.resumeExistingCalls, 0);
       expect(gateway.createCalls, 0);
       expect(tester.takeException(), isNull);
@@ -4579,17 +4582,10 @@ void main() {
 
       expect(gateway.activeListCalls, greaterThan(0));
       expect(find.text('Actividad en otra superficie'), findsNothing);
-      // Sin conteo agregado (ningún tool-call durable observado todavía), el
-      // pill genérico cae al rótulo de "trabajando" — "Trabajo en segundo
-      // plano" solo vive en el `semanticLabel` de accesibilidad del pill.
-      expect(_pillLabel('trabajando'), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('chat-session-activity')),
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsOneWidget,
-      );
+      // Sin conteo agregado (ningún tool-call durable observado todavía), la
+      // pastilla unificada cae al rótulo genérico de trabajo en segundo plano.
+      expect(_pillLabel('Trabajo en segundo plano'), findsOneWidget);
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(gateway.resumeExistingCalls, 0);
       expect(gateway.createCalls, 0);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
@@ -4686,13 +4682,11 @@ void main() {
       await tester.pump();
       expect(find.text('Turno durable'), findsOneWidget);
       expect(find.text('Respuesta durable'), findsNothing);
-      // "Trabajo en segundo plano" now lives only in the pill's
-      // accessibility semantics label, not as visible text — see the same
-      // fix elsewhere in this file for why.
+      // La pastilla de actividad unificada nombra el trabajo remoto.
       final backgroundSemantics = tester.widget<Semantics>(
         find
-            .descendant(
-              of: find.byType(SubagentActivityCard),
+            .ancestor(
+              of: find.byKey(const ValueKey('activity-pill')),
               matching: find.byType(Semantics),
             )
             .first,
@@ -4965,19 +4959,12 @@ void main() {
         ),
         findsOneWidget,
       );
-      expect(
-        find.descendant(
-          of: surface,
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.text('Actividad en otra superficie'), findsNothing);
       // Sin conteo agregado observado todavía en esta pasada (solo se
       // refrescó la lista de sesiones activas, no el tail de mensajes), el
-      // pill genérico cae al rótulo de "trabajando" — "Trabajo en segundo
-      // plano" solo vive en el `semanticLabel` de accesibilidad del pill.
-      expect(_pillLabel('trabajando'), findsOneWidget);
+      // pastilla unificada cae al rótulo genérico de trabajo en segundo plano.
+      expect(_pillLabel('Trabajo en segundo plano'), findsOneWidget);
       expect(find.text('PRIVATE_TOOL_LABEL_CANARY'), findsNothing);
       expect(
         find.descendant(of: surface, matching: find.byType(Wrap)),
@@ -5014,15 +5001,18 @@ void main() {
       const bottomAnchorTolerance = 32.0;
       const clearanceMargin = 1.0;
       expect(
-        tester.getRect(transcript).bottom - tester.getRect(surface).bottom,
+        tester.getRect(transcript).bottom -
+            tester.getRect(find.byKey(const ValueKey('activity-pill'))).bottom,
         inInclusiveRange(0.0, bottomAnchorTolerance),
       );
       expect(
-        tester.getRect(surface).bottom,
+        tester.getRect(find.byKey(const ValueKey('activity-pill'))).bottom,
         lessThanOrEqualTo(tester.getRect(composer).top - clearanceMargin),
       );
 
-      final semanticTree = tester.getSemantics(surface).toStringDeep();
+      final semanticTree = tester
+          .getSemantics(find.byKey(const ValueKey('activity-pill')))
+          .toStringDeep();
       for (final canary in const [
         'PRIVATE_RUNTIME_CANARY',
         'PRIVATE_TOOL_CALL_CANARY',
@@ -5041,7 +5031,7 @@ void main() {
       // Same hard invariant after the keyboard opens and the composer
       // rises: the floating pill must still clear it.
       expect(
-        tester.getRect(surface).bottom,
+        tester.getRect(find.byKey(const ValueKey('activity-pill'))).bottom,
         lessThanOrEqualTo(tester.getRect(composer).top - clearanceMargin),
       );
       expect(tester.takeException(), isNull);
@@ -5078,10 +5068,7 @@ void main() {
       of: surface,
       matching: find.byType(SubagentActivityCard),
     );
-    final inline = find.descendant(
-      of: surface,
-      matching: find.byKey(const ValueKey('subagent-disclosure')),
-    );
+    final inline = find.byKey(const ValueKey('activity-pill'));
     final surfaceElement = tester.element(surface);
     final cardElement = tester.element(card);
     final inlineElement = tester.element(inline);
@@ -5174,24 +5161,12 @@ void main() {
       await chat.refreshPassiveRemoteActivity();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 8900));
-      expect(
-        find.descendant(
-          of: surface,
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       await tester.pump(const Duration(milliseconds: 200));
       expect(chat.hasRecentPassiveRemoteActivity, isFalse);
       expect(tester.element(surface), same(surfaceElement));
       expect(tester.element(card), same(cardElement));
-      expect(
-        find.descendant(
-          of: surface,
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -5408,13 +5383,7 @@ void main() {
       expect(surface, findsOneWidget);
       final surfaceElement = tester.element(surface);
       expect(chat.subagentActivities, hasLength(1));
-      expect(
-        find.descendant(
-          of: surface,
-          matching: find.byKey(const ValueKey('subagent-disclosure')),
-        ),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       // The old inline "ver detalles" disclosure row expanded in place — no
       // new route. The redesigned pill opens a real modal bottom sheet
       // instead (see `_openDetailSheet` in subagent_activity_card.dart), so
@@ -5424,13 +5393,23 @@ void main() {
       final navigator = tester.state<NavigatorState>(
         find.byType(Navigator).first,
       );
-      await tester.tap(find.byKey(const ValueKey('subagent-disclosure')));
+      // La pastilla unificada abre su panel; el subagente abre el detalle y
+      // control de siempre (la misma superficie `subagent-panel`).
+      await tester.tap(find.byKey(const ValueKey('activity-pill')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(
+        find.byKey(const ValueKey('activity-subagent-stable-refresh-child')),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(
         find.byKey(const ValueKey('subagent-row-stable-refresh-child')),
         findsOneWidget,
       );
+      navigator.pop();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
       navigator.pop();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
@@ -5448,29 +5427,25 @@ void main() {
       expect(tester.element(surface), same(surfaceElement));
       expect(chat.subagentActivities, isEmpty);
       // Pushing this route fires several ActiveChat notifications
-      // back-to-back within the same frame, and the pill settles back into
-      // its background/generic state (falling back to the last known
-      // activity via chat_screen.dart's `_displaySubagentActivities` cache)
-      // — legitimately re-showing that state via a fresh fade-in while an
-      // earlier, not-yet-fully-exited instance briefly overlaps it, rather
-      // than the single instantaneous swap this assertion originally
-      // assumed before the pill grew this animation. "Trabajo en segundo
-      // plano" now lives only in the pill's accessibility semantics label
-      // (see subagent_activity_card.dart's `build()`), not as visible text —
-      // and the covering route excludes it from the compiled semantics
-      // tree (so `find.bySemanticsLabel` can't see it either), the same
-      // reason the old text finder needed `skipOffstage: false`. Read the
-      // `Semantics` widget's own property instead, which survives that
-      // exclusion just like the widget itself does.
-      final backgroundSemantics = tester
-          .widgetList<Semantics>(
-            find.descendant(of: surface, matching: find.byType(Semantics)),
-          )
-          .where((widget) => widget.properties.label != null);
-      expect(backgroundSemantics, isNotEmpty);
+      // back-to-back within the same frame, and the unified activity pill
+      // keeps showing the last known activity (chat_screen.dart's
+      // `_displaySubagentActivities` cache) instead of flickering away. The
+      // covering route takes the page offstage, so read the pill's own
+      // semantics widget instead of the compiled tree.
+      final pillSemantics = tester.widget<Semantics>(
+        find
+            .ancestor(
+              of: find.byKey(
+                const ValueKey('activity-pill'),
+                skipOffstage: false,
+              ),
+              matching: find.byType(Semantics, skipOffstage: false),
+            )
+            .first,
+      );
       expect(
-        backgroundSemantics.map((widget) => widget.properties.label),
-        contains('Trabajo en segundo plano'),
+        pillSemantics.properties.label,
+        anyOf(contains('subagente'), contains('segundo plano')),
       );
       expect(
         find.byKey(
@@ -9168,36 +9143,45 @@ void main() {
       ],
     );
 
-    // El cronómetro corre sobre el reloj de pared, que `pump` no adelanta, así
-    // que aquí se comprueba el cableado (turno activo + origen sembrado) y el
-    // umbral/formato/tic quedan en `turn_activity_pill_test.dart`, que inyecta
-    // un reloj falso.
-    final pill = tester.widget<TurnActivityPill>(
-      find.byKey(const ValueKey('chat-turn-activity')),
-    );
+      // El cronómetro corre sobre el reloj de pared, que `pump` no adelanta, así
+      // que aquí se comprueba el cableado (turno activo + origen sembrado) y el
+      // umbral/formato/tic quedan en `activity_pill_test.dart`, que inyecta un
+      // reloj falso. Hay UNA pastilla de actividad para todo lo vivo.
+      final host = tester.widget<ActivityPillHost>(
+        find.byKey(const ValueKey('chat-activity-pill')),
+      );
+      final snapshot = host.snapshot;
 
-    expect(pill.active, isTrue);
-    expect(pill.startedAt, isNotNull);
-    // Un turno en curso al montar no debe estropear el origen: el mantenedor
-    // vuelve a la pantalla mientras el agente sigue trabajando.
-    expect(
-      pill.startedAt!.isAfter(
-        DateTime.now().subtract(const Duration(minutes: 1)),
-      ),
-      isTrue,
-    );
-    // Mientras el transcript sigue el fondo la ThinkingTraceCard en vivo ya
-    // enseña esta misma palabra justo donde va a salir la respuesta — la
-    // pastilla se calla la palabra (no el cronómetro) para no repetirla.
-    expect(pill.statusLabel, isNull);
-  });
+      expect(snapshot.turnActive, isTrue);
+      expect(snapshot.turnStartedAt, isNotNull);
+      // Un turno en curso al montar no debe estropear el origen: el mantenedor
+      // vuelve a la pantalla mientras el agente sigue trabajando.
+      expect(
+        snapshot.turnStartedAt!.isAfter(
+          DateTime.now().subtract(const Duration(minutes: 1)),
+        ),
+        isTrue,
+      );
+      // La acción (titular del pipeline) vive en la pastilla; la burbuja ya no
+      // pinta ninguna fila de estado mientras el turno corre.
+      expect(snapshot.headline, isNotNull);
+      expect(find.byKey(const ValueKey('thinking-shimmer')), findsNothing);
+      for (final legacy in const [
+        'chat-turn-activity',
+        'turn-activity-pill',
+        'chat-agent-tasks',
+        'chat-background-process-status',
+      ]) {
+        expect(find.byKey(ValueKey(legacy)), findsNothing, reason: legacy);
+      }
+    },
+  );
 
   testWidgets(
-    'al leer historial durante el turno la pastilla recupera la palabra',
+    'al leer historial durante el turno la pastilla sigue diciendo la acción',
     (tester) async {
-      // Apartado el lector del fondo, la ThinkingTraceCard ya no está a la
-      // vista: la pastilla es la única señal que queda y tiene que volver a
-      // decir qué está haciendo, no solo cuánto lleva.
+      // La acción no depende del scroll: la pastilla es la única superficie
+      // viva del turno, esté o no el lector en el fondo.
       final history = List.generate(24, (index) {
         return {
           'id': 'turn-label-history-$index',
@@ -9213,40 +9197,43 @@ void main() {
         messages: history,
       );
 
-      var pill = tester.widget<TurnActivityPill>(
-        find.byKey(const ValueKey('chat-turn-activity')),
+      var host = tester.widget<ActivityPillHost>(
+        find.byKey(const ValueKey('chat-activity-pill')),
       );
-      expect(pill.statusLabel, isNull);
+      expect(host.snapshot.headline, isNotNull);
 
       await dragChatAwayFromBottom(tester);
 
-      pill = tester.widget<TurnActivityPill>(
-        find.byKey(const ValueKey('chat-turn-activity')),
+      host = tester.widget<ActivityPillHost>(
+        find.byKey(const ValueKey('chat-activity-pill')),
       );
-      expect(pill.statusLabel, isNotNull);
-      expect(pill.active, isTrue);
+      expect(host.snapshot.headline, isNotNull);
+      expect(host.snapshot.turnActive, isTrue);
     },
   );
 
-  testWidgets('mientras llega texto el propio texto cuenta la vida del turno', (
-    tester,
-  ) async {
-    // `streaming` ya se explica solo, y Desktop tampoco dobla la narración ahí.
-    await pumpChat(
-      tester,
-      chatState: ChatPipelineState.streaming,
-      messages: const [
-        {'role': 'user', 'content': 'revisa el repo', 'id': 1},
-      ],
-    );
+  testWidgets(
+    'mientras llega texto la pastilla sigue viva con «Respondiendo»',
+    (tester) async {
+      // La pastilla es la superficie viva del turno también mientras hay texto;
+      // la burbuja solo lleva cabecera + respuesta.
+      await pumpChat(
+        tester,
+        chatState: ChatPipelineState.streaming,
+        messages: const [
+          {'role': 'user', 'content': 'revisa el repo', 'id': 1},
+        ],
+      );
 
-    final pill = tester.widget<TurnActivityPill>(
-      find.byKey(const ValueKey('chat-turn-activity')),
-    );
+      final host = tester.widget<ActivityPillHost>(
+        find.byKey(const ValueKey('chat-activity-pill')),
+      );
 
-    expect(pill.active, isFalse);
-    expect(find.byKey(const ValueKey('turn-activity-pill')), findsNothing);
-  });
+      expect(host.snapshot.turnActive, isTrue);
+      expect(host.snapshot.headline, isNotNull);
+      expect(find.byKey(const ValueKey('turn-activity-pill')), findsNothing);
+    },
+  );
 
   testWidgets('una entrada en cola agotada avisa una sola vez', (tester) async {
     final chat = await pumpChat(tester, chatState: ChatPipelineState.streaming);
@@ -11321,10 +11308,8 @@ void main() {
       await gateway.compressionEntered.future;
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
-      expect(
-        find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsOneWidget,
-      );
+      // La compactación en marcha la cuenta la pastilla de actividad.
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       wireGate.complete(projectedCompressionReply());
       for (var frame = 0; frame < 12; frame++) {
@@ -11336,6 +11321,12 @@ void main() {
         find.byKey(const ValueKey('desktop-session-compression-progress')),
         findsNothing,
       );
+      // El resultado exacto del RPC pasa a la pastilla unos segundos.
+      final doneText = tester
+          .widget<Text>(find.byKey(const ValueKey('activity-pill-text')))
+          .textSpan!
+          .toPlainText();
+      expect(doneText, startsWith('Compactado: 96k → 4.8k tokens'));
       expect(find.text('La compresión de contexto terminó.'), findsOneWidget);
       expect(find.textContaining('Respuesta conservada'), findsOneWidget);
       expect(
@@ -11378,10 +11369,8 @@ void main() {
       await gateway.compressionEntered.future;
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
-      expect(
-        find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsOneWidget,
-      );
+      // La compactación en marcha la cuenta la pastilla de actividad.
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       final reply = projectedCompressionReply();
       reply['after_messages'] = (reply['messages'] as List).length;
@@ -11725,11 +11714,9 @@ void main() {
       );
       expect(gateway.dispatchCalls, isEmpty);
       expect(gateway.submissions, isEmpty);
-      expect(
-        find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsOneWidget,
-      );
-      expect(find.text('Optimizando la conversación…'), findsOneWidget);
+      // La compactación en marcha la cuenta la pastilla de actividad.
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(find.text('Optimizando la conversación…'), findsNothing);
       expect(find.text('2%'), findsNothing);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
 
@@ -11737,10 +11724,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
 
-      expect(
-        find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsOneWidget,
-      );
+      // La compactación en marcha la cuenta la pastilla de actividad.
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
       expect(chat.storedSessionId, 'sess-test');
       expect(find.textContaining('Contexto listo'), findsNothing);
@@ -13228,8 +13213,8 @@ void main() {
     expect(find.byType(ListView), findsOneWidget);
     expect(find.textContaining('hola mundo'), findsOneWidget);
     expect(find.textContaining('Hola, soy Hermes'), findsOneWidget);
-    expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
-    final agentLabel = tester.widget<Text>(find.text('>_ HERMES CONSOLE'));
+    expect(find.text('Hermes Console'), findsOneWidget);
+    final agentLabel = tester.widget<Text>(find.text('Hermes Console'));
     expect(agentLabel.style?.fontSize, greaterThanOrEqualTo(12.5));
     expect(
       find.byIcon(Icons.edit_outlined),
@@ -13405,7 +13390,7 @@ void main() {
       );
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
+      expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13423,7 +13408,7 @@ void main() {
       );
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
+      expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13453,7 +13438,7 @@ void main() {
       );
 
       expect(find.byType(ToolActivityGroup), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsNothing);
+      expect(find.text('Hermes Console'), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13490,7 +13475,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 350));
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
+      expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -15291,7 +15276,9 @@ void main() {
       expect(waitingCompanion.size, 44);
       expect(waitingCompanion.mood, HermesSparkMood.waiting);
       expect(waitingCompanion.animate, isTrue);
-      expect(find.byIcon(Icons.cloud_queue_rounded), findsOneWidget);
+      // El estado vivo ya no lo pinta la burbuja (lo cuenta la pastilla de
+      // actividad): la tarjeta de traza no muestra icono ni fila de estado.
+      expect(find.byIcon(Icons.cloud_queue_rounded), findsNothing);
       expect(
         find.descendant(
           of: find.byType(ThinkingTraceCard),
@@ -15324,7 +15311,7 @@ void main() {
       expect(activeCompanion.size, 44);
       expect(activeCompanion.mood, HermesSparkMood.thinking);
       expect(activeCompanion.animate, isTrue);
-      final activeHeader = tester.getRect(find.text('>_ HERMES CONSOLE'));
+      final activeHeader = tester.getRect(find.text('Hermes Console'));
       final activeAnswer = tester.getRect(
         find.textContaining('PUBLIC_ACTIVE_ANSWER'),
       );
@@ -15348,7 +15335,7 @@ void main() {
       expect(finishedCompanion.animate, isFalse);
       expect(find.byIcon(Icons.check_circle), findsOneWidget);
       expect(
-        tester.getRect(find.text('>_ HERMES CONSOLE')).left,
+        tester.getRect(find.text('Hermes Console')).left,
         closeTo(activeHeader.left, 0.5),
       );
       expect(
@@ -15657,20 +15644,17 @@ void main() {
 
       expect(chat.isStreaming, isFalse);
       expect(gateway.processListCalls, callsBeforeProcessStatus + 1);
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
+        find.textContaining('dart run worker.dart', findRichText: true),
         findsOneWidget,
       );
-      expect(find.textContaining('dart run worker.dart'), findsOneWidget);
-      expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
       await tester.pump();
       final finalAnswer = find.ancestor(
         of: find.text('PUBLIC_PARENT_DONE'),
         matching: find.byType(ChatAnswerAnchor),
       );
-      final processPill = find.byKey(
-        const ValueKey('chat-background-process-status'),
-      );
+      final processPill = find.byKey(const ValueKey('activity-pill'));
       expect(
         tester.getRect(finalAnswer).bottom,
         lessThanOrEqualTo(tester.getRect(processPill).top),
@@ -15680,20 +15664,16 @@ void main() {
               .bottom;
       await tester.tap(
         find.descendant(
-          of: find.byKey(
-            const ValueKey('chat-background-process-status'),
-          ),
+          of: find.byKey(const ValueKey('activity-pill')),
           matching: find.byType(InkWell),
         ),
       );
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
-      expect(
-        find.byKey(const ValueKey('chat-background-activity-sheet')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-panel')), findsOneWidget);
       expect(find.text('READY_SAFE'), findsOneWidget);
       expect(find.text('Coincidencia detectada'), findsOneWidget);
+      expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
       Navigator.of(
         tester.element(find.text('READY_SAFE')),
       ).pop();
@@ -15738,10 +15718,7 @@ void main() {
       await tester.pump();
 
       expect(gateway.processListCalls, callsBeforeProcessFinished + 1);
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       await tester.pump();
       final idleBottomPadding =
           (tester.widget<ListView>(chatListFinder()).padding! as EdgeInsets)
@@ -15808,9 +15785,7 @@ void main() {
       of: find.text('PUBLIC_STACK_DONE'),
       matching: find.byType(ChatAnswerAnchor),
     );
-    final processPill = find.byKey(
-      const ValueKey('chat-background-process-status'),
-    );
+    final processPill = find.byKey(const ValueKey('activity-pill'));
     expect(processPill, findsOneWidget);
     expect(find.byKey(const ValueKey('chat-subagent-status')), findsOneWidget);
     expect(
@@ -15900,26 +15875,21 @@ void main() {
       // «Tareas» pill and is not counted as background work.
       expect(chat.sessionActivity.backgroundItemCount, 4);
       expect(chat.sessionActivity.active, isTrue);
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
+        find.textContaining('En segundo plano · 4', findRichText: true),
         findsOneWidget,
       );
-      expect(find.textContaining('En segundo plano · 4'), findsOneWidget);
 
       await tester.tap(
         find.descendant(
-          of: find.byKey(
-            const ValueKey('chat-background-process-status'),
-          ),
+          of: find.byKey(const ValueKey('activity-pill')),
           matching: find.byType(InkWell),
         ),
       );
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
-      expect(
-        find.byKey(const ValueKey('chat-background-activity-sheet')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-panel')), findsOneWidget);
       expect(find.text('PUBLIC_STANDING_GOAL'), findsOneWidget);
       expect(find.text('Bucle recurrente'), findsOneWidget);
       expect(find.text('Estado · Pausado'), findsOneWidget);
@@ -15932,6 +15902,10 @@ void main() {
         findsOneWidget,
       );
 
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('background-loop-resume')),
+      );
+      await tester.pump();
       await tester.tap(
         find.byKey(const ValueKey('background-loop-resume')),
       );
@@ -15939,34 +15913,252 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(gateway.controlActions, contains('loop.resume'));
 
-      await tester.tap(
-        find.descendant(
-          of: find.byKey(
-            const ValueKey('chat-background-process-status'),
-          ),
-          matching: find.byType(InkWell),
-        ),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(seconds: 1));
-      await tester.drag(
-        find.byKey(const ValueKey('chat-background-activity-sheet')),
-        const Offset(0, -240),
-      );
+      // El panel sigue abierto tras la acción (ya no se cierra como la hoja):
+      // sus secciones se desplazan con su propio scroll.
+      await tester.ensureVisible(find.text('Heartbeat'));
       await tester.pump();
       expect(find.text('Heartbeat'), findsOneWidget);
-      await tester.drag(
-        find.byKey(const ValueKey('chat-background-activity-sheet')),
-        const Offset(0, -300),
-      );
+      await tester.ensureVisible(find.text('python worker.py'));
       await tester.pump();
       expect(find.text('python worker.py'), findsOneWidget);
       expect(find.text('PUBLIC_PENDING_TASK'), findsNothing);
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('background-process-stop-process-mixed')),
+      );
+      await tester.pump();
       await tester.tap(
         find.byKey(const ValueKey('background-process-stop-process-mixed')),
       );
       await tester.pump();
       expect(gateway.killedProcesses, ['process-mixed']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compactación automática: la pastilla la mide y al terminar muestra el resultado',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-auto-compaction-pill'),
+        messagesLoaded: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      final pill = find.byKey(const ValueKey('activity-pill'));
+      expect(pill, findsNothing);
+
+      gateway.emit('status.update', const {
+        'kind': 'compacting',
+        'text': 'Compacting context — summarizing earlier conversation',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.desktopAutoCompacting, isTrue);
+      // Hermes no publica porcentaje: solo tiempo y una barra honesta.
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('activity-pill-elapsed')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('≈', findRichText: true), findsNothing);
+      expect(
+        find.byKey(const ValueKey('activity-pill-compaction-line')),
+        findsOneWidget,
+      );
+      // Un latido repetido no reinicia la medición.
+      gateway.emit('status.update', const {
+        'kind': 'compacting',
+        'text': 'Compacting context — still summarizing',
+      });
+      await tester.pump();
+      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      // El panel enseña la sección de compactación.
+      await _openActivityPanel(tester);
+      expect(
+        find.byKey(const ValueKey('activity-compaction-title')),
+        findsOneWidget,
+      );
+      await tester.tapAt(const Offset(4, 4));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      gateway.emit('status.update', const {
+        'kind': 'compacted',
+        'text': 'Context compaction complete — continuing turn',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.desktopAutoCompacting, isFalse);
+      expect(
+        find.textContaining('Contexto compactado', findRichText: true),
+        findsOneWidget,
+      );
+      // Unos segundos después se retira sola: nunca queda colgada.
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(pill, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'tool.start con args publica el detalle seguro y tool.complete mide la duración',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-tool-detail-pill'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_DETAIL_PARENT',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('tool.start', const {
+        'tool_id': 'call-detail-1',
+        'name': 'terminal',
+        'args': {'command': 'date -u --token=SECRET_VALUE_CANARY'},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      // Una herramienta en curso revela la pastilla enseguida, con el detalle
+      // proyectado: ejecutable sin argumentos ni secretos.
+      final text = tester.widget<Text>(
+        find.byKey(const ValueKey('activity-pill-text')),
+      );
+      expect(text.textSpan!.toPlainText(), 'terminal · date');
+      expect(find.textContaining('SECRET_VALUE_CANARY'), findsNothing);
+      expect(
+        find.textContaining('SECRET_VALUE_CANARY', findRichText: true),
+        findsNothing,
+      );
+
+      gateway.emit('tool.complete', const {
+        'tool_id': 'call-detail-1',
+        'name': 'terminal',
+        'duration_s': 0.7,
+        'args': {'command': 'date -u --token=SECRET_VALUE_CANARY'},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final step = (chat.messages.first['_activity_trace'] as List)
+          .cast<Map<String, dynamic>>()
+          .single;
+      expect(step['detail'], 'date');
+      expect(step['status'], 'completed');
+      expect((step['completed_at'] as num) - (step['timestamp'] as num), 700);
+      expect(step.toString(), isNot(contains('SECRET_VALUE_CANARY')));
+      // Otra herramienta arranca: el panel enseña «Ahora» y, debajo, el «Hecho»
+      // del turno: ✓ terminal · date  0,7 s
+      gateway.emit('tool.start', const {
+        'tool_id': 'call-detail-2',
+        'name': 'read_file',
+        'args': {'path': '/home/private/dir/config.yaml'},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      await _openActivityPanel(tester);
+      expect(
+        find.text('read_file · config.yaml', findRichText: true),
+        findsWidgets,
+      );
+      expect(
+        find.textContaining('/home/private', findRichText: true),
+        findsNothing,
+      );
+      expect(find.text('terminal · date', findRichText: true), findsOneWidget);
+      expect(find.text('0,7 s'), findsOneWidget);
+      expect(find.byKey(const ValueKey('activity-done-title')), findsOneWidget);
+      await tester.tapAt(const Offset(4, 4));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      gateway.emit('message.complete', const {'text': 'PUBLIC_DETAIL_DONE'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
+      // La burbuja terminada conserva el historial con los mismos detalles.
+      await tester.tap(find.byIcon(Icons.expand_more).first);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('terminal · date', findRichText: true), findsOneWidget);
+      expect(find.text('0,7 s'), findsOneWidget);
+      expect(
+        find.textContaining('/home/private', findRichText: true),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'historial reabierto: el desplegable enseña Tareas y Hecho con detalle y duración',
+    (tester) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': 'PUBLIC_REOPENED_ANSWER',
+            '_activity_trace': [
+              {
+                'kind': 'tool',
+                'label': 'terminal',
+                'status': 'completed',
+                'id': 'reopen-1',
+                'detail': 'date',
+                'timestamp': 1000,
+                'completed_at': 1700,
+              },
+              {
+                'kind': 'tool',
+                'label': 'read_file',
+                'status': 'failed',
+                'id': 'reopen-2',
+                'detail': 'config.yaml',
+                'timestamp': 2000,
+                'completed_at': 14000,
+              },
+            ],
+          },
+          {'role': 'user', 'content': 'PUBLIC_REOPENED_REQUEST'},
+        ],
+      );
+      // Plegado por defecto y sin ninguna pastilla: no hay nada vivo.
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
+      expect(find.byKey(const ValueKey('activity-done-section')), findsNothing);
+      await tester.tap(find.byIcon(Icons.expand_more).first);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('activity-done-title')), findsOneWidget);
+      // Más reciente primero, con su duración.
+      expect(
+        find.text('read_file · config.yaml', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.text('terminal · date', findRichText: true), findsOneWidget);
+      expect(find.text('0,7 s'), findsOneWidget);
+      expect(find.text('12 s'), findsOneWidget);
+      expect(
+        tester
+            .getTopLeft(
+              find.text('read_file · config.yaml', findRichText: true),
+            )
+            .dy,
+        lessThan(
+          tester
+              .getTopLeft(find.text('terminal · date', findRichText: true))
+              .dy,
+        ),
+      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -15993,8 +16185,8 @@ void main() {
       );
       gateway.emit('message.start');
       await tester.pump();
-      final pill = find.byKey(const ValueKey('agent-task-pill'));
-      expect(pill, findsNothing);
+      final pill = find.byKey(const ValueKey('activity-pill'));
+      expect(find.byKey(const ValueKey('activity-task-chip')), findsNothing);
 
       // create
       gateway.emit('todo.updated', const {
@@ -16007,14 +16199,11 @@ void main() {
       });
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
+      // UNA pastilla: el progreso de tareas va dentro (anillo + «0/3»), no en
+      // una pastilla «Tareas» aparte.
       expect(pill, findsOneWidget);
-      expect(find.text('Tareas 0/3'), findsOneWidget);
-      expect(find.text('PUBLIC_STEP_ONE'), findsOneWidget);
-      // The generic background pill no longer narrates the same tasks.
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('agent-task-pill')), findsNothing);
+      expect(find.text('0/3'), findsOneWidget);
 
       // Never overlaps the composer, and the last message stays clear above.
       final pillRect = tester.getRect(pill);
@@ -16038,21 +16227,18 @@ void main() {
       });
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('Tareas 1/3'), findsOneWidget);
-      expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
+      expect(find.text('1/3'), findsOneWidget);
 
-      // tap opens the floating card with every state and keeps updating live
-      await tester.tap(pill);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      final card = find.byKey(const ValueKey('agent-task-card'));
+      // tap opens the panel with every state and keeps updating live
+      await _openActivityPanel(tester);
+      final card = find.byKey(const ValueKey('activity-panel'));
       expect(card, findsOneWidget);
       expect(
         find.descendant(of: card, matching: find.text('PUBLIC_STEP_THREE')),
         findsOneWidget,
       );
       expect(
-        find.byKey(const ValueKey('agent-task-icon-completed')),
+        find.byKey(const ValueKey('activity-task-icon-completed')),
         findsOneWidget,
       );
       gateway.emit('todo.updated', const {
@@ -16064,6 +16250,7 @@ void main() {
         ],
       });
       await tester.pump();
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       expect(
         find.descendant(of: card, matching: find.text('Tareas 3/3')),
@@ -16074,11 +16261,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(card, findsNothing);
 
-      // finished: check + linger, then the pill leaves on its own
-      expect(find.byKey(const ValueKey('agent-task-pill-done')), findsOneWidget);
+      // finished: the pill leaves with the turn
       gateway.emit('message.complete', const {'text': 'PUBLIC_TASKS_DONE'});
       await tester.pump();
-      await tester.pump(const Duration(seconds: 5));
       await tester.pump(const Duration(milliseconds: 300));
       expect(pill, findsNothing);
       expect(tester.takeException(), isNull);
@@ -16123,27 +16308,27 @@ void main() {
       });
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(
-        find.byKey(const ValueKey('agent-task-pill')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
+      expect(find.text('1/2'), findsOneWidget);
       gateway.emit('message.complete', const {'text': 'PUBLIC_HALF_DONE'});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      expect(find.byKey(const ValueKey('agent-task-pill')), findsNothing);
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
 
       // the checklist now lives in the turn's single activity block
       expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
       expect(find.text('1/2'), findsOneWidget);
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byKey(const ValueKey('agent-task-checklist')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('activity-tasks-section')),
+        findsOneWidget,
+      );
       expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
       expect(
         tester
-            .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
-            .textSpan!
-            .toPlainText(),
+            .widget<Text>(find.byKey(const ValueKey('activity-tasks-title')))
+            .data,
         contains('incompleta'),
       );
 
@@ -16202,7 +16387,7 @@ void main() {
       expect(chat.agentTasks.revision, 6);
       expect(chat.agentTasks.isFinished, isTrue);
       // nothing running: no floating pill on reopen, only the activity block
-      expect(find.byKey(const ValueKey('agent-task-pill')), findsNothing);
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
       expect(find.text('2/2'), findsOneWidget);
       await tester.tap(find.byIcon(Icons.expand_more));
@@ -16210,9 +16395,8 @@ void main() {
       expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
       expect(
         tester
-            .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
-            .textSpan!
-            .toPlainText(),
+            .widget<Text>(find.byKey(const ValueKey('activity-tasks-title')))
+            .data,
         isNot(contains('incompleta')),
       );
       expect(chat.sessionActivity.active, isFalse);
@@ -16270,14 +16454,12 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       expect(gateway.controlReadCalls, readsBeforeBurst + 2);
       expect(gateway.maxActiveControlReadCalls, 1);
-      final controlActivity = find.byKey(
-        const ValueKey('chat-background-process-status'),
-      );
+      final controlActivity = find.byKey(const ValueKey('activity-pill'));
       expect(controlActivity, findsOneWidget);
       expect(
         find.descendant(
           of: controlActivity,
-          matching: find.byKey(const ValueKey('turn-activity-elapsed')),
+          matching: find.byKey(const ValueKey('activity-pill-elapsed')),
         ),
         findsNothing,
       );
@@ -16300,18 +16482,12 @@ void main() {
       gateway.emit('status.update', const {'kind': 'loop'});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
 
       gateway.emit('status.update', const {'kind': 'loop'});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -16350,18 +16526,12 @@ void main() {
       gateway.emit('message.start');
       gateway.emit('message.complete', const {'text': 'PUBLIC_PARENT_DONE'});
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
 
       gateway.processListError = StateError('synthetic process.list failure');
       gateway.emit('status.update', const {'kind': 'process'});
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.textContaining('Último estado conocido'), findsOneWidget);
 
       gateway
@@ -16372,17 +16542,11 @@ void main() {
         );
       gateway.emit('status.update', const {'kind': 'process'});
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
 
       gateway.emit('status.update', const {'kind': 'process'});
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -16397,10 +16561,7 @@ void main() {
       ],
     );
 
-    expect(
-      find.byKey(const ValueKey('chat-background-process-status')),
-      findsNothing,
-    );
+    expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -16442,17 +16603,8 @@ void main() {
       expect(chat.activeSubagentCount, 1);
       expect(stableCard, findsOneWidget);
       expect(tester.element(stableCard), same(stableElement));
-      // The pill's visible summary now reflects the live child's phase
-      // (e.g. "en curso"), not the fixed "Trabajo en segundo plano" string —
-      // that literal lives only in the pill's accessibility semantics label
-      // once the parent turn has finished and the child keeps it in
-      // background mode. Assert on the `Semantics` widget's own property,
-      // which is what this test actually cares about ("se muestra como
-      // trabajo en segundo plano").
-      final backgroundSemantics = tester.widget<Semantics>(
-        find.descendant(of: stableCard, matching: find.byType(Semantics)).first,
-      );
-      expect(backgroundSemantics.properties.label, 'Trabajo en segundo plano');
+      // La pastilla unificada nombra el trabajo del hijo que sigue vivo.
+      expect(_subagentPillLabel(tester), '1 subagente trabajando');
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
 
@@ -16466,7 +16618,7 @@ void main() {
       expect(chat.activeSubagentCount, 0);
       expect(stableCard, findsOneWidget);
       expect(tester.element(stableCard), same(stableElement));
-      expect(find.textContaining('completado'), findsWidgets);
+      expect(_subagentPillLabel(tester), '1 subagente terminado');
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -16550,7 +16702,7 @@ void main() {
     expect(_subagentPillLabel(tester), isNot(contains('trabajando')));
     expect(
       find.descendant(
-        of: _subagentPillFinder,
+        of: find.byKey(const ValueKey('activity-pill')),
         matching: find.byType(CircularProgressIndicator),
       ),
       findsNothing,
@@ -16681,7 +16833,8 @@ void main() {
     expect(chat.subagentActivities, hasLength(1));
     final rows = _subagentPillRows(tester);
     expect(rows.single.isTerminal, isFalse);
-    expect(_subagentPillLabel(tester), contains('trabajando'));
+    // El turno sigue vivo: la pastilla dice la acción y resume al hijo.
+    expect(_subagentPillLabel(tester), contains('subagente'));
     expect(tester.takeException(), isNull);
     await disposeChatFixture(tester, fixture.app);
   });
@@ -16701,13 +16854,12 @@ void main() {
     expect(_subagentPillRows(tester), hasLength(1));
 
     // Con todo asentado la × está disponible y vacía la pastilla.
-    final dismiss = find.descendant(
-      of: _subagentPillFinder,
-      matching: find.byIcon(Icons.close_rounded),
-    );
+    await _openActivityPanel(tester);
+    final dismiss = find.byKey(const ValueKey('activity-subagents-dismiss'));
     expect(dismiss, findsOneWidget);
     await tester.tap(dismiss);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     expect(_subagentPillRows(tester), isEmpty);
 
     // Un turno nuevo vuelve a poblarla desde cero.
@@ -21550,9 +21702,7 @@ void main() {
               },
             });
             await tester.pump();
-            final goalActivity = find.byKey(
-              const ValueKey('chat-background-process-status'),
-            );
+            final goalActivity = find.byKey(const ValueKey('activity-pill'));
             expect(goalActivity, findsOneWidget);
             expectPillLabelsFit(
               tester,
@@ -21614,7 +21764,7 @@ void main() {
   // Geometría del overlay inferior del transcript.
   //
   // La flecha «bajar al final» y las pastillas flotantes de actividad
-  // (`chat-turn-activity` / `chat-subagent-status`) viven ancladas abajo y al
+  // (`activity-pill`, la pastilla única de actividad) vive anclada abajo y al
   // centro del mismo Stack. Las pastillas se pintan después, así que se
   // quedaban justo encima de la flecha: invisible y, cuando la pastilla se
   // queda con el gesto, sin poder pulsarla (reportado en dispositivo real).
@@ -21742,9 +21892,9 @@ void main() {
     expectScrollToBottomVisible();
 
     // El cronómetro de la pastilla corre sobre el reloj de pared (ChatScreen no
-    // le inyecta reloj), así que su `revealAfter` de 3 s solo se cruza con
+    // le inyecta reloj), así que su `revealAfter` de 2 s solo se cruza con
     // tiempo real; el tic que la repinta sí es un timer del reloj falso.
-    final revealed = find.byKey(const ValueKey('turn-activity-pill'));
+    final revealed = find.byKey(const ValueKey('activity-pill'));
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 3200)),
     );
@@ -21753,10 +21903,7 @@ void main() {
     }
     expect(revealed, findsOneWidget);
 
-    expectArrowClearOf(
-      tester,
-      find.byKey(const ValueKey('chat-turn-activity')),
-    );
+    expectArrowClearOf(tester, find.byKey(const ValueKey('activity-pill')));
     await expectArrowScrollsToBottom(tester, controller);
     expect(tester.takeException(), isNull);
   });
@@ -21789,7 +21936,7 @@ void main() {
     });
     await tester.pump();
 
-    final card = find.byKey(const ValueKey('chat-subagent-status'));
+    final card = find.byKey(const ValueKey('activity-pill'));
     expect(card, findsOneWidget);
 
     final controller = await holdTranscriptAwayFromBottom(tester);
@@ -21825,7 +21972,7 @@ void main() {
     expect(arrow.height, 48);
     expect(arrow.bottom, closeTo(body.bottom - 8, 0.01));
     expect(
-      tester.getRect(find.byKey(const ValueKey('chat-turn-activity'))).height,
+      tester.getRect(find.byKey(const ValueKey('chat-activity-pill'))).height,
       0,
     );
     expect(
@@ -21923,41 +22070,41 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-    'aviso, tarjeta de subagentes y flecha ocupan huecos distintos',
-    (tester) async {
-      failOnMissedTaps();
-      tester.view
-        ..devicePixelRatio = 1
-        ..physicalSize = const Size(360, 800);
-      addTearDown(tester.view.reset);
-      final gateway = _UiRewindGateway();
-      final chat = await pumpChat(
-        tester,
-        connection: _remoteConn('conn-notice-vs-stack'),
-        desktopGateway: gateway,
-        messages: scrollableChatHistory('aviso vs pila'),
-      );
-      expect(
-        await chat.send(
-          fullText: 'delega el trabajo',
-          model: 'hermes-agent',
-          history: chat.messages,
-        ),
-        isTrue,
-      );
-      gateway.emit('message.start');
-      gateway.emit('subagent.start', const {
-        'subagent_id': 'notice-overlap-child',
-        'delegation_id': 'notice-overlap-delegation',
-        'goal': 'TRABAJO DELEGADO',
-        'status': 'running',
-      });
-      await tester.pump();
-      final card = find.byKey(const ValueKey('chat-subagent-status'));
-      expect(card, findsOneWidget);
-      await holdTranscriptAwayFromBottom(tester);
-      expectScrollToBottomVisible();
+  testWidgets('aviso, tarjeta de subagentes y flecha ocupan huecos distintos', (
+    tester,
+  ) async {
+    failOnMissedTaps();
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800);
+    addTearDown(tester.view.reset);
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('conn-notice-vs-stack'),
+      desktopGateway: gateway,
+      messages: scrollableChatHistory('aviso vs pila'),
+    );
+    expect(
+      await chat.send(
+        fullText: 'delega el trabajo',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('subagent.start', const {
+      'subagent_id': 'notice-overlap-child',
+      'delegation_id': 'notice-overlap-delegation',
+      'goal': 'TRABAJO DELEGADO',
+      'status': 'running',
+    });
+    await tester.pump();
+    final card = find.byKey(const ValueKey('activity-pill'));
+    expect(card, findsOneWidget);
+    await holdTranscriptAwayFromBottom(tester);
+    expectScrollToBottomVisible();
 
       await showChatNotice(tester, 'Aviso con pila completa');
       final notice = noticeRect(tester);
