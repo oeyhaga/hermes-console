@@ -5516,9 +5516,11 @@ void main() {
     await chat.loadMessages(expectedMessageCount: 300);
     expect(chat.isStreaming, isTrue);
 
-    await expectLater(chat.cancel(), throwsStateError);
+    await chat.cancel();
+    await Future<void>.delayed(Duration.zero);
+    expect(gateway.interruptCalls, 1);
     expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
   test(
@@ -5588,9 +5590,11 @@ void main() {
         isTrue,
       );
 
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
+      await Future<void>.delayed(Duration.zero);
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
       expect(
         chat.internalMessagesForTesting.singleWhere(
           (message) =>
@@ -6317,12 +6321,14 @@ void main() {
         delivery: _delivery('two-durable-stops-1', _NoopOutbox()),
       );
       await chat.cancel();
+      await _waitUntil(() => recorded.isNotEmpty);
       durable.add(const {
         'message_id': 'first-cancelled-user',
         'role': 'user',
         'content': 'primer turno detenido',
         'timestamp': 50,
       });
+      await chat.loadMessages(expectedMessageCount: durable.length);
 
       final accepted = await chat.send(
         fullText: 'segundo turno detenido',
@@ -6388,12 +6394,14 @@ void main() {
           delivery: _delivery('two-durable-stops-1', _NoopOutbox()),
         );
         await chat.cancel();
+        await _waitUntil(() => recorded.isNotEmpty);
         durable.add(const {
           'message_id': 'first-cancelled-user',
           'role': 'user',
           'content': 'primer turno detenido',
           'timestamp': 50,
         });
+        await chat.loadMessages(expectedMessageCount: durable.length);
 
         final accepted = await chat.send(
           fullText: prompt,
@@ -6430,6 +6438,9 @@ void main() {
             startedAt: DateTime.fromMillisecondsSinceEpoch(100000, isUtc: true),
           ),
         );
+        if (!sameAnnotation) {
+          await chat.loadMessages(expectedMessageCount: durable.length);
+        }
         expect(
           chat.messages.where((m) => m['role'] == 'user').first['content'],
           'segundo turno @ops',
@@ -6438,11 +6449,28 @@ void main() {
           chat.internalMessagesForTesting
               .where((m) => m['role'] == 'user')
               .first['content'],
-          prompt,
+          sameAnnotation
+              ? prompt
+              : prompt.replaceFirst(
+                  'agent profile "ops"',
+                  'agent profile "other"',
+                ),
         );
         if (!sameAnnotation) {
-          await expectLater(chat.cancel(), throwsStateError);
-          expect(recorded, hasLength(1));
+          await chat.cancel();
+          await Future<void>.delayed(Duration.zero);
+          expect(gateway.interruptCalls, 2);
+          expect(
+            recorded.every(
+              (tombstone) => tombstone.content == 'primer turno detenido',
+            ),
+            isTrue,
+          );
+          expect(
+            recorded.where((tombstone) => tombstone.content == prompt),
+            isEmpty,
+          );
+          expect(chat.isStreaming, isFalse);
           return;
         }
         await chat.cancel();
@@ -6654,9 +6682,11 @@ void main() {
         ),
       );
 
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
+      await Future<void>.delayed(Duration.zero);
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
       expect(
         chat.messages.any(
           (message) =>
@@ -6722,9 +6752,11 @@ void main() {
       delivery: _delivery('numeric-anchor-1', _NoopOutbox()),
     );
 
-    await expectLater(chat.cancel(), throwsStateError);
+    await chat.cancel();
+    await Future<void>.delayed(Duration.zero);
+    expect(gateway.interruptCalls, 1);
     expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
   test('tombstone por row id cruza los aliases numéricos sin normalizar', () {
@@ -6835,7 +6867,7 @@ void main() {
     },
   );
 
-  test('Stop espera confirmación del almacenamiento durable', () async {
+  test('Stop no espera confirmación del almacenamiento durable', () async {
     final gate = Completer<void>();
     final events = <ActiveChatEvent>[];
     final gateway = _LifecycleRecoverableGateway();
@@ -6856,45 +6888,49 @@ void main() {
     );
     var completed = false;
     final cancel = chat.cancel().then((_) => completed = true);
-    await Future<void>.delayed(Duration.zero);
-    expect(completed, isFalse);
-    expect(chat.isStreaming, isTrue);
-    expect(chat.hasPendingDurableCancellation, isTrue);
-    expect(events, isNot(contains(ActiveChatEvent.cancelled)));
-    gate.complete();
     await cancel;
     expect(completed, isTrue);
+    expect(gate.isCompleted, isFalse);
+    expect(chat.isStreaming, isFalse);
+    expect(chat.hasPendingDurableCancellation, isTrue);
     expect(events, contains(ActiveChatEvent.cancelled));
+    gate.complete();
+    await _waitUntil(() => !chat.hasPendingDurableCancellation);
   });
 
-  test('Stop sin ancla durable falla cerrado y no confirma', () async {
-    var persisted = 0;
-    final events = <ActiveChatEvent>[];
-    final gateway = _LifecycleRecoverableGateway();
-    final chat = _recoverableChat(
-      'missing-anchor',
-      gateway,
-      onCancelledTurn: (_) async => persisted++,
-      onEvent: events.add,
-    );
-    addTearDown(chat.dispose);
-    chat.internalMessagesForTesting.add({
-      'role': 'user',
-      'content': 'turno histórico sin id',
-    });
+  test(
+    'Stop sin ancla durable omite tombstone pero confirma localmente',
+    () async {
+      var persisted = 0;
+      final events = <ActiveChatEvent>[];
+      final gateway = _LifecycleRecoverableGateway();
+      final chat = _recoverableChat(
+        'missing-anchor',
+        gateway,
+        onCancelledTurn: (_) async => persisted++,
+        onEvent: events.add,
+      );
+      addTearDown(chat.dispose);
+      chat.internalMessagesForTesting.add({
+        'role': 'user',
+        'content': 'turno histórico sin id',
+      });
 
-    await chat.send(
-      fullText: 'turno sin ancla',
-      model: 'hermes-agent',
-      history: const [],
-      delivery: _delivery('missing-anchor-1', _NoopOutbox()),
-    );
+      await chat.send(
+        fullText: 'turno sin ancla',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery('missing-anchor-1', _NoopOutbox()),
+      );
 
-    await expectLater(chat.cancel(), throwsStateError);
-    expect(persisted, 0);
-    expect(chat.isStreaming, isTrue);
-    expect(events, isNot(contains(ActiveChatEvent.cancelled)));
-  });
+      await chat.cancel();
+      await Future<void>.delayed(Duration.zero);
+      expect(gateway.interruptCalls, 1);
+      expect(persisted, 0);
+      expect(chat.isStreaming, isFalse);
+      expect(events, contains(ActiveChatEvent.cancelled));
+    },
+  );
 
   test('Stop no infiere firstUser si la sesión aún no se hidrató', () async {
     final recorded = <CancelledTurnTombstone>[];
@@ -6913,12 +6949,14 @@ void main() {
       delivery: _delivery('unknown-empty-session-1', _NoopOutbox()),
     );
 
-    await expectLater(chat.cancel(), throwsStateError);
+    await chat.cancel();
+    await Future<void>.delayed(Duration.zero);
+    expect(gateway.interruptCalls, 1);
     expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
-  test('fallo durable bloquea envío pero permite reintentar Stop', () async {
+  test('fallo durable no bloquea Stop ni el envío siguiente', () async {
     var persistenceAttempts = 0;
     final gateway = _LifecycleRecoverableGateway();
     final chat = _recoverableChat(
@@ -6944,32 +6982,28 @@ void main() {
       history: const [],
       delivery: _delivery('persist-failure-1', _NoopOutbox()),
     );
-    Object? firstStopError;
-    try {
-      await chat.cancel();
-    } catch (error) {
-      firstStopError = error;
-    }
-    expect(firstStopError, isA<StateError>());
+    await chat.cancel();
+    await _waitUntil(() => persistenceAttempts == 1);
 
     expect(
       await chat.send(
-        fullText: 'turno posterior prohibido',
+        fullText: 'turno posterior permitido',
         model: 'hermes-agent',
         history: const [],
         delivery: _delivery('persist-failure-2', _NoopOutbox()),
       ),
-      isFalse,
+      isTrue,
     );
-    expect(gateway.submitCalls, 1);
+    expect(gateway.submitCalls, 2);
     expect(chat.isStreaming, isTrue);
     await chat.cancel();
-    expect(persistenceAttempts, 2);
+    expect(gateway.interruptCalls, 2);
+    expect(persistenceAttempts, 1);
     expect(chat.isStreaming, isFalse);
   });
 
   test(
-    'terminal durante write fallido mantiene Stop y permite retry',
+    'terminal durante write fallido no reabre Stop ni bloquea el turno siguiente',
     () async {
       final gate = Completer<void>();
       var attempts = 0;
@@ -6996,14 +7030,23 @@ void main() {
 
       final firstCancel = chat.cancel();
       gateway.emit('message.complete');
-      await Future<void>.delayed(Duration.zero);
-      expect(chat.isStreaming, isTrue);
+      await firstCancel;
+      expect(chat.isStreaming, isFalse);
       gate.completeError(StateError('keystore unavailable'));
-      await expectLater(firstCancel, throwsA(isA<StateError>()));
-      expect(chat.isStreaming, isTrue);
+      await Future<void>.delayed(Duration.zero);
 
+      expect(
+        await chat.send(
+          fullText: 'turno posterior',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      expect(chat.isStreaming, isTrue);
       await chat.cancel();
-      expect(attempts, 2);
+      expect(gateway.interruptCalls, 2);
+      expect(attempts, 1);
       expect(chat.isStreaming, isFalse);
     },
   );
@@ -9893,7 +9936,7 @@ void main() {
     },
   );
 
-  test('error terminal al cancelar retira el runtime muerto', () async {
+  test('error terminal 4007 confirma Stop sin retirar el runtime', () async {
     final gateway = _LifecycleRecoverableGateway()
       ..interruptErrorsRemaining = 1
       ..interruptError = const TuiGatewayRpcError(
@@ -9916,15 +9959,16 @@ void main() {
     );
     expect(chat.desktopRuntimeSessionId, isNotNull);
 
-    chat.cancel();
-    await _waitUntil(() => gateway.interruptCalls == 1);
-    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final runtimeId = chat.desktopRuntimeSessionId;
+    await chat.cancel();
 
-    expect(chat.desktopRuntimeSessionId, isNull);
+    expect(gateway.interruptCalls, 1);
+    expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
+    expect(chat.desktopRuntimeSessionId, runtimeId);
   });
 
   test(
-    'terminal ausente retira el runtime antes del turno siguiente',
+    'terminal ausente conserva el runtime para el turno siguiente',
     () async {
       final gateway = _LifecycleRecoverableGateway();
       final chat = _recoverableChat(
@@ -9954,18 +9998,9 @@ void main() {
           .timeout(const Duration(milliseconds: 300));
 
       expect(gateway.submittedRuntimeIds, hasLength(2));
-      expect(gateway.submittedRuntimeIds.last, isNot(oldRuntimeId));
-      gateway.emit(
-        'message.complete',
-        sessionId: oldRuntimeId,
-        payload: const {'text': 'STALE_OLD_TURN'},
-      );
-      await Future<void>.delayed(Duration.zero);
+      expect(gateway.submittedRuntimeIds.last, oldRuntimeId);
+      expect(chat.desktopRuntimeSessionId, oldRuntimeId);
       expect(chat.isStreaming, isTrue);
-      expect(
-        chat.messages.any((message) => message['content'] == 'STALE_OLD_TURN'),
-        isFalse,
-      );
     },
   );
 

@@ -1723,7 +1723,7 @@ void main() {
         ),
       ],
     );
-    final gateway = _RuntimeReleaseGateway(activeLists: const [idle]);
+    final gateway = _StopThenReleaseGateway(activeLists: const [idle]);
     final fixture = _fixture(gateway, capability: () async => true);
     addTearDown(fixture.chat.dispose);
     await _primeProductionReleaseOwnership(fixture, gateway);
@@ -1754,12 +1754,8 @@ void main() {
         isA<TuiGatewayRpcError>().having((error) => error.code, 'code', 4090),
       ),
     );
-    await expectLater(
-      fixture.chat.cancel(),
-      throwsA(
-        isA<TuiGatewayRpcError>().having((error) => error.code, 'code', 4090),
-      ),
-    );
+    await fixture.chat.cancel();
+    expect(gateway.interruptRequests, ['runtime-owned']);
     await expectLater(
       fixture.chat.steer('NO DEBE REDIRIGIR'),
       throwsA(
@@ -1767,7 +1763,7 @@ void main() {
       ),
     );
     gateway.closeGate!.complete(true);
-    expect(await release, isTrue);
+    expect(await release, isFalse);
   });
 
   for (final approvalCase

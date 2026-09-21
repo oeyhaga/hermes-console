@@ -2886,13 +2886,16 @@ final class ChatTransportStatus {
   bool get isConnected => state == ChatTransportState.connected;
 }
 
+const _stopEscalationBudget = Duration(seconds: 8);
+const _stopInterruptAttemptLimit = 3;
+const _stopSettlingPollInterval = Duration(milliseconds: 500);
+
 enum StopConfirmationState { idle, stopping, retrying, confirmed, failed }
 
 enum QueueLease { active, parked, resumeRequested }
 
 enum _StopTransitionState {
   stopping,
-  persisting,
   interrupting,
   recovering,
   settling,
@@ -2908,14 +2911,20 @@ final class _StopTransitionCoordinator {
     required this.runtimeId,
     required this.gateway,
     required this.queueGeneration,
+    required this.deadlineMs,
   });
 
   final int turnEpoch;
   final String? runtimeId;
   final HermesDesktopGateway? gateway;
   final int queueGeneration;
+  final int deadlineMs;
   final Completer<void> terminal = Completer<void>();
   _StopTransitionState state = _StopTransitionState.stopping;
+  int interruptAttempts = 0;
+  bool agentStartingRetryUsed = false;
+  bool sessionNotFoundRecoveryUsed = false;
+  Object? lastInterruptError;
 
   bool get isFinal => const {
     _StopTransitionState.confirmed,
@@ -3929,6 +3938,8 @@ class ActiveChat {
 
   DesktopSessionRuntimeInfo get desktopRuntimeInfo => _desktopRuntimeInfo;
   String? get desktopRuntimeSessionId => _desktopRuntimeSessionId;
+  @visibleForTesting
+  int get desktopBindEpochForTesting => _desktopBindEpoch;
   String? get desktopLiveStatus => _desktopLiveStatus;
   bool get offerStaleResumedSessionStop => _offerStaleResumedSessionStop;
 
@@ -4942,13 +4953,10 @@ class ActiveChat {
 
   bool get canControlSessionActivity =>
       !connection.readOnly &&
-      !mutationsBlockedByOwnershipConflict &&
       _desktopGateway is HermesDesktopSessionControlGateway;
 
   bool get canStopBackgroundProcesses =>
-      !connection.readOnly &&
-      !mutationsBlockedByOwnershipConflict &&
-      _desktopGateway is HermesDesktopControlGateway;
+      !connection.readOnly && _desktopGateway is HermesDesktopControlGateway;
 
   List<SubagentActivity> get subagentActivities {
     if (_disposed ||
@@ -5628,7 +5636,6 @@ class ActiveChat {
         phase == SubagentActivityPhase.thinking ||
         phase == SubagentActivityPhase.tool;
     if (connection.readOnly ||
-        mutationsBlockedByOwnershipConflict ||
         !hasAuthoritativeLivePhase ||
         activity.subagentId == null) {
       return false;
@@ -6953,9 +6960,7 @@ class ActiveChat {
       _durableCancelFlight != null;
 
   bool get _hasPendingActiveTurnCancellation =>
-      _cancelledTurnPersistencePending ||
-      _cancelledTurnPersistenceFailed ||
-      _durableCancelFlight != null;
+      _cancelledTurnPersistencePending || _durableCancelFlight != null;
 
   bool get _hasPendingTombstoneMetadataUpdate =>
       _pendingCancelledTombstoneUpdates.isNotEmpty;
@@ -11405,17 +11410,10 @@ class ActiveChat {
         await delivery?.markUnaccepted();
         return false;
       }
-      if (_cancelledTurnPersistencePending || _cancelledTurnPersistenceFailed) {
-        await _cancelledTurnPersistence;
-        if (_disposed || _cancelledTurnPersistenceFailed) return false;
-      }
       final pendingStop = _durableCancelFlight;
       if (pendingStop != null) {
         await pendingStop;
-        if (_disposed ||
-            _stopConfirmationState == StopConfirmationState.failed) {
-          return false;
-        }
+        if (_disposed) return false;
       }
       // Intento de reparación, nunca una valla de admisión. Si el servidor aún
       // no publica la fila durable del turno detenido, Desktop sigue enviando:
@@ -16580,20 +16578,20 @@ class ActiveChat {
     final stop = _stopTransition;
     if (stop != null &&
         _stopIsCurrent(stop) &&
-        isTerminal &&
         (stop.state == _StopTransitionState.interrupting ||
             stop.state == _StopTransitionState.settling)) {
-      final stopText =
-          '${payload['text'] ?? payload['rendered'] ?? payload['message'] ?? ''}'
-              .toLowerCase();
+      final rawSessionInfo = payload['info'];
+      final sessionInfo = rawSessionInfo is Map ? rawSessionInfo : payload;
       final confirmsInterrupt =
-          event.type == 'error' ||
-          stopText.contains('interrupt') ||
-          stopText.contains('cancel');
+          isTerminal ||
+          (event.type == 'session.info' && sessionInfo['running'] == false) ||
+          (event.type == 'request.cancel' &&
+              (payload['reason'] ?? '').toString().trim().toLowerCase() ==
+                  'interrupted');
       if (confirmsInterrupt) {
         _clearDesktopCompactingIndicator();
         if (!stop.terminal.isCompleted) stop.terminal.complete();
-        return;
+        if (event.type != 'session.info') return;
       }
     }
     final interruptDrain = _desktopInterruptDrain;
@@ -21915,17 +21913,12 @@ class ActiveChat {
         await persist(before.tombstone);
         _cancelledTurnPersistencePending = false;
         _cancelledTurnPersistenceFailed = false;
-        _cancelledTurnPersistence = Future<void>.value();
       } catch (_) {
-        // Consume the storage future here. The owned Stop future below is the
-        // sole observable failure and remains retryable through state.
         _cancelledTurnPersistencePending = false;
         _cancelledTurnPersistenceFailed = true;
-        _cancelledTurnPersistence = Future<void>.value();
         throw StateError('cancelled turn persistence failed');
       }
     } else {
-      _cancelledTurnPersistence = Future<void>.value();
       _cancelledTurnPersistencePending = false;
       _cancelledTurnPersistenceFailed = false;
     }
@@ -21951,6 +21944,21 @@ class ActiveChat {
       _messages,
       incomingTranscriptComplete: _transcriptIsComplete,
     );
+  }
+
+  void _persistLatestUserCancellationInBackground() {
+    final persistence = _persistLatestUserCancellation().catchError((
+      Object error,
+      StackTrace stackTrace,
+    ) {
+      _cancelledTurnPersistencePending = false;
+      _cancelledTurnPersistenceFailed = true;
+      debugPrint(
+        '[active-chat] Stop persistence unavailable (${error.runtimeType})',
+      );
+    });
+    _cancelledTurnPersistence = persistence;
+    unawaited(persistence);
   }
 
   /// El run fue cancelado por el servidor (no por el usuario).
@@ -22011,12 +22019,8 @@ class ActiveChat {
     _cancelRunState();
   }
 
-  /// Cancela el run en curso y no completa hasta que el tombstone cifrado
-  /// queda confirmado por el almacenamiento durable.
+  /// Cancela el run en curso; el tombstone durable se persiste en segundo plano.
   Future<void> cancel() {
-    if (mutationsBlockedByOwnershipConflict) {
-      return Future<void>.error(_ownershipConflictError('session.interrupt'));
-    }
     final existing = _durableCancelFlight;
     if (existing != null) return existing;
     _freezeQueueForStop();
@@ -22025,13 +22029,10 @@ class ActiveChat {
       runtimeId: _desktopRuntimeSessionId,
       gateway: _desktopGateway,
       queueGeneration: _queueGeneration,
+      deadlineMs: _wallClockMs() + _stopEscalationBudget.inMilliseconds,
     );
     _stopTransition = coordinator;
-    if (state == ChatPipelineState.connecting) {
-      // Claim recovery admission synchronously. The coordinator still owns the
-      // durable/interrupt result, but stale recovery cannot remain visibly live.
-      state = ChatPipelineState.cancelled;
-    }
+    state = ChatPipelineState.cancelled;
     late final Future<void> operation;
     Future<void> runOwnedCancel() async {
       try {
@@ -22101,67 +22102,111 @@ class ActiveChat {
           error.statusCode == 429 ||
           error.statusCode >= 500;
     }
-    if (error is TuiGatewayRpcError) {
-      return !_isTerminalDesktopRecoveryError(error);
+    return error is TuiGatewayRpcError &&
+        const {4001, 4009, 5032}.contains(error.code);
+  }
+
+  Duration _remainingStopBudget(_StopTransitionCoordinator stop) => Duration(
+    milliseconds: math.max(0, stop.deadlineMs - _wallClockMs()),
+  );
+
+  Future<T?> _stopOperationBeforeDeadline<T>(
+    _StopTransitionCoordinator stop,
+    Future<T> operation,
+  ) async {
+    final remaining = _remainingStopBudget(stop);
+    if (remaining <= Duration.zero) {
+      throw TimeoutException('Stop escalation budget exhausted');
     }
-    return false;
+    final timeout = remaining < _desktopRecoveryAttemptTimeout
+        ? remaining
+        : _desktopRecoveryAttemptTimeout;
+    final deadline = Completer<T?>();
+    final timer = Timer(timeout, () {
+      deadline.completeError(TimeoutException('Stop operation timed out', timeout));
+    });
+    try {
+      return await Future.any<T?>([
+        operation,
+        deadline.future,
+        _disposeSignal.future.then((_) => null),
+      ]);
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  Future<bool> _waitForStopRetry(
+    _StopTransitionCoordinator stop,
+    Duration delay,
+  ) {
+    final remaining = _remainingStopBudget(stop);
+    if (remaining <= Duration.zero) return Future<bool>.value(false);
+    final boundedDelay = delay < remaining ? delay : remaining;
+    return _waitForTerminalReconcileDelay(
+      boundedDelay,
+      _disposeSignal.future,
+    ).then((elapsed) => elapsed && _remainingStopBudget(stop) > Duration.zero);
   }
 
   Duration get _stopSettleTimeout =>
-      _desktopRecoveryAttemptTimeout < const Duration(milliseconds: 100)
+      _desktopRecoveryAttemptTimeout < const Duration(seconds: 2)
       ? _desktopRecoveryAttemptTimeout
-      : const Duration(milliseconds: 100);
+      : const Duration(seconds: 2);
 
   Future<bool> _interruptAndSettleStop(
     _StopTransitionCoordinator stop,
     String runtimeId,
   ) async {
     final gateway = stop.gateway!;
-    stop.state = _StopTransitionState.interrupting;
-    try {
-      await _desktopRecoveryOperationBeforeDeadline(
-        gateway.interrupt(runtimeId).then((_) => true),
-        _disposeSignal.future,
-      );
-    } catch (error) {
-      if (error is TuiGatewayRpcError && error.code == 4007) {
-        if (_stopIsCurrent(stop)) {
-          _usingDesktopGateway = false;
-          _retireDesktopRuntime();
+    while (_stopIsCurrent(stop) &&
+        stop.interruptAttempts < _stopInterruptAttemptLimit &&
+        _remainingStopBudget(stop) > Duration.zero) {
+      stop.state = _StopTransitionState.interrupting;
+      stop.interruptAttempts += 1;
+      try {
+        await _stopOperationBeforeDeadline(
+          stop,
+          gateway.interrupt(runtimeId).then((_) => true),
+        );
+        stop.lastInterruptError = null;
+      } catch (error) {
+        stop.lastInterruptError = error;
+        if (error is TuiGatewayRpcError && error.code == 4007) return true;
+        if (error is TuiGatewayRpcError &&
+            error.code == 5032 &&
+            !stop.agentStartingRetryUsed &&
+            stop.interruptAttempts < _stopInterruptAttemptLimit) {
+          stop.agentStartingRetryUsed = true;
+          continue;
         }
-        return true;
+        if (!_transientStopFailure(error)) rethrow;
+        return false;
       }
-      if (!_transientStopFailure(error)) rethrow;
-      return false;
+      if (!_stopIsCurrent(stop)) return true;
+      stop.state = _StopTransitionState.settling;
+      final remaining = _remainingStopBudget(stop);
+      if (remaining <= Duration.zero) return false;
+      final fullGrace = _stopSettleTimeout;
+      final grace = remaining < fullGrace ? remaining : fullGrace;
+      final timeout = Completer<bool>();
+      final settleTimer = Timer(grace, () => timeout.complete(false));
+      late final bool settled;
+      try {
+        settled = await Future.any<bool>([
+          stop.terminal.future.then((_) => true),
+          timeout.future,
+          _disposeSignal.future.then((_) => false),
+        ]);
+      } finally {
+        settleTimer.cancel();
+      }
+      return settled ||
+          (grace == fullGrace &&
+              _stopIsCurrent(stop) &&
+              _remainingStopBudget(stop) > Duration.zero);
     }
-    if (!_stopIsCurrent(stop)) return true;
-    stop.state = _StopTransitionState.settling;
-    // The exact interrupt ACK closes live admission immediately; terminal
-    // settlement still owns the coordinator future and runtime retirement.
-    state = ChatPipelineState.cancelled;
-    final timeout = Completer<bool>();
-    final settleTimer = Timer(
-      _stopSettleTimeout,
-      () => timeout.complete(false),
-    );
-    late final bool settled;
-    try {
-      settled = await Future.any<bool>([
-        stop.terminal.future.then((_) => true),
-        timeout.future,
-        _disposeSignal.future.then((_) => false),
-      ]);
-    } finally {
-      // Future.delayed leaves its Timer alive after another Future.any branch
-      // wins. Widget tests expose that leak, and real disposal must not retain it.
-      settleTimer.cancel();
-    }
-    if (!settled && _stopIsCurrent(stop)) {
-      // An ACK without its terminal is not safe to share with the next turn.
-      _usingDesktopGateway = false;
-      _retireDesktopRuntime();
-    }
-    return true;
+    return false;
   }
 
   Future<bool> _recoverAndInterruptStop(
@@ -22175,27 +22220,32 @@ class ActiveChat {
         gateway is! HermesDesktopRecoverySessionLifecycleGateway) {
       return false;
     }
-    var attempt = 0;
-    while (_stopIsCurrent(stop)) {
-      stop.state = _StopTransitionState.recovering;
-      final delay =
-          _desktopRecoveryBackoff[attempt.clamp(
-            0,
-            _desktopRecoveryBackoff.length - 1,
-          )];
-      attempt++;
-      if (attempt > 1 &&
-          delay > Duration.zero &&
-          !await _waitForTerminalReconcileDelay(delay, _disposeSignal.future)) {
+    for (var recoveryAttempt = 0; recoveryAttempt < 16; recoveryAttempt++) {
+      if (!_stopIsCurrent(stop) ||
+          stop.interruptAttempts >= _stopInterruptAttemptLimit ||
+          _remainingStopBudget(stop) <= Duration.zero) {
         return false;
       }
+      final previousError = stop.lastInterruptError;
+      if (previousError is TuiGatewayRpcError) {
+        if (previousError.code == 5032) return false;
+        if (previousError.code == 4001) {
+          if (stop.sessionNotFoundRecoveryUsed) return false;
+          stop.sessionNotFoundRecoveryUsed = true;
+        } else if (previousError.code == 4009 &&
+            !await _waitForStopRetry(stop, _stopSettlingPollInterval)) {
+          return false;
+        }
+      }
+      stop.state = _StopTransitionState.recovering;
       try {
-        final connected = await _desktopRecoveryOperationBeforeDeadline(
+        final connected = await _stopOperationBeforeDeadline(
+          stop,
           gateway.connect().then((_) => true),
-          _disposeSignal.future,
         );
         if (connected == null || !_stopIsCurrent(stop)) return false;
-        final snapshot = await _desktopRecoveryOperationBeforeDeadline(
+        final snapshot = await _stopOperationBeforeDeadline(
+          stop,
           _resumeDesktopSessionForRecovery(
             gateway,
             storedSessionId,
@@ -22203,10 +22253,9 @@ class ActiveChat {
             legacyModel: model,
             deferRuntimeCommit: true,
           ),
-          _disposeSignal.future,
         );
         if (snapshot == null || !_stopIsCurrent(stop)) return false;
-        if (!_commitDesktopRecoverySnapshot(gateway, snapshot)) continue;
+        if (!_commitDesktopRecoverySnapshot(gateway, snapshot)) return false;
         _desktopStoredSessionId = snapshot.storedSessionId;
         _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
         _usingDesktopGateway = true;
@@ -22215,15 +22264,40 @@ class ActiveChat {
         }
       } catch (error) {
         if (!_stopIsCurrent(stop)) return false;
-        if (error is TuiGatewayRpcError && error.code == 4007) {
-          _usingDesktopGateway = false;
-          _retireDesktopRuntime();
-          return true;
+        if (error is TuiGatewayRpcError && error.code == 4007) return true;
+        stop.lastInterruptError = error;
+        if (error is TuiGatewayRpcError && error.code == 4009) {
+          continue;
         }
         if (!_transientStopFailure(error)) rethrow;
+        return false;
       }
     }
     return false;
+  }
+
+  void _finalizeStopLocally(
+    _StopTransitionCoordinator stop,
+    _StopTransitionState terminalState,
+    StopConfirmationState confirmation, {
+    required bool requestServerStop,
+  }) {
+    _cancelCurrent(
+      requestServerStop: requestServerStop,
+      deferConfirmation: true,
+      markUserCancelled: false,
+      clearQueue: false,
+    );
+    _persistLatestUserCancellationInBackground();
+    _settleStopTransition(
+      stop,
+      terminalState,
+      confirmation: confirmation,
+      emitQueueChanged: false,
+    );
+    final terminalEpoch = _turnEpoch;
+    _emit(ActiveChatEvent.cancelled);
+    _drainOrTerminal(expectedEpoch: terminalEpoch);
   }
 
   Future<void> _cancelDurably(_StopTransitionCoordinator stop) async {
@@ -22245,21 +22319,6 @@ class ActiveChat {
         : StopConfirmationState.stopping;
     _emit(ActiveChatEvent.queueChanged);
     bool scopeIsCurrent() => _stopIsCurrent(stop);
-    try {
-      stop.state = _StopTransitionState.persisting;
-      await _persistLatestUserCancellation();
-    } catch (error) {
-      if (scopeIsCurrent()) {
-        _settleStopTransition(
-          stop,
-          _StopTransitionState.failed,
-          confirmation: StopConfirmationState.failed,
-        );
-      } else if (!stop.terminal.isCompleted) {
-        stop.terminal.complete();
-      }
-      rethrow;
-    }
     if (!scopeIsCurrent()) {
       _settleStopTransition(
         stop,
@@ -22284,23 +22343,21 @@ class ActiveChat {
           );
         }
         if (!delivered && scopeIsCurrent()) {
-          // A transient timeout on a legacy gateway cannot be retried without
-          // risking implicit session creation. Keep the Stop failed; the same
-          // coordinator future settles without spawning another owner, and the
-          // entries the user halted stay parked until they act on them.
-          _settleStopTransition(
+          _finalizeStopLocally(
             stop,
             _StopTransitionState.failed,
-            confirmation: StopConfirmationState.failed,
+            StopConfirmationState.failed,
+            requestServerStop: false,
           );
           return;
         }
       } catch (error) {
         if (scopeIsCurrent()) {
-          _settleStopTransition(
+          _finalizeStopLocally(
             stop,
             _StopTransitionState.failed,
-            confirmation: StopConfirmationState.failed,
+            StopConfirmationState.failed,
+            requestServerStop: false,
           );
           rethrow;
         }
@@ -22336,21 +22393,12 @@ class ActiveChat {
         return;
       }
     }
-    _cancelCurrent(
-      requestServerStop: !hasDesktopStopTarget,
-      deferConfirmation: true,
-      markUserCancelled: false,
-      clearQueue: false,
-    );
-    _settleStopTransition(
+    _finalizeStopLocally(
       stop,
       _StopTransitionState.confirmed,
-      confirmation: StopConfirmationState.confirmed,
-      emitQueueChanged: false,
+      StopConfirmationState.confirmed,
+      requestServerStop: !hasDesktopStopTarget,
     );
-    final terminalEpoch = _turnEpoch;
-    _emit(ActiveChatEvent.cancelled);
-    _drainOrTerminal(expectedEpoch: terminalEpoch);
   }
 
   void _beginVoiceBargeHandoff() {
