@@ -3,10 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/attachment_draft.dart';
+import 'package:hermes_android/core/services/attachment_uploader.dart';
+import 'package:hermes_android/core/services/generated_media_service.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
+import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 
 class _FakeAudioPlayback implements GeneratedAudioPlayback {
@@ -335,5 +339,620 @@ void main() {
     await tester.tap(find.byIcon(Icons.close));
     expect(retries, 1);
     expect(removes, 1);
+  });
+
+  testWidgets('MEDIA text auto-loads and opens a selectable full viewer', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-text-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/report.txt')
+      ..writeAsStringSync('first line\nsecond line\nfull final line');
+    var loads = 0;
+    const reference = GeneratedMediaReference(
+      source: '/workspace/report.txt',
+      kind: GeneratedMediaKind.file,
+      sourceKind: GeneratedMediaSourceKind.serverPath,
+      displayName: 'report.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 38,
+    );
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: reference,
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            expect(isCancelled(), isFalse);
+            onProgress(file.lengthSync(), file.lengthSync());
+            return file;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 1);
+    expect(find.textContaining('first line\nsecond line'), findsOneWidget);
+    expect(find.text('Descargar'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('generated-text-preview-body')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(
+      find.byKey(const ValueKey('generated-text-viewer-body')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('full final line'), findsOneWidget);
+
+    String? copiedText;
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        copiedText = (call.arguments as Map<Object?, Object?>)['text'] as String?;
+      }
+      return null;
+    });
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(SystemChannels.platform, null),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('generated-text-copy')));
+    await tester.pump();
+    expect(copiedText, 'first line\nsecond line\nfull final line');
+  });
+
+  testWidgets('MEDIA image auto-loads directly into its ready preview', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-image-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/pixel.png')
+      ..writeAsBytesSync(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+          'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        ),
+      );
+    var loads = 0;
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/pixel.png',
+            kind: GeneratedMediaKind.image,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'pixel.png',
+            mimeType: 'image/png',
+            sizeBytes: 68,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            onProgress(file.lengthSync(), file.lengthSync());
+            return file;
+          },
+          readyBuilder: (_, readyFile, _, _, _, _) => Image.file(
+            readyFile,
+            key: const ValueKey('auto-loaded-image'),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 1);
+    expect(find.byKey(const ValueKey('auto-loaded-image')), findsOneWidget);
+    expect(find.text('Descargar'), findsNothing);
+  });
+
+  testWidgets('MEDIA pdf audio and video auto-load into visible tiles', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-kinds-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final pdf = File('${directory.path}/report.pdf')
+      ..writeAsBytesSync(utf8.encode('%PDF-1.4'));
+    final audio = File('${directory.path}/voice.mp3')
+      ..writeAsBytesSync(<int>[0x49, 0x44, 0x33, 0]);
+    final video = File('${directory.path}/clip.mp4')
+      ..writeAsBytesSync(<int>[
+        0,
+        0,
+        0,
+        24,
+        0x66,
+        0x74,
+        0x79,
+        0x70,
+        0x69,
+        0x73,
+        0x6f,
+        0x6d,
+      ]);
+
+    for (final entry in <(GeneratedMediaReference, File, Key)>[
+      (
+        const GeneratedMediaReference(
+          source: '/workspace/report.pdf',
+          kind: GeneratedMediaKind.file,
+          sourceKind: GeneratedMediaSourceKind.serverPath,
+          displayName: 'report.pdf',
+          mimeType: 'application/pdf',
+          sizeBytes: 8,
+        ),
+        pdf,
+        const ValueKey('pdf-ready-tile'),
+      ),
+      (
+        const GeneratedMediaReference(
+          source: '/workspace/clip.mp4',
+          kind: GeneratedMediaKind.video,
+          sourceKind: GeneratedMediaSourceKind.serverPath,
+          displayName: 'clip.mp4',
+          mimeType: 'video/mp4',
+          sizeBytes: 12,
+        ),
+        video,
+        const ValueKey('video-ready-tile'),
+      ),
+    ]) {
+      await tester.pumpWidget(
+        host(
+          GeneratedMediaAttachmentCard(
+            reference: entry.$1,
+            autoLoad: true,
+            load: (onProgress, isCancelled) async => entry.$2,
+            readyBuilder: (_, _, _, _, _, _) => SizedBox(key: entry.$3),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+      await tester.pumpAndSettle();
+      expect(find.byKey(entry.$3), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+    }
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/voice.mp3',
+            kind: GeneratedMediaKind.audio,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'voice.mp3',
+            mimeType: 'audio/mpeg',
+            sizeBytes: 4,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async => audio,
+          audioPlayback: _FakeAudioPlayback(),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('generated-audio-player')),
+      findsOneWidget,
+    );
+    expect(find.text('Descargar'), findsNothing);
+  });
+
+  testWidgets('MEDIA above its auto cap shows real size and Download', (
+    tester,
+  ) async {
+    var loads = 0;
+    const reference = GeneratedMediaReference(
+      source: '/workspace/large.png',
+      kind: GeneratedMediaKind.image,
+      sourceKind: GeneratedMediaSourceKind.serverPath,
+      displayName: 'large.png',
+      mimeType: 'image/png',
+      sizeBytes: GeneratedMediaService.maxAutoImageBytes + 1024,
+    );
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: reference,
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            throw StateError('must not auto-load');
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 0);
+    expect(find.textContaining('15 MB'), findsOneWidget);
+    expect(find.text('Descargar'), findsOneWidget);
+  });
+
+  testWidgets('non-current-session source keeps the consent card', (
+    tester,
+  ) async {
+    var loads = 0;
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: 'https://example.test/report.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.https,
+            displayName: 'report.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 12,
+          ),
+          autoLoad: false,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            throw StateError('must wait for consent');
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 0);
+    expect(find.text('Descargar'), findsOneWidget);
+  });
+
+  testWidgets('failed MEDIA auto-load retries and becomes ready', (tester) async {
+    final directory = Directory.systemTemp.createTempSync('generated-retry-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/retry.txt')
+      ..writeAsStringSync('retry succeeded');
+    var loads = 0;
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/retry.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'retry.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 15,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            if (loads == 1) throw StateError('temporary failure');
+            return file;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Reintentar'), findsOneWidget);
+    await tester.tap(find.text('Reintentar'));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+    expect(loads, 2);
+    expect(find.textContaining('retry succeeded'), findsOneWidget);
+  });
+
+  testWidgets('disposed queued MEDIA load yields its place to a visible card', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-queue-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/visible.txt')
+      ..writeAsStringSync('visible');
+    final firstStarted = Completer<void>();
+    final secondStarted = Completer<void>();
+    final firstRelease = Completer<void>();
+    final secondRelease = Completer<void>();
+    var disposedLoads = 0;
+    var visibleLoads = 0;
+
+    unawaited(GeneratedMediaService.runAutoLoad(() async {
+      firstStarted.complete();
+      await firstRelease.future;
+    }));
+    unawaited(GeneratedMediaService.runAutoLoad(() async {
+      secondStarted.complete();
+      await secondRelease.future;
+    }));
+    await Future.wait([firstStarted.future, secondStarted.future]);
+    addTearDown(() {
+      if (!firstRelease.isCompleted) firstRelease.complete();
+      if (!secondRelease.isCompleted) secondRelease.complete();
+    });
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/disposed.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'disposed.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 7,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            disposedLoads++;
+            return file;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(disposedLoads, 0);
+
+    await tester.pumpWidget(host(const SizedBox.shrink()));
+    await tester.pump();
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/visible.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'visible.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 7,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            visibleLoads++;
+            return file;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+
+    firstRelease.complete();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(disposedLoads, 0);
+    expect(visibleLoads, 1);
+    expect(
+      find.byKey(const ValueKey('generated-text-preview-body')),
+      findsOneWidget,
+    );
+
+    secondRelease.complete();
+    await tester.pumpWidget(host(const SizedBox.shrink()));
+    await tester.pump();
+  });
+
+  test('external file opener sends opaque cache keys without a path', () async {
+    final directory = Directory.systemTemp.createTempSync('generated-open-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final connectionKey = 'e' * 64;
+    final fileKey = 'f' * 64;
+    final cacheDirectory = Directory(
+      '${directory.path}/generated_media/$connectionKey',
+    )..createSync(recursive: true);
+    final file = File('${cacheDirectory.path}/$fileKey.bin')
+      ..writeAsBytesSync(<int>[1, 2, 3, 4]);
+    MethodCall? openCall;
+    const channel = MethodChannel('hermes/document_preview');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      openCall = call;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await openGeneratedMediaExternally(
+      file,
+      mimeType: 'application/octet-stream',
+      expectedSize: file.lengthSync(),
+    );
+
+    expect(openCall?.method, 'openGeneratedFile');
+    final arguments = openCall?.arguments as Map<Object?, Object?>;
+    expect(arguments['generatedConnectionKey'], connectionKey);
+    expect(arguments['generatedFileKey'], fileKey);
+    expect(arguments['mimeType'], 'application/octet-stream');
+    expect(arguments.containsKey('path'), isFalse);
+    expect(arguments['storageKey'], arguments['expectedSha256']);
+  });
+
+  testWidgets('generic file opens an in-app viewer with distinct actions', (
+    tester,
+  ) async {
+    var openedExternally = 0;
+    var shared = 0;
+    var saved = 0;
+    await tester.pumpWidget(
+      host(
+        Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => GeneratedFileViewerScreen(
+                  name: 'archive.bin',
+                  mimeType: 'application/octet-stream',
+                  sizeBytes: 4096,
+                  onOpenWith: () => openedExternally++,
+                  onShare: () => shared++,
+                  onSave: () => saved++,
+                ),
+              ),
+            ),
+            child: const Text('Launch'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Launch'));
+    await tester.pumpAndSettle();
+    expect(find.text('archive.bin'), findsWidgets);
+    expect(find.textContaining('application/octet-stream'), findsOneWidget);
+    await tester.tap(find.text('Abrir con…'));
+    await tester.tap(find.text('Compartir'));
+    await tester.tap(find.text('Guardar'));
+    expect((openedExternally, shared, saved), (1, 1, 1));
+  });
+
+  testWidgets('PDF generated preview uses opaque cache keys and page zero', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-pdf-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final connectionKey = 'a' * 64;
+    final fileKey = 'b' * 64;
+    final cacheDirectory = Directory(
+      '${directory.path}/generated_media/$connectionKey',
+    )..createSync(recursive: true);
+    final file = File('${cacheDirectory.path}/$fileKey.pdf')
+      ..writeAsBytesSync(utf8.encode('%PDF-1.4\n'));
+    final pngBytes = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+      'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    );
+    MethodCall? renderCall;
+    const channel = MethodChannel('hermes/document_preview');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      renderCall = call;
+      return <String, Object>{'pngBytes': pngBytes, 'pageCount': 3};
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    var opened = 0;
+    var shared = 0;
+    var saved = 0;
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        host(
+          GeneratedPdfPreviewCard(
+            file: file,
+            name: 'report.pdf',
+            sizeBytes: file.lengthSync(),
+            onOpen: () => opened++,
+            onShare: () => shared++,
+            onSave: () => saved++,
+          ),
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(renderCall?.method, 'renderPdfPage');
+    final arguments = renderCall?.arguments as Map<Object?, Object?>;
+    expect(arguments['page'], 0);
+    expect(arguments['generatedConnectionKey'], connectionKey);
+    expect(arguments['generatedFileKey'], fileKey);
+    expect(arguments.containsKey('path'), isFalse);
+    expect(arguments['storageKey'], arguments['expectedSha256']);
+    expect(find.byKey(const ValueKey('generated-pdf-thumbnail')), findsOneWidget);
+    expect(find.textContaining('3 páginas'), findsOneWidget);
+
+    await tester.tap(find.text('Abrir'));
+    await tester.tap(find.text('Compartir'));
+    await tester.tap(find.text('Guardar'));
+    expect((opened, shared, saved), (1, 1, 1));
+  });
+
+  testWidgets('PDF viewer renders pages lazily with per-page zoom', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync('generated-pdf-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final connectionKey = 'c' * 64;
+    final fileKey = 'd' * 64;
+    final cacheDirectory = Directory(
+      '${directory.path}/generated_media/$connectionKey',
+    )..createSync(recursive: true);
+    final file = File('${cacheDirectory.path}/$fileKey.pdf')
+      ..writeAsBytesSync(utf8.encode('%PDF-1.4\n'));
+    final pngBytes = base64Decode(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+      'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    );
+    final renderedPages = <int>[];
+    const channel = MethodChannel('hermes/document_preview');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      final arguments = call.arguments as Map<Object?, Object?>;
+      expect(arguments['generatedConnectionKey'], connectionKey);
+      expect(arguments['generatedFileKey'], fileKey);
+      expect(arguments.containsKey('path'), isFalse);
+      renderedPages.add(arguments['page']! as int);
+      return <String, Object>{'pngBytes': pngBytes, 'pageCount': 3};
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        host(
+          AttachmentBytesPreviewScreen(
+            name: 'report.pdf',
+            sizeLabel: '${file.lengthSync()} B',
+            reference: AttachmentHistoryReference(
+              index: 0,
+              storageKey: fileKey,
+              type: AttachmentType.document,
+              mimeType: 'application/pdf',
+              sizeBytes: file.lengthSync(),
+              sha256Hex: fileKey,
+            ),
+            file: file,
+          ),
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump();
+
+    expect(renderedPages, contains(0));
+    expect(renderedPages, isNot(contains(2)));
+    expect(find.byKey(const ValueKey('attachment-pdf-page-0')), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsWidgets);
+
+    await tester.drag(find.byType(ListView), const Offset(0, -1000));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.drag(find.byType(ListView), const Offset(0, -1000));
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.pump();
+    expect(renderedPages, contains(2));
+    expect(find.byKey(const ValueKey('attachment-pdf-page-2')), findsOneWidget);
   });
 }

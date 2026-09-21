@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -495,5 +496,138 @@ void main() {
 
       expect(temporary.listSync(recursive: true).whereType<File>(), isEmpty);
     });
+
+    test('cache identity includes known size and modification time', () async {
+      const source = '/workspace/report.txt';
+      var fetches = 0;
+
+      Future<Uint8List> fetch(String _) async {
+        fetches++;
+        return Uint8List.fromList(utf8.encode('version $fetches'));
+      }
+
+      final first = await GeneratedMediaService.ensureDownloaded(
+        'connection-cache-identity',
+        GeneratedMediaReference(
+          source: source,
+          kind: GeneratedMediaKind.file,
+          sourceKind: GeneratedMediaSourceKind.serverPath,
+          displayName: 'report.txt',
+          mimeType: 'text/plain',
+          sizeBytes: 9,
+          modifiedAt: DateTime.utc(2026, 9, 20),
+        ),
+        fetchServerPath: fetch,
+        baseDir: temporary,
+      );
+      final second = await GeneratedMediaService.ensureDownloaded(
+        'connection-cache-identity',
+        GeneratedMediaReference(
+          source: source,
+          kind: GeneratedMediaKind.file,
+          sourceKind: GeneratedMediaSourceKind.serverPath,
+          displayName: 'report.txt',
+          mimeType: 'text/plain',
+          sizeBytes: 9,
+          modifiedAt: DateTime.utc(2026, 9, 21),
+        ),
+        fetchServerPath: fetch,
+        baseDir: temporary,
+      );
+
+      expect(fetches, 2);
+      expect(first.path, isNot(second.path));
+    });
+  });
+
+  test('auto-load coordinator allows at most two concurrent loads', () async {
+    var active = 0;
+    var maximum = 0;
+    final started = <Completer<void>>[
+      Completer<void>(),
+      Completer<void>(),
+      Completer<void>(),
+    ];
+    final releases = <Completer<void>>[
+      Completer<void>(),
+      Completer<void>(),
+      Completer<void>(),
+    ];
+
+    Future<void> load(int index) async {
+      active++;
+      maximum = active > maximum ? active : maximum;
+      started[index].complete();
+      await releases[index].future;
+      active--;
+    }
+
+    final futures = <Future<void>>[
+      for (var index = 0; index < 3; index++)
+        GeneratedMediaService.runAutoLoad(() => load(index)),
+    ];
+    await Future.wait([started[0].future, started[1].future]);
+    expect(started[2].isCompleted, isFalse);
+    expect(maximum, 2);
+
+    releases[0].complete();
+    await started[2].future;
+    expect(maximum, 2);
+    releases[1].complete();
+    releases[2].complete();
+    await Future.wait(futures);
+  });
+
+  test('cancelled queued auto-load does not starve the next waiter', () async {
+    final firstStarted = Completer<void>();
+    final secondStarted = Completer<void>();
+    final firstRelease = Completer<void>();
+    final secondRelease = Completer<void>();
+    final visibleStarted = Completer<void>();
+    final visibleRelease = Completer<void>();
+    final cancellation = GeneratedMediaAutoLoadCancellation();
+
+    final first = GeneratedMediaService.runAutoLoad(() async {
+      firstStarted.complete();
+      await firstRelease.future;
+    });
+    final second = GeneratedMediaService.runAutoLoad(() async {
+      secondStarted.complete();
+      await secondRelease.future;
+    });
+    await Future.wait([firstStarted.future, secondStarted.future]);
+
+    final Future<void> cancelledFuture =
+        GeneratedMediaService.runAutoLoad<void>(
+          () async => fail('cancelled queued load must never start'),
+          cancellation: cancellation,
+        );
+    final cancelledExpectation = expectLater(
+      cancelledFuture,
+      throwsA(isA<GeneratedMediaDownloadCancelled>()),
+    );
+    final visible = GeneratedMediaService.runAutoLoad(() async {
+      visibleStarted.complete();
+      await visibleRelease.future;
+    });
+
+    addTearDown(() async {
+      if (!firstRelease.isCompleted) firstRelease.complete();
+      if (!secondRelease.isCompleted) secondRelease.complete();
+      if (!visibleRelease.isCompleted) visibleRelease.complete();
+      await first.catchError((_) {});
+      await second.catchError((_) {});
+      await cancelledFuture.catchError((_) {});
+      await visible.catchError((_) {});
+    });
+
+    cancellation.cancel();
+    await cancelledExpectation;
+    firstRelease.complete();
+    await visibleStarted.future.timeout(const Duration(milliseconds: 200));
+
+    secondRelease.complete();
+    visibleRelease.complete();
+    await Future.wait([first, second, visible]);
   });
 }
