@@ -1263,6 +1263,7 @@ class TuiGatewayClient
         HermesDesktopCompressionGateway,
         HermesDesktopApprovalResultGateway,
         HermesDesktopSubagentGateway,
+        HermesDesktopProcessStopGateway,
         HermesDesktopControlGateway,
         HermesDesktopSessionControlGateway,
         HermesExtensionManagementGateway,
@@ -5337,6 +5338,12 @@ class TuiGatewayClient
       'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
       'process_id': _validatedControlValue(processId, maxLength: 512),
     }, capability: DesktopGatewayCapability.agentCenter);
+  }
+
+  @override
+  Future<void> stopBackgroundProcesses() async {
+    _requireWritableControlConnection();
+    await _controlRequest('process.stop', const {});
   }
 
   @override

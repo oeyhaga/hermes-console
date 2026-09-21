@@ -2897,6 +2897,20 @@ const _stopSettlingPollInterval = Duration(milliseconds: 500);
 
 enum StopConfirmationState { idle, stopping, retrying, confirmed, failed }
 
+final class SessionStopResult {
+  const SessionStopResult({
+    required this.remainingSubagents,
+    required this.remainingProcesses,
+  });
+
+  final int remainingSubagents;
+  final int remainingProcesses;
+
+  int get remainingBackgroundTasks =>
+      remainingSubagents + remainingProcesses;
+  bool get allBackgroundWorkStopped => remainingBackgroundTasks == 0;
+}
+
 enum QueueLease { active, parked, resumeRequested }
 
 enum _StopTransitionState {
@@ -3784,11 +3798,19 @@ class ActiveChat {
   int _cancelledTombstoneRevision = 0;
   Future<void>? _cancelledTombstoneUpdateFlight;
   Future<void>? _durableCancelFlight;
+  Future<SessionStopResult>? _sessionStopFlight;
   StopConfirmationState _stopConfirmationState = StopConfirmationState.idle;
   bool _lastStopAffectedLiveTurn = true;
+  bool _backgroundStopVerificationInFlight = false;
+  int? _backgroundStopRemainingTasks;
   StopConfirmationState get stopConfirmationState => _stopConfirmationState;
+  bool get backgroundStopVerificationInFlight =>
+      _backgroundStopVerificationInFlight;
+  int? get backgroundStopRemainingTasks => _backgroundStopRemainingTasks;
   bool get stopConfirmationOnlyBackground =>
       _stopConfirmationState == StopConfirmationState.confirmed &&
+      !_backgroundStopVerificationInFlight &&
+      _backgroundStopRemainingTasks == 0 &&
       !_lastStopAffectedLiveTurn;
   final int Function() _monotonicMicros;
   int? _responseStartedAtMicros;
@@ -3811,6 +3833,7 @@ class ActiveChat {
   final HermesDesktopGateway? _desktopGateway;
   final DesktopCompressionFenceStore _compressionFenceStore;
   final int Function() _wallClockMs;
+  final List<Duration> _backgroundStopRecheckDelays;
   final Future<AttachmentUploadResult> Function(
     SavedConnection,
     AttachmentDraft,
@@ -3939,6 +3962,7 @@ class ActiveChat {
   int _backgroundProcessListRequestGeneration = 0;
   int _backgroundProcessMutationGeneration = 0;
   bool _backgroundProcessesStale = false;
+  bool _backgroundProcessLiveRosterConfirmed = false;
   DateTime? _backgroundProcessesObservedAt;
   Future<void>? _backgroundProcessRefreshFlight;
   bool _backgroundProcessRefreshRequested = false;
@@ -4971,36 +4995,128 @@ class ActiveChat {
     _requestPostControlRepair();
   }
 
-  Future<void> stopBackgroundProcessesAfterSessionStop(
-    Iterable<String> processIds, {
-    String? runtimeSessionId,
-  }) async {
-    final ids = processIds.map((id) => id.trim()).where((id) => id.isNotEmpty);
-    if (ids.isEmpty) return;
-    final runtimeId = runtimeSessionId ?? _desktopRuntimeSessionId;
-    if (runtimeId == null) {
-      throw const TuiGatewayRpcError(
-        'process.stop',
-        'No live runtime is available',
-        code: 4007,
-      );
-    }
+  Future<void> _bestEffortBackgroundStopRpc(
+    Future<void> Function() request,
+  ) async {
+    try {
+      await request().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
+  Set<String> _activeSubagentIdsForStop() => {
+    for (final activity
+        in _subagentActivities?.activities ?? const <SubagentActivity>[])
+      if (!activity.isTerminal &&
+          activity.subagentId?.trim().isNotEmpty == true)
+        activity.subagentId!.trim(),
+  };
+
+  Future<SessionStopResult> stopSessionWork() {
+    final existing = _sessionStopFlight;
+    if (existing != null) return existing;
+    late final Future<SessionStopResult> operation;
+    operation = _stopSessionWork().whenComplete(() {
+      if (identical(_sessionStopFlight, operation)) _sessionStopFlight = null;
+    });
+    _sessionStopFlight = operation;
+    return operation;
+  }
+
+  Future<SessionStopResult> _stopSessionWork() async {
+    final runtimeId = _desktopRuntimeSessionId;
     final gateway = _desktopGateway;
-    if (gateway is! HermesDesktopControlGateway) {
-      throw const TuiGatewayRpcError(
-        'process.stop',
-        'Background process controls are unavailable',
-        code: -32601,
-      );
+    final HermesDesktopSubagentGateway? subagentGateway =
+        gateway is HermesDesktopSubagentGateway
+        ? gateway as HermesDesktopSubagentGateway
+        : null;
+    final HermesDesktopProcessStopGateway? processStopGateway =
+        gateway is HermesDesktopProcessStopGateway
+        ? gateway as HermesDesktopProcessStopGateway
+        : null;
+    final HermesDesktopControlGateway? controlGateway =
+        gateway is HermesDesktopControlGateway
+        ? gateway as HermesDesktopControlGateway
+        : null;
+    final subagentIds = _activeSubagentIdsForStop();
+    final processIds = _backgroundProcesses
+        .map((process) => process.id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    final verifiesBackgroundWork =
+        runtimeId != null &&
+        gateway != null &&
+        (subagentIds.isNotEmpty || processIds.isNotEmpty);
+    var result = SessionStopResult(
+      remainingSubagents: subagentIds.length,
+      remainingProcesses: processIds.length,
+    );
+    if (verifiesBackgroundWork) {
+      _backgroundStopVerificationInFlight = true;
+      _backgroundStopRemainingTasks = null;
+      _emit(ActiveChatEvent.queueChanged);
     }
-    for (final processId in ids.toSet()) {
-      await (gateway as HermesDesktopControlGateway).killBackgroundProcess(
-        runtimeId,
-        processId,
-      );
+
+    try {
+      await cancel();
+      if (!verifiesBackgroundWork) {
+        return const SessionStopResult(
+          remainingSubagents: 0,
+          remainingProcesses: 0,
+        );
+      }
+
+      final requests = <Future<void>>[
+        if (subagentGateway != null)
+          for (final subagentId in subagentIds)
+            _bestEffortBackgroundStopRpc(
+              () => subagentGateway
+                  .interruptSubagent(runtimeId, subagentId)
+                  .then<void>((_) {}),
+            ),
+        if (processStopGateway != null)
+          _bestEffortBackgroundStopRpc(
+            processStopGateway.stopBackgroundProcesses,
+          ),
+      ];
+      await Future.wait(requests);
+
+      for (final delay in _backgroundStopRecheckDelays) {
+        if (delay > Duration.zero) await Future<void>.delayed(delay);
+        if (_disposed ||
+            !identical(gateway, _desktopGateway) ||
+            _desktopRuntimeSessionId != runtimeId) {
+          break;
+        }
+        await Future.wait<void>([
+          if (subagentGateway != null) refreshSubagents(),
+          if (controlGateway != null) refreshBackgroundProcesses(),
+        ]);
+        final subagentsCleared =
+            subagentIds.isEmpty ||
+            (subagentGateway != null &&
+                _subagentLiveRosterConfirmed &&
+                safeActiveSubagentCount == 0);
+        final processesCleared =
+            processIds.isEmpty ||
+            (controlGateway != null &&
+                _backgroundProcessLiveRosterConfirmed &&
+                _backgroundProcesses.isEmpty);
+        result = SessionStopResult(
+          remainingSubagents: subagentsCleared ? 0 : safeActiveSubagentCount,
+          remainingProcesses: processesCleared
+              ? 0
+              : _backgroundProcesses.length,
+        );
+        if (subagentsCleared && processesCleared) break;
+      }
+      return result;
+    } finally {
+      if (verifiesBackgroundWork) {
+        _backgroundStopVerificationInFlight = false;
+        _backgroundStopRemainingTasks = result.remainingBackgroundTasks;
+        if (!_disposed) _emit(ActiveChatEvent.queueChanged);
+      }
     }
-    await refreshBackgroundProcesses();
-    _requestPostControlRepair();
   }
 
   bool get canControlGoal =>
@@ -5358,6 +5474,7 @@ class ActiveChat {
     final staleChanged = _backgroundProcessesStale;
     _backgroundProcessesObservedAt = now;
     _backgroundProcessesStale = false;
+    _backgroundProcessLiveRosterConfirmed = true;
     if (!changed && !staleChanged) return;
     _backgroundProcesses = List.unmodifiable(next);
     _backgroundProcessMutationGeneration += 1;
@@ -6568,6 +6685,12 @@ class ActiveChat {
       minutes: 2,
     ),
     @visibleForTesting
+    List<Duration> backgroundStopRecheckDelays = const [
+      Duration.zero,
+      Duration(milliseconds: 1500),
+      Duration(milliseconds: 2500),
+    ],
+    @visibleForTesting
     int transcriptPageSizeForTesting = _authoritativeTranscriptPageSize,
     @visibleForTesting double Function()? desktopRecoveryRandom,
     List<Duration> desktopRecoveryBackoff = const [
@@ -6637,6 +6760,9 @@ class ActiveChat {
            compressionFenceStore ?? DesktopCompressionFenceStore(),
        _wallClockMs =
            wallClockMs ?? (() => DateTime.now().millisecondsSinceEpoch),
+       _backgroundStopRecheckDelays = List<Duration>.unmodifiable(
+         backgroundStopRecheckDelays,
+       ),
        _desktopGateway =
            desktopGateway ??
            (api == null &&
@@ -7329,6 +7455,7 @@ class ActiveChat {
     _backgroundProcesses = const [];
     _backgroundProcessAbsenceStreaks.clear();
     _backgroundProcessesStale = false;
+    _backgroundProcessLiveRosterConfirmed = false;
     _backgroundProcessesObservedAt = null;
     if (_subagentForegroundPresentationLeased) {
       _subagentForegroundPresentationGeneration += 1;
@@ -11591,6 +11718,8 @@ class ActiveChat {
     _runTerminal = false;
     _stopConfirmationState = StopConfirmationState.idle;
     _lastStopAffectedLiveTurn = true;
+    _backgroundStopVerificationInFlight = false;
+    _backgroundStopRemainingTasks = null;
     _desktopTurnStartedAt = null;
     final hasLiveSubagent =
         _subagentActivities?.activities.any(
@@ -24106,7 +24235,7 @@ class ActiveChatService {
   ActiveChat? of(String connectionId, String sessionId, {String? profile}) =>
       _entryFor(connectionId, sessionId, profile: profile)?.value;
 
-  Future<void> stopSessionWork({
+  Future<SessionStopResult> stopSessionWork({
     required SavedConnection connection,
     required Session session,
     @visibleForTesting HermesDesktopGateway? desktopGateway,
@@ -24146,18 +24275,18 @@ class ActiveChatService {
           code: 4007,
         );
       }
-      final runtimeSessionId = chat.desktopRuntimeSessionId;
-      final processIds = chat.backgroundProcesses
-          .map((process) => process.id)
-          .toList(growable: false);
-      await chat.cancel();
-      await chat.stopBackgroundProcessesAfterSessionStop(
-        processIds,
-        runtimeSessionId: runtimeSessionId,
-      );
+      await Future.wait([
+        chat.refreshSubagents(),
+        chat.refreshBackgroundProcesses(),
+      ]);
+      return await chat.stopSessionWork();
     } finally {
       if (attachedForStop) {
         release(connection.id, session.id, profile: owner);
+        final retained = _entryFor(connection.id, session.id, profile: owner);
+        if (retained != null && identical(retained.value, chat)) {
+          _dispose(retained.key);
+        }
       }
     }
   }

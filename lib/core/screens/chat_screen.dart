@@ -5289,17 +5289,21 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _cancelInteractivePrompt() async {
     if (_resolvingInteractivePrompt) return;
     _recentInterrupt.markInterrupted();
-    final runtimeSessionId = _chat.desktopRuntimeSessionId;
-    final processIds = _chat.backgroundProcesses
-        .map((process) => process.id)
-        .toList(growable: false);
     try {
-      await _chat.cancel();
-      await _chat.stopBackgroundProcessesAfterSessionStop(
-        processIds,
-        runtimeSessionId: runtimeSessionId,
-      );
+      final result = await _chat.stopSessionWork();
       _chat.clearStaleResumedSessionStopOffer();
+      if (!result.allBackgroundWorkStopped && mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              Strings.of(
+                context,
+              ).chaBackgroundWorkRemaining(result.remainingBackgroundTasks),
+            ),
+          ),
+          kind: HermesNoticeKind.warning,
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       HermesNotice.of(context).showSnackBar(
@@ -6832,23 +6836,28 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _cancelStream() async {
     if (!_chat.gatewayConnected) return;
     _recentInterrupt.markInterrupted();
-    final runtimeSessionId = _chat.desktopRuntimeSessionId;
-    final processIds = _chat.backgroundProcesses
-        .map((process) => process.id)
-        .toList(growable: false);
     var cancelled = false;
     try {
       final override = widget.cancelStreamOverride;
+      SessionStopResult? result;
       if (override != null) {
         await override();
       } else {
-        await _chat.cancel();
-        await _chat.stopBackgroundProcessesAfterSessionStop(
-          processIds,
-          runtimeSessionId: runtimeSessionId,
-        );
+        result = await _chat.stopSessionWork();
       }
       _chat.clearStaleResumedSessionStopOffer();
+      if (result != null && !result.allBackgroundWorkStopped && mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              Strings.of(
+                context,
+              ).chaBackgroundWorkRemaining(result.remainingBackgroundTasks),
+            ),
+          ),
+          kind: HermesNoticeKind.warning,
+        );
+      }
       cancelled = true;
     } catch (_) {
       if (mounted) {
@@ -11593,15 +11602,23 @@ class _ChatScreenState extends State<ChatScreen>
     final stop = _chat.stopConfirmationState;
     if (stop == StopConfirmationState.idle) return const SizedBox.shrink();
     final strings = Strings.of(context);
-    final label = switch (stop) {
-      StopConfirmationState.stopping => strings.chaStopStopping,
-      StopConfirmationState.retrying => strings.chaStopRetrying,
-      StopConfirmationState.confirmed => _chat.stopConfirmationOnlyBackground
-          ? strings.chaBackgroundWorkStopped
-          : strings.chaStopConfirmed,
-      StopConfirmationState.failed => strings.chaStopFailed,
-      StopConfirmationState.idle => '',
-    };
+    final remainingBackgroundTasks = _chat.backgroundStopRemainingTasks;
+    final backgroundStopWarning =
+        remainingBackgroundTasks != null && remainingBackgroundTasks > 0;
+    final label = _chat.backgroundStopVerificationInFlight
+        ? strings.chaStopStopping
+        : backgroundStopWarning
+        ? strings.chaBackgroundWorkRemaining(remainingBackgroundTasks)
+        : switch (stop) {
+            StopConfirmationState.stopping => strings.chaStopStopping,
+            StopConfirmationState.retrying => strings.chaStopRetrying,
+            StopConfirmationState.confirmed =>
+              _chat.stopConfirmationOnlyBackground
+                  ? strings.chaBackgroundWorkStopped
+                  : strings.chaStopConfirmed,
+            StopConfirmationState.failed => strings.chaStopFailed,
+            StopConfirmationState.idle => '',
+          };
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
       child: Semantics(
@@ -11611,7 +11628,8 @@ class _ChatScreenState extends State<ChatScreen>
           constraints: const BoxConstraints(minHeight: 48),
           child: Row(
             children: [
-              if (stop == StopConfirmationState.stopping ||
+              if (_chat.backgroundStopVerificationInFlight ||
+                  stop == StopConfirmationState.stopping ||
                   stop == StopConfirmationState.retrying)
                 const SizedBox.square(
                   dimension: 18,
@@ -11619,17 +11637,22 @@ class _ChatScreenState extends State<ChatScreen>
                 )
               else
                 Icon(
-                  stop == StopConfirmationState.failed
+                  backgroundStopWarning
+                      ? Icons.warning_amber_rounded
+                      : stop == StopConfirmationState.failed
                       ? Icons.error_outline_rounded
                       : Icons.stop_circle_outlined,
                   size: 20,
-                  color: stop == StopConfirmationState.failed
+                  color: backgroundStopWarning
+                      ? colors.warning
+                      : stop == StopConfirmationState.failed
                       ? colors.error
                       : colors.textSecondary,
                 ),
               const SizedBox(width: 10),
               Expanded(child: Text(label)),
-              if (stop == StopConfirmationState.failed)
+              if (stop == StopConfirmationState.failed &&
+                  !backgroundStopWarning)
                 TextButton(
                   key: const ValueKey('chat-stop-retry'),
                   onPressed: _cancelStream,
