@@ -234,7 +234,7 @@ void main() {
     mockChannel('dexterous.com/flutter/local_notifications');
   });
 
-  test('editar sin row_id durable reenvía plano', () async {
+  test('editar sin dirección durable falla cerrado sin duplicar', () async {
     final gateway = _RewriteGateway();
     final attached = _attach(gateway);
     addTearDown(attached.service.dispose);
@@ -249,22 +249,23 @@ void main() {
       isTrue,
     );
 
-    await chat.rewrite(
-      userOrdinal: 0,
-      text: 'pregunta corregida',
-      model: 'hermes-agent',
+    await expectLater(
+      chat.rewrite(
+        userOrdinal: 0,
+        text: 'pregunta corregida',
+        model: 'hermes-agent',
+      ),
+      throwsA(isA<StateError>()),
     );
 
-    // Sin dirección durable exacta: append ordinario, nunca un corte adivinado.
     expect(gateway.resolverCalls, 1);
     expect(gateway.durableRewinds, isEmpty);
     expect(gateway.legacyRewinds, isEmpty);
-    expect(gateway.plainPrompts, ['pregunta corregida']);
-    // Y el texto editado aterriza sin perder el historial anterior.
+    expect(gateway.plainPrompts, isEmpty);
     final contents = chat.internalMessagesForTesting
         .map((message) => (message['content'] ?? '').toString())
         .toList(growable: false);
-    expect(contents, contains('pregunta corregida'));
+    expect(contents, isNot(contains('pregunta corregida')));
     expect(contents, contains('pregunta original'));
   });
 

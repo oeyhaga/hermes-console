@@ -17,10 +17,15 @@ class _StopGateway
     implements
         HermesDesktopGateway,
         HermesDesktopSessionLifecycleGateway,
-        HermesDesktopRedirectGateway {
+        HermesDesktopRedirectGateway,
+        HermesDesktopRewindResolverGateway,
+        HermesDesktopDurableRewindGateway {
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> submittedTexts = [];
+  final List<({String text, int ordinal, int rowId})> durableRewinds = [];
   int interruptCalls = 0;
+  int busyRewindResponses = 0;
+  bool emitInterruptTerminal = false;
   Object? interruptError;
   Completer<void>? interruptGate;
 
@@ -91,6 +96,9 @@ class _StopGateway
     interruptCalls++;
     await interruptGate?.future;
     if (interruptError case final error?) throw error;
+    if (emitInterruptTerminal) {
+      emit('message.complete', const {'text': 'Operation interrupted.'});
+    }
   }
 
   @override
@@ -109,6 +117,37 @@ class _StopGateway
     String runtimeSessionId,
     String text,
   ) async => DesktopRedirectDisposition.redirected;
+
+  @override
+  Future<int?> resolveDurableUserRowId(
+    String runtimeSessionId, {
+    required String sourceText,
+    required int expectedOrdinal,
+  }) async => 3;
+
+  @override
+  Future<DesktopRewindAck> submitDurableRewindPrompt(
+    String runtimeSessionId,
+    String text,
+    int truncateBeforeUserOrdinal, {
+    required int truncateBeforeRowId,
+    List<int> rebindSurvivorRowIds = const [],
+  }) async {
+    durableRewinds.add((
+      text: text,
+      ordinal: truncateBeforeUserOrdinal,
+      rowId: truncateBeforeRowId,
+    ));
+    if (busyRewindResponses > 0) {
+      busyRewindResponses--;
+      throw const TuiGatewayRpcError(
+        'prompt.submit',
+        'session busy',
+        code: 4009,
+      );
+    }
+    return const DesktopRewindAck();
+  }
 }
 
 ActiveChat _chat(
@@ -356,8 +395,10 @@ void main() {
       expect(chat.queuedMessages, isEmpty);
     });
 
-    test('editar un mensaje con el turno vivo envía el texto nuevo', () async {
-      final gateway = _StopGateway();
+    test('editar un mensaje vivo reintenta 4009 con el recorte intacto', () async {
+      final gateway = _StopGateway()
+        ..emitInterruptTerminal = true
+        ..busyRewindResponses = 1;
       final harness = _durableChat(gateway, id: 'conn-edit-while-streaming');
       final chat = harness.chat;
       addTearDown(chat.dispose);
@@ -382,8 +423,12 @@ void main() {
           )
           .timeout(const Duration(seconds: 6));
 
-      expect(gateway.interruptCalls, 1);
-      expect(gateway.submittedTexts, ['segundo', 'segundo editado']);
+      expect(gateway.interruptCalls, 2);
+      expect(gateway.submittedTexts, ['segundo']);
+      expect(gateway.durableRewinds, [
+        (text: 'segundo editado', ordinal: 1, rowId: 3),
+        (text: 'segundo editado', ordinal: 1, rowId: 3),
+      ]);
       expect(chat.takeRewindRestoredOnError(), isFalse);
       expect(chat.isStreaming, isTrue);
 
@@ -415,7 +460,7 @@ void main() {
       chat.dispose();
 
       await chat
-          .rewrite(userOrdinal: 1, text: 'no llega', model: 'hermes-agent')
+          .rewrite(userOrdinal: 0, text: 'no llega', model: 'hermes-agent')
           .timeout(const Duration(seconds: 6));
 
       // Sin esta marca la pantalla no mostraba nada: el turno vivo quedaba
