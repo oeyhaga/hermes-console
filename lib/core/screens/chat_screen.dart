@@ -6268,14 +6268,20 @@ class _ChatScreenState extends State<ChatScreen>
         _compressingSession) {
       return false;
     }
+    // Claim the in-flight slot BEFORE any await: two same-tick sends (double
+    // tap) must never both pass the guard above and submit twice.
+    _composerSubmissionInFlight = true;
     try {
       await _recentInterrupt.interruptBeforeSend(_chat.cancel);
     } catch (_) {
       if (mounted) {
+        setState(() => _composerSubmissionInFlight = false);
         HermesNotice.of(context).showSnackBar(
           SnackBar(content: Text(Strings.of(context).chaStopFailed)),
           kind: HermesNoticeKind.error,
         );
+      } else {
+        _composerSubmissionInFlight = false;
       }
       return false;
     }
