@@ -323,6 +323,27 @@ void main() {
     expect((await store.load('conn-a', 'session-a')).text, isEmpty);
   });
 
+  test(
+    'cold restart restores text from secure storage with fresh prefs',
+    () async {
+      final firstPrefs = await SharedPreferences.getInstance();
+      await ChatDraftStore(firstPrefs).save(
+        'cold-connection',
+        'cold-session',
+        'Draft after process death',
+        const [],
+      );
+
+      SharedPreferences.setMockInitialValues({});
+      final reopened = ChatDraftStore(await SharedPreferences.getInstance());
+
+      expect(
+        (await reopened.load('cold-connection', 'cold-session')).text,
+        'Draft after process death',
+      );
+    },
+  );
+
   test('android-share provisional draft round-trips text and attachments and '
       'survives promotion to the canonical id', () async {
     final store = ChatDraftStore(await SharedPreferences.getInstance());

@@ -1881,7 +1881,9 @@ class _ChatScreenState extends State<ChatScreen>
     // El borrador pinta primero: la reconciliación adicional de outbox no debe
     // retrasar el composer ni introducir una carrera visible al navegar rápido.
     _draftStore = store;
-    var draft = await _loadDraftWithRecoveryMigration(store);
+    var draft = widget.connection.readOnly
+        ? const ChatDraft(text: '', attachments: [])
+        : await _loadDraftWithRecoveryMigration(store);
     if (!mounted) return;
     _turnOutbox = outbox;
     final linkedDiscard = draft.preparedTurnClientTurnId;
@@ -2272,6 +2274,7 @@ class _ChatScreenState extends State<ChatScreen>
     bool preparedTurnAuthorityCaptured = false,
     bool finalDisposeSnapshot = false,
   }) async {
+    if (widget.connection.readOnly) return false;
     if (_disposed && !finalDisposeSnapshot) return false;
     // Leaving during secure restore must not replace unread content with empty UI.
     if (!_draftLoaded &&
@@ -2339,6 +2342,7 @@ class _ChatScreenState extends State<ChatScreen>
 
   Future<bool> _clearDraft() async {
     _draftTimer?.cancel();
+    if (widget.connection.readOnly) return true;
     if (!_isBotChatSurface) {
       return _saveDraftSnapshot('', const []);
     }
