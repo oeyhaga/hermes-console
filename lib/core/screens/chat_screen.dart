@@ -1337,8 +1337,12 @@ class _ChatScreenState extends State<ChatScreen>
   // reconstruye la pantalla (crítico cuando se pausa el seguimiento con el
   // dedo durante el streaming).
   final ValueNotifier<bool> _scrollToBottomVisibility = ValueNotifier(false);
-  set _showScrollToBottom(bool value) =>
-      _scrollToBottomVisibility.value = value;
+  set _showScrollToBottom(bool value) {
+    if (_scrollToBottomVisibility.value == value) return;
+    _recordTranscriptOverlayExtentChange(value ? 48 : -48);
+    _scrollToBottomVisibility.value = value;
+  }
+
   // Alturas medidas de la zona inferior para que los SnackBars floten POR
   // ENCIMA del composer y de la pila de estado (ver `_ChatSnackBarClearance`).
   // Son notifiers aparte por la misma razón que la flecha: cambiar no
@@ -1350,7 +1354,18 @@ class _ChatScreenState extends State<ChatScreen>
   }
 
   void _setActivityPillExtent(double value) {
-    if (!_disposed) _activityPillExtent.value = value;
+    if (_disposed || _activityPillExtent.value == value) return;
+    _recordTranscriptOverlayExtentChange(
+      value - _activityPillExtent.value,
+    );
+    _activityPillExtent.value = value;
+  }
+
+  void _recordTranscriptOverlayExtentChange(double delta) {
+    if (!_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    if (position.pixels <= position.minScrollExtent + 0.5) return;
+    _streamingViewportLock.recordOverlayExtentChange(delta);
   }
 
   bool _autoFollowStreaming = true;
@@ -9096,9 +9111,9 @@ class _ChatScreenState extends State<ChatScreen>
                                 // The pills stay glued near the composer like
                                 // the design mockup, but always INSIDE this
                                 // transcript Stack, never over the input.
-                                // Reply text keeps its clearance because
-                                // `_subagentActivityPillReservedSpace` pads the
-                                // transcript's bottom by the same amount.
+                                // Reply text keeps its clearance because the
+                                // measured stack extent pads the transcript by
+                                // the same amount.
                                 Positioned(
                                   left: 0,
                                   right: 0,
@@ -12237,35 +12252,6 @@ class _ChatScreenState extends State<ChatScreen>
     child: _buildBodyContent(),
   );
 
-  /// Vertical space reserved at the BOTTOM of the transcript (just above
-  /// the composer) so the floating subagent-activity pill
-  /// (`chat-session-activity`, pinned via `Positioned(bottom: 64, ...)` in
-  /// the same Stack) never paints over the last real message. Zero when
-  /// there's nothing to show. Scales a little with the text-scale factor
-  /// since the pill's own content grows with it too — this is a fixed
-  /// estimate, not a measured value, so at very large accessibility scales
-  /// the reservation may run slightly short.
-  double get _subagentActivityPillReservedSpace {
-    // Must match the pill's own visibility, not just the live flags: once
-    // work retires, `_chat`'s live counts drop to zero but the pill itself
-    // keeps showing (see `_displaySubagentActivities`) until dismissed, so
-    // the reservation has to stay too or the persisted pill overlaps the
-    // reply text right under it.
-    final hasActivity =
-        _displaySubagentActivities.isNotEmpty ||
-        _chat.hasRecentPassiveRemoteActivity ||
-        _chat.safeActiveSubagentCount > 0 ||
-        // La pastilla del turno ocupa el mismo hueco y es excluyente con la de
-        // subagentes, así que necesita la misma reserva o taparía la respuesta.
-        // Se reserva desde que el turno empieza, sin esperar su `revealAfter`:
-        // el hueco llega antes que la pastilla y así aparecer no da un salto de
-        // layout (el propio widget se autorrevela con su ticker interno).
-        _showTurnActivityPill;
-    if (!hasActivity) return 0;
-    final textScale = MediaQuery.textScalerOf(context).scale(1);
-    return 56 * textScale.clamp(1.0, 2.0);
-  }
-
   Widget _buildBodyContent() {
     final colors = Theme.of(context).hermes;
     if (_messages.isEmpty &&
@@ -12391,12 +12377,21 @@ class _ChatScreenState extends State<ChatScreen>
     final entries = _currentListEntries;
     pruneMessageAnchorCache(_messageAnchors, _messages);
 
-    final transcript = ChatScrollInteractionGuard(
-      onPointerDown: _pauseStreamingFollow,
-      onPointerMove: _trackStreamingScrollInteraction,
-      onPointerUp: _finishStreamingScrollInteraction,
-      onPointerCancel: _cancelStreamingScrollInteraction,
-      child: ListView.builder(
+    final transcript = ListenableBuilder(
+      listenable: Listenable.merge([
+        _activityPillExtent,
+        _scrollToBottomVisibility,
+      ]),
+      builder: (context, _) {
+        final overlayExtent =
+            _activityPillExtent.value +
+            (_scrollToBottomVisibility.value ? 48 : 0);
+        return ChatScrollInteractionGuard(
+          onPointerDown: _pauseStreamingFollow,
+          onPointerMove: _trackStreamingScrollInteraction,
+          onPointerUp: _finishStreamingScrollInteraction,
+          onPointerCancel: _cancelStreamingScrollInteraction,
+          child: ListView.builder(
         controller: _scrollController,
         // En `reverse:true` el asistente vivo crece por debajo del contenido
         // que el lector está mirando. Conservar el mismo offset numérico hace
@@ -12407,17 +12402,10 @@ class _ChatScreenState extends State<ChatScreen>
         physics: _ChatStreamingViewportPhysics(lock: _streamingViewportLock),
         // Deja aire real bajo la última respuesta. Con solo 4 dp el cierre del
         // texto quedaba pegado al compositor y parecía visualmente recortado.
-        // `bottom` también reserva sitio para el pill flotante de actividad de
-        // subagentes (anclado justo encima del composer, ver
-        // Positioned('chat-session-activity') más abajo): así el pill nunca
-        // tapa el último mensaje real, sin necesidad de redimensionar el
-        // Stack — solo empuja el contenido scrolleable, que sigue ocupando
-        // la misma caja. `EdgeInsets.bottom` es el borde físico inferior de
-        // la pantalla incluso con `reverse: true` (reverse solo cambia el
-        // orden de los hijos, no qué lado físico representa cada inset).
-        padding: EdgeInsets.only(
-          bottom: 12 + _subagentActivityPillReservedSpace,
-        ),
+        // `bottom` reserva la altura medida de toda la pila flotante y de la
+        // flecha cuando está visible. Así ninguna fila tapa el último mensaje,
+        // aunque cambie de alto o convivan varias actividades.
+        padding: EdgeInsets.only(bottom: 12 + overlayExtent),
         reverse: true,
         // Precarga ~1 pantalla extra fuera del viewport: al seguir el stream no
         // se materializan entradas frías en medio de un frame de scroll.
@@ -12536,6 +12524,8 @@ class _ChatScreenState extends State<ChatScreen>
           return result;
         },
       ),
+    );
+      },
     );
     return ChatRefreshStatusOverlay(
       loading: _interactiveMessageRefreshPending,
@@ -17967,10 +17957,14 @@ class _ChatStreamingViewportPhysics extends ScrollPhysics {
       isScrolling: isScrolling,
       velocity: velocity,
     );
+    final overlayDelta = lock.takeOverlayExtentChange();
     if (!lock.enabled) {
       lock.clear();
-      return inherited;
+      return (inherited + overlayDelta)
+          .clamp(newPosition.minScrollExtent, newPosition.maxScrollExtent)
+          .toDouble();
     }
+    lock.record(overlayDelta);
     final anchorCorrection = lock.consumeAnchorVisualCorrection();
     if (anchorCorrection != null) {
       lock.clear();
@@ -18016,6 +18010,7 @@ class _ChatStreamingViewportPhysics extends ScrollPhysics {
 
 class _ChatStreamingViewportLock {
   double _pendingExtentDelta = 0;
+  double _pendingOverlayExtentDelta = 0;
   bool _structuralChangePending = false;
   bool _reportedStructuralChangePending = false;
   double? _anchorVisualOffset;
@@ -18028,6 +18023,7 @@ class _ChatStreamingViewportLock {
     enabled = false;
     _structuralChangePending = false;
     _reportedStructuralChangePending = false;
+    _pendingOverlayExtentDelta = 0;
     _clearAnchorVisualChange();
     clear();
   }
@@ -18158,6 +18154,18 @@ class _ChatStreamingViewportLock {
     if (delta.isFinite) {
       _pendingExtentDelta += delta;
     }
+  }
+
+  void recordOverlayExtentChange(double delta) {
+    if (delta.isFinite) {
+      _pendingOverlayExtentDelta += delta;
+    }
+  }
+
+  double takeOverlayExtentChange() {
+    final delta = _pendingOverlayExtentDelta;
+    _pendingOverlayExtentDelta = 0;
+    return delta;
   }
 
   double take() {
