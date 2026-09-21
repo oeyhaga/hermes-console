@@ -97,6 +97,7 @@ import '../services/tui_gateway_client.dart'
     show DesktopRedirectDisposition, TuiGatewayClient, TuiGatewayRpcError;
 import '../widgets/chat_connection_recovery_row.dart';
 import '../widgets/hermes_notice.dart';
+import '../widgets/inline_message_editor.dart';
 import '../widgets/stale_running_session_banner.dart';
 import 'foreground_conversation_reader.dart';
 import '../services/voice/conversation/native_voice.dart';
@@ -1094,14 +1095,18 @@ class _ChatScreenState extends State<ChatScreen>
   late final LocalConversationLifecycle _localConversationLifecycle;
 
   bool _editingUserMessage = false;
+  Map<String, dynamic>? _editingUserMessageTarget;
+  double? _editingUserMessageWidth;
+  String? _editingUserMessageText;
+  int? _editingUserMessageOrdinal;
   String? _editingQueuedEntryId;
   bool _editingRewriteSubmitted = false;
   List<Map<String, dynamic>>? _editingMessagesSnapshot;
   ChatPipelineState? _editingPipelineSnapshot;
 
   /// Congela la proyección visual mientras el editor está abierto. El agente
-  /// puede avanzar en segundo plano, pero su respuesta no aparece detrás del
-  /// diálogo: Cancelar revela el progreso real y Guardar rebobina el turno.
+  /// puede avanzar en segundo plano, pero su respuesta no aparece mientras se
+  /// edita: Cancelar revela el progreso real y Guardar rebobina el turno.
   List<Map<String, dynamic>> get _messages =>
       _editingMessagesSnapshot ?? _chat.messages;
   bool get _editingTranscriptChanged {
@@ -1116,6 +1121,17 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
     return false;
+  }
+
+  void _clearUserMessageEditingState() {
+    _editingUserMessage = false;
+    _editingUserMessageTarget = null;
+    _editingUserMessageWidth = null;
+    _editingUserMessageText = null;
+    _editingUserMessageOrdinal = null;
+    _editingRewriteSubmitted = false;
+    _editingMessagesSnapshot = null;
+    _editingPipelineSnapshot = null;
   }
 
   ChatPipelineState get _pipelineState =>
@@ -4671,10 +4687,7 @@ class _ChatScreenState extends State<ChatScreen>
             event == ActiveChatEvent.error ||
             event == ActiveChatEvent.cancelled ||
             event == ActiveChatEvent.messagesHydrated)) {
-      _editingUserMessage = false;
-      _editingRewriteSubmitted = false;
-      _editingMessagesSnapshot = null;
-      _editingPipelineSnapshot = null;
+      _clearUserMessageEditingState();
     }
     final delivery = _attachmentDelivery;
     if (delivery != null) _preparedTurn = delivery.current;
@@ -6985,7 +6998,7 @@ class _ChatScreenState extends State<ChatScreen>
     return indexes.isNotEmpty && identical(_messages[indexes.first], target);
   }
 
-  Future<void> _editUserMessage(Map<String, dynamic> message) async {
+  void _editUserMessage(Map<String, dynamic> message, double bubbleWidth) {
     final ordinal = _userOrdinalFor(message);
     if (ordinal == null) return;
     final rawContent = (message['content'] ?? '').toString();
@@ -6994,50 +7007,47 @@ class _ChatScreenState extends State<ChatScreen>
         !_attachmentsCanBeReused(parsed.attachments)) {
       return;
     }
+    Map<String, dynamic>? target;
+    final snapshot = _chat.messages.map((entry) {
+      final copy = Map<String, dynamic>.from(entry);
+      if (identical(entry, message)) target = copy;
+      return copy;
+    }).toList();
+    if (target == null) return;
     setState(() {
       _editingUserMessage = true;
+      _editingUserMessageTarget = target;
+      _editingUserMessageWidth = bubbleWidth;
+      _editingUserMessageText = parsed.text.trim();
+      _editingUserMessageOrdinal = ordinal;
       _editingRewriteSubmitted = false;
-      _editingMessagesSnapshot = _chat.messages
-          .map((entry) => Map<String, dynamic>.from(entry))
-          .toList();
+      _editingMessagesSnapshot = snapshot;
       _editingPipelineSnapshot = _chat.state;
     });
-    final edited = await showHermesFloatingSurface<String>(
-      context: context,
-      surfaceKey: const ValueKey('chat-edit-message-dialog'),
-      maxWidth: 560,
-      maxHeightFactor: 1,
-      builder: (dialogContext) =>
-          _EditUserMessageSheet(initialText: parsed.text.trim()),
-    );
-    if (!mounted) {
-      _editingUserMessage = false;
-      _editingRewriteSubmitted = false;
-      _editingMessagesSnapshot = null;
-      _editingPipelineSnapshot = null;
-      return;
-    }
-    if (edited == null || edited.isEmpty || edited == parsed.text.trim()) {
-      setState(() {
-        _editingUserMessage = false;
-        _editingRewriteSubmitted = false;
-        _editingMessagesSnapshot = null;
-        _editingPipelineSnapshot = null;
-      });
-      return;
-    }
+  }
+
+  void _cancelUserMessageEdit() {
+    if (_editingRewriteSubmitted) return;
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(_clearUserMessageEditingState);
+  }
+
+  Future<void> _saveUserMessageEdit(String edited) async {
+    final message = _editingUserMessageTarget;
+    if (message == null || _editingRewriteSubmitted) return;
+    final ordinal = _editingUserMessageOrdinal;
+    if (ordinal == null) return;
+    final rawContent = (message['content'] ?? '').toString();
+    final parsed = _parseUserContent(rawContent);
+    if (edited.isEmpty || edited == parsed.text.trim()) return;
+    setState(() => _editingRewriteSubmitted = true);
 
     final nativeAttachments = parsed.attachments.isEmpty
         ? const <AttachmentDraft>[]
         : await _resolveAttachmentsForEdit(parsed.attachments);
     if (!mounted) return;
     if (nativeAttachments == null) {
-      setState(() {
-        _editingUserMessage = false;
-        _editingRewriteSubmitted = false;
-        _editingMessagesSnapshot = null;
-        _editingPipelineSnapshot = null;
-      });
+      setState(_clearUserMessageEditingState);
       HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).chaEditFailed)),
         kind: HermesNoticeKind.error,
@@ -7097,10 +7107,7 @@ class _ChatScreenState extends State<ChatScreen>
     if (!mounted) return;
     setState(() {
       if (failed || _editingMessagesSnapshot == null) {
-        _editingUserMessage = false;
-        _editingRewriteSubmitted = false;
-        _editingMessagesSnapshot = null;
-        _editingPipelineSnapshot = null;
+        _clearUserMessageEditingState();
       }
     });
     if (failed) {
@@ -7125,7 +7132,7 @@ class _ChatScreenState extends State<ChatScreen>
       surfaceKey: ValueKey('chat-queue-edit-dialog-${entry.id}'),
       maxWidth: 560,
       maxHeightFactor: 1,
-      builder: (_) => _EditUserMessageSheet(initialText: entry.text),
+      builder: (_) => _EditQueuedEntrySheet(initialText: entry.text),
     );
     if (!mounted) return;
     var saved = true;
@@ -9777,7 +9784,11 @@ class _ChatScreenState extends State<ChatScreen>
                                     colors,
                                     ownsCurrentChat: voiceSessionActive,
                                   ),
-                                if (!showVoiceSurface) _buildInputBar(),
+                                if (!showVoiceSurface)
+                                  Opacity(
+                                    opacity: _editingUserMessage ? 0.62 : 1,
+                                    child: _buildInputBar(),
+                                  ),
                               ],
                             ),
                           ),
@@ -13058,8 +13069,15 @@ class _ChatScreenState extends State<ChatScreen>
             content == rawContent &&
                 unit.supplements.isEmpty &&
                 _canEditUserMessage(unit.primary)
-            ? () => _editUserMessage(unit.primary)
+            ? (bubbleWidth) =>
+                  _editUserMessage(unit.primary, bubbleWidth)
             : null,
+        editing: identical(unit.primary, _editingUserMessageTarget),
+        editingText: _editingUserMessageText,
+        editingWidth: _editingUserMessageWidth,
+        editSaving: _editingRewriteSubmitted,
+        onCancelEdit: _cancelUserMessageEdit,
+        onSaveEdit: (text) => unawaited(_saveUserMessageEdit(text)),
       );
     }
 
@@ -13292,8 +13310,14 @@ class _ChatScreenState extends State<ChatScreen>
       terminalProjection: terminalProjection,
       technicalDetails: operationalProjection.technicalDetails,
       onEdit: role == 'user' && _canEditUserMessage(msg)
-          ? () => _editUserMessage(msg)
+          ? (bubbleWidth) => _editUserMessage(msg, bubbleWidth)
           : null,
+      editing: role == 'user' && identical(msg, _editingUserMessageTarget),
+      editingText: _editingUserMessageText,
+      editingWidth: _editingUserMessageWidth,
+      editSaving: _editingRewriteSubmitted,
+      onCancelEdit: _cancelUserMessageEdit,
+      onSaveEdit: (text) => unawaited(_saveUserMessageEdit(text)),
       onRegenerate: role == 'assistant' && _isLatestAssistant(msg)
           ? _regenerateLastResponse
           : null,
@@ -13695,16 +13719,16 @@ class _LocalTranscriptTruncationNotice extends StatelessWidget {
   }
 }
 
-class _EditUserMessageSheet extends StatefulWidget {
+class _EditQueuedEntrySheet extends StatefulWidget {
   final String initialText;
 
-  const _EditUserMessageSheet({required this.initialText});
+  const _EditQueuedEntrySheet({required this.initialText});
 
   @override
-  State<_EditUserMessageSheet> createState() => _EditUserMessageSheetState();
+  State<_EditQueuedEntrySheet> createState() => _EditQueuedEntrySheetState();
 }
 
-class _EditUserMessageSheetState extends State<_EditUserMessageSheet> {
+class _EditQueuedEntrySheetState extends State<_EditQueuedEntrySheet> {
   late final TextEditingController _controller;
 
   @override
@@ -13756,7 +13780,7 @@ class _EditUserMessageSheetState extends State<_EditUserMessageSheet> {
                 const SizedBox(width: 4),
                 Expanded(
                   child: Text(
-                    strings.chaEditTitle,
+                    strings.chaQueueEdit,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: colors.textPrimary,
                       fontWeight: FontWeight.w700,
@@ -13775,7 +13799,7 @@ class _EditUserMessageSheetState extends State<_EditUserMessageSheet> {
                 ),
               ),
               child: TextField(
-                key: const ValueKey('edit-message-composer'),
+                key: const ValueKey('queued-message-editor-field'),
                 controller: _controller,
                 autofocus: true,
                 minLines: 2,
@@ -13790,15 +13814,6 @@ class _EditUserMessageSheetState extends State<_EditUserMessageSheet> {
                     vertical: 15,
                   ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              strings.chaEditRewindWarning,
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.4,
-                color: colors.textSecondary,
               ),
             ),
             const SizedBox(height: 74),
@@ -14974,7 +14989,13 @@ class _MessageBubble extends StatelessWidget {
   final _AssistantRenderSlice? assistantSlice;
   final _AssistantTerminalProjection? terminalProjection;
   final List<String> technicalDetails;
-  final VoidCallback? onEdit;
+  final ValueChanged<double>? onEdit;
+  final bool editing;
+  final String? editingText;
+  final double? editingWidth;
+  final bool editSaving;
+  final VoidCallback? onCancelEdit;
+  final ValueChanged<String>? onSaveEdit;
   final VoidCallback? onRegenerate;
   final AssistantSuggestionCallback? onSuggestionSelected;
   final bool compact;
@@ -15000,6 +15021,12 @@ class _MessageBubble extends StatelessWidget {
     this.terminalProjection,
     this.technicalDetails = const [],
     this.onEdit,
+    this.editing = false,
+    this.editingText,
+    this.editingWidth,
+    this.editSaving = false,
+    this.onCancelEdit,
+    this.onSaveEdit,
     this.onRegenerate,
     this.onSuggestionSelected,
     this.compact = false,
@@ -15014,6 +15041,12 @@ class _MessageBubble extends StatelessWidget {
             verbose: verbose,
             metadata: metadata,
             onEdit: onEdit,
+            editing: editing,
+            editingText: editingText,
+            editingWidth: editingWidth,
+            editSaving: editSaving,
+            onCancelEdit: onCancelEdit,
+            onSaveEdit: onSaveEdit,
             compact: compact,
           )
         : _AssistantMessage(
@@ -15616,7 +15649,13 @@ class _UserMessage extends StatelessWidget {
   final bool verbose;
   final Map<String, dynamic> metadata;
   final List<String> supplements;
-  final VoidCallback? onEdit;
+  final ValueChanged<double>? onEdit;
+  final bool editing;
+  final String? editingText;
+  final double? editingWidth;
+  final bool editSaving;
+  final VoidCallback? onCancelEdit;
+  final ValueChanged<String>? onSaveEdit;
   final bool compact;
 
   const _UserMessage({
@@ -15625,8 +15664,57 @@ class _UserMessage extends StatelessWidget {
     this.metadata = const {},
     this.supplements = const [],
     this.onEdit,
+    this.editing = false,
+    this.editingText,
+    this.editingWidth,
+    this.editSaving = false,
+    this.onCancelEdit,
+    this.onSaveEdit,
     this.compact = false,
   });
+
+  Widget _buildAttachmentCards(
+    BuildContext context,
+    List<_ParsedAttachment> attachments,
+  ) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final attachment in attachments)
+          Builder(
+            builder: (context) {
+              final historyReference = attachment.historyReference;
+              if (historyReference != null) {
+                return AttachmentHistoryCard(
+                  key: ValueKey(
+                    'history-attachment-${historyReference.index}-'
+                    '${historyReference.storageKey}',
+                  ),
+                  name: attachment.name,
+                  sizeLabel: attachment.sizeLabel,
+                  reference: historyReference,
+                );
+              }
+              final imgPath = attachment.imagePath;
+              final imgFile =
+                  (imgPath != null && File(imgPath).existsSync())
+                  ? File(imgPath)
+                  : null;
+              return AttachmentCard(
+                name: attachment.name,
+                mimeType: '',
+                sizeLabel: attachment.sizeLabel,
+                thumbnailFile: imgFile,
+                onTap: imgFile != null
+                    ? () => showImageViewer(context, imgFile)
+                    : null,
+              );
+            },
+          ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -15639,8 +15727,10 @@ class _UserMessage extends StatelessWidget {
     final List<String> metaLines = _buildMetaLines(verbose, metadata);
     final timestamp = _formatMessageTimestamp(metadata);
     final parsed = _parseUserContent(content);
+    final bubbleMeasureKey = GlobalKey();
 
     return ChatMessageSelectionArea(
+      enabled: !editing,
       selectionIdentity: metadata['message_id'] ?? metadata['id'] ?? metadata,
       child: Padding(
         padding: EdgeInsets.only(
@@ -15652,194 +15742,183 @@ class _UserMessage extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Container(
-              padding: EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: compact ? 8 : 11,
-              ),
-              // Burbuja estilo Claude: panel suave uniforme, redondeado, SIN
-              // borde. El mensaje del agente va en texto plano; el del usuario
-              // en esta burbuja sutil.
-              decoration: BoxDecoration(
-                color: colors.surfaceVariant.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (metaLines.isNotEmpty)
-                    _MetaBlock(lines: metaLines, onDark: true),
-                  if (parsed.attachments.isNotEmpty)
-                    Padding(
-                      padding: EdgeInsets.only(
-                        bottom: parsed.text.isNotEmpty ? 8 : 0,
-                      ),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+            KeyedSubtree(
+              key: const ValueKey('user-message-bubble'),
+              child: Container(
+                key: bubbleMeasureKey,
+                width: editing ? editingWidth : null,
+                padding: EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: compact ? 8 : 11,
+                ),
+                // Burbuja estilo Claude: panel suave uniforme, redondeado, SIN
+                // borde. El mensaje del agente va en texto plano; el del usuario
+                // en esta burbuja sutil.
+                decoration: BoxDecoration(
+                  color: colors.surfaceVariant.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: editing
+                    ? InlineMessageEditor(
+                        initialText: editingText ?? parsed.text.trim(),
+                        saving: editSaving,
+                        attachments: parsed.attachments.isEmpty
+                            ? null
+                            : _buildAttachmentCards(
+                                context,
+                                parsed.attachments,
+                              ),
+                        onCancel: onCancelEdit!,
+                        onSave: onSaveEdit!,
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          for (final attachment in parsed.attachments)
-                            Builder(
-                              builder: (context) {
-                                final historyReference =
-                                    attachment.historyReference;
-                                if (historyReference != null) {
-                                  return AttachmentHistoryCard(
-                                    key: ValueKey(
-                                      'history-attachment-'
-                                      '${historyReference.index}-'
-                                      '${historyReference.storageKey}',
-                                    ),
-                                    name: attachment.name,
-                                    sizeLabel: attachment.sizeLabel,
-                                    reference: historyReference,
-                                  );
-                                }
-                                final imgPath = attachment.imagePath;
-                                final imgFile =
-                                    (imgPath != null &&
-                                        File(imgPath).existsSync())
-                                    ? File(imgPath)
-                                    : null;
-                                return AttachmentCard(
-                                  name: attachment.name,
-                                  mimeType: '',
-                                  sizeLabel: attachment.sizeLabel,
-                                  thumbnailFile: imgFile,
-                                  onTap: imgFile != null
-                                      ? () => showImageViewer(context, imgFile)
-                                      : null,
-                                );
-                              },
-                            ),
-                        ],
-                      ),
-                    ),
-                  if (parsed.text.isNotEmpty)
-                    MarkdownBody(
-                      data: parsed.text,
-                      selectable: false,
-                      // Respeta los saltos de línea simples (CommonMark los
-                      // colapsaría en espacios → texto "todo junto").
-                      softLineBreak: true,
-                      onTapLink: (text, href, title) =>
-                          _openMarkdownLink(context, href),
-                      styleSheet: _userSheet(theme, colors),
-                    ),
-                  if (supplements.isNotEmpty) ...[
-                    const SizedBox(height: 11),
-                    Divider(
-                      height: 1,
-                      color: colors.divider.withValues(alpha: 0.45),
-                    ),
-                    const SizedBox(height: 9),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.add_comment_outlined,
-                          size: 14,
-                          color: colors.accent,
-                        ),
-                        const SizedBox(width: 6),
-                        Flexible(
-                          child: Text(
-                            Strings.of(context).chaSteerSupplementsLabel,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: colors.textSecondary,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 7),
-                    for (var index = 0; index < supplements.length; index++)
-                      Padding(
-                        padding: EdgeInsets.only(
-                          bottom: index == supplements.length - 1 ? 0 : 7,
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              width: 2,
-                              height: 18,
-                              margin: const EdgeInsets.only(top: 2, right: 8),
-                              decoration: BoxDecoration(
-                                color: colors.accent.withValues(alpha: 0.55),
-                                borderRadius: BorderRadius.circular(2),
+                          if (metaLines.isNotEmpty)
+                            _MetaBlock(lines: metaLines, onDark: true),
+                          if (parsed.attachments.isNotEmpty)
+                            Padding(
+                              padding: EdgeInsets.only(
+                                bottom: parsed.text.isNotEmpty ? 8 : 0,
+                              ),
+                              child: _buildAttachmentCards(
+                                context,
+                                parsed.attachments,
                               ),
                             ),
-                            Expanded(
-                              child: Text(
-                                supplements[index],
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  height: 1.35,
-                                  color: colors.textPrimary,
+                          if (parsed.text.isNotEmpty)
+                            MarkdownBody(
+                              data: parsed.text,
+                              selectable: false,
+                              // Respeta los saltos de línea simples (CommonMark los
+                              // colapsaría en espacios → texto "todo junto").
+                              softLineBreak: true,
+                              onTapLink: (text, href, title) =>
+                                  _openMarkdownLink(context, href),
+                              styleSheet: _userSheet(theme, colors),
+                            ),
+                          if (supplements.isNotEmpty) ...[
+                            const SizedBox(height: 11),
+                            Divider(
+                              height: 1,
+                              color: colors.divider.withValues(alpha: 0.45),
+                            ),
+                            const SizedBox(height: 9),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.add_comment_outlined,
+                                  size: 14,
+                                  color: colors.accent,
+                                ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(
+                                    Strings.of(context).chaSteerSupplementsLabel,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: colors.textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 7),
+                            for (var index = 0; index < supplements.length; index++)
+                              Padding(
+                                padding: EdgeInsets.only(
+                                  bottom: index == supplements.length - 1 ? 0 : 7,
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Container(
+                                      width: 2,
+                                      height: 18,
+                                      margin: const EdgeInsets.only(top: 2, right: 8),
+                                      decoration: BoxDecoration(
+                                        color: colors.accent.withValues(alpha: 0.55),
+                                        borderRadius: BorderRadius.circular(2),
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        supplements[index],
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          height: 1.35,
+                                          color: colors.textPrimary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                            ),
                           ],
-                        ),
+                        ],
                       ),
-                  ],
-                ],
               ),
             ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (onEdit != null)
+            if (!editing)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (onEdit != null)
+                    IconButton(
+                      onPressed: () {
+                        final box = bubbleMeasureKey.currentContext
+                            ?.findRenderObject() as RenderBox?;
+                        if (box != null && box.hasSize) {
+                          onEdit!(box.size.width);
+                        }
+                      },
+                      tooltip: Strings.of(context).chaEditMessage,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 48,
+                        minHeight: 48,
+                      ),
+                      icon: Icon(
+                        Icons.edit_outlined,
+                        size: 15,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  // A-104 (spec 028): acción con nombre para TalkBack y target
+                  // de 48dp (el icono visual sigue siendo discreto).
                   IconButton(
-                    onPressed: onEdit,
-                    tooltip: Strings.of(context).chaEditMessage,
+                    onPressed: () {
+                      Clipboard.setData(
+                        ClipboardData(
+                          text: userMessageClipboardText(parsed.text),
+                        ),
+                      );
+                      HermesNotice.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(Strings.of(context).chaCopied),
+                          duration: Duration(seconds: 1),
+                        ),
+                        kind: HermesNoticeKind.success,
+                      );
+                    },
+                    tooltip: Strings.of(context).chaCopyMessage,
                     padding: EdgeInsets.zero,
                     constraints: const BoxConstraints(
                       minWidth: 48,
                       minHeight: 48,
                     ),
                     icon: Icon(
-                      Icons.edit_outlined,
-                      size: 15,
+                      Icons.copy_rounded,
+                      size: 13,
                       color: colors.textSecondary,
                     ),
                   ),
-                // A-104 (spec 028): acción con nombre para TalkBack y target
-                // de 48dp (el icono visual sigue siendo discreto).
-                IconButton(
-                  onPressed: () {
-                    Clipboard.setData(
-                      ClipboardData(
-                        text: userMessageClipboardText(parsed.text),
-                      ),
-                    );
-                    HermesNotice.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(Strings.of(context).chaCopied),
-                        duration: Duration(seconds: 1),
-                      ),
-                      kind: HermesNoticeKind.success,
-                    );
-                  },
-                  tooltip: Strings.of(context).chaCopyMessage,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 48,
-                    minHeight: 48,
-                  ),
-                  icon: Icon(
-                    Icons.copy_rounded,
-                    size: 13,
-                    color: colors.textSecondary,
-                  ),
-                ),
-                if (timestamp != null) _MessageTimestamp(timestamp),
-              ],
-            ),
+                  if (timestamp != null) _MessageTimestamp(timestamp),
+                ],
+              ),
           ],
         ),
       ),
