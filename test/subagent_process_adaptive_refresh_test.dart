@@ -40,11 +40,14 @@ class _AdaptiveGateway
       StreamController<TuiGatewayEvent>.broadcast();
   bool connected = true;
   bool failReads = false;
+  bool resumedSessionRunning = true;
   List<DesktopSubagentSnapshot> subagents = const [];
   AgentCenterSnapshot processSnapshot = const AgentCenterSnapshot(
     snapshots: [],
     processes: [],
   );
+  final List<AgentCenterSnapshot> processSnapshots = [];
+  final List<String> killedProcesses = [];
   int listCalls = 0;
   int processCalls = 0;
   int controlCalls = 0;
@@ -84,8 +87,8 @@ class _AdaptiveGateway
     runtimeSessionId: 'runtime-adaptive',
     storedSessionId: storedSessionId,
     created: false,
-    running: true,
-    status: 'working',
+    running: resumedSessionRunning,
+    status: resumedSessionRunning ? 'working' : 'idle',
   );
 
   @override
@@ -126,7 +129,16 @@ class _AdaptiveGateway
   }) async {
     processCalls += 1;
     if (failReads) throw StateError('process snapshot failed');
+    if (processSnapshots.isNotEmpty) return processSnapshots.removeAt(0);
     return processSnapshot;
+  }
+
+  @override
+  Future<void> killBackgroundProcess(
+    String runtimeSessionId,
+    String processId,
+  ) async {
+    killedProcesses.add(processId);
   }
 
   @override
@@ -441,6 +453,109 @@ void main() {
 
     await _disposeFixture(tester, fixture);
   });
+
+  testWidgets(
+    'Stop rechecks stale process snapshots until absence is confirmed',
+    (tester) async {
+      const running = AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-stop-recheck',
+            status: AgentCenterStatus.running,
+            uptimeSeconds: 5,
+            command: 'sleep 200',
+            notifyOnComplete: true,
+          ),
+        ],
+      );
+      const empty = AgentCenterSnapshot(snapshots: [], processes: []);
+      final fixture = await _mountChat(
+        tester,
+        changeEventsAvailable: true,
+      );
+      expect(
+        await fixture.chat.send(
+          fullText: 'Finish this turn before background Stop',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      fixture.gateway.emit('message.start');
+      fixture.gateway.emit('message.complete', const {
+        'text': 'Completed normally before background Stop',
+      });
+      await tester.pump();
+      expect(fixture.chat.isStreaming, isFalse);
+      expect(fixture.chat.messages.first['_cancelled'], isNot(true));
+      fixture.gateway.resumedSessionRunning = false;
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump();
+
+      fixture.gateway.processSnapshot = running;
+      fixture.gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+
+      fixture.gateway.processSnapshots.addAll([running, running, empty, empty]);
+      fixture.gateway.processSnapshot = empty;
+      final processCallsBeforeStop = fixture.gateway.processCalls;
+      final fullRevisionBeforeStop = fixture.chat.adaptiveFullRefreshRevision;
+      await tester.tap(find.byKey(const ValueKey('stop')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(fixture.gateway.killedProcesses, ['process-stop-recheck']);
+      expect(
+        fixture.chat.adaptiveFullRefreshRevision,
+        fullRevisionBeforeStop + 1,
+      );
+      expect(fixture.gateway.processCalls - processCallsBeforeStop, 2);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump();
+      expect(fixture.gateway.processCalls - processCallsBeforeStop, 3);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 2500));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      expect(fixture.chat.isStreaming, isFalse);
+      expect(fixture.chat.remoteSurfaceOwnsLiveTurn, isFalse);
+      expect(fixture.chat.safeActiveSubagentCount, 0);
+      expect(fixture.chat.backgroundProcesses, isEmpty);
+      expect(fixture.chat.canStopSessionWork, isFalse);
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('stop')), findsNothing);
+      expect(fixture.chat.messages.first['_cancelled'], isNot(true));
+      expect(
+        fixture.chat.messages.any((message) => message['_cancelledUser'] == true),
+        isFalse,
+      );
+      expect(find.text('Background work stopped'), findsOneWidget);
+
+      await _disposeFixture(tester, fixture);
+    },
+  );
 
   testWidgets('hidden and background routes perform zero reads', (tester) async {
     final fixture = await _mountChat(tester, changeEventsAvailable: true);

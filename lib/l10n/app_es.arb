@@ -5396,6 +5396,7 @@
   "chaStopStopping": "Deteniendo…",
   "chaStopRetrying": "Reintentando Stop…",
   "chaStopConfirmed": "Detenido",
+  "chaBackgroundWorkStopped": "Trabajo en segundo plano detenido",
   "chaStopFailed": "Stop no se confirmó",
   "chaStopRetry": "Reintentar Stop",
   "chaStopPersistenceFailed": "Stop no se pudo guardar o confirmar de forma segura. Reinténtalo.",

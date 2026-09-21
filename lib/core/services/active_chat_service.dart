@@ -2915,6 +2915,7 @@ final class _StopTransitionCoordinator {
     required this.gateway,
     required this.queueGeneration,
     required this.deadlineMs,
+    required this.affectsLiveTurn,
   });
 
   final int turnEpoch;
@@ -2922,6 +2923,7 @@ final class _StopTransitionCoordinator {
   final HermesDesktopGateway? gateway;
   final int queueGeneration;
   final int deadlineMs;
+  final bool affectsLiveTurn;
   final Completer<void> terminal = Completer<void>();
   _StopTransitionState state = _StopTransitionState.stopping;
   int interruptAttempts = 0;
@@ -3779,7 +3781,11 @@ class ActiveChat {
   Future<void>? _cancelledTombstoneUpdateFlight;
   Future<void>? _durableCancelFlight;
   StopConfirmationState _stopConfirmationState = StopConfirmationState.idle;
+  bool _lastStopAffectedLiveTurn = true;
   StopConfirmationState get stopConfirmationState => _stopConfirmationState;
+  bool get stopConfirmationOnlyBackground =>
+      _stopConfirmationState == StopConfirmationState.confirmed &&
+      !_lastStopAffectedLiveTurn;
   final int Function() _monotonicMicros;
   int? _responseStartedAtMicros;
   int? _observedFirstTokenLatencyMs;
@@ -4222,6 +4228,11 @@ class ActiveChat {
     if (subagents) _adaptiveSubagentRepairRevision += 1;
     if (processes) _adaptiveProcessRepairRevision += 1;
     if (control) _adaptiveControlRepairRevision += 1;
+  }
+
+  void _requestPostControlRepair() {
+    _signalAdaptiveRefresh(full: true);
+    _emit(ActiveChatEvent.subagentActivity);
   }
 
   bool _subagentEventNeedsRosterRepair(
@@ -4891,6 +4902,7 @@ class ActiveChat {
     }
     await (gateway as HermesDesktopSessionControlGateway)
         .sendSessionControlAction(runtimeId, action);
+    _requestPostControlRepair();
   }
 
   Future<void> stopBackgroundProcess(String processId) async {
@@ -4915,6 +4927,7 @@ class ActiveChat {
       processId,
     );
     await refreshBackgroundProcesses();
+    _requestPostControlRepair();
   }
 
   Future<void> stopBackgroundProcessesAfterSessionStop(
@@ -4946,6 +4959,7 @@ class ActiveChat {
       );
     }
     await refreshBackgroundProcesses();
+    _requestPostControlRepair();
   }
 
   bool get canControlGoal =>
@@ -5710,7 +5724,9 @@ class ActiveChat {
           _subagentForegroundPresentationGeneration ==
               pending.presentationGeneration &&
           _subagentActivities?.scope == pending.key.scope;
-      return isCurrent && result.found;
+      final found = isCurrent && result.found;
+      if (found) _requestPostControlRepair();
+      return found;
     } finally {
       final current = _pendingSubagentInterrupts[activity.key];
       final changed = identical(current, pending);
@@ -11530,6 +11546,7 @@ class ActiveChat {
     _terminalTimer = null;
     _runTerminal = false;
     _stopConfirmationState = StopConfirmationState.idle;
+    _lastStopAffectedLiveTurn = true;
     _desktopTurnStartedAt = null;
     final hasLiveSubagent =
         _subagentActivities?.activities.any(
@@ -22082,15 +22099,21 @@ class ActiveChat {
     final existing = _durableCancelFlight;
     if (existing != null) return existing;
     _freezeQueueForStop();
+    // Only visible background activity may preserve the completed transcript.
+    final backgroundOnlyStop =
+        !isStreaming && !remoteSurfaceOwnsLiveTurn && canStopSessionWork;
+    final affectsLiveTurn = !backgroundOnlyStop;
     final coordinator = _StopTransitionCoordinator(
       turnEpoch: _turnEpoch,
       runtimeId: _desktopRuntimeSessionId,
       gateway: _desktopGateway,
       queueGeneration: _queueGeneration,
       deadlineMs: _wallClockMs() + _stopEscalationBudget.inMilliseconds,
+      affectsLiveTurn: affectsLiveTurn,
     );
+    _lastStopAffectedLiveTurn = affectsLiveTurn;
     _stopTransition = coordinator;
-    state = ChatPipelineState.cancelled;
+    if (affectsLiveTurn) state = ChatPipelineState.cancelled;
     late final Future<void> operation;
     Future<void> runOwnedCancel() async {
       try {
@@ -22340,20 +22363,29 @@ class ActiveChat {
     StopConfirmationState confirmation, {
     required bool requestServerStop,
   }) {
-    _cancelCurrent(
-      requestServerStop: requestServerStop,
-      deferConfirmation: true,
-      markUserCancelled: false,
-      stopped: terminalState == _StopTransitionState.confirmed,
-      clearQueue: false,
-    );
-    _persistLatestUserCancellationInBackground();
+    if (stop.affectsLiveTurn) {
+      _cancelCurrent(
+        requestServerStop: requestServerStop,
+        deferConfirmation: true,
+        markUserCancelled: false,
+        stopped: terminalState == _StopTransitionState.confirmed,
+        clearQueue: false,
+      );
+      _persistLatestUserCancellationInBackground();
+    } else {
+      _clearQueue();
+    }
     _settleStopTransition(
       stop,
       terminalState,
       confirmation: confirmation,
       emitQueueChanged: false,
     );
+    if (_backgroundProcesses.isEmpty) _requestPostControlRepair();
+    if (!stop.affectsLiveTurn) {
+      _emit(ActiveChatEvent.queueChanged);
+      return;
+    }
     final terminalEpoch = _turnEpoch;
     _emit(ActiveChatEvent.cancelled);
     _drainOrTerminal(expectedEpoch: terminalEpoch);
@@ -22367,7 +22399,7 @@ class ActiveChat {
         cancelRuntimeId != null && cancelGateway != null;
     final hasDesktopStopTarget =
         cancelGateway != null &&
-        (_usingDesktopGateway ||
+        ((stop.affectsLiveTurn && _usingDesktopGateway) ||
             _activeTurnDelivery?.current.transport ==
                 PreparedTurnTransport.desktop ||
             _recoveringDesktopTurnEpoch == cancelEpoch);
