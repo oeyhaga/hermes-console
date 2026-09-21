@@ -14557,6 +14557,12 @@ class ActiveChat {
         }
         if (binding.created) {
           _stagedFirstSubmitConfig = const DesktopSessionCreateConfig();
+          if (_activeTurnTranscriptBoundaryEpoch == turnEpoch &&
+              _activeTurnTranscriptBoundaryIdentity == null &&
+              !history.any(isRealUserTurn)) {
+            // Creation with no seeded user proves this turn owns the first row.
+            _activeTurnStartedFromKnownMissing = true;
+          }
         }
         _desktopStoredSessionId = binding.storedSessionId;
         _desktopStoredSessionKnownMissing = false;

@@ -28,6 +28,7 @@ class _StopGateway
   bool emitInterruptTerminal = false;
   Object? interruptError;
   Completer<void>? interruptGate;
+  DesktopSessionSnapshot? resumeSnapshot;
 
   void emit(String type, [Map<String, dynamic>? payload]) {
     _events.add(
@@ -66,11 +67,13 @@ class _StopGateway
     String profile = '',
     bool omitMessages = false,
     bool deferHistory = false,
-  }) async => DesktopSessionSnapshot(
-    runtimeSessionId: 'runtime-test',
-    storedSessionId: storedSessionId,
-    created: false,
-  );
+  }) async =>
+      resumeSnapshot ??
+      DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-test',
+        storedSessionId: storedSessionId,
+        created: false,
+      );
 
   @override
   Future<DesktopSessionSnapshot> createForFirstSubmit({
@@ -153,8 +156,10 @@ class _StopGateway
 ActiveChat _chat(
   _StopGateway gateway, {
   String id = 'conn-stop-recovery',
+  String sessionId = 'session-test',
   StoredSessionMessageLoader? storedMessageLoader,
   Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
+  bool attachDesktopRuntimeOnLoad = false,
 }) {
   final api = ApiClient(
     baseUrl: 'https://example.invalid',
@@ -171,7 +176,7 @@ ActiveChat _chat(
       apiKey: 'test-only',
       useHttps: true,
     ),
-    sessionId: 'session-test',
+    sessionId: sessionId,
     sessionTitle: 'Test',
     notifications: null,
     onTerminal: () {},
@@ -179,6 +184,8 @@ ActiveChat _chat(
     desktopGateway: gateway,
     storedMessageLoader: storedMessageLoader,
     onCancelledTurn: onCancelledTurn,
+    attachDesktopRuntimeOnLoad: attachDesktopRuntimeOnLoad,
+    allowUnownedDesktopSnapshotForTesting: attachDesktopRuntimeOnLoad,
   );
 }
 
@@ -509,6 +516,236 @@ void main() {
       isTrue,
     );
     expect(gateway.submittedTexts, ['turno detenido', 'turno posterior']);
+  });
+
+  group('Stop never duplicates durable user rows', () {
+    test('composer Stop on a new first turn reloads one user row', () async {
+      final gateway = _StopGateway()..emitInterruptTerminal = true;
+      final rows = <Map<String, dynamic>>[];
+      final saved = <CancelledTurnTombstone>[];
+      final chat = _chat(
+        gateway,
+        id: 'conn-composer-stop-first-turn',
+        sessionId: 'mob-composer-stop-first-turn',
+        storedMessageLoader: (_, _) async => List.of(rows),
+        onCancelledTurn: (tombstone) async => saved.add(tombstone),
+      );
+      addTearDown(chat.dispose);
+
+      expect(
+        await chat.send(
+          fullText: 'sleep 60',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      gateway.emit('tool.start', const {
+        'name': 'terminal',
+        'tool_id': 'terminal-first-turn',
+      });
+      await Future<void>.delayed(Duration.zero);
+
+      await chat.cancel();
+      for (var tick = 0; tick < 20 && saved.isEmpty; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(saved, hasLength(1));
+      expect(saved.single.firstUser, isTrue);
+
+      rows.addAll(const [
+        {
+          'id': 1,
+          'message_id': 'user-first-turn',
+          'role': 'user',
+          'content': 'sleep 60',
+        },
+        {'id': 2, 'role': 'assistant', 'content': ''},
+        {'id': 3, 'role': 'tool', 'content': 'sleep 60'},
+        {
+          'id': 4,
+          'role': 'assistant',
+          'content': 'Operation interrupted.',
+        },
+      ]);
+      await chat.loadMessages(expectedMessageCount: 4);
+
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['role'] == 'user' && message['content'] == 'sleep 60',
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('clarify cancel on a new first turn reloads one user row', () async {
+      final gateway = _StopGateway()..emitInterruptTerminal = true;
+      final rows = <Map<String, dynamic>>[];
+      final saved = <CancelledTurnTombstone>[];
+      final chat = _chat(
+        gateway,
+        id: 'conn-clarify-stop-first-turn',
+        sessionId: 'mob-clarify-stop-first-turn',
+        storedMessageLoader: (_, _) async => List.of(rows),
+        onCancelledTurn: (tombstone) async => saved.add(tombstone),
+      );
+      addTearDown(chat.dispose);
+
+      expect(
+        await chat.send(
+          fullText: 'ask before continuing',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      gateway.emit('clarify.request', const {
+        'request_id': 'clarify-first-turn',
+        'question': 'Continue?',
+      });
+      for (
+        var tick = 0;
+        tick < 20 && chat.pendingInteractivePrompt == null;
+        tick++
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(chat.pendingInteractivePrompt, isNotNull);
+
+      await chat.cancel();
+      for (var tick = 0; tick < 20 && saved.isEmpty; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(saved, hasLength(1));
+
+      rows.addAll(const [
+        {
+          'id': 11,
+          'message_id': 'user-clarify-first-turn',
+          'role': 'user',
+          'content': 'ask before continuing',
+        },
+        {'id': 12, 'role': 'assistant', 'content': ''},
+        {'id': 13, 'role': 'tool', 'content': 'clarify'},
+        {
+          'id': 14,
+          'role': 'assistant',
+          'content': 'Operation interrupted.',
+        },
+      ]);
+      await chat.loadMessages(expectedMessageCount: 4);
+
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['role'] == 'user' &&
+              message['content'] == 'ask before continuing',
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('row Stop over a durable first turn reloads one user row', () async {
+      final gateway = _StopGateway()
+        ..emitInterruptTerminal = true
+        ..resumeSnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-test',
+          storedSessionId: 'session-row-stop',
+          created: false,
+          running: true,
+          status: 'working',
+          inflight: DesktopInflightTurn(user: 'sleep 60', streaming: true),
+          messagesProvided: false,
+          messageCount: 3,
+        );
+      final rows = <Map<String, dynamic>>[
+        const {
+          'id': 21,
+          'message_id': 'user-row-stop',
+          'role': 'user',
+          'content': 'sleep 60',
+        },
+        const {'id': 22, 'role': 'assistant', 'content': ''},
+        const {'id': 23, 'role': 'tool', 'content': 'sleep 60'},
+      ];
+      final chat = _chat(
+        gateway,
+        id: 'conn-row-stop-first-turn',
+        sessionId: 'session-row-stop',
+        storedMessageLoader: (_, _) async => List.of(rows),
+        onCancelledTurn: (_) async {},
+        attachDesktopRuntimeOnLoad: true,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 3);
+      expect(chat.isStreaming, isTrue);
+      await chat.cancel();
+      rows.add(const {
+        'id': 24,
+        'role': 'assistant',
+        'content': 'Operation interrupted.',
+      });
+      gateway.resumeSnapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-test',
+        storedSessionId: 'session-row-stop',
+        created: false,
+        running: false,
+        status: 'idle',
+        messagesProvided: false,
+        messageCount: 4,
+      );
+      await chat.loadMessages(expectedMessageCount: 4);
+
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['role'] == 'user' && message['content'] == 'sleep 60',
+        ),
+        hasLength(1),
+      );
+    });
+
+    test('two identical durable prompts remain distinct rows', () async {
+      final gateway = _StopGateway();
+      final chat = _chat(
+        gateway,
+        id: 'conn-identical-prompts',
+        storedMessageLoader: (_, _) async => const [
+          {
+            'id': 31,
+            'message_id': 'identical-user-1',
+            'role': 'user',
+            'content': 'same prompt',
+          },
+          {'id': 32, 'role': 'assistant', 'content': 'first answer'},
+          {
+            'id': 33,
+            'message_id': 'identical-user-2',
+            'role': 'user',
+            'content': 'same prompt',
+          },
+          {'id': 34, 'role': 'assistant', 'content': 'second answer'},
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 4);
+
+      final identicalUsers = chat.messages
+          .where(
+            (message) =>
+                message['role'] == 'user' &&
+                message['content'] == 'same prompt',
+          )
+          .toList(growable: false);
+      expect(identicalUsers, hasLength(2));
+      expect(
+        identicalUsers.map((message) => message['message_id']).toSet(),
+        {'identical-user-1', 'identical-user-2'},
+      );
+    });
   });
 
   test('dos drenajes solapados no envían la misma entrada dos veces', () async {
