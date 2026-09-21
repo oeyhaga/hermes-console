@@ -1329,6 +1329,12 @@ class TuiGatewayClient
   /// Current replay authority domain; rotates with every socket generation.
   String get currentReplayEpoch => _replayEpoch ?? 'legacy:$_socketGeneration';
   bool _connectionReplayCapable = false;
+  bool _connectionChangeEvents = false;
+
+  /// `gateway.ready.change_events` of the current connection: the backend
+  /// broadcasts sessions/cron/process changes, so polls can be demoted to slow
+  /// safety backstops (Hermes Desktop does the same).
+  bool get changeEventsAvailable => _connectionChangeEvents;
   Completer<void>? _gatewayReadyCompleter;
   String? _legacyEventRuntimeId;
   bool _legacyEventRuntimeAmbiguous = false;
@@ -1420,6 +1426,7 @@ class TuiGatewayClient
       throw StateError('Hermes Desktop connection was cancelled');
     }
     _connectionReplayCapable = false;
+    _connectionChangeEvents = false;
     final gatewayReady = Completer<void>();
     // Socket callbacks may fail readiness before channel.ready settles. Attach a
     // handler immediately so the original upgrade error remains the connect
@@ -1605,6 +1612,7 @@ class TuiGatewayClient
           }
           _replayEpoch = null;
         }
+        _connectionChangeEvents = payload['change_events'] == true;
         if (payload['heartbeat'] == true) _startHeartbeat(generation, channel);
         final ready = _gatewayReadyCompleter;
         if (ready != null && !ready.isCompleted) ready.complete();

@@ -65,11 +65,13 @@ class _Gateway {
     });
   }
 
+  Map<String, dynamic> readyPayload = <String, dynamic>{};
+
   void sendReady([WebSocket? socket]) => (socket ?? sockets.last).add(
     jsonEncode({
       'jsonrpc': '2.0',
       'method': 'event',
-      'params': {'type': 'gateway.ready', 'payload': <String, dynamic>{}},
+      'params': {'type': 'gateway.ready', 'payload': readyPayload},
     }),
   );
 
@@ -204,6 +206,25 @@ void main() {
         .resumeExisting('stored-1')
         .timeout(const Duration(seconds: 1));
     expect(resumed.runtimeSessionId, 'runtime-1');
+  });
+
+  test('change_events stays off when gateway.ready does not advertise it', () async {
+    final client = _clientFor(gateway);
+    await client.connect();
+    expect(client.changeEventsAvailable, isFalse);
+    await _waitUntil(
+      () => gateway.rpcCalls('client.capabilities').isNotEmpty,
+    );
+  });
+
+  test('records gateway.ready change_events for the connection', () async {
+    gateway.readyPayload = {'change_events': true};
+    final client = _clientFor(gateway);
+    await client.connect();
+    expect(client.changeEventsAvailable, isTrue);
+    await _waitUntil(
+      () => gateway.rpcCalls('client.capabilities').isNotEmpty,
+    );
   });
 
   test('advertises again after reconnect', () async {

@@ -3667,7 +3667,7 @@ class _ChatScreenState extends State<ChatScreen>
           Duration(seconds: 60),
         ],
         changeEventsAvailable:
-            _chat.desktopRuntimeInfo.raw['change_events'] == true,
+            _chat.desktopChangeEventsAvailable,
         durableChatId: () => _chat.serverSessionId,
         externallyOwnedTurnActive: () => _chat.remoteSurfaceOwnsLiveTurn,
         recoveryConverging: () => _chat.resumeReconciliationInFlight,
@@ -4147,7 +4147,7 @@ class _ChatScreenState extends State<ChatScreen>
   }) {
     final reader = _passiveConversationReader;
     reader?.setChangeEventsAvailable(
-      _chat.desktopRuntimeInfo.raw['change_events'] == true,
+      _chat.desktopChangeEventsAvailable,
       immediate: false,
     );
     final shouldRun = _canProbePassiveRemoteActivity;
