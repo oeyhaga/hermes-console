@@ -1126,7 +1126,20 @@ class _ChatScreenState extends State<ChatScreen>
   bool _chatRouteVisible = false;
   late bool _appInForeground;
   Timer? _subagentPollTimer;
+  Timer? _subagentRepairDebounce;
+  Timer? _processControlRepairDebounce;
   String? _subagentPollingRuntimeId;
+  bool _adaptiveSnapshotInFlight = false;
+  bool _adaptiveSnapshotQueued = false;
+  bool _queuedSubagentRefresh = false;
+  bool _queuedProcessRefresh = false;
+  bool _queuedControlRefresh = false;
+  int _adaptiveRefreshFailureIndex = 0;
+  int _seenAdaptiveEventRevision = 0;
+  int _seenAdaptiveFullRefreshRevision = 0;
+  int _seenAdaptiveSubagentRepairRevision = 0;
+  int _seenAdaptiveProcessRepairRevision = 0;
+  int _seenAdaptiveControlRepairRevision = 0;
   SubagentPresentationOwnerToken? _subagentPresentationOwner;
   int _viewerAttachGeneration = 0;
 
@@ -3901,32 +3914,211 @@ class _ChatScreenState extends State<ChatScreen>
     final runtimeId = _chatBound ? _chat.desktopRuntimeSessionId : null;
     final shouldPoll = shouldOwnPresentation && runtimeId != null;
     if (!shouldPoll) {
-      _subagentPollTimer?.cancel();
-      _subagentPollTimer = null;
+      _cancelAdaptiveSnapshotTimers();
       _subagentPollingRuntimeId = null;
       return;
     }
-    if (_subagentPollTimer != null && _subagentPollingRuntimeId == runtimeId) {
+    if (_subagentPollingRuntimeId != runtimeId) {
+      _cancelAdaptiveSnapshotTimers();
+      _subagentPollingRuntimeId = runtimeId;
+      _adaptiveRefreshFailureIndex = 0;
+      _captureAdaptiveRefreshRevisions();
+      unawaited(_runAdaptiveSnapshot());
+      return;
+    }
+
+    if (_chat.desktopChangeEventsAvailable) {
+      _consumeAdaptiveRefreshSignals();
+    }
+    if (_subagentPollTimer == null && !_adaptiveSnapshotInFlight) {
+      _scheduleAdaptiveSnapshot(_adaptiveBackstopDelay());
+    }
+  }
+
+  void _captureAdaptiveRefreshRevisions() {
+    _seenAdaptiveEventRevision = _chat.adaptiveRefreshEventRevision;
+    _seenAdaptiveFullRefreshRevision = _chat.adaptiveFullRefreshRevision;
+    _seenAdaptiveSubagentRepairRevision =
+        _chat.adaptiveSubagentRepairRevision;
+    _seenAdaptiveProcessRepairRevision = _chat.adaptiveProcessRepairRevision;
+    _seenAdaptiveControlRepairRevision = _chat.adaptiveControlRepairRevision;
+  }
+
+  void _cancelAdaptiveSnapshotTimers() {
+    _subagentPollTimer?.cancel();
+    _subagentPollTimer = null;
+    _subagentRepairDebounce?.cancel();
+    _subagentRepairDebounce = null;
+    _processControlRepairDebounce?.cancel();
+    _processControlRepairDebounce = null;
+    _adaptiveSnapshotQueued = false;
+    _queuedSubagentRefresh = false;
+    _queuedProcessRefresh = false;
+    _queuedControlRefresh = false;
+  }
+
+  Duration _adaptiveBackstopDelay() {
+    if (!_chat.desktopChangeEventsAvailable) {
+      return const Duration(seconds: 5);
+    }
+    final hasActiveItems =
+        _chat.safeActiveSubagentCount > 0 ||
+        _chat.sessionActivity.backgroundItemCount > 0;
+    return Duration(seconds: hasActiveItems ? 30 : 60);
+  }
+
+  void _scheduleAdaptiveSnapshot(
+    Duration delay, {
+    bool subagents = true,
+    bool processes = true,
+    bool control = true,
+  }) {
+    _subagentPollTimer?.cancel();
+    _subagentPollTimer = Timer(delay, () {
+      _subagentPollTimer = null;
+      unawaited(
+        _runAdaptiveSnapshot(
+          subagents: subagents,
+          processes: processes,
+          control: control,
+        ),
+      );
+    });
+  }
+
+  void _consumeAdaptiveRefreshSignals() {
+    final eventRevision = _chat.adaptiveRefreshEventRevision;
+    if (eventRevision != _seenAdaptiveEventRevision) {
+      _seenAdaptiveEventRevision = eventRevision;
+      _adaptiveRefreshFailureIndex = 0;
+      _scheduleAdaptiveSnapshot(_adaptiveBackstopDelay());
+    }
+
+    final fullRevision = _chat.adaptiveFullRefreshRevision;
+    if (fullRevision != _seenAdaptiveFullRefreshRevision) {
+      _captureAdaptiveRefreshRevisions();
+      _subagentRepairDebounce?.cancel();
+      _subagentRepairDebounce = null;
+      _processControlRepairDebounce?.cancel();
+      _processControlRepairDebounce = null;
+      unawaited(_runAdaptiveSnapshot());
+      return;
+    }
+
+    final subagentRevision = _chat.adaptiveSubagentRepairRevision;
+    if (subagentRevision != _seenAdaptiveSubagentRepairRevision) {
+      _seenAdaptiveSubagentRepairRevision = subagentRevision;
+      _subagentRepairDebounce?.cancel();
+      _subagentRepairDebounce = Timer(const Duration(milliseconds: 250), () {
+        _subagentRepairDebounce = null;
+        unawaited(
+          _runAdaptiveSnapshot(processes: false, control: false),
+        );
+      });
+    }
+
+    final processRevision = _chat.adaptiveProcessRepairRevision;
+    final controlRevision = _chat.adaptiveControlRepairRevision;
+    if (processRevision != _seenAdaptiveProcessRepairRevision ||
+        controlRevision != _seenAdaptiveControlRepairRevision) {
+      final refreshProcesses =
+          processRevision != _seenAdaptiveProcessRepairRevision;
+      final refreshControl = controlRevision != _seenAdaptiveControlRepairRevision;
+      _seenAdaptiveProcessRepairRevision = processRevision;
+      _seenAdaptiveControlRepairRevision = controlRevision;
+      _processControlRepairDebounce?.cancel();
+      _processControlRepairDebounce = Timer(
+        const Duration(milliseconds: 250),
+        () {
+          _processControlRepairDebounce = null;
+          unawaited(
+            _runAdaptiveSnapshot(
+              subagents: false,
+              processes: refreshProcesses,
+              control: refreshControl,
+            ),
+          );
+        },
+      );
+    }
+  }
+
+  Future<void> _runAdaptiveSnapshot({
+    bool subagents = true,
+    bool processes = true,
+    bool control = true,
+  }) async {
+    final runtimeId = _subagentPollingRuntimeId;
+    if (runtimeId == null ||
+        _disposed ||
+        !mounted ||
+        !_chatRouteVisible ||
+        !_appInForeground ||
+        _chat.desktopRuntimeSessionId != runtimeId) {
+      return;
+    }
+    if (_adaptiveSnapshotInFlight) {
+      _adaptiveSnapshotQueued = true;
+      _queuedSubagentRefresh |= subagents;
+      _queuedProcessRefresh |= processes;
+      _queuedControlRefresh |= control;
       return;
     }
 
     _subagentPollTimer?.cancel();
-    _subagentPollingRuntimeId = runtimeId;
-    unawaited(_chat.refreshSubagents());
-    unawaited(_chat.refreshBackgroundProcesses());
-    unawaited(_chat.refreshSessionControl());
-    _subagentPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (_disposed || !mounted) return;
-      if (_chat.desktopRuntimeSessionId != _subagentPollingRuntimeId) {
-        _syncSubagentPolling();
-        return;
-      }
-      unawaited(_chat.refreshSubagents());
-      if (_chat.sessionActivity.backgroundItemCount > 0) {
-        unawaited(_chat.refreshBackgroundProcesses());
-        unawaited(_chat.refreshSessionControl());
-      }
-    });
+    _subagentPollTimer = null;
+    _adaptiveSnapshotInFlight = true;
+    final failureRevision = _chat.adaptiveSnapshotFailureRevision;
+    await Future.wait<void>([
+      if (subagents) _chat.refreshSubagents(),
+      if (processes) _chat.refreshBackgroundProcesses(),
+      if (control) _chat.refreshSessionControl(),
+    ]);
+    final failed =
+        _chat.adaptiveSnapshotFailureRevision != failureRevision;
+    _adaptiveSnapshotInFlight = false;
+    if (_disposed ||
+        !mounted ||
+        !_chatRouteVisible ||
+        !_appInForeground ||
+        _subagentPollingRuntimeId != runtimeId ||
+        _chat.desktopRuntimeSessionId != runtimeId) {
+      return;
+    }
+
+    if (_adaptiveSnapshotQueued) {
+      final queuedSubagents = _queuedSubagentRefresh;
+      final queuedProcesses = _queuedProcessRefresh;
+      final queuedControl = _queuedControlRefresh;
+      _adaptiveSnapshotQueued = false;
+      _queuedSubagentRefresh = false;
+      _queuedProcessRefresh = false;
+      _queuedControlRefresh = false;
+      unawaited(
+        _runAdaptiveSnapshot(
+          subagents: queuedSubagents,
+          processes: queuedProcesses,
+          control: queuedControl,
+        ),
+      );
+      return;
+    }
+
+    if (failed) {
+      const delays = [5, 15, 30, 60];
+      final index = _adaptiveRefreshFailureIndex.clamp(0, delays.length - 1);
+      _adaptiveRefreshFailureIndex = (index + 1).clamp(0, delays.length - 1);
+      _scheduleAdaptiveSnapshot(
+        Duration(seconds: delays[index]),
+        subagents: subagents,
+        processes: processes,
+        control: control,
+      );
+      return;
+    }
+
+    _adaptiveRefreshFailureIndex = 0;
+    _scheduleAdaptiveSnapshot(_adaptiveBackstopDelay());
   }
 
   // El sondeo del roster no está condicionado por el turno vivo: una lista

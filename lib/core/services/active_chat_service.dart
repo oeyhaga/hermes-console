@@ -3894,6 +3894,12 @@ class ActiveChat {
   DateTime? _backgroundProcessesObservedAt;
   Future<void>? _backgroundProcessRefreshFlight;
   bool _backgroundProcessRefreshRequested = false;
+  int _adaptiveRefreshEventRevision = 0;
+  int _adaptiveFullRefreshRevision = 0;
+  int _adaptiveSubagentRepairRevision = 0;
+  int _adaptiveProcessRepairRevision = 0;
+  int _adaptiveControlRepairRevision = 0;
+  int _adaptiveSnapshotFailureRevision = 0;
   ArtifactIndexSnapshot? _artifactIndex;
   ArtifactIndexScope? _artifactScope;
   List<ArtifactTranscriptEntry> _pendingArtifactTranscript = const [];
@@ -4131,6 +4137,61 @@ class ActiveChat {
     return gateway is HermesDesktopControlGateway
         ? gateway as HermesDesktopControlGateway
         : null;
+  }
+
+  bool get desktopChangeEventsAvailable {
+    final gateway = _desktopGateway;
+    if (gateway == null) return false;
+    try {
+      return (gateway as dynamic).changeEventsAvailable == true;
+    } on NoSuchMethodError {
+      return false;
+    }
+  }
+
+  int get adaptiveRefreshEventRevision => _adaptiveRefreshEventRevision;
+  int get adaptiveFullRefreshRevision => _adaptiveFullRefreshRevision;
+  int get adaptiveSubagentRepairRevision => _adaptiveSubagentRepairRevision;
+  int get adaptiveProcessRepairRevision => _adaptiveProcessRepairRevision;
+  int get adaptiveControlRepairRevision => _adaptiveControlRepairRevision;
+  int get adaptiveSnapshotFailureRevision =>
+      _adaptiveSnapshotFailureRevision;
+
+  void _signalAdaptiveRefresh({
+    bool full = false,
+    bool subagents = false,
+    bool processes = false,
+    bool control = false,
+  }) {
+    _adaptiveRefreshEventRevision += 1;
+    if (full) _adaptiveFullRefreshRevision += 1;
+    if (subagents) _adaptiveSubagentRepairRevision += 1;
+    if (processes) _adaptiveProcessRepairRevision += 1;
+    if (control) _adaptiveControlRepairRevision += 1;
+  }
+
+  bool _subagentEventNeedsRosterRepair(
+    String type,
+    Map<String, dynamic> payload,
+  ) {
+    if (!const {
+      'subagent.spawn_requested',
+      'subagent.start',
+      'subagent.progress',
+      'subagent.thinking',
+      'subagent.tool',
+      'subagent.complete',
+    }.contains(type)) {
+      return false;
+    }
+    final subagentId = payload['subagent_id']?.toString().trim() ?? '';
+    if (subagentId.isEmpty) return true;
+    final activity = _subagentActivities?.activities
+        .where((candidate) => candidate.subagentId == subagentId)
+        .firstOrNull;
+    if (activity == null) return true;
+    if (type == 'subagent.complete') return !activity.isTerminal;
+    return activity.isTerminal;
   }
 
   DesktopGatewayCapabilityState desktopCapabilityState(
@@ -4671,6 +4732,7 @@ class ActiveChat {
       _applySessionControl(snapshot, authoritativePush: false);
     } catch (_) {
       if (_disposed || _desktopRuntimeSessionId != runtimeSessionId) return;
+      _adaptiveSnapshotFailureRevision += 1;
       if (_hasSessionControl && !_sessionControlStale) {
         _sessionControlStale = true;
         _emit(ActiveChatEvent.goalUpdated);
@@ -5000,6 +5062,7 @@ class ActiveChat {
         requestGeneration: requestGeneration,
         mutationGeneration: mutationGeneration,
       )) {
+        _adaptiveSnapshotFailureRevision += 1;
         final nextStale = _backgroundProcesses.isNotEmpty;
         if (_backgroundProcessesStale != nextStale) {
           _backgroundProcessesStale = nextStale;
@@ -5171,6 +5234,11 @@ class ActiveChat {
         runtimeId,
       );
     } catch (_) {
+      if (!_disposed &&
+          identical(_desktopGateway, gateway) &&
+          _desktopRuntimeSessionId == runtimeId) {
+        _adaptiveSnapshotFailureRevision += 1;
+      }
       return;
     }
     if (_disposed ||
@@ -16238,8 +16306,13 @@ class ActiveChat {
     final runtimeId = _desktopRuntimeSessionId;
     if (runtimeId == null) return;
     if (event.type == 'sessions.changed') {
-      unawaited(refreshBackgroundProcesses());
-      unawaited(refreshSessionControl());
+      if (desktopChangeEventsAvailable) {
+        _signalAdaptiveRefresh(full: true);
+        _emit(ActiveChatEvent.sessionInfo);
+      } else {
+        unawaited(refreshBackgroundProcesses());
+        unawaited(refreshSessionControl());
+      }
       return;
     }
     if (event.sessionId != runtimeId) return;
@@ -16282,6 +16355,7 @@ class ActiveChat {
       _observeRuntimeActivity();
     }
     if (event.type == 'session.control.update') {
+      _signalAdaptiveRefresh();
       _applySessionControlUpdate(payload['control']);
       return;
     }
@@ -16341,12 +16415,35 @@ class ActiveChat {
       return;
     }
     if (event.type == 'status.update') {
+      final kind = (payload['kind'] ?? payload['status'] ?? '')
+          .toString()
+          .trim()
+          .toLowerCase();
+      if (kind == 'process') {
+        if (desktopChangeEventsAvailable) {
+          _signalAdaptiveRefresh(processes: true);
+          _emit(ActiveChatEvent.subagentActivity);
+        } else {
+          unawaited(refreshBackgroundProcesses());
+        }
+        return;
+      }
+      if (const {'goal', 'loop', 'heartbeat'}.contains(kind)) {
+        if (desktopChangeEventsAvailable) {
+          _signalAdaptiveRefresh(control: true);
+          _emit(ActiveChatEvent.goalUpdated);
+        } else {
+          unawaited(refreshSessionControl());
+        }
+        return;
+      }
       _applyDesktopStatusUpdate(payload);
       return;
     }
     if (event.type == 'background.complete') {
       final taskId = payload['task_id']?.toString().trim() ?? '';
       if (taskId.isNotEmpty) {
+        _signalAdaptiveRefresh(processes: true);
         final rawText = payload['text']?.toString() ?? '';
         final isError = rawText.startsWith('error:');
         _backgroundTaskOutcomes[taskId] = (text: rawText, isError: isError);
@@ -16364,6 +16461,12 @@ class ActiveChat {
               Future<void>.value(),
         );
       }
+      return;
+    }
+    if (event.type == 'agent.terminal.output' ||
+        event.type == 'terminal.close') {
+      _signalAdaptiveRefresh(processes: true);
+      _emit(ActiveChatEvent.subagentActivity);
       return;
     }
     if (const {
@@ -16433,6 +16536,9 @@ class ActiveChat {
           (!_runTerminal ||
               isLateAuthoritativeCompletion ||
               isLiveBackgroundUpdate)) {
+        _signalAdaptiveRefresh(
+          subagents: _subagentEventNeedsRosterRepair(event.type, payload),
+        );
         _handleNativeSubagentEvent(event.type, runtimeId, payload);
       }
       return;
