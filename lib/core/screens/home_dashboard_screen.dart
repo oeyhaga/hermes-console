@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app_header_title.dart';
 import '../config/flavor.dart';
+import '../models/desktop_active_session.dart';
 import '../models/home_widget_snapshot.dart';
 import '../models/session_activity.dart';
 import '../models/session_category.dart';
@@ -16,12 +17,14 @@ import '../services/active_chat_service.dart';
 import '../services/connection_manager.dart';
 import '../services/chat_draft_store.dart';
 import '../services/drawer_gesture_exclusion.dart';
+import '../services/global_activity_aggregate.dart';
 import '../services/home_widget_publisher.dart';
 import '../services/platform/android_apps.dart';
 import '../services/local_transcript_store.dart';
 import '../services/session_archive.dart';
 import '../services/session_deletion.dart';
 import '../services/turn_outbox_store.dart';
+import '../services/tui_gateway_client.dart';
 import '../theme/app_theme.dart';
 import '../utils/home_recent_sessions.dart';
 import '../utils/assistant_operational_artifacts.dart';
@@ -68,6 +71,9 @@ class HomeDashboardScreen extends StatefulWidget {
   final ValueChanged<double>? onInitialLoadProgress;
   final VoidCallback? onInitialLoadComplete;
   final ActiveChatService? activeChatsOverride;
+  final GlobalActivityAggregate? globalActivityOverride;
+  final Future<DesktopActiveSessionList> Function()? activeSessionListLoader;
+  final Stream<TuiGatewayEvent>? eventStreamOverride;
 
   const HomeDashboardScreen({
     required this.connManager,
@@ -75,6 +81,9 @@ class HomeDashboardScreen extends StatefulWidget {
     this.onInitialLoadProgress,
     this.onInitialLoadComplete,
     @visibleForTesting this.activeChatsOverride,
+    @visibleForTesting this.globalActivityOverride,
+    @visibleForTesting this.activeSessionListLoader,
+    @visibleForTesting this.eventStreamOverride,
     super.key,
   });
 
@@ -102,7 +111,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   int _reloadEpoch = 0;
   int _refreshStatusEpoch = 0;
   ActiveChatService? _listenedActiveChats;
-  bool _activeChatsRebuildScheduled = false;
+  GlobalActivityAggregate? _listenedGlobalActivity;
+  TuiGatewayClient? _ownedActivityClient;
+  StreamSubscription<TuiGatewayEvent>? _activityEventSubscription;
+  Timer? _activityEventRefreshTimer;
+  Timer? _activityStaleExpiryTimer;
+  DateTime? _lastActivityEventRefreshAt;
+  String? _activityConnectionId;
+  bool _foreground = true;
+  bool _activityRebuildScheduled = false;
 
   ActiveChatService? get _activeChats =>
       widget.activeChatsOverride ??
@@ -123,10 +140,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     unawaited(DrawerGestureExclusion.setEnabled(false));
     _refreshStatusEpoch++;
     _previewHydrationEpoch++;
+    _activityEventRefreshTimer?.cancel();
+    _activityStaleExpiryTimer?.cancel();
+    unawaited(_activityEventSubscription?.cancel());
+    unawaited(_ownedActivityClient?.close());
     unawaited(_historyCleanupSubscription?.cancel());
     WidgetsBinding.instance.removeObserver(this);
     widget.connManager.activeConnectionId.removeListener(_onActiveConnChanged);
-    _listenedActiveChats?.activeIds.removeListener(_onActiveChatsChanged);
+    _listenedActiveChats?.activeIds.removeListener(_onActivityChanged);
+    _listenedGlobalActivity?.removeListener(_onActivityChanged);
     _localStartPoll?.cancel();
     super.dispose();
   }
@@ -136,9 +158,16 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     super.didChangeDependencies();
     final activeChats = _activeChats;
     if (!identical(_listenedActiveChats, activeChats)) {
-      _listenedActiveChats?.activeIds.removeListener(_onActiveChatsChanged);
+      _listenedActiveChats?.activeIds.removeListener(_onActivityChanged);
       _listenedActiveChats = activeChats;
-      activeChats?.activeIds.addListener(_onActiveChatsChanged);
+      activeChats?.activeIds.addListener(_onActivityChanged);
+    }
+    final aggregate =
+        widget.globalActivityOverride ?? activeChats?.globalActivity;
+    if (!identical(_listenedGlobalActivity, aggregate)) {
+      _listenedGlobalActivity?.removeListener(_onActivityChanged);
+      _listenedGlobalActivity = aggregate;
+      aggregate?.addListener(_onActivityChanged);
     }
     final route = ModalRoute.of(context);
     if (route is PageRoute<dynamic> && !identical(route, _route)) {
@@ -170,7 +199,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }
 
   @override
-  void didPushNext() => unawaited(DrawerGestureExclusion.setEnabled(false));
+  void didPushNext() {
+    _activityEventRefreshTimer?.cancel();
+    _activityEventRefreshTimer = null;
+    unawaited(DrawerGestureExclusion.setEnabled(false));
+  }
 
   @override
   void didPop() => unawaited(DrawerGestureExclusion.setEnabled(false));
@@ -193,13 +226,154 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (mounted) _reload();
   }
 
-  void _onActiveChatsChanged() {
-    if (!mounted || _activeChatsRebuildScheduled) return;
-    _activeChatsRebuildScheduled = true;
+  void _onActivityChanged() {
+    if (!mounted || _activityRebuildScheduled) return;
+    _activityRebuildScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _activeChatsRebuildScheduled = false;
+      _activityRebuildScheduled = false;
       if (mounted) setState(() {});
     });
+  }
+
+  bool get _activityRefreshAllowed =>
+      mounted && _foreground && _route?.isCurrent != false;
+
+  void _configureActivitySource(SavedConnection? connection) {
+    if (_activityConnectionId == connection?.id) return;
+    _activityConnectionId = connection?.id;
+    _activityEventRefreshTimer?.cancel();
+    _activityEventRefreshTimer = null;
+    _lastActivityEventRefreshAt = null;
+    unawaited(_activityEventSubscription?.cancel());
+    _activityEventSubscription = null;
+    unawaited(_ownedActivityClient?.close());
+    _ownedActivityClient = null;
+    if (connection == null) return;
+
+    if (widget.clientFactory == null &&
+        (widget.activeSessionListLoader == null ||
+            widget.eventStreamOverride == null)) {
+      _ownedActivityClient = TuiGatewayClient(connection);
+    }
+    final stream = widget.eventStreamOverride ?? _ownedActivityClient?.events;
+    _activityEventSubscription = stream?.listen(
+      _onActivityEvent,
+      onError: (_) => _markActivityTransportStale(connection.id),
+    );
+    final client = _ownedActivityClient;
+    if (client != null) unawaited(_connectActivityClient(client, connection.id));
+  }
+
+  Future<void> _connectActivityClient(
+    TuiGatewayClient client,
+    String connectionId,
+  ) async {
+    try {
+      await client.connect();
+      if (_activityConnectionId == connectionId && _activityRefreshAllowed) {
+        final connection = _active;
+        if (connection != null) {
+          await _refreshRemoteActivity(
+            connection,
+            Session.profileOwner(
+              widget.connManager.activeProfileFor(connection.id),
+            ),
+          );
+        }
+      }
+    } catch (_) {
+      _markActivityTransportStale(connectionId);
+    }
+  }
+
+  void _markActivityTransportStale(String connectionId) {
+    if (_activityConnectionId != connectionId) return;
+    final profile = Session.profileOwner(
+      widget.connManager.activeProfileFor(connectionId),
+    );
+    _listenedGlobalActivity?.markTransportStale(connectionId, profile);
+    _activityStaleExpiryTimer?.cancel();
+    _activityStaleExpiryTimer = Timer(
+      GlobalActivityAggregate.staleLivenessCeiling,
+      () {
+        _activityStaleExpiryTimer = null;
+        if (mounted) setState(() {});
+      },
+    );
+  }
+
+  void _onActivityEvent(TuiGatewayEvent event) {
+    final connection = _active;
+    if (connection == null || !_activityRefreshAllowed) return;
+    final profile = Session.profileOwner(
+      widget.connManager.activeProfileFor(connection.id),
+    );
+    final routed =
+        _listenedGlobalActivity?.observeGatewayEvent(
+          connectionId: connection.id,
+          profile: profile,
+          event: event,
+        ) ??
+        true;
+    if (event.sessionId.isNotEmpty && !routed) {
+      unawaited(_refreshRemoteActivity(connection, profile));
+    }
+    if (!isSessionLibraryRefreshEvent(event)) return;
+    final now = DateTime.now();
+    final last = _lastActivityEventRefreshAt;
+    final elapsed = last == null
+        ? sessionLibraryRefreshGap
+        : now.difference(last);
+    if (last == null || elapsed >= sessionLibraryRefreshGap) {
+      _activityEventRefreshTimer?.cancel();
+      _activityEventRefreshTimer = null;
+      _lastActivityEventRefreshAt = now;
+      unawaited(_refreshStatus());
+      return;
+    }
+    _activityEventRefreshTimer ??= Timer(
+      sessionLibraryRefreshGap - elapsed,
+      () {
+        _activityEventRefreshTimer = null;
+        _lastActivityEventRefreshAt = DateTime.now();
+        if (_activityRefreshAllowed) unawaited(_refreshStatus());
+      },
+    );
+  }
+
+  Future<void> _refreshRemoteActivity(
+    SavedConnection connection,
+    String profile,
+  ) async {
+    final aggregate = _listenedGlobalActivity;
+    final loader =
+        widget.activeSessionListLoader ??
+        (_ownedActivityClient == null
+            ? null
+            : () => _ownedActivityClient!.listActiveSessions());
+    if (!_activityRefreshAllowed || aggregate == null || loader == null) return;
+    final generation = aggregate.beginRosterRequest(connection.id, profile);
+    try {
+      final roster = await loader();
+      if (!_activityRefreshAllowed || _activityConnectionId != connection.id) {
+        return;
+      }
+      aggregate.applyRoster(
+        connectionId: connection.id,
+        profile: profile,
+        replayEpoch: _ownedActivityClient?.currentReplayEpoch ?? 'current',
+        requestGeneration: generation,
+        roster: roster,
+      );
+      if (roster.hasMalformedRows) {
+        _markActivityTransportStale(connection.id);
+      } else {
+        _activityStaleExpiryTimer?.cancel();
+        _activityStaleExpiryTimer = null;
+      }
+    } catch (_) {
+      _markActivityTransportStale(connection.id);
+    }
   }
 
   void _onHistoryCleanupInvalidation(HistoryCleanupInvalidation event) {
@@ -216,12 +390,18 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    _foreground = state == AppLifecycleState.resumed;
+    if (!_foreground) {
+      _activityEventRefreshTimer?.cancel();
+      _activityEventRefreshTimer = null;
+      _activityStaleExpiryTimer?.cancel();
+      _activityStaleExpiryTimer = null;
+      return;
+    }
     // Al volver de segundo plano re-comprobamos la salud: una instancia que
     // sigue viva (p.ej. el agente local con wake-lock) vuelve a "online" sola,
     // sin obligar al usuario a reconectar a mano cada vez que reabre la app.
-    if (state == AppLifecycleState.resumed && _active != null && !_checking) {
-      _refreshStatus();
-    }
+    if (_active != null && !_checking) _refreshStatus();
   }
 
   /// Re-resolve connections + active gateway from storage, then refresh
@@ -293,6 +473,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         _installInProgress = installInProgress;
         _uninstallInProgress = uninstallInProgress;
       });
+      _configureActivitySource(active);
       _reportInitialLoadProgress(0.64);
       await _refreshStatus();
     } finally {
@@ -766,6 +947,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       _archive = archive;
       _recentSessions = recentSessions;
     });
+    await _refreshRemoteActivity(conn, ownerProfile);
+    if (!_isCurrentStatusRefresh(refreshEpoch, connectionId)) return;
     unawaited(
       app?.updateHomeWidget(
         (current) => _isCurrentStatusRefresh(refreshEpoch, connectionId)
@@ -858,6 +1041,40 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     HomeRecentDateGroup.earlier => Strings.of(context).homeRecentEarlier,
   };
 
+  GlobalActivity? _globalActivityFor(
+    SavedConnection connection,
+    Session session,
+  ) {
+    final aggregate = _listenedGlobalActivity;
+    if (aggregate == null) return null;
+    final profile = Session.profileOwner(session.profile);
+    for (final id in <String>{session.id, session.logicalId}) {
+      if (aggregate.isActive(connection.id, profile, id)) {
+        return aggregate.activityFor(connection.id, profile, id);
+      }
+    }
+    return null;
+  }
+
+  SessionActivityKind _globalActivityKind(GlobalActivity? activity) {
+    if (activity == null || !activity.active) return SessionActivityKind.idle;
+    return switch (activity.phase) {
+      GlobalActivityPhase.preparing => SessionActivityKind.preparing,
+      GlobalActivityPhase.usingTools => SessionActivityKind.usingTools,
+      GlobalActivityPhase.waitingForUser => SessionActivityKind.waitingForUser,
+      GlobalActivityPhase.compacting => SessionActivityKind.compacting,
+      GlobalActivityPhase.delegated => SessionActivityKind.delegated,
+      GlobalActivityPhase.backgroundWork =>
+        SessionActivityKind.backgroundProcess,
+      GlobalActivityPhase.generating ||
+      GlobalActivityPhase.completing ||
+      GlobalActivityPhase.unknown => SessionActivityKind.generating,
+      GlobalActivityPhase.completed ||
+      GlobalActivityPhase.interrupted ||
+      GlobalActivityPhase.failed => SessionActivityKind.idle,
+    };
+  }
+
   List<Widget> _buildRecentRows(SavedConnection connection, int limit) {
     final rows = <Widget>[];
     final now = DateTime.now();
@@ -897,6 +1114,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         session.id,
         profile: session.profile,
       );
+      final rosterActivity = _globalActivityKind(
+        _globalActivityFor(connection, session),
+      );
 
       Widget recentTile(SessionActivityKind activity) => _RecentSessionTile(
         session: session,
@@ -918,10 +1138,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
               ? Duration.zero
               : const Duration(milliseconds: 220),
           child: activeChat == null
-              ? recentTile(SessionActivityKind.idle)
+              ? recentTile(rosterActivity)
               : StreamBuilder<ActiveChatEvent>(
                   stream: activeChat.changes,
-                  builder: (_, _) => recentTile(activeChat.sessionActivity.kind),
+                  builder: (_, _) {
+                    final localActivity = activeChat.sessionActivity;
+                    return recentTile(
+                      localActivity.active ? localActivity.kind : rosterActivity,
+                    );
+                  },
                 ),
         ),
       );
