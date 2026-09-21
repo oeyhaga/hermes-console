@@ -1857,8 +1857,9 @@ void main() {
   test('Chat no conserva superficies que entren desde abajo', () {
     final source = File('lib/core/screens/chat_screen.dart').readAsStringSync();
     expect(source, isNot(contains('showModalBottomSheet')));
+    expect(source, isNot(contains('chat-edit-message-dialog')));
+    expect(source, isNot(contains('_EditUserMessageSheet')));
     for (final key in const [
-      'chat-edit-message-dialog',
       'chat-slash-help-dialog',
       'chat-session-details-dialog',
       'chat-artifacts-dialog',
@@ -14257,11 +14258,18 @@ void main() {
       await tester.tap(editButtons.last);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+      final editorField = find.byKey(
+        const ValueKey('inline-message-editor-field'),
+      );
+      await tester.enterText(editorField, 'pregunta uno corregida');
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<TextField>(editorField).controller?.text,
         'pregunta uno corregida',
       );
-      await tester.tap(find.text('Guardar y enviar'));
+      final save = find.byKey(const ValueKey('inline-message-editor-save'));
+      expect(tester.widget<IconButton>(save).onPressed, isNotNull);
+      await tester.tap(save);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 700));
 
@@ -14315,10 +14323,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await tester.enterText(
-      find.byKey(const ValueKey('edit-message-composer')),
+      find.byKey(const ValueKey('inline-message-editor-field')),
       'pregunta corregida tras seleccionar',
     );
-    await tester.tap(find.text('Guardar y enviar'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 700));
 
@@ -14354,10 +14363,11 @@ void main() {
       await tester.tap(find.byIcon(Icons.edit_outlined));
       await tester.pumpAndSettle();
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         'pregunta que no debe enviarse',
       );
-      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 700));
 
@@ -14418,10 +14428,11 @@ void main() {
       await tester.tap(find.byIcon(Icons.edit_outlined));
       await tester.pumpAndSettle();
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         'texto que no se enviará',
       );
-      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 700));
 
@@ -14457,21 +14468,36 @@ void main() {
       ],
     );
 
+    final bubble = find.byKey(const ValueKey('user-message-bubble'));
+    expect(bubble, findsOneWidget);
+    final bubbleRect = tester.getRect(bubble);
+
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(
       find.byKey(const ValueKey('chat-edit-message-dialog')),
-      findsOneWidget,
+      findsNothing,
     );
     expect(find.byType(BottomSheet), findsNothing);
-    final editor = find.byKey(const ValueKey('edit-message-composer'));
+    expect(find.byType(Dialog), findsNothing);
+    final editor = find.byKey(const ValueKey('inline-message-editor-field'));
     expect(editor, findsOneWidget);
+    final editorBubbleRect = tester.getRect(bubble);
+    expect(editorBubbleRect.left, closeTo(bubbleRect.left, 1));
+    expect(editorBubbleRect.right, closeTo(bubbleRect.right, 1));
     await tester.enterText(editor, 'pregunta corregida');
-    await tester.tap(find.text('Guardar y enviar'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 700));
+    final save = find.byKey(const ValueKey('inline-message-editor-save'));
+    expect(tester.widget<IconButton>(save).onPressed, isNotNull);
+    expect(save.hitTestable(), findsOneWidget);
+    final bubbleCounts = <int>[];
+    await tester.tap(save);
+    for (var frame = 0; frame < 24; frame++) {
+      await tester.pump(const Duration(milliseconds: 33));
+      bubbleCounts.add(bubble.evaluate().length);
+    }
 
     expect(gateway.resolutionCalls, [(text: 'pregunta original', ordinal: 0)]);
     expect(gateway.rewinds, [(text: 'pregunta corregida', ordinal: 0)]);
@@ -14482,7 +14508,10 @@ void main() {
     gateway.emit('message.complete', {'text': 'Respuesta corregida'});
     for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
       await tester.pump(const Duration(milliseconds: 33));
+      bubbleCounts.add(bubble.evaluate().length);
     }
+    expect(bubbleCounts, isNotEmpty);
+    expect(bubbleCounts.every((count) => count == 1), isTrue);
     expect(find.textContaining('pregunta corregida'), findsOneWidget);
     expect(chat.isStreaming, isFalse);
   });
@@ -14544,11 +14573,14 @@ void main() {
       expect(edit, findsOneWidget);
       await tester.tap(edit);
       await tester.pumpAndSettle();
+      expect(find.byType(AttachmentHistoryCard), findsOneWidget);
+      expect(find.text('brief.txt'), findsOneWidget);
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         'pregunta corregida',
       );
-      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
       for (var frame = 0; frame < 60 && gateway.rewinds.isEmpty; frame++) {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 5)),
@@ -14598,10 +14630,11 @@ void main() {
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pumpAndSettle();
     await tester.enterText(
-      find.byKey(const ValueKey('edit-message-composer')),
+      find.byKey(const ValueKey('inline-message-editor-field')),
       'pregunta corregida',
     );
-    await tester.tap(find.text('Guardar y enviar'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 700));
 
@@ -14801,10 +14834,11 @@ void main() {
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pumpAndSettle();
     await tester.enterText(
-      find.byKey(const ValueKey('edit-message-composer')),
+      find.byKey(const ValueKey('inline-message-editor-field')),
       'pregunta corregida que debe abortar',
     );
-    await tester.tap(find.text('Guardar y enviar'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
     await tester.pump();
     expect(gateway.resolutionCalls, [(text: 'pregunta original', ordinal: 0)]);
 
@@ -14843,7 +14877,7 @@ void main() {
     'guardar edición sigue siendo táctil con teclado Android compacto',
     (tester) async {
       tester.view
-        ..physicalSize = const Size(360, 640)
+        ..physicalSize = const Size(320, 640)
         ..devicePixelRatio = 1
         ..viewInsets = const FakeViewPadding(bottom: 300);
       addTearDown(tester.view.reset);
@@ -14858,14 +14892,19 @@ void main() {
         ],
       );
 
-      await tester.tap(find.byIcon(Icons.edit_outlined));
+      final edit = find.byIcon(Icons.edit_outlined);
+      await tester.ensureVisible(edit);
+      await tester.pumpAndSettle();
+      expect(edit.hitTestable(), findsOneWidget);
+      await tester.tap(edit);
       await tester.pumpAndSettle();
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         'pregunta corregida desde Android',
       );
+      await tester.pump();
 
-      final apply = find.text('Guardar y enviar');
+      final apply = find.byKey(const ValueKey('inline-message-editor-save'));
       expect(apply, findsOneWidget);
       expect(apply.hitTestable(), findsOneWidget);
       await tester.tap(apply);
@@ -14874,6 +14913,8 @@ void main() {
       expect(gateway.rewinds, [
         (text: 'pregunta corregida desde Android', ordinal: 0),
       ]);
+      tester.view.viewInsets = const FakeViewPadding();
+      await tester.pump();
       gateway.emit('message.complete', {'text': 'Respuesta corregida Android'});
       for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
         await tester.pump(const Duration(milliseconds: 33));
@@ -14914,22 +14955,34 @@ void main() {
   Future<void> submitEdit(WidgetTester tester, [String? text]) async {
     if (text != null) {
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         text,
       );
+      await tester.pump();
     }
-    await tester.tap(find.text('Guardar y enviar'));
+    await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
   }
 
   testWidgets('editar a texto vacío no rebobina ni altera el turno', (
     tester,
   ) async {
     final (:chat, :gateway) = await openRewriteEditor(tester, 'conn-empty');
-    await submitEdit(tester, '   ');
-    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('inline-message-editor-field')),
+      '   ',
+    );
+    await tester.pump();
+    final save = tester.widget<IconButton>(
+      find.byKey(const ValueKey('inline-message-editor-save')),
+    );
+    expect(save.onPressed, isNull);
     expect(gateway.rewinds, isEmpty);
-    expect(transcript('pregunta original'), findsOneWidget);
     expect(chat.state, ChatPipelineState.idle);
+    await tester.tap(
+      find.byKey(const ValueKey('inline-message-editor-cancel')),
+    );
+    await tester.pump();
+    expect(transcript('pregunta original'), findsOneWidget);
     expect(find.byIcon(Icons.edit_outlined).hitTestable(), findsOneWidget);
   });
 
@@ -14937,12 +14990,48 @@ void main() {
     tester,
   ) async {
     final (:chat, :gateway) = await openRewriteEditor(tester, 'conn-same');
-    await submitEdit(tester);
-    await tester.pumpAndSettle();
+    final save = tester.widget<IconButton>(
+      find.byKey(const ValueKey('inline-message-editor-save')),
+    );
+    expect(save.onPressed, isNull);
     expect(gateway.rewinds, isEmpty);
-    expect(transcript('pregunta original'), findsOneWidget);
     expect(chat.state, ChatPipelineState.idle);
+    await tester.tap(
+      find.byKey(const ValueKey('inline-message-editor-cancel')),
+    );
+    await tester.pump();
+    expect(transcript('pregunta original'), findsOneWidget);
     expect(find.byIcon(Icons.edit_outlined).hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('solo una burbuja puede editarse a la vez', (tester) async {
+    await pumpChat(
+      tester,
+      desktopGateway: _UiRewindGateway(),
+      connection: _remoteConn('conn-one-inline-editor'),
+      messages: const [
+        {'role': 'assistant', 'content': 'Respuesta dos'},
+        {'role': 'user', 'content': 'pregunta dos', '_desktopRowId': 22},
+        {'role': 'assistant', 'content': 'Respuesta uno'},
+        {'role': 'user', 'content': 'pregunta uno', '_desktopRowId': 11},
+      ],
+    );
+
+    final editButtons = find.byIcon(Icons.edit_outlined);
+    expect(editButtons, findsNWidgets(2));
+    await tester.tap(editButtons.first);
+    await tester.pump();
+
+    expect(
+      find.byKey(const ValueKey('inline-message-editor-field')),
+      findsOneWidget,
+    );
+    expect(find.byIcon(Icons.edit_outlined), findsNothing);
+    await tester.tap(
+      find.byKey(const ValueKey('inline-message-editor-cancel')),
+    );
+    await tester.pump();
+    expect(find.byIcon(Icons.edit_outlined), findsNWidgets(2));
   });
 
   testWidgets('auth Dashboard al resolver identidad muestra configuración', (
@@ -15031,7 +15120,7 @@ void main() {
     await tester.tap(edit);
     await tester.pumpAndSettle();
     expect(
-      find.byKey(const ValueKey('chat-edit-message-dialog')),
+      find.byKey(const ValueKey('inline-message-editor-field')),
       findsOneWidget,
     );
   });
@@ -19267,12 +19356,13 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    final editor = find.byKey(const ValueKey('edit-message-composer'));
+    final editor = find.byKey(const ValueKey('inline-message-editor-field'));
     expect(editor, findsOneWidget);
     await tester.enterText(editor, '¿Quién fue el mayor emperador griego?');
-    await tester.tap(find.text('Guardar y enviar'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
 
-    // El pop de la hoja y el rewind del transcript ocurren en la misma
+    // El cierre del editor y el rewind del transcript ocurren en la misma
     // transición. Avanzar varios frames reproduce la carrera del dispositivo.
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
@@ -19314,10 +19404,11 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
+        find.byKey(const ValueKey('inline-message-editor-field')),
         'pregunta corregida obsoleta',
       );
-      await tester.tap(find.text('Guardar y enviar'));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('inline-message-editor-save')));
       await tester.pump(const Duration(milliseconds: 100));
       expect(gateway.interruptCalls, 1);
       expect(gateway.rewinds, isEmpty);
@@ -19353,12 +19444,15 @@ void main() {
     },
   );
 
-  testWidgets('cancelar el editor conserva el turno original trabajando', (
+  testWidgets('atrás cancela el editor sin RPC y conserva el turno original', (
     tester,
   ) async {
+    final gateway = _UiRewindGateway();
     final chat = await pumpChat(
       tester,
       chatState: ChatPipelineState.executing,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-inline-back-cancel'),
       messages: [
         {'role': 'assistant', 'content': '', '_pipeline': true},
         {'role': 'user', 'content': 'pregunta original'},
@@ -19368,12 +19462,16 @@ void main() {
     await tester.tap(find.byIcon(Icons.edit_outlined));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    expect(find.byKey(const ValueKey('edit-message-composer')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('inline-message-editor-field')),
+      findsOneWidget,
+    );
 
-    await tester.tap(find.text('Cancelar'));
+    await tester.binding.handlePopRoute();
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
 
+    expect(gateway.rewinds, isEmpty);
     expect(chat.state, ChatPipelineState.executing);
     expect(find.textContaining('pregunta original'), findsOneWidget);
     expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
