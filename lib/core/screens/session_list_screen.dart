@@ -38,10 +38,8 @@ import 'mission_control_screen.dart';
 import 'session_detail_screen.dart';
 import '../widgets/hermes_app_bar.dart';
 
-@visibleForTesting
 const sessionLibraryRefreshGap = Duration(seconds: 10);
 
-@visibleForTesting
 bool isSessionLibraryRefreshEvent(TuiGatewayEvent event) =>
     event.type == 'sessions.changed';
 

@@ -13,7 +13,7 @@ void main() {
   );
 
   test(
-    'authoritative roster exposes unopened remote work and closes absence',
+    'authoritative roster exposes unopened work and clears after two absences',
     () {
       final aggregate = GlobalActivityAggregate.inMemory(
         now: () => DateTime.utc(2026),
@@ -56,11 +56,111 @@ void main() {
         roster: const DesktopActiveSessionList(),
       );
       expect(
+        aggregate.activityFor('connection-a', 'default', 'durable-a')?.active,
+        isTrue,
+      );
+
+      aggregate.applyRoster(
+        connectionId: 'connection-a',
+        profile: 'default',
+        replayEpoch: 'epoch-a',
+        requestGeneration: aggregate.beginRosterRequest(
+          'connection-a',
+          'default',
+        ),
+        roster: const DesktopActiveSessionList(),
+      );
+      expect(
         aggregate.activityFor('connection-a', 'default', 'durable-a'),
         isNull,
       );
     },
   );
+
+  test('two explicit non-busy roster rows clear activity', () {
+    final aggregate = GlobalActivityAggregate.inMemory();
+
+    void apply(String status) {
+      aggregate.applyRoster(
+        connectionId: 'connection-a',
+        profile: 'default',
+        replayEpoch: 'epoch-a',
+        requestGeneration: aggregate.beginRosterRequest(
+          'connection-a',
+          'default',
+        ),
+        roster: DesktopActiveSessionList(
+          sessions: [
+            DesktopActiveSession(
+              runtimeSessionId: 'runtime-a',
+              storedSessionId: 'durable-a',
+              status: status,
+            ),
+          ],
+        ),
+      );
+    }
+
+    apply('working');
+    apply('idle');
+    expect(aggregate.isActive('connection-a', 'default', 'durable-a'), isTrue);
+    apply('idle');
+    expect(
+      aggregate.activityFor('connection-a', 'default', 'durable-a'),
+      isNull,
+    );
+  });
+
+  test('malformed roster only marks known activity stale', () {
+    final aggregate = GlobalActivityAggregate.inMemory();
+    aggregate.applyRoster(
+      connectionId: 'connection-a',
+      profile: 'default',
+      replayEpoch: 'epoch-a',
+      requestGeneration: aggregate.beginRosterRequest(
+        'connection-a',
+        'default',
+      ),
+      roster: const DesktopActiveSessionList(
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-a',
+            storedSessionId: 'durable-a',
+            status: 'working',
+          ),
+        ],
+      ),
+    );
+
+    aggregate.applyRoster(
+      connectionId: 'connection-a',
+      profile: 'default',
+      replayEpoch: 'epoch-a',
+      requestGeneration: aggregate.beginRosterRequest(
+        'connection-a',
+        'default',
+      ),
+      roster: const DesktopActiveSessionList(
+        hasMalformedRows: true,
+        sessions: [
+          DesktopActiveSession(
+            runtimeSessionId: 'runtime-other',
+            storedSessionId: 'durable-other',
+            status: 'working',
+          ),
+        ],
+      ),
+    );
+
+    expect(
+      aggregate.activityFor('connection-a', 'default', 'durable-a')?.stale,
+      isTrue,
+    );
+    expect(
+      aggregate.activityFor('connection-a', 'default', 'durable-other'),
+      isNull,
+    );
+  });
 
   test('event detail wins over an older roster response', () {
     final aggregate = GlobalActivityAggregate.inMemory(
