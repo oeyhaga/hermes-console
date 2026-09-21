@@ -133,6 +133,7 @@ import 'soul_screen.dart';
 import 'tasks_screen.dart';
 import 'chat_render_projection.dart';
 import '../widgets/action_approval.dart';
+import '../widgets/agent_task_widgets.dart';
 import '../widgets/attachment_card.dart';
 import '../widgets/attachment_history_preview.dart';
 import '../widgets/attachment_source_sheet.dart';
@@ -4408,6 +4409,12 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
+  Future<void> _showAgentTaskCard() => showAgentTaskCard(
+    context,
+    changes: _chat.changes,
+    read: () => _chat.agentTasks,
+  );
+
   Future<void> _showBackgroundActivitySheet() async {
     final activity = _chat.sessionActivity;
     if (activity.backgroundItemCount == 0) return;
@@ -4654,35 +4661,6 @@ class _ChatScreenState extends State<ChatScreen>
             ),
           );
         }
-        final tasks = activity.pendingTasks;
-        if (tasks.isNotEmpty) {
-          final counted = activity.tasks
-              .where(
-                (task) => task.status != SessionActivityTaskStatus.cancelled,
-              )
-              .toList(growable: false);
-          final done = counted
-              .where(
-                (task) => task.status == SessionActivityTaskStatus.completed,
-              )
-              .length;
-          rows.add(
-            section(
-              title: Text(
-                s.chaBackgroundTasks(done, counted.length),
-                style: Theme.of(sheetContext).textTheme.titleSmall,
-              ),
-              children: [
-                for (final task in tasks)
-                  detailRow(
-                    task.content,
-                    key: ValueKey('background-task-${task.id}'),
-                  ),
-              ],
-            ),
-          );
-        }
-
         return ListView(
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
@@ -9369,7 +9347,13 @@ class _ChatScreenState extends State<ChatScreen>
                           Expanded(
                             child: Stack(
                               children: [
-                                _buildBody(),
+                                AgentTaskScope(
+                                  tasks: _chat.agentTasks,
+                                  ownerStepId: _chat.agentTasks.isEmpty
+                                      ? null
+                                      : latestAgentTaskStepId(_messages),
+                                  child: _buildBody(),
+                                ),
                                 if (_chat.hasEarlierMessages)
                                   Positioned(
                                     top: 8,
@@ -9478,6 +9462,16 @@ class _ChatScreenState extends State<ChatScreen>
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
+                                            AgentTaskPill(
+                                              key: const ValueKey(
+                                                'chat-agent-tasks',
+                                              ),
+                                              tasks: _chat.agentTasks,
+                                              turnActive:
+                                                  _chat.isStreaming ||
+                                                  _chat.remoteSurfaceOwnsLiveTurn,
+                                              onTap: _showAgentTaskCard,
+                                            ),
                                             TurnActivityPill(
                                               key: const ValueKey(
                                                 'chat-turn-activity',

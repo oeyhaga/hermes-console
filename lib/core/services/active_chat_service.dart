@@ -23,6 +23,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../widgets/chat_event_cards.dart';
+import '../models/agent_task_list.dart';
 import '../models/attachment_draft.dart';
 import '../models/command_descriptor.dart';
 import '../models/core_read.dart';
@@ -4595,6 +4596,10 @@ class ActiveChat {
   SessionHeartbeatSnapshot? _heartbeat;
   List<SessionActivityTask> _sessionTasks = const [];
   int _sessionTaskRevision = -1;
+
+  /// Lista de tareas del agente (`todo_list`) de la sesión, o vacía.
+  AgentTaskList _agentTasks = AgentTaskList.empty;
+  AgentTaskList get agentTasks => _agentTasks;
   bool _sessionControlStale = false;
   int _sessionControlAbsenceStreak = 0;
   Future<void>? _sessionControlRefreshFlight;
@@ -4636,40 +4641,55 @@ class ActiveChat {
   }
 
   void _applyTodoUpdate(Map<String, dynamic> payload) {
-    final revision = payload['revision'];
-    final parsedRevision = revision is num
-        ? revision.toInt()
-        : int.tryParse(revision?.toString() ?? '');
-    if (parsedRevision == null || parsedRevision <= _sessionTaskRevision) return;
-    final rawTodos = payload['todos'];
-    if (rawTodos is! List) return;
-    final next = <SessionActivityTask>[];
-    for (final raw in rawTodos.take(200)) {
-      if (raw is! Map) continue;
-      final id = (raw['id'] ?? '').toString().trim();
-      final content = (raw['content'] ?? '')
-          .toString()
-          .replaceAll(RegExp(r'[\x00-\x1f\x7f]+'), ' ')
-          .trim();
-      final status = switch ((raw['status'] ?? '').toString()) {
-        'pending' => SessionActivityTaskStatus.pending,
-        'in_progress' => SessionActivityTaskStatus.inProgress,
-        'completed' => SessionActivityTaskStatus.completed,
-        'cancelled' => SessionActivityTaskStatus.cancelled,
-        _ => null,
-      };
-      if (id.isEmpty || content.isEmpty || status == null) continue;
-      next.add(
-        SessionActivityTask(
-          id: id.length <= 512 ? id : id.substring(0, 512),
-          content: content.length <= 200 ? content : content.substring(0, 200),
-          status: status,
-        ),
-      );
+    _adoptAgentTasks(AgentTaskList.tryParse(payload), live: true);
+  }
+
+  /// Reconstruye la lista desde el `todo_state` de un resume/activate/recovery.
+  /// Solo alimenta la presentación: el trabajo pendiente de una lista rancia
+  /// no convierte un chat en reposo en «actividad» (eso solo lo hace la lista
+  /// que llegó en vivo con un turno en marcha).
+  void _hydrateAgentTasks(AgentTaskList? state) =>
+      _adoptAgentTasks(state, live: false);
+
+  void _adoptAgentTasks(AgentTaskList? next, {required bool live}) {
+    if (next == null) return;
+    final revision = next.revision;
+    // Una revisión anterior nunca pisa a una posterior; la misma es idempotente.
+    if (revision != null && revision < _sessionTaskRevision) return;
+    if (revision != null) _sessionTaskRevision = revision;
+    var changed = false;
+    if (!next.sameContentAs(_agentTasks)) {
+      _agentTasks = next;
+      changed = true;
     }
-    _sessionTasks = List.unmodifiable(next);
-    _sessionTaskRevision = parsedRevision;
-    _emit(ActiveChatEvent.subagentActivity);
+    if (live) {
+      final tasks = List<SessionActivityTask>.unmodifiable([
+        for (final item in next.items)
+          SessionActivityTask(
+            id: item.id,
+            content: item.content,
+            status: switch (item.status) {
+              AgentTaskStatus.pending => SessionActivityTaskStatus.pending,
+              AgentTaskStatus.inProgress =>
+                SessionActivityTaskStatus.inProgress,
+              AgentTaskStatus.completed => SessionActivityTaskStatus.completed,
+              AgentTaskStatus.cancelled => SessionActivityTaskStatus.cancelled,
+            },
+          ),
+      ]);
+      var tasksChanged = _sessionTasks.length != tasks.length;
+      for (var i = 0; !tasksChanged && i < tasks.length; i++) {
+        tasksChanged =
+            _sessionTasks[i].id != tasks[i].id ||
+            _sessionTasks[i].content != tasks[i].content ||
+            _sessionTasks[i].status != tasks[i].status;
+      }
+      if (tasksChanged) {
+        _sessionTasks = tasks;
+        changed = true;
+      }
+    }
+    if (changed) _emit(ActiveChatEvent.subagentActivity);
   }
 
   /// Registers/unregisters this session with [BackgroundGoalWatch] so the
@@ -7049,6 +7069,7 @@ class ActiveChat {
     _loop = null;
     _heartbeat = null;
     _sessionTasks = const [];
+    _agentTasks = AgentTaskList.empty;
     _sessionTaskRevision = -1;
     _sessionControlStale = false;
     _sessionControlAbsenceStreak = 0;
@@ -7862,6 +7883,7 @@ class ActiveChat {
         }
         if (!loadStillAuthorized()) return;
         _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
+        _hydrateAgentTasks(snapshot.todoState);
         _reconcileSubagentsFromTranscript();
         _restorePendingClarify(snapshot);
         _restorePendingApproval(
@@ -12055,6 +12077,7 @@ class ActiveChat {
 
       _desktopStoredSessionId = durableId;
       _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
+      _hydrateAgentTasks(snapshot.todoState);
       _desktopRuntimeBindingOrigin = origin;
       _desktopRuntimeInfo = snapshot.info;
       _rememberDesktopLiveStatus(snapshot.status, running: snapshot.running);
@@ -12410,6 +12433,7 @@ class ActiveChat {
         reconnectEvidence: snapshot,
       );
       _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
+      _hydrateAgentTasks(snapshot.todoState);
       _desktopRuntimeBindingOrigin = snapshot.created
           ? _DesktopRuntimeBindingOrigin.consoleOwned
           : bindingOrigin;
@@ -13831,6 +13855,7 @@ class ActiveChat {
     _desktopStoredSessionKnownMissing = false;
     if (authoritativeRuntimeId != rejectedRuntimeId) {
       _adoptDesktopRuntime(authoritativeRuntimeId, info: snapshot.info);
+      _hydrateAgentTasks(snapshot.todoState);
     }
     _desktopRuntimeInfo = snapshot.info;
     _rememberDesktopLiveStatus(snapshot.status, running: snapshot.running);
@@ -14159,6 +14184,7 @@ class ActiveChat {
         _desktopStoredSessionId = binding.storedSessionId;
         _desktopStoredSessionKnownMissing = false;
         _adoptDesktopRuntime(runtimeId, info: binding.info);
+        _hydrateAgentTasks(binding.todoState);
         boundOrAvailabilityResumedForSubmit = true;
         if (binding.info != _desktopRuntimeInfo) {
           _desktopRuntimeInfo = binding.info;
@@ -14991,6 +15017,7 @@ class ActiveChat {
         _desktopStoredSessionId = snapshot.storedSessionId;
         _desktopStoredSessionKnownMissing = false;
         _adoptDesktopRuntime(runtimeId, info: snapshot.info);
+        _hydrateAgentTasks(snapshot.todoState);
         _desktopRuntimeInfo = snapshot.info;
         _rememberDesktopLiveStatus(snapshot.status, running: snapshot.running);
         _desktopStartedAt = snapshot.startedAt;
@@ -15551,6 +15578,7 @@ class ActiveChat {
         reconnectEvidence: snapshot,
       );
       _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
+      _hydrateAgentTasks(snapshot.todoState);
       _reconcileSubagentsFromTranscript();
       _desktopStoredSessionKnownMissing = false;
       _desktopRuntimeInfo = snapshot.info;
@@ -15670,6 +15698,7 @@ class ActiveChat {
       reconnectEvidence: snapshot,
     );
     _adoptDesktopRuntime(snapshot.runtimeSessionId, info: snapshot.info);
+    _hydrateAgentTasks(snapshot.todoState);
     _reconcileSubagentsFromTranscript();
     _desktopStoredSessionKnownMissing = false;
     _desktopRuntimeInfo = snapshot.info;

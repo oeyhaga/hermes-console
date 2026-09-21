@@ -117,24 +117,28 @@ final class SessionActivity {
   List<SessionActivityTask> get pendingTasks =>
       tasks.where((task) => task.pending).toList(growable: false);
 
+  /// Trabajo de fondo que enseña la píldora «En segundo plano». Las tareas
+  /// pendientes del agente NO cuentan aquí: tienen su propia píldora y tarjeta
+  /// («Tareas 3/7», `AgentTaskPill`); contarlas también aquí las narraba dos
+  /// veces. Sí siguen contando como actividad ([active], [kind]).
   int get backgroundItemCount =>
-      processes.length +
-      schedules.length +
-      (goal == null ? 0 : 1) +
-      pendingTasks.length;
+      processes.length + schedules.length + (goal == null ? 0 : 1);
 
   bool get active =>
       foregroundTurn ||
       rosterTurn ||
       subagentCount > 0 ||
-      backgroundItemCount > 0;
+      backgroundItemCount > 0 ||
+      pendingTasks.isNotEmpty;
 
   bool get willNotifyLater => processes.any((process) => process.notifyOnComplete);
 
   SessionActivityKind get kind {
     if (foregroundTurn) return foregroundKind;
     if (subagentCount > 0) return SessionActivityKind.delegated;
-    if (backgroundItemCount > 0) return SessionActivityKind.backgroundProcess;
+    if (backgroundItemCount > 0 || pendingTasks.isNotEmpty) {
+      return SessionActivityKind.backgroundProcess;
+    }
     if (rosterTurn) return SessionActivityKind.generating;
     return SessionActivityKind.idle;
   }
