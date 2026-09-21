@@ -6,11 +6,13 @@ import 'package:flutter/services.dart';
 import '../../l10n/app_localizations.dart';
 import '../companion/render/companion_status_indicator.dart';
 import '../companion/state/companion_controller.dart';
+import '../models/agent_task_list.dart';
 import '../services/approval_policy.dart';
 import '../services/command_risk.dart';
 import '../services/connection_manager.dart';
 import '../theme/app_theme.dart';
 import '../theme/component_profile.dart';
+import 'agent_task_widgets.dart';
 import 'hermes_premium_ui.dart';
 import 'hermes_spark_mascot.dart';
 import 'hermes_pill.dart';
@@ -1632,7 +1634,14 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
     HapticFeedback.selectionClick();
   }
 
-  Widget _buildTraceDetails(HermesThemeColors colors) {
+  /// Lista de tareas del agente que pertenece a ESTE bloque de actividad (el
+  /// del turno que escribió la última `todo_list`), o null.
+  AgentTaskList? get _ownedTasks => AgentTaskScope.ownedBy(
+    context,
+    widget.events.map((event) => (id: event.id, label: event.label)),
+  );
+
+  Widget _buildTraceDetails(HermesThemeColors colors, AgentTaskList? tasks) {
     final s = Strings.of(context);
     return Padding(
       padding: const EdgeInsets.only(left: 40, top: 2),
@@ -1640,6 +1649,8 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (tasks != null)
+            AgentTaskActivitySection(tasks: tasks, turnActive: widget.active),
           ...widget.events.map((event) => _TraceEventLine(event: event)),
           const SizedBox(height: 6),
           Semantics(
@@ -1672,6 +1683,7 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
     final hasEvents = widget.events.isNotEmpty;
+    final tasks = hasEvents ? _ownedTasks : null;
 
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
 
@@ -1765,6 +1777,10 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
                               ),
                       ),
                       if (hasEvents) ...[
+                        if (tasks != null) ...[
+                          const SizedBox(width: 8),
+                          AgentTaskChip(tasks: tasks),
+                        ],
                         const SizedBox(width: 8),
                         AnimatedRotation(
                           turns: _expanded ? 0.5 : 0,
@@ -1785,14 +1801,14 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
               if (hasEvents)
                 if (reduceMotion)
                   _expanded
-                      ? _buildTraceDetails(colors)
+                      ? _buildTraceDetails(colors, tasks)
                       : const SizedBox.shrink()
                 else
                   AnimatedSize(
                     duration: const Duration(milliseconds: 200),
                     curve: Curves.easeOut,
                     child: _expanded
-                        ? _buildTraceDetails(colors)
+                        ? _buildTraceDetails(colors, tasks)
                         : const SizedBox.shrink(),
                   ),
             ],

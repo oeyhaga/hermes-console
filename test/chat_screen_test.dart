@@ -38,6 +38,7 @@ import 'package:hermes_android/main.dart';
 import 'package:hermes_android/core/config/flavor.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/models/agent_profile.dart';
+import 'package:hermes_android/core/models/agent_task_list.dart';
 import 'package:hermes_android/core/models/attachment_draft.dart';
 import 'package:hermes_android/core/models/chat_preferences.dart';
 import 'package:hermes_android/core/models/command_descriptor.dart';
@@ -14830,12 +14831,15 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(gateway.controlReadCalls, readsBeforeLoopStatus + 1);
-      expect(chat.sessionActivity.backgroundItemCount, 5);
+      // goal + loop + heartbeat + process. The pending task has its own
+      // «Tareas» pill and is not counted as background work.
+      expect(chat.sessionActivity.backgroundItemCount, 4);
+      expect(chat.sessionActivity.active, isTrue);
       expect(
         find.byKey(const ValueKey('chat-background-process-status')),
         findsOneWidget,
       );
-      expect(find.textContaining('En segundo plano · 5'), findsOneWidget);
+      expect(find.textContaining('En segundo plano · 4'), findsOneWidget);
 
       await tester.tap(
         find.descendant(
@@ -14892,13 +14896,261 @@ void main() {
       );
       await tester.pump();
       expect(find.text('python worker.py'), findsOneWidget);
-      expect(find.text('PUBLIC_PENDING_TASK'), findsOneWidget);
+      expect(find.text('PUBLIC_PENDING_TASK'), findsNothing);
       await tester.tap(
         find.byKey(const ValueKey('background-process-stop-process-mixed')),
       );
       await tester.pump();
       expect(gateway.killedProcesses, ['process-mixed']);
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'lista de tareas del agente: píldora en vivo, tarjeta y sin tapar compositor ni último mensaje',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const []);
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('agent-tasks-live'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_TASKS_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_TASKS_PARENT',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      await tester.pump();
+      final pill = find.byKey(const ValueKey('agent-task-pill'));
+      expect(pill, findsNothing);
+
+      // create
+      gateway.emit('todo.updated', const {
+        'revision': 1,
+        'todos': [
+          {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'in_progress'},
+          {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'pending'},
+          {'id': '3', 'content': 'PUBLIC_STEP_THREE', 'status': 'pending'},
+        ],
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(pill, findsOneWidget);
+      expect(find.text('Tareas 0/3'), findsOneWidget);
+      expect(find.text('PUBLIC_STEP_ONE'), findsOneWidget);
+      // The generic background pill no longer narrates the same tasks.
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+
+      // Never overlaps the composer, and the last message stays clear above.
+      final pillRect = tester.getRect(pill);
+      final composerRect = tester.getRect(
+        find.byKey(const ValueKey('chat-composer-host')),
+      );
+      expect(pillRect.bottom, lessThanOrEqualTo(composerRect.top));
+      expect(
+        tester.getRect(find.text('PUBLIC_TASKS_PARENT')).bottom,
+        lessThanOrEqualTo(pillRect.top + 0.5),
+      );
+
+      // progress
+      gateway.emit('todo.updated', const {
+        'revision': 2,
+        'todos': [
+          {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'completed'},
+          {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'in_progress'},
+          {'id': '3', 'content': 'PUBLIC_STEP_THREE', 'status': 'pending'},
+        ],
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Tareas 1/3'), findsOneWidget);
+      expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
+
+      // tap opens the floating card with every state and keeps updating live
+      await tester.tap(pill);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final card = find.byKey(const ValueKey('agent-task-card'));
+      expect(card, findsOneWidget);
+      expect(
+        find.descendant(of: card, matching: find.text('PUBLIC_STEP_THREE')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey('agent-task-icon-completed')),
+        findsOneWidget,
+      );
+      gateway.emit('todo.updated', const {
+        'revision': 3,
+        'todos': [
+          {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'completed'},
+          {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'completed'},
+          {'id': '3', 'content': 'PUBLIC_STEP_THREE', 'status': 'completed'},
+        ],
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.descendant(of: card, matching: find.text('Tareas 3/3')),
+        findsOneWidget,
+      );
+      await tester.tapAt(const Offset(4, 4)); // barrier
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(card, findsNothing);
+
+      // finished: check + linger, then the pill leaves on its own
+      expect(find.byKey(const ValueKey('agent-task-pill-done')), findsOneWidget);
+      gateway.emit('message.complete', const {'text': 'PUBLIC_TASKS_DONE'});
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(pill, findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'lista de tareas del agente: un turno que termina a medias oculta la píldora y la deja en el bloque de actividad',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const []);
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('agent-tasks-incomplete'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_TASKS_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_TASKS_PARENT',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('tool.start', const {
+        'tool_id': 'call-todo-1',
+        'name': 'todo_list',
+      });
+      gateway.emit('tool.complete', const {
+        'tool_id': 'call-todo-1',
+        'name': 'todo_list',
+      });
+      gateway.emit('todo.updated', const {
+        'revision': 1,
+        'todos': [
+          {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'completed'},
+          {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'in_progress'},
+        ],
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.byKey(const ValueKey('agent-task-pill')),
+        findsOneWidget,
+      );
+      gateway.emit('message.complete', const {'text': 'PUBLIC_HALF_DONE'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('agent-task-pill')), findsNothing);
+
+      // the checklist now lives in the turn's single activity block
+      expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
+      expect(find.text('1/2'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.expand_more));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('agent-task-checklist')), findsOneWidget);
+      expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
+            .textSpan!
+            .toPlainText(),
+        contains('incompleta'),
+      );
+
+      // task text never reaches the copied message
+      await tester.tap(
+        find.descendant(
+          of: find.ancestor(
+            of: find.text('PUBLIC_HALF_DONE'),
+            matching: find.byType(ChatMessageSelectionArea),
+          ),
+          matching: find.byTooltip('Copiar mensaje'),
+        ),
+      );
+      await tester.pump();
+      expect(clipboardText, contains('PUBLIC_HALF_DONE'));
+      expect(clipboardText, isNot(contains('PUBLIC_STEP')));
+      expect(clipboardText, isNot(contains('todo_list')));
+    },
+  );
+
+  testWidgets(
+    'lista de tareas del agente: al reabrir el chat se reconstruye desde session.resume todo_state',
+    (tester) async {
+      final gateway = _TodoResumeGateway(
+        AgentTaskList.tryParse(const {
+          'revision': 6,
+          'todos': [
+            {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'completed'},
+            {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'completed'},
+          ],
+        }),
+      );
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('agent-tasks-reopen'),
+        desktopGateway: gateway,
+        acquireDesktopRuntimeBeforeMount: true,
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': 'PUBLIC_PLAN_DONE',
+            '_activity_trace': [
+              {
+                'kind': 'tool',
+                'label': 'todo_list',
+                'status': 'completed',
+                'id': 'call-todo-1',
+              },
+            ],
+          },
+          {'role': 'user', 'content': 'PUBLIC_PLAN_REQUEST'},
+        ],
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(chat.agentTasks.revision, 6);
+      expect(chat.agentTasks.isFinished, isTrue);
+      // nothing running: no floating pill on reopen, only the activity block
+      expect(find.byKey(const ValueKey('agent-task-pill')), findsNothing);
+      expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
+      expect(find.text('2/2'), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.expand_more));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
+            .textSpan!
+            .toPlainText(),
+        isNot(contains('incompleta')),
+      );
+      expect(chat.sessionActivity.active, isFalse);
     },
   );
 
@@ -20403,4 +20655,37 @@ void main() {
     }
     expect(tester.takeException(), isNull);
   });
+}
+
+
+class _TodoResumeGateway extends _StableRefreshGateway {
+  _TodoResumeGateway(this.todoState) : super(subagents: const []);
+
+  final AgentTaskList? todoState;
+
+  @override
+  Future<DesktopSessionBinding> resumeSession(
+    String storedSessionId, {
+    String profile = '',
+    List<Map<String, dynamic>> seedMessages = const [],
+    String model = '',
+  }) async => DesktopSessionBinding(
+    runtimeSessionId: 'runtime-ui-test',
+    storedSessionId: storedSessionId,
+    created: false,
+    todoState: todoState,
+  );
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) async => DesktopSessionSnapshot(
+    runtimeSessionId: 'runtime-ui-test',
+    storedSessionId: storedSessionId,
+    created: false,
+    todoState: todoState,
+  );
 }
