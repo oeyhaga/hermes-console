@@ -69,177 +69,7 @@ void _narrow(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
-Finder get _pill => find.byKey(const ValueKey('agent-task-pill'));
-Finder get _pillIdle => find.byKey(const ValueKey('agent-task-pill-idle'));
-
 void main() {
-  group('AgentTaskPill', () {
-    testWidgets('shows counts and the in-progress task as subtitle', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        _host(AgentTaskPill(tasks: _running(), turnActive: true, onTap: () {})),
-      );
-      await tester.pump();
-      expect(_pill, findsOneWidget);
-      // cancelled work counts on neither side: 1 of 4
-      expect(find.text('Tasks 1/4'), findsOneWidget);
-      expect(find.text('Patch the parser'), findsOneWidget);
-      final ring = tester.widget<CircularProgressIndicator>(
-        find.byKey(const ValueKey('agent-task-pill-ring')),
-      );
-      expect(ring.value, closeTo(0.25, 1e-9));
-    });
-
-    testWidgets('localised to Spanish', (tester) async {
-      await tester.pumpWidget(
-        _host(
-          AgentTaskPill(tasks: _running(), turnActive: true, onTap: () {}),
-          locale: 'es',
-        ),
-      );
-      await tester.pump();
-      expect(find.text('Tareas 1/4'), findsOneWidget);
-    });
-
-    testWidgets('collapses to zero without a live turn, list or open items', (
-      tester,
-    ) async {
-      Future<Size> sizeOf(AgentTaskList tasks, bool active) async {
-        await tester.pumpWidget(
-          _host(AgentTaskPill(tasks: tasks, turnActive: active, onTap: () {})),
-        );
-        await tester.pump();
-        return tester.getSize(find.byType(AgentTaskPill));
-      }
-
-      expect((await sizeOf(_running(), false)).height, 0);
-      expect(_pill, findsNothing);
-      expect((await sizeOf(AgentTaskList.empty, true)).height, 0);
-      expect((await sizeOf(_finished(), false)).height, 0);
-      expect((await sizeOf(_running(), true)).height, greaterThan(0));
-    });
-
-    testWidgets('tap opens the list', (tester) async {
-      var taps = 0;
-      await tester.pumpWidget(
-        _host(
-          AgentTaskPill(
-            tasks: _running(),
-            turnActive: true,
-            onTap: () => taps++,
-          ),
-        ),
-      );
-      await tester.pump();
-      await tester.tap(_pill);
-      expect(taps, 1);
-    });
-
-    testWidgets(
-      'finishing while visible shows the check, lingers, then leaves',
-      (tester) async {
-        Widget pill(AgentTaskList tasks, {bool active = true}) => _host(
-          AgentTaskPill(
-            tasks: tasks,
-            turnActive: active,
-            onTap: () {},
-            lingerAfterFinished: const Duration(seconds: 4),
-          ),
-        );
-        await tester.pumpWidget(pill(_running()));
-        await tester.pump();
-        expect(
-          find.byKey(const ValueKey('agent-task-pill-ring')),
-          findsOneWidget,
-        );
-
-        await tester.pumpWidget(pill(_finished()));
-        await tester.pump();
-        expect(
-          find.byKey(const ValueKey('agent-task-pill-done')),
-          findsOneWidget,
-        );
-        expect(find.text('Tasks 2/2'), findsOneWidget);
-        expect(find.text('All done'), findsOneWidget);
-
-        // The turn ends; the finished pill still lingers its full 4 s.
-        await tester.pumpWidget(pill(_finished(), active: false));
-        await tester.pump(const Duration(seconds: 3));
-        expect(_pill, findsOneWidget);
-        await tester.pump(const Duration(seconds: 2));
-        expect(_pill, findsNothing);
-        expect(_pillIdle, findsOneWidget);
-
-        // A new plan brings it back.
-        await tester.pumpWidget(pill(_running(), active: true));
-        await tester.pump();
-        expect(_pill, findsOneWidget);
-      },
-    );
-
-    testWidgets('a finished list found on open does not flash a pill', (
-      tester,
-    ) async {
-      await tester.pumpWidget(
-        _host(
-          AgentTaskPill(tasks: _finished(), turnActive: false, onTap: () {}),
-        ),
-      );
-      await tester.pump();
-      expect(_pill, findsNothing);
-    });
-
-    testWidgets('text scale 2.0 at 320dp stays one line and never overflows', (
-      tester,
-    ) async {
-      _narrow(tester);
-      await tester.pumpWidget(
-        _host(
-          AgentTaskPill(
-            tasks: _list([
-              (
-                '1',
-                'A very very long task title that would never fit',
-                'in_progress',
-              ),
-            ]),
-            turnActive: true,
-            onTap: () {},
-          ),
-          textScale: 2,
-        ),
-      );
-      await tester.pump();
-      expect(tester.takeException(), isNull);
-      expect(
-        find.byKey(const ValueKey('agent-task-pill-subtitle')),
-        findsNothing,
-      );
-      final rect = tester.getRect(_pill);
-      expect(rect.left, greaterThanOrEqualTo(0));
-      expect(rect.right, lessThanOrEqualTo(320));
-      expect(rect.height, lessThan(120));
-    });
-
-    testWidgets('semantics: one button node naming progress and current task', (
-      tester,
-    ) async {
-      final handle = tester.ensureSemantics();
-      await tester.pumpWidget(
-        _host(AgentTaskPill(tasks: _running(), turnActive: true, onTap: () {})),
-      );
-      await tester.pump();
-      final node = tester.getSemantics(
-        find.bySemanticsLabel('Tasks 1/4. Patch the parser'),
-      );
-      expect(node.label, 'Tasks 1/4. Patch the parser');
-      expect(node.hint, 'Show the task list');
-      expect(node.flagsCollection.isButton, isTrue);
-      handle.dispose();
-    });
-  });
-
   group('AgentTaskChecklist', () {
     testWidgets('each status has its own icon and text treatment', (
       tester,
@@ -531,20 +361,20 @@ void main() {
       expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
       expect(find.text('1/4'), findsOneWidget);
       // collapsed by default: the list only appears once expanded
-      expect(find.byKey(const ValueKey('agent-task-checklist')), findsNothing);
+      expect(find.byKey(const ValueKey('activity-tasks-section')), findsNothing);
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump(const Duration(milliseconds: 250));
+      // The history expansion shares the live panel's «Tareas» section.
       expect(
-        find.byKey(const ValueKey('agent-task-checklist')),
+        find.byKey(const ValueKey('activity-tasks-section')),
         findsOneWidget,
       );
       expect(find.text('Patch the parser'), findsOneWidget);
       // the turn ended with open items: flagged incomplete like the TUI archive
       expect(
         tester
-            .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
-            .textSpan!
-            .toPlainText(),
+            .widget<Text>(find.byKey(const ValueKey('activity-tasks-title')))
+            .data,
         contains('incomplete'),
       );
     });
@@ -557,9 +387,8 @@ void main() {
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump(const Duration(milliseconds: 250));
       final text = tester
-          .widget<Text>(find.byKey(const ValueKey('agent-task-header')))
-          .textSpan!
-          .toPlainText();
+          .widget<Text>(find.byKey(const ValueKey('activity-tasks-title')))
+          .data!;
       expect(text, isNot(contains('incomplete')));
       expect(text, startsWith('Tasks 2/2'));
     });
@@ -628,60 +457,10 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(
         tester
-            .getRect(find.byKey(const ValueKey('agent-task-checklist')))
+            .getRect(find.byKey(const ValueKey('activity-tasks-section')))
             .right,
         lessThanOrEqualTo(320),
       );
-    });
-  });
-
-  group('showAgentTaskCard', () {
-    testWidgets('updates live while open and shows every state', (
-      tester,
-    ) async {
-      var current = _list([
-        ('1', 'Plan the work', 'in_progress'),
-        ('2', 'Do the work', 'pending'),
-      ]);
-      final changes = ValueNotifier<int>(0);
-      await tester.pumpWidget(
-        _host(
-          Builder(
-            builder: (context) => TextButton(
-              onPressed: () => showAgentTaskCard(
-                context,
-                changes: Stream<Object?>.periodic(
-                  const Duration(milliseconds: 50),
-                  (n) => n,
-                ),
-                read: () => current,
-              ),
-              child: const Text('open'),
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('open'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 60));
-      expect(find.byKey(const ValueKey('agent-task-card')), findsOneWidget);
-      expect(find.text('Tasks 0/2'), findsOneWidget);
-
-      current = _list([
-        ('1', 'Plan the work', 'completed'),
-        ('2', 'Do the work', 'in_progress'),
-      ], revision: 2);
-      await tester.pump(const Duration(milliseconds: 60));
-      expect(find.text('Tasks 1/2'), findsOneWidget);
-
-      current = _list([
-        ('1', 'Plan the work', 'completed'),
-        ('2', 'Do the work', 'completed'),
-      ], revision: 3);
-      await tester.pump(const Duration(milliseconds: 60));
-      expect(find.text('Tasks 2/2'), findsOneWidget);
-      changes.dispose();
-      await tester.pumpWidget(const SizedBox.shrink());
     });
   });
 }

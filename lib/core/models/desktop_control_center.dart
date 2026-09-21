@@ -55,6 +55,11 @@ String _safeProcessCommand(Object? raw) {
   return _cleanText(display.join(' '), max: 80);
 }
 
+/// Proyección de solo lectura de un comando para mostrarlo en pantalla: el
+/// ejecutable (y, en las herramientas conocidas, el guion o subcomando), nunca
+/// flags, argumentos, variables ni rutas completas.
+String safeCommandProjection(Object? raw) => _safeProcessCommand(raw);
+
 int _safeInt(Object? raw, {int fallback = 0}) {
   if (raw is int) return raw;
   if (raw is num) return raw.toInt();

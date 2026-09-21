@@ -234,7 +234,9 @@ void main() {
 
     await tester.tap(find.text('Running tool'));
     await tester.pump(const Duration(milliseconds: 220));
-    expect(find.text('Terminal · running'), findsOneWidget);
+    // El desplegable comparte las filas del panel en vivo («Terminal» + su
+    // estado como icono, ya no «Terminal · running») y conserva la vista previa.
+    expect(find.text('Terminal', findRichText: true), findsOneWidget);
     expect(find.text('pwd && ls'), findsOneWidget);
   });
 
@@ -474,6 +476,58 @@ void main() {
 
     expect(find.text('Thought for 12s'), findsOneWidget);
     expect(find.text('Checked the inputs.'), findsNothing);
+  });
+
+  testWidgets('con el estado vivo en la pastilla la burbuja no pinta ninguna '
+      'fila de estado y al terminar aparece la entrada plegada', (
+    tester,
+  ) async {
+    Future<void> pump({required bool active}) => tester.pumpWidget(
+      _cardHost(
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(
+              id: 't1',
+              label: 'terminal',
+              status: active ? 'running' : 'completed',
+              detail: 'date',
+              duration: active ? null : const Duration(milliseconds: 700),
+            ),
+          ],
+          active: active,
+          liveInPill: true,
+        ),
+      ),
+    );
+
+    await pump(active: true);
+    await tester.pump();
+    // Ni fila de estado, ni shimmer, ni icono, ni desplegable: nada vivo.
+    expect(
+      find.byKey(const ValueKey('thinking-trace-live-in-pill')),
+      findsOneWidget,
+    );
+    expect(find.text('Running tool'), findsNothing);
+    expect(find.byKey(const ValueKey('thinking-shimmer')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('thinking-trace-state-icon')),
+      findsNothing,
+    );
+    expect(find.byIcon(Icons.expand_more), findsNothing);
+    expect(tester.getSize(find.byType(ThinkingTraceCard)).height, 0);
+
+    // Terminado: la entrada plegada «Completed ⌄» y, al abrirla, las mismas
+    // filas que el panel en vivo («terminal · date  0.7 s»).
+    await pump(active: false);
+    await tester.pump();
+    expect(find.text('Completed'), findsOneWidget);
+    expect(find.byIcon(Icons.expand_more), findsOneWidget);
+    expect(find.byKey(const ValueKey('activity-done-section')), findsNothing);
+    await tester.tap(find.text('Completed'));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byKey(const ValueKey('activity-done-title')), findsOneWidget);
+    expect(find.text('terminal · date', findRichText: true), findsOneWidget);
+    expect(find.text('0.7 s'), findsOneWidget);
   });
 
   testWidgets('el cargador por defecto respeta locale=en', (tester) async {

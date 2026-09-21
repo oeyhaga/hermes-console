@@ -498,10 +498,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
 
       fixture.gateway.processSnapshots.addAll([running, running, empty, empty]);
@@ -518,27 +515,18 @@ void main() {
         fullRevisionBeforeStop + 1,
       );
       expect(fixture.gateway.processCalls - processCallsBeforeStop, 2);
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
 
       await tester.pump(const Duration(milliseconds: 1500));
       await tester.pump();
       expect(fixture.gateway.processCalls - processCallsBeforeStop, 3);
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
 
       await tester.pump(const Duration(milliseconds: 2500));
       await tester.pump();
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       expect(fixture.chat.isStreaming, isFalse);
       expect(fixture.chat.remoteSurfaceOwnsLiveTurn, isFalse);
       expect(fixture.chat.safeActiveSubagentCount, 0);
