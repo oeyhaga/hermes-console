@@ -3131,6 +3131,19 @@ enum _SessionMessagesPageAction {
 
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
 
+final class _NativeSessionHistoryPage extends SessionMessagesPage {
+  _NativeSessionHistoryPage(SessionMessagesPage page)
+    : super(
+        messages: page.messages,
+        pagination: null,
+        paginationProvided: false,
+        rawMessageCount: page.rawMessageCount,
+        messagesFullyParsed: page.messagesFullyParsed,
+        resolvedTipId: page.resolvedTipId,
+        coverage: page.coverage,
+      );
+}
+
 final class _SessionMessagesPageReadContext {
   const _SessionMessagesPageReadContext({
     required this.consumer,
@@ -8284,6 +8297,8 @@ class ActiveChat {
     limit: context.requestedLimit,
     offset: context.requestedOffset,
     runtimeSessionId: runtimeSessionId,
+    allowNativeHistory:
+        context.consumer != _SessionMessagesPageConsumer.loadEarlier,
   );
 
   Future<SessionMessagesPage> _requestStoredMessagesPage({
@@ -8292,6 +8307,7 @@ class ActiveChat {
     int? limit,
     int offset = 0,
     String? runtimeSessionId,
+    bool allowNativeHistory = true,
   }) async {
     final injected = _storedMessageLoader;
     if (injected != null) {
@@ -8309,15 +8325,20 @@ class ActiveChat {
             : null);
     // Keep the same automatic gateway opt-in as loadMessages: a runtime bound
     // by an explicit action does not authorize RPCs from a REST-only load.
-    if ((_attachDesktopRuntimeOnLoad ||
+    if (allowNativeHistory &&
+        (_attachDesktopRuntimeOnLoad ||
             _allowUnownedDesktopSnapshotForTesting) &&
         gateway != null &&
         gateway.isConnected &&
         gateway is HermesDesktopSessionHistoryGateway &&
         runtime != null) {
       try {
-        return await (gateway as HermesDesktopSessionHistoryGateway)
-            .sessionHistory(sessionId: runtime, profile: profile);
+        return _NativeSessionHistoryPage(
+          await (gateway as HermesDesktopSessionHistoryGateway).sessionHistory(
+            sessionId: runtime,
+            profile: profile,
+          ),
+        );
       } catch (_) {
         // Older gateways and transient RPC failures retain the REST path.
         // Do not log remote payloads or profile credentials.
@@ -8349,6 +8370,7 @@ class ActiveChat {
     }
     prepareProjection?.call();
 
+    final nativeSessionHistory = page is _NativeSessionHistoryPage;
     final legacyPage = !page.paginationProvided;
     final limit = page.limit;
     final terminalPage =
@@ -8362,7 +8384,10 @@ class ActiveChat {
         page.paginationFullyParsed &&
         rowsHaveSafePaginationIdentity;
     final pageProvesWholeTranscript =
-        page.offset == 0 && terminalPage && pageFullyValid;
+        !nativeSessionHistory &&
+        page.offset == 0 &&
+        terminalPage &&
+        pageFullyValid;
     final incomingTip = page.resolvedTipId;
     final currentTip = _coreReadIdentity.resolvedTipId;
     final emptyIdentityIsCompatible =
@@ -8402,6 +8427,7 @@ class ActiveChat {
         !consumesAsBackfill;
 
     if (validEmptyAtTail &&
+        !nativeSessionHistory &&
         !hardExpectedCountMismatch &&
         !softExpectedCountMismatch &&
         hasDurableVisibleTranscript) {
@@ -8577,6 +8603,21 @@ class ActiveChat {
       // repara siempre desde offset cero.
       applyCoreEvidence(replaceCoverage: false);
       armTailRecovery(recordsParseGap: true);
+    } else if (nativeSessionHistory) {
+      applyCoreEvidence(replaceCoverage: false);
+      nextLineageComplete = false;
+      nextExtent = _TranscriptExtent.partial;
+      nextEarlierAvailable = true;
+      nextOffset = 0;
+      nextTailHydration = true;
+      if (projection.disposition ==
+          _SessionMessagesPageProjectionDisposition.publish) {
+        acceptProjectionEvidence();
+        action = _SessionMessagesPageAction.publish;
+      } else {
+        action = _SessionMessagesPageAction.preserveVisible;
+      }
+      mutates = true;
     } else if (projection.preservesExistingCoverage &&
         page.messages.isNotEmpty) {
       applyCoreEvidence(replaceCoverage: false);
@@ -8696,9 +8737,9 @@ class ActiveChat {
     _transcriptCoverageRevision += 1;
     _transcriptExtent = _TranscriptExtent.partial;
     _transcriptCoverageHasParseGap = true;
-    _earlierMessagesAvailable = false;
-    _earlierMessagesNextOffset = snapshot.messages.length;
-    _needsTranscriptTailHydration = false;
+    _earlierMessagesAvailable = true;
+    _earlierMessagesNextOffset = 0;
+    _needsTranscriptTailHydration = true;
     _desktopHydrationExpectedMessageCount = null;
     _unconfirmedRetainedTranscriptIdentities.clear();
   }
@@ -9651,6 +9692,15 @@ class ActiveChat {
       if (_allTranscriptRowsHaveDurableIds(refreshedNewestFirst) &&
           canPartitionPrevious &&
           _allTranscriptRowsHaveDurableIds(durablePrevious)) {
+        final refreshedIdentities = _transcriptIdentities(refreshedNewestFirst);
+        final unconfirmedRetainedIdentities = _transcriptIdentities(
+          durablePrevious,
+        ).where(
+          (identity) => !_identityCollectionContains(
+            refreshedIdentities,
+            identity,
+          ),
+        ).toList(growable: false);
         return (
           messages: withRetainedLocal(
             _mergeOlderTranscriptPage(refreshedNewestFirst, durablePrevious),
@@ -9659,7 +9709,7 @@ class ActiveChat {
           acceptedRefreshed: true,
           retainsExistingRows:
               durablePrevious.isNotEmpty || retainedLocal.isNotEmpty,
-          unconfirmedRetainedIdentities: _transcriptIdentities(durablePrevious),
+          unconfirmedRetainedIdentities: unconfirmedRetainedIdentities,
         );
       }
       return (
@@ -10136,8 +10186,7 @@ class ActiveChat {
   Future<bool> _loadEarlierMessagesPage() async {
     if (_disposed ||
         !_earlierMessagesAvailable ||
-        _earlierMessagesInFlight ||
-        connection.kind == InstanceKind.localhost) {
+        _earlierMessagesInFlight) {
       return false;
     }
     _earlierMessagesInFlight = true;
@@ -10153,10 +10202,8 @@ class ActiveChat {
     );
     try {
       final page = await _fetchStoredMessagesPage(context);
-      // A native history read is the whole transcript even when the caller
-      // requested an older REST offset. Reconcile it as a fresh complete
-      // transcript, not as an older prefix to append to a potentially stale
-      // tail. Its absent pagination also retires the earlier-page cursor.
+      // Tail repair starts at REST offset zero; legacy REST can still return a
+      // complete one-shot transcript without pagination metadata.
       final replacesTranscript =
           requestedTailHydration || !page.paginationProvided;
       var normalized = const <Map<String, dynamic>>[];
@@ -15719,6 +15766,7 @@ class ActiveChat {
         profile: profile,
         limit: 500,
         offset: offset,
+        allowNativeHistory: false,
       );
       if (!page.messagesFullyParsed || !page.paginationFullyParsed) {
         throw StateError('Incomplete recovery transcript');
