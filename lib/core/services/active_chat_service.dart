@@ -142,8 +142,7 @@ String activeChatDesktopEventFailureUiMessage(Object? rawMessage) {
 @visibleForTesting
 String activeChatDesktopRecoveryDiagnostic(Object error) {
   final code = error is TuiGatewayRpcError ? ', code=${error.code}' : '';
-  return '[active-chat] Desktop recovery failed '
-      '(${error.runtimeType}$code)';
+  return '[active-chat] gave up reason kind=${error.runtimeType}$code';
 }
 
 @visibleForTesting
@@ -15460,6 +15459,7 @@ class ActiveChat {
         _recoveringDesktopTurnEpoch == turnEpoch) {
       return;
     }
+    debugPrint('[active-chat] recovery scheduled');
     late final Future<void> recovery;
     recovery = _recoverDesktopTurn(gateway, turnEpoch, originalError)
         .whenComplete(() {
@@ -15532,6 +15532,7 @@ class ActiveChat {
       while (_canRecoverTurn(turnEpoch)) {
         final delay = _desktopRecoveryDelayForAttempt(attempt);
         attempt++;
+        debugPrint('[active-chat] recovery attempt $attempt');
         if (!_canRecoverTurn(turnEpoch)) return;
         if (delay > Duration.zero) {
           final elapsed = await _waitForDesktopRecoveryDelay(
@@ -15548,6 +15549,9 @@ class ActiveChat {
             epochInvalidated,
           );
           if (connected == null || !_canRecoverTurn(turnEpoch)) return;
+          debugPrint('[active-chat] ticket ok');
+          debugPrint('[active-chat] connected');
+          debugPrint('[active-chat] resume start');
           final binding = await _desktopRecoveryOperationBeforeDeadline(
             _resumeDesktopSessionForRecovery(
               gateway,
@@ -15568,6 +15572,10 @@ class ActiveChat {
           );
           if (status == null || !_canRecoverTurn(turnEpoch)) return;
           _publishDashboardAuthRequired(false);
+          final resultKind = status.known
+              ? status.state?.name ?? 'unknown'
+              : 'unknown';
+          debugPrint('[active-chat] result kind=$resultKind');
           if (!status.known || status.state == null) continue;
           switch (status.state!) {
             case DesktopTurnState.accepted:
@@ -15632,7 +15640,8 @@ class ActiveChat {
               return;
             case DesktopTurnState.terminal:
               if (!_canRecoverTurn(turnEpoch)) return;
-              if (!_commitDesktopRecoverySnapshot(gateway, binding)) continue;
+              // Exact terminal status does not adopt a runtime or replay cut.
+              debugPrint('[active-chat] converged kind=terminal');
               await _completeRun();
               return;
             case DesktopTurnState.failed:
