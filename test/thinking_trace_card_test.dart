@@ -108,19 +108,111 @@ void main() {
     final companion = tester.widget<CompanionStatusIndicator>(
       find.byType(CompanionStatusIndicator),
     );
-    expect(find.text('Terminal'), findsOneWidget);
+    expect(find.text('Running tool'), findsOneWidget);
+    expect(find.text('Terminal'), findsNothing);
     expect(find.text('TERMINAL'), findsNothing);
     expect(find.text('Running tools · 0 completed'), findsNothing);
     expect(companion.size, ThinkingTraceCard.activeWithEventsCompanionSize);
     expect(find.text('pwd && ls'), findsNothing);
 
-    final status = tester.widget<Text>(find.text('Terminal'));
+    final status = tester.widget<Text>(find.text('Running tool'));
     expect(status.style?.fontSize, 12);
     expect(status.style?.letterSpacing, 0.35);
 
-    await tester.tap(find.text('Terminal'));
+    await tester.tap(find.text('Running tool'));
     await tester.pump(const Duration(milliseconds: 220));
+    expect(find.text('Terminal · running'), findsOneWidget);
     expect(find.text('pwd && ls'), findsOneWidget);
+  });
+
+  testWidgets('una skill activa usa el titular localizado', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('es'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        theme: AppTheme.hermesRedDark,
+        home: Scaffold(
+          body: ThinkingTraceCard(
+            events: [
+              ChatTraceEvent(
+                id: 'skill-1',
+                label: 'review_changes',
+                status: 'running',
+                kind: ChatTraceEventKind.skill,
+              ),
+            ],
+            active: true,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Ejecutando skill'), findsOneWidget);
+    expect(find.text('review_changes'), findsNothing);
+  });
+
+  testWidgets('razonamiento terminado queda plegado en la misma tarjeta', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('es'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        theme: AppTheme.hermesRedDark,
+        home: Scaffold(
+          body: ThinkingTraceCard(
+            events: [
+              ChatTraceEvent(
+                id: 'reasoning-1',
+                label: 'Razonamiento',
+                status: 'completed',
+                preview: 'Primero inspecciono. Luego verifico.',
+                kind: ChatTraceEventKind.reasoning,
+              ),
+            ],
+            active: false,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Razonamiento'), findsOneWidget);
+    expect(find.textContaining('Primero inspecciono'), findsNothing);
+
+    await tester.tap(find.text('Razonamiento'));
+    await tester.pumpAndSettle();
+    expect(find.text('Primero inspecciono. Luego verifico.'), findsOneWidget);
+  });
+
+  testWidgets('duración conocida usa el resumen localizado', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('en'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        theme: AppTheme.hermesRedDark,
+        home: Scaffold(
+          body: ThinkingTraceCard(
+            events: [
+              ChatTraceEvent(
+                id: 'reasoning-1',
+                label: 'Reasoning',
+                status: 'completed',
+                preview: 'Checked the inputs.',
+                kind: ChatTraceEventKind.reasoning,
+              ),
+            ],
+            active: false,
+            duration: Duration(seconds: 12),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Thought for 12s'), findsOneWidget);
+    expect(find.text('Checked the inputs.'), findsNothing);
   });
 
   testWidgets('el cargador por defecto respeta locale=en', (tester) async {

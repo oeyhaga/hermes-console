@@ -67,6 +67,7 @@ import '../navigation/chat_route.dart';
 import '../models/desktop_control_center.dart' show SessionGoalSnapshot;
 import '../services/active_chat_service.dart';
 import '../services/approval_policy.dart';
+import '../services/session_reconciler.dart';
 import '../services/artifact_export_service.dart';
 import '../services/attachment_uploader.dart';
 import '../services/command_risk.dart';
@@ -156,7 +157,6 @@ import '../widgets/turn_activity_pill.dart';
 import '../widgets/platform_setup_commands.dart';
 import '../widgets/read_only.dart';
 import '../widgets/read_aloud_button.dart';
-import '../widgets/reasoning_block.dart';
 import '../widgets/session_deletion_dialogs.dart';
 import '../widgets/session_artifacts_sheet.dart';
 import '../widgets/session_context_usage.dart';
@@ -1515,16 +1515,6 @@ class _ChatScreenState extends State<ChatScreen>
     return _messages.isNotEmpty && identical(message, _messages.first);
   }
 
-  /// Frontera de segmento dentro del MISMO turno (message.interim de Desktop):
-  /// el servicio sella la burbuja visible en el historial e inserta un
-  /// placeholder `_pipeline` como nueva cabeza. El host vivo debe soltar el
-  /// texto sellado —que a partir de ese momento ya se pinta en su propia fila
-  /// histórica— y pasar a "sigue trabajando"; el revelado gradual reinicia
-  /// para el segmento siguiente. Sin este relevo el frame obsoleto duplica el
-  /// texto sellado durante toda la pausa, y cuando el segmento nuevo arranca
-  /// la burbuja superior "se corta" (su contenido viejo se sustituye por el
-  /// nuevo) y aparece de golpe, sin typewriter, porque [_revealedChars] quedó
-  /// en la longitud del segmento anterior.
   void _syncStreamingSegmentBoundary() {
     if (!_chat.isStreaming || !_liveAssistantMaterialized) return;
     if (_messages.isEmpty) return;
@@ -1536,10 +1526,14 @@ class _ChatScreenState extends State<ChatScreen>
         identical(frame.metadata, head)) {
       return;
     }
-    _revealedChars = 0;
+    final hasActivity = normalizeAssistantActivityTrace(
+      head[assistantActivityTraceKey],
+    ).isNotEmpty;
+    final content = hasActivity ? '' : (head['content'] as String? ?? '');
+    _revealedChars = content.length;
     _liveAssistantFrame.value = _LiveAssistantFrame(
       turnSerial: _assistantEntranceSerial,
-      content: '',
+      content: content,
       metadata: head,
       isStreaming: true,
     );
@@ -3366,8 +3360,8 @@ class _ChatScreenState extends State<ChatScreen>
     final maxBytes = switch (reference.kind) {
       GeneratedMediaKind.image => GeneratedMediaService.maxImageBytes,
       GeneratedMediaKind.video => GeneratedMediaService.maxVideoBytes,
-      GeneratedMediaKind.audio || GeneratedMediaKind.file =>
-        GeneratedMediaService.maxFileBytes,
+      GeneratedMediaKind.audio ||
+      GeneratedMediaKind.file => GeneratedMediaService.maxFileBytes,
     };
     return GeneratedMediaService.ensureDownloaded(
       cacheScope,
@@ -4803,11 +4797,7 @@ class _ChatScreenState extends State<ChatScreen>
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            Strings.of(context).chatStopSaveFailed,
-          ),
-        ),
+        SnackBar(content: Text(Strings.of(context).chatStopSaveFailed)),
       );
     }
   }
@@ -5296,8 +5286,10 @@ class _ChatScreenState extends State<ChatScreen>
       // vivo en vez de dejar solo la petición del usuario.
       final liveAssistantWithoutRenderUnit =
           head['role'] == 'assistant' &&
-          head['_pipeline'] != true &&
-          projection.nearestRenderableMessageIndex(0) != 0;
+          projection.nearestRenderableMessageIndex(0) != 0 &&
+          (head['_pipeline'] != true ||
+              (_liveAssistantMaterialized &&
+                  _liveAssistantFrame.value != null));
       if (liveAssistantWithoutRenderUnit) {
         entries.add(_WholeChatListEntry(const ChatMessageUnitPlan(0)));
       }
@@ -5959,7 +5951,9 @@ class _ChatScreenState extends State<ChatScreen>
     if (RegExp(r'(^|\s)@[a-z0-9]', caseSensitive: false).hasMatch(text)) {
       await _chat.loadMentionRoster();
     }
-    final mentions = List<BotMention>.unmodifiable(_chat.mentionResolver.resolve(text));
+    final mentions = List<BotMention>.unmodifiable(
+      _chat.mentionResolver.resolve(text),
+    );
     final mentionAnnotation = buildBotMentionAnnotation(mentions);
     final waitsForExternalOwner = _chat.hasAuthoritativePassiveRemoteActivity;
     // Every queued composer turn is written to the encrypted outbox before the
@@ -6063,7 +6057,9 @@ class _ChatScreenState extends State<ChatScreen>
       fullText: sameRecoveredBatch ? existing!.fullText : fullText,
       desktopText: sameRecoveredBatch ? existing!.desktopText : desktopText,
       mentions: sameRecoveredBatch ? existing!.mentions : mentions,
-      mentionAnnotation: sameRecoveredBatch ? existing!.mentionAnnotation : mentionAnnotation,
+      mentionAnnotation: sameRecoveredBatch
+          ? existing!.mentionAnnotation
+          : mentionAnnotation,
       attachments: attachments,
       model: selectedModel,
       profile: profile,
@@ -8778,7 +8774,8 @@ class _ChatScreenState extends State<ChatScreen>
                                         width: double.infinity,
                                         height: 48,
                                         child: ValueListenableBuilder<bool>(
-                                          valueListenable: _scrollToBottomVisibility,
+                                          valueListenable:
+                                              _scrollToBottomVisibility,
                                           builder: (context, showScrollToBottom, _) {
                                             return ExcludeSemantics(
                                               excluding: !showScrollToBottom,
@@ -8809,7 +8806,8 @@ class _ChatScreenState extends State<ChatScreen>
                                                           : const Duration(
                                                               milliseconds: 160,
                                                             ),
-                                                      curve: Curves.easeOutCubic,
+                                                      curve:
+                                                          Curves.easeOutCubic,
                                                       child: _ScrollToBottomButton(
                                                         key: const ValueKey(
                                                           'chat-scroll-to-bottom',
@@ -8843,8 +8841,10 @@ class _ChatScreenState extends State<ChatScreen>
                                               ),
                                               active: _showTurnActivityPill,
                                               startedAt: _turnActivityStartedAt,
-                                              statusLabel: _turnActivityPillLabel,
-                                              reassureAfter: _chat.noActivityHint
+                                              statusLabel:
+                                                  _turnActivityPillLabel,
+                                              reassureAfter:
+                                                  _chat.noActivityHint
                                                   ? const Duration(days: 1)
                                                   : const Duration(seconds: 20),
                                             ),
@@ -8883,7 +8883,8 @@ class _ChatScreenState extends State<ChatScreen>
                                                                   .passiveActivityAggregate
                                                                   .total
                                                             : 0)
-                                                    ? _chat.safeActiveSubagentCount
+                                                    ? _chat
+                                                          .safeActiveSubagentCount
                                                     : (_chat.hasRecentPassiveRemoteActivity
                                                           ? _chat
                                                                 .passiveActivityAggregate
@@ -8896,7 +8897,8 @@ class _ChatScreenState extends State<ChatScreen>
                                                         0,
                                                 canInterrupt:
                                                     _chat.canInterruptSubagent,
-                                                canSteer: _chat.canSteerSubagent,
+                                                canSteer:
+                                                    _chat.canSteerSubagent,
                                                 isInterruptPending: _chat
                                                     .isSubagentInterruptPending,
                                                 appForeground:
@@ -8911,16 +8913,17 @@ class _ChatScreenState extends State<ChatScreen>
                                                     truncated: result.truncated,
                                                   );
                                                 },
-                                                onSteer: (activity, text) async {
-                                                  final result = await _chat
-                                                      .steerSubagent(
-                                                        activity,
-                                                        text,
+                                                onSteer:
+                                                    (activity, text) async {
+                                                      final result = await _chat
+                                                          .steerSubagent(
+                                                            activity,
+                                                            text,
+                                                          );
+                                                      return SubagentSteerView(
+                                                        status: result.status,
                                                       );
-                                                  return SubagentSteerView(
-                                                    status: result.status,
-                                                  );
-                                                },
+                                                    },
                                                 isOpenPending:
                                                     _isSubagentOpenPending,
                                                 onOpenConversation: (activity) {
@@ -9016,25 +9019,34 @@ class _ChatScreenState extends State<ChatScreen>
                                     busy: _resolvingApproval,
                                     onChoice: _resolveChatApproval,
                                     companion: context
-                                        .findAncestorStateOfType<HermesAppState>()
+                                        .findAncestorStateOfType<
+                                          HermesAppState
+                                        >()
                                         ?.companion,
                                   ),
                                 if (_chat.desktopContinuationRequired)
                                   Semantics(
                                     container: true,
-                                    label:
-                                        Strings.of(context).chatContinueOnDesktop,
+                                    label: Strings.of(
+                                      context,
+                                    ).chatContinueOnDesktop,
                                     child: Card(
-                                      key: const ValueKey('desktop-continuation-required'),
+                                      key: const ValueKey(
+                                        'desktop-continuation-required',
+                                      ),
                                       child: Padding(
                                         padding: EdgeInsets.all(16),
                                         child: Row(
                                           children: [
-                                            Icon(Icons.desktop_windows_outlined),
+                                            Icon(
+                                              Icons.desktop_windows_outlined,
+                                            ),
                                             SizedBox(width: 12),
                                             Expanded(
                                               child: Text(
-                                                Strings.of(context).chatContinueOnDesktop,
+                                                Strings.of(
+                                                  context,
+                                                ).chatContinueOnDesktop,
                                               ),
                                             ),
                                           ],
@@ -11670,13 +11682,16 @@ class _ChatScreenState extends State<ChatScreen>
         _isRecording || _transcribing || _slashSuggestions.isEmpty
         ? null
         : _SlashPalette(commands: _slashSuggestions, onPick: _pickSlash);
-    final floatingPalette = slashPalette ?? (_isRecording || _transcribing
-        ? null : ChatMentionPalette(
-            controller: _textController,
-            focusNode: _textFocusNode,
-            connectionId: widget.connection.id,
-            profile: _effectiveSessionProfile,
-          ));
+    final floatingPalette =
+        slashPalette ??
+        (_isRecording || _transcribing
+            ? null
+            : ChatMentionPalette(
+                controller: _textController,
+                focusNode: _textFocusNode,
+                connectionId: widget.connection.id,
+                profile: _effectiveSessionProfile,
+              ));
     // Composer premium (referencia live-chat): contenedor con borde sutil,
     // campo sin marco y fila inferior de acciones con send cuadrado ámbar.
     //
@@ -12483,6 +12498,12 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     final isPipeline = msg['_pipeline'] == true;
+    final hasUnifiedActivity =
+        normalizeAssistantActivityTrace(
+          msg[assistantActivityTraceKey],
+        ).isNotEmpty ||
+        (msg['reasoning'] is String &&
+            (msg['reasoning'] as String).trim().isNotEmpty);
     final isCancelled = msg['_cancelled'] == true;
     // El mensaje en curso es el más nuevo (índice 0) mientras hay streaming.
     // Solo en él aplicamos el normalizador visual de Markdown incompleto.
@@ -12515,7 +12536,10 @@ class _ChatScreenState extends State<ChatScreen>
     // Placeholder del turno activo: la ThinkingTraceCard en vivo agrega el
     // progreso del turno en curso (los eventos reales se agruparán al
     // refrescar tras completar).
-    if (role == 'assistant' && isPipeline) {
+    if (role == 'assistant' &&
+        isPipeline &&
+        content.trim().isEmpty &&
+        !hasUnifiedActivity) {
       // Un placeholder interno puede sobrevivir a una reconciliación tardía.
       // Nunca lo proyectamos como actividad si ya no es la cabeza viva del
       // chat: _trace pertenece al turno actual, no al mensaje histórico.
@@ -12536,7 +12560,10 @@ class _ChatScreenState extends State<ChatScreen>
     final displayContent = role == 'assistant'
         ? operationalProjection.visibleMarkdown
         : content;
-    if (role == 'assistant' && isStreaming && displayContent.trim().isEmpty) {
+    if (role == 'assistant' &&
+        isStreaming &&
+        displayContent.trim().isEmpty &&
+        !hasUnifiedActivity) {
       return _buildActiveThinkingState();
     }
     // Los resúmenes de delegación son cortos y necesitan una proyección
@@ -12668,7 +12695,15 @@ class _ChatScreenState extends State<ChatScreen>
     required bool compact,
   }) {
     final projection = _projectOperationalArtifacts(context, frame.content);
-    if (frame.isStreaming && projection.visibleMarkdown.trim().isEmpty) {
+    final hasUnifiedActivity =
+        normalizeAssistantActivityTrace(
+          frame.metadata[assistantActivityTraceKey],
+        ).isNotEmpty ||
+        (frame.metadata['reasoning'] is String &&
+            (frame.metadata['reasoning'] as String).trim().isNotEmpty);
+    if (frame.isStreaming &&
+        projection.visibleMarkdown.trim().isEmpty &&
+        !hasUnifiedActivity) {
       return _buildActiveThinkingState();
     }
     if (!frame.isStreaming &&
@@ -15679,6 +15714,63 @@ class _GatedChatImageState extends State<_GatedChatImage> {
   }
 }
 
+List<ChatTraceEvent> _assistantActivityEvents(
+  BuildContext context,
+  Map<String, dynamic> metadata,
+  String legacyReasoning,
+) {
+  final s = Strings.of(context);
+  final normalized = normalizeAssistantActivityTrace(
+    metadata[assistantActivityTraceKey],
+  );
+  final events = <ChatTraceEvent>[];
+  var hasReasoning = false;
+  for (var index = 0; index < normalized.length; index++) {
+    final step = normalized[index];
+    final kind = switch (step['kind']) {
+      'reasoning' => ChatTraceEventKind.reasoning,
+      'skill' => ChatTraceEventKind.skill,
+      _ => ChatTraceEventKind.tool,
+    };
+    hasReasoning |= kind == ChatTraceEventKind.reasoning;
+    final preview = kind == ChatTraceEventKind.reasoning
+        ? step['text']?.toString() ?? ''
+        : '';
+    final label = kind == ChatTraceEventKind.reasoning
+        ? s.chatActivityReasoning
+        : step['label']?.toString().trim() ?? '';
+    if (label.isEmpty) continue;
+    events.add(
+      ChatTraceEvent(
+        id: step['id']?.toString() ?? 'activity-$index',
+        label: label,
+        status: step['status']?.toString() ?? 'completed',
+        preview: preview,
+        kind: kind,
+      ),
+    );
+  }
+  if (!hasReasoning && legacyReasoning.trim().isNotEmpty) {
+    events.insert(
+      0,
+      ChatTraceEvent(
+        id: 'reasoning',
+        label: s.chatActivityReasoning,
+        status: metadata['_pipeline'] == true ? 'running' : 'completed',
+        preview: legacyReasoning.trim(),
+        kind: ChatTraceEventKind.reasoning,
+      ),
+    );
+  }
+  return events;
+}
+
+Duration? _assistantActivityDuration(Map<String, dynamic> metadata) {
+  final raw = metadata['_activity_duration_seconds'];
+  if (raw is! num || !raw.isFinite || raw <= 0 || raw > 604800) return null;
+  return Duration(milliseconds: (raw * 1000).round());
+}
+
 class _AssistantMessage extends StatelessWidget {
   final String content;
   final bool verbose;
@@ -15740,6 +15832,11 @@ class _AssistantMessage extends StatelessWidget {
     );
     final showHeader = slice?.showHeader ?? true;
     final showFooter = slice?.showFooter ?? true;
+    final activityEvents = _assistantActivityEvents(
+      context,
+      metadata,
+      split.reasoning,
+    );
     final structuredImages = _structuredGeneratedImages(metadata);
     final structuredVideos = _structuredGeneratedVideos(metadata);
     final textualGeneratedBasenames = <String, int>{};
@@ -16099,12 +16196,17 @@ class _AssistantMessage extends StatelessWidget {
               ),
             if (showHeader && metaLines.isNotEmpty)
               _MetaBlock(lines: metaLines, onDark: false),
-            // Razonamiento del modelo (`<think>…`) como bloque discreto y plegado,
-            // separado de la respuesta final. Solo aparece si lo hay.
-            if (showHeader && split.hasReasoning)
-              ReasoningBlock(
-                reasoning: split.reasoning,
-                inProgress: split.reasoningInProgress,
+            if (showHeader && activityEvents.isNotEmpty)
+              ThinkingTraceCard(
+                key: const ValueKey('assistant-activity-trace'),
+                events: activityEvents,
+                active: isStreaming || metadata['_pipeline'] == true,
+                headline: Strings.of(context).chatActivityThinking,
+                companion: context
+                    .findAncestorStateOfType<HermesAppState>()
+                    ?.companion,
+                activeMood: HermesSparkMood.thinking,
+                duration: _assistantActivityDuration(metadata),
               ),
             if (answer.isNotEmpty) ...answerWidgets(),
             if (showFooter && technicalDetails.isNotEmpty)
@@ -16553,9 +16655,9 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
   }
 
   void _showActionError() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(Strings.of(context).genMediaError)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(Strings.of(context).genMediaError)));
   }
 
   @override
@@ -16580,8 +16682,8 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
         GeneratedImageStatus.unsupported => GeneratedFileStatus.consent,
         GeneratedImageStatus.downloading => GeneratedFileStatus.downloading,
         GeneratedImageStatus.ready => GeneratedFileStatus.ready,
-        GeneratedImageStatus.error || GeneratedImageStatus.gone =>
-          GeneratedFileStatus.error,
+        GeneratedImageStatus.error ||
+        GeneratedImageStatus.gone => GeneratedFileStatus.error,
       };
       return GeneratedFileCard(
         key: kind == GeneratedMediaKind.audio
@@ -18165,31 +18267,13 @@ class AssistantMarkdownView extends StatelessWidget {
             onLinkTap: (href) => _openMarkdownLink(context, href),
           );
 
-    // Sin razonamiento y un único bloque: render idéntico al anterior (preserva
-    // los goldens del caso markdown válido, donde la capa semántica es no-op).
-    if (!split.hasReasoning) {
-      if (blocks.isEmpty && !operationalProjection.hasTechnicalDetails) {
-        return const SizedBox.shrink();
-      }
-      if (blocks.length == 1 && !operationalProjection.hasTechnicalDetails) {
-        return ChatMessageSelectionArea(
-          enabled: !isStreaming,
-          child: blocks.first,
-        );
-      }
+    if (blocks.isEmpty && !operationalProjection.hasTechnicalDetails) {
+      return const SizedBox.shrink();
+    }
+    if (blocks.length == 1 && !operationalProjection.hasTechnicalDetails) {
       return ChatMessageSelectionArea(
         enabled: !isStreaming,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ...blocks,
-            if (operationalProjection.hasTechnicalDetails)
-              _AssistantTechnicalDetails(
-                details: operationalProjection.technicalDetails,
-              ),
-          ],
-        ),
+        child: blocks.first,
       );
     }
     return ChatMessageSelectionArea(
@@ -18198,10 +18282,6 @@ class AssistantMarkdownView extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          ReasoningBlock(
-            reasoning: split.reasoning,
-            inProgress: split.reasoningInProgress,
-          ),
           ...blocks,
           if (operationalProjection.hasTechnicalDetails)
             _AssistantTechnicalDetails(
