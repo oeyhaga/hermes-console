@@ -1118,11 +1118,17 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
         _globalActivityFor(connection, session),
       );
 
-      Widget recentTile(SessionActivityKind activity) => _RecentSessionTile(
+      Widget recentTile(
+        SessionActivityKind activity, {
+        int backgroundCount = 0,
+      }) => _RecentSessionTile(
         session: session,
         title: title,
         summary: summary,
-        activityLabel: _activityLabel(activity),
+        activityLabel: _activityLabel(
+          activity,
+          backgroundCount: backgroundCount,
+        ),
         relativeTime: relativeTime(
           session.lastActivityAt,
           languageCode: Localizations.localeOf(context).languageCode,
@@ -1145,6 +1151,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                     final localActivity = activeChat.sessionActivity;
                     return recentTile(
                       localActivity.active ? localActivity.kind : rosterActivity,
+                      backgroundCount: localActivity.backgroundItemCount,
                     );
                   },
                 ),
@@ -1154,7 +1161,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     return rows;
   }
 
-  String? _activityLabel(SessionActivityKind activity) => switch (activity) {
+  String? _activityLabel(
+    SessionActivityKind activity, {
+    int backgroundCount = 0,
+  }) => switch (activity) {
     SessionActivityKind.preparing || SessionActivityKind.generating =>
       Strings.of(context).chaPipelineThinking,
     SessionActivityKind.usingTools =>
@@ -1165,8 +1175,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       Strings.of(context).homeActivityAwaitingApproval,
     SessionActivityKind.compacting => Strings.of(context).slActivityCompacting,
     SessionActivityKind.delegated => Strings.of(context).slActivityDelegated,
-    SessionActivityKind.backgroundProcess =>
-      Strings.of(context).slActivityBackground,
+    SessionActivityKind.backgroundProcess => backgroundCount > 0
+        ? Strings.of(context).chaBackgroundActivityCount(backgroundCount)
+        : Strings.of(context).slActivityBackground,
     SessionActivityKind.idle => null,
   };
 

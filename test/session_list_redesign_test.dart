@@ -519,7 +519,7 @@ void main() {
       await _pumpUntil(tester, find.text('Informe prolongado'));
 
       final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
-      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsOneWidget);
       expect(
         find.byKey(const ValueKey('session-running-background-1')),
         findsOneWidget,
@@ -541,6 +541,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
 
       expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsNothing);
       expect(
         find.byKey(const ValueKey('session-running-background-1')),
         findsNothing,
@@ -883,7 +884,7 @@ void main() {
       final strings = Strings.of(
         tester.element(find.byType(HomeDashboardScreen)),
       );
-      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsOneWidget);
       expect(
         find.byKey(const ValueKey('home-activity-background-1')),
         findsOneWidget,
@@ -905,6 +906,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
 
       expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsNothing);
       expect(find.text(strings.chaPipelineThinking), findsOneWidget);
       expect(
         find.byKey(const ValueKey('home-activity-background-1')),

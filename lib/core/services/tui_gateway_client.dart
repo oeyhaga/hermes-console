@@ -1226,6 +1226,7 @@ class TuiGatewayClient
         HermesDesktopApprovalResultGateway,
         HermesDesktopSubagentGateway,
         HermesDesktopControlGateway,
+        HermesDesktopSessionControlGateway,
         HermesExtensionManagementGateway,
         HermesMcpProvisioningGateway,
         HermesWebhookManagementGateway,
@@ -5317,33 +5318,58 @@ class TuiGatewayClient
     }
   }
 
-  static const Set<String> _validGoalActions = {
+  static const Set<String> _validSessionControlActions = {
     'goal.pause',
     'goal.resume',
     'goal.clear',
     'goal.unwait',
+    'loop.pause',
+    'loop.resume',
+    'loop.stop',
+    'heartbeat.pause',
+    'heartbeat.resume',
+    'heartbeat.clear',
   };
 
   @override
-  Future<SessionGoalSnapshot?> readSessionGoal(String runtimeSessionId) async {
+  Future<SessionControlSnapshot> readSessionControl(
+    String runtimeSessionId,
+  ) async {
     final result = await _controlRequest('session.control.read', {
       'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
     }, capability: DesktopGatewayCapability.sessionControl);
-    final control = result['control'];
-    if (control is! Map) return null;
-    return SessionGoalSnapshot.tryParse(control['goal']);
+    return SessionControlSnapshot.fromJson(result['control']);
   }
 
   @override
-  Future<void> sendGoalAction(String runtimeSessionId, String action) async {
-    if (!_validGoalActions.contains(action)) {
-      throw ArgumentError.value(action, 'action', 'not a supported goal action');
+  Future<SessionGoalSnapshot?> readSessionGoal(String runtimeSessionId) async =>
+      (await readSessionControl(runtimeSessionId)).goal;
+
+  @override
+  Future<void> sendSessionControlAction(
+    String runtimeSessionId,
+    String action,
+  ) async {
+    if (!_validSessionControlActions.contains(action)) {
+      throw ArgumentError.value(
+        action,
+        'action',
+        'not a supported session control action',
+      );
     }
     _requireWritableControlConnection();
     await _controlRequest('session.control', {
       'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
       'action': action,
     }, capability: DesktopGatewayCapability.sessionControl);
+  }
+
+  @override
+  Future<void> sendGoalAction(String runtimeSessionId, String action) async {
+    if (!action.startsWith('goal.')) {
+      throw ArgumentError.value(action, 'action', 'not a supported goal action');
+    }
+    await sendSessionControlAction(runtimeSessionId, action);
   }
 
   @override

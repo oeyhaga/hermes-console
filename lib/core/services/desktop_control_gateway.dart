@@ -83,6 +83,15 @@ abstract class HermesDesktopControlGateway {
   Future<void> sendGoalAction(String runtimeSessionId, String action);
 }
 
+abstract class HermesDesktopSessionControlGateway {
+  Future<SessionControlSnapshot> readSessionControl(String runtimeSessionId);
+
+  Future<void> sendSessionControlAction(
+    String runtimeSessionId,
+    String action,
+  );
+}
+
 /// Optional authenticated Dashboard seam for installing and administering
 /// extensions. Keeping it separate preserves legacy JSON-RPC fakes/servers.
 abstract class HermesExtensionManagementGateway {

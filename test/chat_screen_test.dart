@@ -661,7 +661,10 @@ class _UiRewindGateway
 }
 
 class _StableRefreshGateway extends _UiRewindGateway
-    implements HermesDesktopSubagentGateway, HermesDesktopControlGateway {
+    implements
+        HermesDesktopSubagentGateway,
+        HermesDesktopControlGateway,
+        HermesDesktopSessionControlGateway {
   _StableRefreshGateway({
     this.subagents = const [
       DesktopSubagentSnapshot(
@@ -680,6 +683,20 @@ class _StableRefreshGateway extends _UiRewindGateway
   );
   Object? processListError;
   int processListCalls = 0;
+  int controlReadCalls = 0;
+  int inFlightControlReadCalls = 0;
+  int maxActiveControlReadCalls = 0;
+  Completer<SessionControlSnapshot>? controlReadGate;
+  Object? controlReadError;
+  SessionControlSnapshot controlSnapshot = const SessionControlSnapshot(
+    goal: null,
+    loop: null,
+    heartbeat: null,
+    revision: '',
+    updatedAt: null,
+  );
+  final List<String> controlActions = [];
+  final List<String> killedProcesses = [];
   int listCalls = 0;
   int inFlightSubagentListCalls = 0;
   int maxActiveListCalls = 0;
@@ -716,6 +733,46 @@ class _StableRefreshGateway extends _UiRewindGateway
     final error = processListError;
     if (error != null) throw error;
     return processSnapshot;
+  }
+
+  @override
+  Future<SessionControlSnapshot> readSessionControl(
+    String runtimeSessionId,
+  ) async {
+    controlReadCalls += 1;
+    inFlightControlReadCalls += 1;
+    if (inFlightControlReadCalls > maxActiveControlReadCalls) {
+      maxActiveControlReadCalls = inFlightControlReadCalls;
+    }
+    try {
+      final error = controlReadError;
+      if (error != null) throw error;
+      final gate = controlReadGate;
+      if (gate != null) {
+        final result = await gate.future;
+        if (identical(controlReadGate, gate)) controlReadGate = null;
+        return result;
+      }
+      return controlSnapshot;
+    } finally {
+      inFlightControlReadCalls -= 1;
+    }
+  }
+
+  @override
+  Future<void> sendSessionControlAction(
+    String runtimeSessionId,
+    String action,
+  ) async {
+    controlActions.add(action);
+  }
+
+  @override
+  Future<void> killBackgroundProcess(
+    String runtimeSessionId,
+    String processId,
+  ) async {
+    killedProcesses.add(processId);
   }
 
   @override
@@ -14345,6 +14402,8 @@ void main() {
             uptimeSeconds: 12,
             command: 'dart run worker.dart',
             notifyOnComplete: true,
+            watchPatterns: ['READY_SAFE'],
+            watchHit: true,
           ),
         ],
       );
@@ -14381,6 +14440,26 @@ void main() {
       );
       expect(find.textContaining('dart run worker.dart'), findsOneWidget);
       expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        findsOneWidget,
+      );
+      expect(find.text('READY_SAFE'), findsOneWidget);
+      expect(find.text('Coincidencia detectada'), findsOneWidget);
+      Navigator.of(
+        tester.element(find.text('READY_SAFE')),
+      ).pop();
+      await tester.pump(const Duration(milliseconds: 300));
 
       gateway.processSnapshot = const AgentCenterSnapshot(
         snapshots: [],
@@ -14400,6 +14479,251 @@ void main() {
       await tester.pump();
 
       expect(gateway.processListCalls, callsBeforeProcessFinished + 1);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'status loop reúne control proceso y tareas en una sola actividad',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const [])
+        ..processSnapshot = const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [
+            BackgroundProcessEntry(
+              opaqueId: 'process-mixed',
+              status: AgentCenterStatus.running,
+              uptimeSeconds: 8,
+              command: 'python worker.py',
+            ),
+          ],
+        );
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-mixed-status'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_MIXED_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_MIXED_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('message.complete', const {'text': 'PUBLIC_MIXED_DONE'});
+      await tester.pump();
+      gateway.controlSnapshot = SessionControlSnapshot(
+        goal: const SessionGoalSnapshot(
+          title: 'PUBLIC_STANDING_GOAL',
+          status: 'waiting',
+          turnsUsed: 2,
+          maxTurns: 8,
+        ),
+        loop: SessionLoopSnapshot(
+          status: 'paused',
+          interval: const Duration(minutes: 5),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 5),
+          ticksFired: 3,
+          awaitingResponse: true,
+          deferredByGoal: true,
+        ),
+        heartbeat: SessionHeartbeatSnapshot(
+          status: 'active',
+          interval: const Duration(minutes: 10),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 10),
+          fireCount: 4,
+        ),
+        revision: 'mixed-1',
+        updatedAt: DateTime.utc(2026, 9, 21, 10),
+      );
+      gateway.emit('todo.updated', const {
+        'revision': 1,
+        'todos': [
+          {
+            'id': 'task-mixed',
+            'content': 'PUBLIC_PENDING_TASK',
+            'status': 'in_progress',
+          },
+        ],
+      });
+      final readsBeforeLoopStatus = gateway.controlReadCalls;
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(gateway.controlReadCalls, readsBeforeLoopStatus + 1);
+      expect(chat.sessionActivity.backgroundItemCount, 5);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('En segundo plano · 5'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        findsOneWidget,
+      );
+      expect(find.text('PUBLIC_STANDING_GOAL'), findsOneWidget);
+      expect(find.text('Bucle recurrente'), findsOneWidget);
+      expect(find.text('Estado · Pausado'), findsOneWidget);
+      expect(
+        find.text('Esperando a que termine la ejecución actual'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Aplazado mientras el goal permanente está activo'),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('background-loop-resume')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(gateway.controlActions, contains('loop.resume'));
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.drag(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        const Offset(0, -240),
+      );
+      await tester.pump();
+      expect(find.text('Heartbeat'), findsOneWidget);
+      await tester.drag(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        const Offset(0, -300),
+      );
+      await tester.pump();
+      expect(find.text('python worker.py'), findsOneWidget);
+      expect(find.text('PUBLIC_PENDING_TASK'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('background-process-stop-process-mixed')),
+      );
+      await tester.pump();
+      expect(gateway.killedProcesses, ['process-mixed']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'control fallido queda stale y dos lecturas vacías retiran la actividad',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const []);
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-control-hysteresis'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_CONTROL_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_CONTROL_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.complete', const {'text': 'PUBLIC_CONTROL_DONE'});
+      await tester.pump();
+      final activeControl = SessionControlSnapshot(
+        goal: null,
+        loop: SessionLoopSnapshot(
+          status: 'active',
+          interval: const Duration(minutes: 2),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 2),
+          ticksFired: 1,
+          awaitingResponse: false,
+        ),
+        heartbeat: null,
+        revision: 'control-active',
+        updatedAt: DateTime.utc(2026, 9, 21, 10),
+      );
+      final controlGate = Completer<SessionControlSnapshot>();
+      gateway
+        ..controlSnapshot = activeControl
+        ..controlReadGate = controlGate;
+      final readsBeforeBurst = gateway.controlReadCalls;
+      gateway.emit('status.update', const {'kind': 'loop'});
+      gateway.emit('status.update', const {'kind': 'heartbeat'});
+      await tester.pump();
+      expect(gateway.controlReadCalls, readsBeforeBurst + 1);
+      expect(gateway.maxActiveControlReadCalls, 1);
+      controlGate.complete(activeControl);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(gateway.controlReadCalls, readsBeforeBurst + 2);
+      expect(gateway.maxActiveControlReadCalls, 1);
+      final controlActivity = find.byKey(
+        const ValueKey('chat-background-process-status'),
+      );
+      expect(controlActivity, findsOneWidget);
+      expect(
+        find.descendant(
+          of: controlActivity,
+          matching: find.byKey(const ValueKey('turn-activity-elapsed')),
+        ),
+        findsNothing,
+      );
+
+      gateway.controlReadError = StateError('synthetic control read failure');
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.textContaining('Último estado conocido'), findsOneWidget);
+
+      gateway
+        ..controlReadError = null
+        ..controlSnapshot = const SessionControlSnapshot(
+          goal: null,
+          loop: null,
+          heartbeat: null,
+          revision: 'control-empty',
+          updatedAt: null,
+        );
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
       expect(
         find.byKey(const ValueKey('chat-background-process-status')),
         findsNothing,
@@ -14454,6 +14778,7 @@ void main() {
         find.byKey(const ValueKey('chat-background-process-status')),
         findsOneWidget,
       );
+      expect(find.textContaining('Último estado conocido'), findsOneWidget);
 
       gateway
         ..processListError = null
@@ -19275,17 +19600,14 @@ void main() {
               },
             });
             await tester.pump();
-            expect(
-              find.byKey(const ValueKey('chat-goal-primary-label')),
-              findsOneWidget,
+            final goalActivity = find.byKey(
+              const ValueKey('chat-background-process-status'),
             );
+            expect(goalActivity, findsOneWidget);
             expectPillLabelsFit(
               tester,
               find
-                  .ancestor(
-                    of: find.byKey(const ValueKey('chat-goal-primary-label')),
-                    matching: find.byType(Row),
-                  )
+                  .descendant(of: goalActivity, matching: find.byType(Row))
                   .first,
             );
           } else if (surface == 'background') {

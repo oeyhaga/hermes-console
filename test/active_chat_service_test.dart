@@ -3096,6 +3096,66 @@ void main() {
   );
 
   test(
+    'control y tareas pendientes mantienen visible el trabajo de fondo',
+    () async {
+      final gateway = _AttachmentDesktopGateway();
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(service.dispose);
+      addTearDown(gateway.close);
+      final connection = _conn(id: 'conn-control-activity');
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 'sess-control-activity',
+        sessionTitle: 'Control activo',
+        desktopGateway: gateway,
+        disableForegroundKeepAlive: true,
+      )..smoothStreaming = false;
+      expect(
+        await chat.send(
+          fullText: 'programa el seguimiento',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit('message.complete', const {'text': 'seguimiento programado'});
+      await done.timeout(const Duration(seconds: 1));
+      expect(chat.sessionActivity.active, isFalse);
+
+      gateway.emit('session.control.update', const {
+        'control': {
+          'loop': {
+            'status': 'active',
+            'interval_seconds': 300,
+            'last_fired_at': 1720000000,
+            'next_due_at': 1720000300,
+            'ticks_fired': 2,
+          },
+        },
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.sessionActivity.active, isTrue);
+
+      gateway.emit('session.control.update', const {
+        'control': {'loop': null, 'heartbeat': null, 'goal': null},
+      });
+      gateway.emit('todo.updated', const {
+        'revision': 4,
+        'todos': [
+          {'id': 'task-1', 'content': 'Esperar el despliegue', 'status': 'pending'},
+        ],
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.sessionActivity.active, isTrue);
+    },
+  );
+
+  test(
     'terminal espera process.list pendiente y conserva trabajo de fondo',
     () async {
       final gateway = _DelayedProcessGateway();

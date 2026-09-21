@@ -2722,7 +2722,9 @@ String _sessionActivityLabel(Strings strings, SessionActivity activity) =>
       SessionActivityKind.waitingForUser => strings.slActivityWaiting,
       SessionActivityKind.compacting => strings.slActivityCompacting,
       SessionActivityKind.delegated => strings.slActivityDelegated,
-      SessionActivityKind.backgroundProcess => strings.slActivityBackground,
+      SessionActivityKind.backgroundProcess => activity.backgroundItemCount > 0
+          ? strings.chaBackgroundActivityCount(activity.backgroundItemCount)
+          : strings.slActivityBackground,
       SessionActivityKind.idle => strings.slActivityUnknown,
     };
 
