@@ -12,6 +12,7 @@ import '../services/command_risk.dart';
 import '../services/connection_manager.dart';
 import '../theme/app_theme.dart';
 import '../theme/component_profile.dart';
+import 'activity_pill.dart' show formatTurnElapsed;
 import 'activity_sections.dart';
 import 'agent_task_widgets.dart';
 import 'hermes_premium_ui.dart';
@@ -1473,6 +1474,13 @@ class ThinkingTraceCard extends StatefulWidget {
   /// ni shimmer) y solo aparece, plegada, cuando el turno termina.
   final bool liveInPill;
 
+  /// Coloca la línea de resumen (apagada, con un chevron minúsculo) y el bloque
+  /// desplegable donde el llamador quiera: la cabecera del mensaje pone el
+  /// resumen bajo el título y el detalle a todo ancho debajo. Con esto la tarjeta
+  /// no pinta nada por su cuenta, ni siquiera en vivo («Trabajando…»).
+  final Widget Function(BuildContext context, Widget summary, Widget details)?
+  headerBuilder;
+
   const ThinkingTraceCard({
     required this.events,
     required this.active,
@@ -1482,6 +1490,7 @@ class ThinkingTraceCard extends StatefulWidget {
     this.stopped = false,
     this.duration,
     this.liveInPill = false,
+    this.headerBuilder,
     super.key,
   });
 
@@ -1666,6 +1675,15 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
   /// violaba la regla del ThinkingCard (colapsado salvo petición explícita).
   bool get _expanded => _userExpanded ?? false;
 
+  /// Pasos que el usuario debe ver: sin las herramientas puente de Hermes.
+  List<ChatTraceEvent> get _visibleEvents => widget.events
+      .where(
+        (event) =>
+            event.kind == ChatTraceEventKind.reasoning ||
+            !isInternalActivityLabel(event.label),
+      )
+      .toList(growable: false);
+
   String get _summary {
     final s = Strings.of(context);
     if (widget.active) {
@@ -1681,6 +1699,30 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
       };
     }
     if (_outcome == TraceOutcome.stopped) return s.cevTraceStopped;
+    // Con trabajo real (herramientas o tareas) el bloque dice cómo acabó y
+    // cuánto tardó; con solo razonamiento, cuánto pensó.
+    final didWork =
+        _visibleEvents.any(
+          (event) => event.kind != ChatTraceEventKind.reasoning,
+        ) ||
+        _ownedTasks != null;
+    if (didWork) {
+      switch (_outcome) {
+        case TraceOutcome.failed:
+          return s.cevTraceFailed;
+        case TraceOutcome.recovered:
+          return s.cevTraceRecovered;
+        case TraceOutcome.stopped:
+        case TraceOutcome.working:
+        case TraceOutcome.completed:
+          final seconds = widget.duration?.inSeconds ?? 0;
+          return seconds > 0
+              ? s.cevTraceCompletedDuration(
+                  formatTurnElapsed(Duration(seconds: seconds)),
+                )
+              : s.cevTraceCompleted;
+      }
+    }
     if (widget.events.any(
       (event) => event.kind == ChatTraceEventKind.reasoning,
     )) {
@@ -1810,10 +1852,14 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
     widget.events.map((event) => (id: event.id, label: event.label)),
   );
 
-  Widget _buildTraceDetails(HermesThemeColors colors, AgentTaskList? tasks) {
+  Widget _buildTraceDetails(
+    HermesThemeColors colors,
+    AgentTaskList? tasks, {
+    bool muted = false,
+  }) {
     final s = Strings.of(context);
     final now = DateTime.now();
-    final steps = widget.events.reversed
+    final steps = _visibleEvents.reversed
         .map(
           (event) => ActivityStep(
             id: event.id,
@@ -1836,7 +1882,7 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
         )
         .toList(growable: false);
     return Padding(
-      padding: const EdgeInsets.only(left: 40, top: 2),
+      padding: EdgeInsets.only(left: muted ? 50 : 40, top: 2),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -1848,7 +1894,12 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
               incomplete: !widget.active && tasks.hasOpen,
             ),
           if (steps.isNotEmpty)
-            ActivityDoneSection(steps: steps, now: now, dense: true),
+            ActivityDoneSection(
+              steps: steps,
+              now: now,
+              dense: true,
+              muted: muted,
+            ),
           const SizedBox(height: 6),
           Semantics(
             button: true,
@@ -1879,11 +1930,98 @@ class _ThinkingTraceCardState extends State<ThinkingTraceCard> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
-    final hasEvents = widget.events.isNotEmpty;
-    final tasks = hasEvents ? _ownedTasks : null;
+    // Una traza solo de herramientas puente no tiene nada que desplegar.
+    final hasEvents = widget.active
+        ? widget.events.isNotEmpty
+        : _visibleEvents.isNotEmpty;
+    final tasks = widget.events.isNotEmpty ? _ownedTasks : null;
     final indicator = _indicatorSpec(colors);
 
     final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+
+    final headerBuilder = widget.headerBuilder;
+    if (headerBuilder != null) {
+      final s = Strings.of(context);
+      final muted = TextStyle(fontSize: 11.5, color: colors.textSecondary);
+      if (widget.active) {
+        // El estado vivo lo cuenta la pastilla de actividad; aquí, una palabra.
+        return headerBuilder(
+          context,
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              s.liveHeaderWorking,
+              key: const ValueKey('thinking-trace-live-in-pill'),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: muted,
+            ),
+          ),
+          const SizedBox.shrink(),
+        );
+      }
+      final summary = Semantics(
+        button: hasEvents,
+        expanded: hasEvents ? _expanded : null,
+        label: _summary,
+        excludeSemantics: true,
+        child: InkWell(
+          key: const ValueKey('thinking-trace-summary'),
+          borderRadius: BorderRadius.circular(8),
+          onTap: hasEvents
+              ? () {
+                  HapticFeedback.selectionClick();
+                  setState(() => _userExpanded = !_expanded);
+                }
+              : null,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 30),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _cleanTraceStatus(_summary),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: muted,
+                  ),
+                ),
+                if (hasEvents) ...[
+                  const SizedBox(width: 2),
+                  AnimatedRotation(
+                    turns: _expanded ? 0.5 : 0,
+                    duration: reduceMotion
+                        ? Duration.zero
+                        : const Duration(milliseconds: 160),
+                    child: Icon(
+                      Icons.expand_more,
+                      size: 15,
+                      color: colors.textSecondary,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+      final body = hasEvents && _expanded
+          ? _buildTraceDetails(colors, tasks, muted: true)
+          : const SizedBox.shrink();
+      return headerBuilder(
+        context,
+        summary,
+        reduceMotion
+            ? body
+            : AnimatedSize(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                alignment: Alignment.topCenter,
+                child: body,
+              ),
+      );
+    }
 
     // El estado vivo lo cuenta la pastilla de actividad, no la burbuja.
     if (widget.active && widget.liveInPill) {

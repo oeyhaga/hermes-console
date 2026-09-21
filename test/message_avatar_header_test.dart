@@ -34,17 +34,23 @@ Widget _app(
   ),
 );
 
+Widget _subtitle() => Builder(
+  builder: (context) => Text(
+    'Completado · 1:12',
+    key: const ValueKey('fake-summary'),
+    style: TextStyle(
+      fontSize: 11.5,
+      color: Theme.of(context).hermes.textSecondary,
+    ),
+  ),
+);
+
 Widget _header({
-  AvatarRingState state = AvatarRingState.live,
   bool mascot = true,
-  String? model = 'gpt-5.5',
-  String? time = '12:04',
+  bool subtitle = true,
   List<Widget> actions = const [],
 }) => MessageAvatarHeader(
-  name: 'hermes',
-  state: state,
-  model: model,
-  time: time,
+  name: 'HERMES CONSOLE',
   mascot: mascot
       ? const CompanionStatusIndicator(
           key: ValueKey('assistant-header-companion'),
@@ -54,152 +60,113 @@ Widget _header({
           animate: false,
         )
       : null,
+  subtitle: subtitle ? _subtitle() : null,
   actions: actions,
 );
 
-Color _ringColor(WidgetTester tester) {
-  final box = tester.widget<DecoratedBox>(
-    find.byKey(const ValueKey('assistant-avatar-ring')),
-  );
-  final border = (box.decoration as BoxDecoration).border! as Border;
-  return border.top.color;
-}
-
 void main() {
-  testWidgets('la mascota va dentro del chip con anillo en cada estado', (
-    tester,
-  ) async {
-    final theme = AppTheme.hermesRedDark;
-    final colors = theme.hermes;
-    for (final entry in {
-      AvatarRingState.live: colors.accent,
-      AvatarRingState.success: colors.success,
-      AvatarRingState.warning: colors.warning,
-      AvatarRingState.error: colors.error,
-      AvatarRingState.neutral: colors.textDisabled,
-    }.entries) {
-      await tester.pumpWidget(_app(_header(state: entry.key), theme: theme));
-      await tester.pump();
-      expect(
-        find.byKey(const ValueKey('assistant-header-companion')),
-        findsOneWidget,
-        reason: '${entry.key}',
-      );
-      // La mascota queda dentro del chip circular.
-      final chip = tester.getRect(
-        find.byKey(const ValueKey('assistant-avatar-chip')),
-      );
-      final mascot = tester.getRect(
-        find.byKey(const ValueKey('assistant-header-companion')),
-      );
-      expect(chip.contains(mascot.topLeft), isTrue);
-      expect(chip.contains(mascot.bottomRight), isTrue);
-      expect(chip.size, const Size(kAvatarChipSize, kAvatarChipSize));
-      expect(mascot.size, const Size(kAvatarMascotSize, kAvatarMascotSize));
-      final ring = _ringColor(tester);
-      // Vivo: raíl suave + arco; el resto: anillo casi opaco del color de estado.
-      expect(
-        ring.toARGB32() & 0x00FFFFFF,
-        entry.value.toARGB32() & 0x00FFFFFF,
-        reason: '${entry.key}',
-      );
-    }
-  });
-
-  testWidgets('el arco vivo solo existe mientras el turno vive', (
+  testWidgets('la mascota va suelta: sin disco, sin anillo y sin arco', (
     tester,
   ) async {
     await tester.pumpWidget(_app(_header(), reduceMotion: false));
     await tester.pump();
     expect(
-      find.byKey(const ValueKey('assistant-avatar-live-arc')),
-      findsOneWidget,
-    );
-    await tester.pumpWidget(
-      _app(_header(state: AvatarRingState.success), reduceMotion: false),
-    );
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('assistant-avatar-live-arc')),
-      findsNothing,
-    );
-    // Movimiento reducido: sin arco animado.
-    await tester.pumpWidget(_app(_header()));
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('assistant-avatar-live-arc')),
-      findsNothing,
-    );
-  });
-
-  testWidgets('sin presencia: avatar neutro con el mismo anillo y la misma '
-      'geometría', (tester) async {
-    await tester.pumpWidget(_app(_header()));
-    await tester.pump();
-    final withMascot = tester.getRect(find.byType(MessageAvatarHeader));
-    final chipWith = tester.getRect(
-      find.byKey(const ValueKey('assistant-avatar-chip')),
-    );
-    final nameWith = tester.getTopLeft(
-      find.byKey(const ValueKey('assistant-header-name')),
-    );
-
-    await tester.pumpWidget(_app(_header(mascot: false)));
-    await tester.pump();
-    expect(
       find.byKey(const ValueKey('assistant-header-companion')),
+      findsOneWidget,
+    );
+    expect(
+      tester.getSize(find.byKey(const ValueKey('assistant-header-companion'))),
+      const Size(kAvatarMascotSize, kAvatarMascotSize),
+    );
+    // Nada circular alrededor de la mascota.
+    expect(find.byKey(const ValueKey('assistant-avatar-chip')), findsNothing);
+    expect(find.byKey(const ValueKey('assistant-avatar-ring')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('assistant-avatar-live-arc')),
       findsNothing,
     );
     expect(
-      find.byKey(const ValueKey('assistant-avatar-initial')),
-      findsOneWidget,
+      find.descendant(
+        of: find.byType(MessageAvatarHeader),
+        matching: find.byType(CircularProgressIndicator),
+      ),
+      findsNothing,
     );
-    expect(find.text('H'), findsOneWidget);
-    expect(tester.getRect(find.byType(MessageAvatarHeader)), withMascot);
-    expect(
-      tester.getRect(find.byKey(const ValueKey('assistant-avatar-chip'))),
-      chipWith,
+    final circles = find.descendant(
+      of: find.byType(MessageAvatarHeader),
+      matching: find.byWidgetPredicate(
+        (w) =>
+            w is DecoratedBox &&
+            (w.decoration is BoxDecoration) &&
+            (w.decoration as BoxDecoration).shape == BoxShape.circle,
+      ),
     );
-    expect(
-      tester.getTopLeft(find.byKey(const ValueKey('assistant-header-name'))),
-      nameWith,
-    );
-    expect(find.byKey(const ValueKey('assistant-avatar-ring')), findsOneWidget);
+    expect(circles, findsNothing);
   });
 
-  testWidgets('nombre y «modelo · hora»; sin modelo solo la hora', (
+  testWidgets('el título conserva el color de acento del tema', (tester) async {
+    for (final id in ['dark', 'claude-light', 'ember']) {
+      final theme = AppTheme.fromId(id);
+      await tester.pumpWidget(_app(_header(), theme: theme));
+      // El cambio de tema se anima: se deja terminar antes de leer el color.
+      await tester.pump(const Duration(seconds: 1));
+      final title = tester.widget<Text>(
+        find.byKey(const ValueKey('assistant-header-name')),
+      );
+      expect(title.data, 'Hermes Console');
+      expect(title.style!.color, theme.hermes.accent, reason: id);
+    }
+  });
+
+  testWidgets(
+    'sin presencia: la inicial en acento, sin círculo y misma geometría',
+    (tester) async {
+      await tester.pumpWidget(_app(_header()));
+      await tester.pump();
+      final withMascot = tester.getRect(find.byType(MessageAvatarHeader));
+      final nameWith = tester.getTopLeft(
+        find.byKey(const ValueKey('assistant-header-name')),
+      );
+      await tester.pumpWidget(_app(_header(mascot: false)));
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey('assistant-header-companion')),
+        findsNothing,
+      );
+      final initial = tester.widget<Text>(
+        find.byKey(const ValueKey('assistant-avatar-initial')),
+      );
+      expect(initial.data, 'H');
+      expect(initial.style!.color, AppTheme.hermesRedDark.hermes.accent);
+      expect(tester.getRect(find.byType(MessageAvatarHeader)), withMascot);
+      expect(
+        tester.getTopLeft(find.byKey(const ValueKey('assistant-header-name'))),
+        nameWith,
+      );
+      expect(find.byKey(const ValueKey('assistant-avatar-ring')), findsNothing);
+    },
+  );
+
+  testWidgets('la segunda línea es la que pasa el llamador, bajo el título', (
     tester,
   ) async {
     await tester.pumpWidget(_app(_header()));
     await tester.pump();
-    expect(
-      tester
-          .widget<Text>(find.byKey(const ValueKey('assistant-header-name')))
-          .data,
-      'Hermes',
+    final name = tester.getRect(
+      find.byKey(const ValueKey('assistant-header-name')),
     );
-    expect(
-      tester
-          .widget<Text>(find.byKey(const ValueKey('assistant-header-subtitle')))
-          .data,
-      'gpt-5.5 · 12:04',
-    );
-    await tester.pumpWidget(_app(_header(model: null)));
-    await tester.pump();
-    expect(
-      tester
-          .widget<Text>(find.byKey(const ValueKey('assistant-header-subtitle')))
-          .data,
-      '12:04',
-    );
-    await tester.pumpWidget(_app(_header(model: null, time: null)));
-    await tester.pump();
+    final summary = tester.getRect(find.byKey(const ValueKey('fake-summary')));
+    expect(summary.top, greaterThanOrEqualTo(name.bottom - 1));
+    expect(summary.left, name.left);
+    // Ya no hay «modelo · hora» ni el «>_» monoespaciado.
     expect(
       find.byKey(const ValueKey('assistant-header-subtitle')),
       findsNothing,
     );
-    // Ya no hay el «>_ HERMES» monoespaciado.
     expect(find.textContaining('>_'), findsNothing);
+    await tester.pumpWidget(_app(_header(subtitle: false)));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('fake-summary')), findsNothing);
     expect(displayAgentName('Hermes Console'), 'Hermes Console');
     expect(displayAgentName('HERMES CONSOLE'), 'Hermes Console');
     expect(displayAgentName('MyBot'), 'MyBot');
@@ -211,7 +178,6 @@ void main() {
     await tester.pumpWidget(
       _app(
         _header(
-          state: AvatarRingState.success,
           actions: const [
             SizedBox(key: ValueKey('act-copy'), width: 48, height: 48),
           ],
@@ -239,10 +205,7 @@ void main() {
     for (final preset in AppTheme.presets) {
       await tester.pumpWidget(
         _app(
-          _header(
-            model: 'un-modelo-con-un-id-larguisimo-que-no-cabe',
-            actions: const [SizedBox(width: 48, height: 48)],
-          ),
+          _header(actions: const [SizedBox(width: 48, height: 48)]),
           theme: AppTheme.fromId(preset.id),
           textScale: 2,
         ),

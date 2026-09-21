@@ -5,12 +5,10 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../models/activity_snapshot.dart';
 import '../models/agent_task_list.dart';
-import '../models/compaction_progress.dart';
 import '../models/session_activity.dart';
 import '../models/subagent_activity.dart';
 import '../theme/app_theme.dart';
 import 'activity_pill.dart';
-import 'compaction_bar.dart';
 
 /// Acciones por elemento del panel. Son los mismos controladores que tenían las
 /// hojas anteriores de segundo plano / subagentes; el panel no pierde ninguna.
@@ -384,12 +382,16 @@ class ActivityStepRow extends StatelessWidget {
     required this.step,
     required this.now,
     this.dense = false,
+    this.muted = false,
     super.key,
   });
 
   final ActivityStep step;
   final DateTime now;
   final bool dense;
+
+  /// Historial: la marca de «hecho» va en tono apagado, sin verde.
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
@@ -401,7 +403,9 @@ class ActivityStepRow extends StatelessWidget {
       ActivityStepStatus.done => Icon(
         Icons.check_rounded,
         size: 15,
-        color: colors.success.withValues(alpha: 0.9),
+        color: muted
+            ? colors.textSecondary.withValues(alpha: 0.7)
+            : colors.success.withValues(alpha: 0.9),
       ),
       ActivityStepStatus.failed => Icon(
         Icons.close_rounded,
@@ -690,6 +694,7 @@ class ActivityDoneSection extends StatelessWidget {
     required this.now,
     this.maxRows = 30,
     this.dense = false,
+    this.muted = false,
     this.showTitle = true,
     super.key,
   });
@@ -698,6 +703,7 @@ class ActivityDoneSection extends StatelessWidget {
   final DateTime now;
   final int maxRows;
   final bool dense;
+  final bool muted;
   final bool showTitle;
 
   @override
@@ -722,6 +728,7 @@ class ActivityDoneSection extends StatelessWidget {
             step: step,
             now: now,
             dense: dense,
+            muted: muted,
           ),
         if (hidden > 0)
           Padding(
@@ -731,104 +738,6 @@ class ActivityDoneSection extends StatelessWidget {
               style: TextStyle(fontSize: 12, color: colors.textSecondary),
             ),
           ),
-      ],
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Compactación
-// ─────────────────────────────────────────────────────────────────────────────
-
-class ActivityCompactionSection extends StatelessWidget {
-  const ActivityCompactionSection({
-    required this.compaction,
-    required this.now,
-    super.key,
-  });
-
-  final CompactionProgress compaction;
-  final DateTime now;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).hermes;
-    final s = Strings.of(context);
-    final lang = _lang(context);
-    final fraction = compaction.fraction(now);
-    final remaining = compaction.remaining(now);
-    final estimate = compaction.estimate;
-    final headline = compaction.isFinished
-        ? compactionDoneLabel(s, compaction, lang)
-        : (fraction == null
-              ? s.liveCompacting
-              : s.liveCompactingPercent((fraction * 100).round()));
-    final facts = <String>[
-      compaction.manual ? s.liveCompactionManual : s.liveCompactionAuto,
-      if (compaction.messagesBefore != null)
-        s.liveCompactionMessages(compaction.messagesBefore!),
-      if (compaction.tokensBefore != null && !compaction.isFinished)
-        s.liveCompactionBefore(formatCompactTokens(compaction.tokensBefore!)),
-    ];
-    return Column(
-      key: const ValueKey('activity-compaction-section'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ActivitySectionHeader(
-          title: s.liveSectionCompaction,
-          keyName: 'activity-compaction-title',
-        ),
-        Text(
-          headline,
-          key: const ValueKey('activity-compaction-headline'),
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: colors.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 8),
-        CompactionBar(
-          compaction: compaction,
-          now: now,
-          minHeight: 5,
-          rounded: true,
-        ),
-        const SizedBox(height: 6),
-        Wrap(
-          alignment: WrapAlignment.spaceBetween,
-          spacing: 12,
-          runSpacing: 2,
-          children: [
-            Text(
-              s.liveCompactionElapsed(
-                formatTurnElapsed(compaction.elapsed(now)),
-              ),
-              key: const ValueKey('activity-compaction-elapsed'),
-              style: TextStyle(
-                fontSize: 12,
-                color: colors.textSecondary,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-            if (!compaction.isFinished && estimate != null)
-              Text(
-                remaining != null && remaining > Duration.zero
-                    ? s.liveCompactionRemaining(formatTurnElapsed(remaining))
-                    : s.liveCompactionTypical(formatTurnElapsed(estimate)),
-                key: const ValueKey('activity-compaction-estimate'),
-                style: TextStyle(fontSize: 12, color: colors.textSecondary),
-              ),
-          ],
-        ),
-        if (facts.isNotEmpty) ...[
-          const SizedBox(height: 2),
-          Text(
-            facts.join(' · '),
-            style: TextStyle(fontSize: 11.5, color: colors.textDisabled),
-          ),
-        ],
       ],
     );
   }

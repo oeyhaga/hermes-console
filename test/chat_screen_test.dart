@@ -1846,6 +1846,12 @@ String _subagentPillLabel(WidgetTester tester) {
       : '$action ${tester.widget<Text>(extras).data}';
 }
 
+/// Texto de la barra de compactación sobre el compositor.
+Finder _dockText(String text) => find.descendant(
+  of: find.byKey(const ValueKey('compaction-dock')),
+  matching: find.textContaining(text, findRichText: true),
+);
+
 /// Abre el panel que sale de la pastilla de actividad.
 Future<void> _openActivityPanel(WidgetTester tester) async {
   await tester.tap(find.byKey(const ValueKey('activity-pill')));
@@ -8982,6 +8988,82 @@ void main() {
     },
   );
 
+  testWidgets(
+    'con la pastilla de actividad visible Stop sigue tocable y la paleta la deja a un lado',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      var cancelCalls = 0;
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-pill-stop-palette'),
+        desktopGateway: gateway,
+        cancelStreamOverride: () async => cancelCalls++,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_STOP_PARENT',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('tool.start', const {
+        'tool_id': 'call-stop-1',
+        'name': 'terminal',
+        'args': {'command': 'sleep 30'},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      final pill = find.byKey(const ValueKey('activity-pill'));
+      final stop = find.byKey(const ValueKey('stop'));
+      expect(pill, findsOneWidget);
+      // La pastilla queda por encima del compositor y Stop no se mueve.
+      expect(
+        tester.getRect(pill).bottom,
+        lessThanOrEqualTo(tester.getRect(stop).top),
+      );
+
+      // Al abrir la paleta de comandos, la pastilla cede su sitio (no se pinta
+      // ni recibe toques) para no solaparse con ella.
+      await tester.enterText(find.byType(TextField), '/');
+      await tester.pump(const Duration(milliseconds: 250));
+      final palette = find.byKey(const ValueKey('chat-slash-palette'));
+      expect(palette, findsOneWidget);
+      final opacity = tester.widget<Opacity>(
+        find.ancestor(of: pill, matching: find.byType(Opacity)).first,
+      );
+      expect(opacity.opacity, 0);
+      await tester.enterText(find.byType(TextField), '');
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(palette, findsNothing);
+      expect(
+        tester
+            .widget<Opacity>(
+              find.ancestor(of: pill, matching: find.byType(Opacity)).first,
+            )
+            .opacity,
+        1,
+      );
+
+      // Stop del compositor: sin cambios.
+      await tester.tap(stop);
+      await tester.pump();
+      expect(cancelCalls, 1);
+      await tester.pump(const Duration(milliseconds: 1300));
+      gateway.emit('tool.complete', const {
+        'tool_id': 'call-stop-1',
+        'name': 'terminal',
+      });
+      gateway.emit('message.complete', const {'text': 'PUBLIC_STOP_DONE'});
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 2));
+    },
+  );
+
   testWidgets('roster remoto muestra Stop y permite interrumpir', (tester) async {
     final gateway = _RosterSubmissionGateway();
     var cancelCalls = 0;
@@ -10870,8 +10952,8 @@ void main() {
       expect(find.text('75%'), findsOneWidget);
 
       // Hermes omite el gauge mientras espera la primera medición real tras
-      // compactar. El móvil no conserva el 75 % antiguo ni usa `total` como
-      // sustituto de la ocupación de ventana.
+      // compactar. El móvil conserva el último porcentaje conocido hasta que
+      // llegue el uso real (nunca salta a los tokens acumulados de la sesión).
       gateway.emit('status.update', const {'kind': 'compacting'});
       await tester.pump();
       gateway.emit('session.info', const {
@@ -10881,14 +10963,17 @@ void main() {
         },
       });
       await tester.pump();
+      expect(find.text('75%'), findsOneWidget);
+      expect(find.text('99k tok'), findsNothing);
+      // El uso real que llega después sustituye a ese porcentaje.
+      gateway.emit('session.info', const {
+        'info': {
+          'usage': {'context_used': 100, 'context_max': 1000},
+        },
+      });
+      await tester.pump();
+      expect(find.text('10%'), findsOneWidget);
       expect(find.text('75%'), findsNothing);
-      expect(
-        find.descendant(
-          of: find.byKey(const ValueKey('desktop-context-usage-status')),
-          matching: find.text('99k tok'),
-        ),
-        findsOneWidget,
-      );
       expect(tester.takeException(), isNull);
     },
   );
@@ -11068,9 +11153,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(chat.desktopCompactionLineageId, 'lineage-root-qa');
+      // La compactación automática que dispara el servidor pinta la MISMA
+      // barra que la manual, sobre el input.
       expect(
         find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsNothing,
+        findsOneWidget,
       );
       expect(find.text('Optimizando la conversación…'), findsNothing);
       // El 2 % del snapshot es ocupación de contexto, no progreso de la
@@ -11309,7 +11396,7 @@ void main() {
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       wireGate.complete(projectedCompressionReply());
       for (var frame = 0; frame < 12; frame++) {
@@ -11317,16 +11404,17 @@ void main() {
       }
       expect(chat.desktopCompressionInFlight, isFalse);
       expect(chat.desktopCompressionAwaitingReconciliation, isFalse);
+      // El resultado exacto del RPC pasa a la barra unos segundos.
+      final dock = find.byKey(const ValueKey('compaction-result'));
+      expect(dock, findsOneWidget);
       expect(
-        find.byKey(const ValueKey('desktop-session-compression-progress')),
-        findsNothing,
+        find.descendant(
+          of: dock,
+          matching: find.textContaining('Compactado · ', findRichText: true),
+        ),
+        findsOneWidget,
       );
-      // El resultado exacto del RPC pasa a la pastilla unos segundos.
-      final doneText = tester
-          .widget<Text>(find.byKey(const ValueKey('activity-pill-text')))
-          .textSpan!
-          .toPlainText();
-      expect(doneText, startsWith('Compactado: 96k → 4.8k tokens'));
+      expect(_dockText('96k → 4.8k tokens'), findsOneWidget);
       expect(find.text('La compresión de contexto terminó.'), findsOneWidget);
       expect(find.textContaining('Respuesta conservada'), findsOneWidget);
       expect(
@@ -11370,7 +11458,7 @@ void main() {
       await tester.pump(const Duration(seconds: 42));
       expect(chat.desktopCompressionInFlight, isTrue);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
       // Decode the official wire shape only after the delayed reply arrives.
       final reply = projectedCompressionReply();
       reply['after_messages'] = (reply['messages'] as List).length;
@@ -11715,7 +11803,7 @@ void main() {
       expect(gateway.dispatchCalls, isEmpty);
       expect(gateway.submissions, isEmpty);
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
       expect(find.text('Optimizando la conversación…'), findsNothing);
       expect(find.text('2%'), findsNothing);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
@@ -11725,7 +11813,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 350));
 
       // La compactación en marcha la cuenta la pastilla de actividad.
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
       expect(chat.storedSessionId, 'sess-test');
       expect(find.textContaining('Contexto listo'), findsNothing);
@@ -11943,6 +12031,154 @@ void main() {
       });
       await tester.pump();
       expect(chat.desktopCompressionInFlight, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    '/compress pendiente: pastilla con tiempo, sin paleta, composer limpio al terminar y contexto sano',
+    (tester) async {
+      final gateway = _UiNativeCompressionGateway(
+        _uiNativeCompressionResult(DesktopCompressionStatus.pending),
+      );
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-native-compress-late-ack'),
+        messagesLoaded: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('25%'), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), '/compress');
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('chat-slash-palette')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 350));
+
+      // Sin turno vivo: la compactación manda en la pastilla, y la paleta de
+      // comandos ya no la tapa.
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(find.byKey(const ValueKey('chat-slash-palette')), findsNothing);
+      expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
+      // Sin spinner en ningún sitio: ni en la barra ni en el botón de envío.
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('compaction-dock')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('send')),
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        findsNothing,
+      );
+
+      // La línea fijada de Hermes trae los recuentos reales de partida.
+      gateway.emit('status.update', const {
+        'kind': 'compressing',
+        'text': '⠋ compressing 22 messages (~21,000 tok)…',
+      });
+      await tester.pump();
+      expect(_dockText('22 mensajes · ~21k tokens'), findsOneWidget);
+
+      // Llega el final tardío: el composer se limpia, el contexto conserva su
+      // porcentaje (nunca salta a los tokens acumulados) y la pastilla enseña
+      // el resultado unos segundos.
+      gateway.emit('status.update', const {
+        'kind': 'compacted',
+        'info': {
+          '_lineage_root_id': 'sess-test',
+          'stored_session_id': 'stored-ui-late-ack-tip',
+          'usage': {'total': 231400},
+        },
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.desktopCompressionInFlight, isFalse);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      expect(find.text('25%'), findsOneWidget);
+      expect(find.textContaining('231'), findsNothing);
+      // El final llega sin cifras: solo la duración medida, nada inventado.
+      expect(_dockText('Compactado · '), findsOneWidget);
+      expect(
+        find.textContaining('mensajes →', findRichText: true),
+        findsNothing,
+      );
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    '/compress terminado: paleta cerrada durante la espera, composer limpio y contexto medido',
+    (tester) async {
+      final wireGate = Completer<Map<String, dynamic>>();
+      final gateway = _UiNativeCompressionGateway(
+        _uiNativeCompressionResult(DesktopCompressionStatus.compressed),
+      )..compressionWireGate = wireGate;
+      final chat = await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'assistant', 'content': 'Respuesta conservada'},
+          {'role': 'user', 'content': 'Pregunta conservada'},
+          {'role': 'assistant', 'content': 'Prefijo editorial conservado'},
+        ],
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-compress-terminal-composer'),
+        messagesLoaded: true,
+        acquireDesktopRuntimeBeforeMount: true,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('25%'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '/compress');
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('chat-slash-palette')), findsOneWidget);
+      await submitComposerFromKeyboard(tester);
+      await gateway.compressionEntered.future;
+      await tester.pump(const Duration(seconds: 30));
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(find.byKey(const ValueKey('chat-slash-palette')), findsNothing);
+      // La barra va pegada sobre el input, dentro del compositor.
+      final dockRect = tester.getRect(
+        find.byKey(const ValueKey('compaction-dock')),
+      );
+      final inputRow = tester.getRect(
+        find.byKey(const ValueKey('composer-input-row')),
+      );
+      expect(dockRect.bottom, lessThanOrEqualTo(inputRow.top));
+      expect(dockRect.top, greaterThan(inputRow.top - 120));
+
+      wireGate.complete(projectedCompressionReply());
+      for (var frame = 0; frame < 12; frame++) {
+        await tester.pump();
+      }
+      expect(chat.desktopCompressionInFlight, isFalse);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      expect(find.byKey(const ValueKey('chat-slash-palette')), findsNothing);
+      // El uso real que trae el resultado (4.8k) sustituye al 25 % anterior;
+      // nunca salta a los tokens acumulados.
+      expect(find.text('2%'), findsOneWidget);
+      // El resultado real: recuentos de mensajes y tokens que Hermes midió.
+      expect(_dockText('Compactado · '), findsOneWidget);
+      expect(_dockText('96k → 4.8k tokens'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13389,7 +13625,11 @@ void main() {
         ],
       );
 
-      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      // El estado vivo lo cuenta la pastilla; la cabecera solo dice «Trabajando…».
+      expect(
+        find.byKey(const ValueKey('assistant-header-working')),
+        findsOneWidget,
+      );
       expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -13407,7 +13647,11 @@ void main() {
         ],
       );
 
-      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      // El estado vivo lo cuenta la pastilla; la cabecera solo dice «Trabajando…».
+      expect(
+        find.byKey(const ValueKey('assistant-header-working')),
+        findsOneWidget,
+      );
       expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -13458,7 +13702,10 @@ void main() {
           {'role': 'user', 'content': 'continúa en segundo plano'},
         ],
       );
-      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('assistant-header-working')),
+        findsOneWidget,
+      );
 
       Navigator.of(tester.element(find.byType(ChatScreen))).pop();
       await tester.pump();
@@ -13474,7 +13721,11 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 350));
 
-      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      // El estado vivo lo cuenta la pastilla; la cabecera solo dice «Trabajando…».
+      expect(
+        find.byKey(const ValueKey('assistant-header-working')),
+        findsOneWidget,
+      );
       expect(find.text('Hermes Console'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -15197,7 +15448,7 @@ void main() {
   });
 
   testWidgets(
-    'historial terminado muestra check en actividad y una mascota en cabecera',
+    'historial terminado muestra el resumen apagado bajo el título y una mascota suelta',
     (tester) async {
       mockCompanionStorage();
       await pumpChat(
@@ -15224,20 +15475,16 @@ void main() {
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
       expect(find.byType(CompanionStatusIndicator), findsOneWidget);
       expect(find.byType(CompanionView), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byType(ThinkingTraceCard),
-          matching: find.byType(CompanionStatusIndicator),
-        ),
-        findsNothing,
-      );
       final companion = tester.widget<CompanionStatusIndicator>(
         find.byType(CompanionStatusIndicator),
       );
       expect(companion.size, 44);
       expect(companion.mood, HermesSparkMood.success);
       expect(companion.animate, isFalse);
-      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      // La mascota va suelta (sin disco ni anillo) y el resumen apagado del
+      // turno cuelga bajo el título.
+      expect(find.textContaining('Completado'), findsOneWidget);
+      expect(find.byKey(const ValueKey('assistant-avatar-ring')), findsNothing);
       expect(tester.takeException(), isNull);
     },
   );
@@ -15268,7 +15515,11 @@ void main() {
       await tester.pump();
 
       expect(chat.state, ChatPipelineState.waiting);
-      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      // Sin texto aún: cabecera con la palabra apagada; el estado, en la pastilla.
+      expect(
+        find.byKey(const ValueKey('assistant-header-working')),
+        findsOneWidget,
+      );
       expect(find.byType(CompanionStatusIndicator), findsOneWidget);
       final waitingCompanion = tester.widget<CompanionStatusIndicator>(
         find.byType(CompanionStatusIndicator),
@@ -15279,13 +15530,6 @@ void main() {
       // El estado vivo ya no lo pinta la burbuja (lo cuenta la pastilla de
       // actividad): la tarjeta de traza no muestra icono ni fila de estado.
       expect(find.byIcon(Icons.cloud_queue_rounded), findsNothing);
-      expect(
-        find.descendant(
-          of: find.byType(ThinkingTraceCard),
-          matching: find.byType(CompanionStatusIndicator),
-        ),
-        findsNothing,
-      );
 
       gateway.emit('message.start');
       gateway.emit('tool.start', const {
@@ -15298,13 +15542,6 @@ void main() {
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
       expect(find.byType(CompanionStatusIndicator), findsOneWidget);
       expect(find.byType(CompanionView), findsOneWidget);
-      expect(
-        find.descendant(
-          of: find.byType(ThinkingTraceCard),
-          matching: find.byType(CompanionStatusIndicator),
-        ),
-        findsNothing,
-      );
       final activeCompanion = tester.widget<CompanionStatusIndicator>(
         find.byType(CompanionStatusIndicator),
       );
@@ -15333,7 +15570,8 @@ void main() {
       expect(finishedCompanion.size, 44);
       expect(finishedCompanion.mood, HermesSparkMood.success);
       expect(finishedCompanion.animate, isFalse);
-      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+      // Terminado: la línea bajo el título es el desplegable apagado del turno.
+      expect(find.textContaining('Completado'), findsOneWidget);
       expect(
         tester.getRect(find.text('Hermes Console')).left,
         closeTo(activeHeader.left, 0.5),
@@ -15383,7 +15621,7 @@ void main() {
     expect(companion.size, 44);
     expect(companion.mood, HermesSparkMood.error);
     expect(companion.animate, isFalse);
-    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(find.textContaining('Error'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -15413,7 +15651,12 @@ void main() {
 
     expect(find.byType(CompanionStatusIndicator), findsNothing);
     expect(find.byType(CompanionView), findsNothing);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    // Sin mascota: la inicial en acento (sin círculo) y el mismo resumen.
+    expect(
+      find.byKey(const ValueKey('assistant-avatar-initial')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Completado'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -15445,19 +15688,11 @@ void main() {
     await enableFullCompanion(tester);
 
     expect(find.text('Detenido'), findsOneWidget);
-    expect(find.byIcon(Icons.stop_circle), findsOneWidget);
     final companion = tester.widget<CompanionStatusIndicator>(
       find.byType(CompanionStatusIndicator),
     );
     expect(companion.mood, HermesSparkMood.idle);
     expect(companion.animate, isFalse);
-    expect(
-      find.descendant(
-        of: find.byType(ThinkingTraceCard),
-        matching: find.byType(CompanionStatusIndicator),
-      ),
-      findsNothing,
-    );
     expect(tester.takeException(), isNull);
   });
 
@@ -15544,7 +15779,11 @@ void main() {
     gateway.emit('message.start');
     await tester.pump();
 
-    expect(find.byType(ThinkingTraceCard), findsOneWidget);
+    // Vivo: solo la palabra apagada bajo el título; el resto, en la pastilla.
+    expect(
+      find.byKey(const ValueKey('assistant-header-working')),
+      findsOneWidget,
+    );
 
     gateway.emit('message.complete', const {
       'text': 'Respuesta terminada.',
@@ -15956,33 +16195,26 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(chat.desktopAutoCompacting, isTrue);
-      // Hermes no publica porcentaje: solo tiempo y una barra honesta.
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
+      // Hermes no publica porcentaje: solo tiempo y una línea honesta que se
+      // mueve, sin spinner y sin número inventado.
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('activity-pill-elapsed')),
+        find.byKey(const ValueKey('compaction-line-moving')),
         findsOneWidget,
       );
+      expect(find.byKey(const ValueKey('compaction-line-fill')), findsNothing);
       expect(find.textContaining('≈', findRichText: true), findsNothing);
-      expect(
-        find.byKey(const ValueKey('activity-pill-compaction-line')),
-        findsOneWidget,
-      );
+      // Con la barra en marcha ni la pastilla ni el botón de envío llevan
+      // spinner: no hay turno vivo, así que no hay pastilla.
+      expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
       // Un latido repetido no reinicia la medición.
       gateway.emit('status.update', const {
         'kind': 'compacting',
         'text': 'Compacting context — still summarizing',
       });
       await tester.pump();
-      expect(_pillLabel('Compactando conversación'), findsOneWidget);
-      // El panel enseña la sección de compactación.
-      await _openActivityPanel(tester);
-      expect(
-        find.byKey(const ValueKey('activity-compaction-title')),
-        findsOneWidget,
-      );
-      await tester.tapAt(const Offset(4, 4));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 400));
+      expect(_dockText('Compactando conversación'), findsOneWidget);
 
       gateway.emit('status.update', const {
         'kind': 'compacted',
@@ -15991,15 +16223,200 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(chat.desktopAutoCompacting, isFalse);
-      expect(
-        find.textContaining('Contexto compactado', findRichText: true),
-        findsOneWidget,
-      );
+      // Sin cifras del backend, solo la duración medida.
+      expect(_dockText('Compactado · '), findsOneWidget);
+      expect(find.textContaining('tokens', findRichText: true), findsNothing);
       // Unos segundos después se retira sola: nunca queda colgada.
       await tester.pump(const Duration(seconds: 7));
       await tester.pump(const Duration(milliseconds: 100));
-      expect(pill, findsNothing);
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compactación automática a mitad de turno: la barra sale y el turno sigue',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-auto-compaction-mid-turn'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_MID_TURN',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('tool.start', const {
+        'tool_id': 'call-mid-1',
+        'name': 'terminal',
+        'args': {'command': 'sleep 1'},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+
+      gateway.emit('status.update', const {
+        'kind': 'compacting',
+        'text': 'Compacting context — summarizing earlier conversation',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.isStreaming, isTrue);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      // La pastilla del turno sigue viva y no se solapa con la barra.
+      final pill = tester.getRect(find.byKey(const ValueKey('activity-pill')));
+      final dock = tester.getRect(
+        find.byKey(const ValueKey('compaction-dock')),
+      );
+      expect(pill.overlaps(dock), isFalse);
+
+      gateway.emit('status.update', const {
+        'kind': 'compacted',
+        'text': 'Context compaction complete — continuing turn',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(_dockText('Compactado · '), findsOneWidget);
+      expect(chat.isStreaming, isTrue);
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+      expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
+
+      gateway.emit('message.complete', const {'text': 'PUBLIC_MID_DONE'});
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 2));
+    },
+  );
+
+  testWidgets(
+    'reconexión a mitad de compactación: la barra se restaura con el siguiente latido',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-auto-compaction-reconnect'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      // La app llega (o se reconecta) con una compactación ya en marcha: no
+      // hay estado local que la delate, solo el latido periódico de Hermes.
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+      gateway.emit('status.update', const {
+        'kind': 'compacting',
+        'text': 'Compacting context — still summarizing earlier conversation',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.desktopAutoCompacting, isTrue);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      expect(find.byKey(const ValueKey('compaction-elapsed')), findsOneWidget);
+      // La compactación acabó mientras estaba desconectada y solo llega el
+      // reposo real de la sesión: la barra se retira SIN inventar un éxito.
+      gateway.emit('session.info', const {
+        'info': {'running': false},
+      });
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      expect(chat.desktopAutoCompacting, isFalse);
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+      expect(
+        find.textContaining('Compactado', findRichText: true),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'compactación atascada que nunca dice «compacted»: `ready` o el tiempo la retiran',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-auto-compaction-stuck'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      const compacting = {
+        'kind': 'compacting',
+        'text': 'Compacting context — summarizing earlier conversation',
+      };
+      // 1) La señal real de reposo la cierra.
+      gateway.emit('status.update', compacting);
+      await tester.pump();
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      gateway.emit('status.update', const {'kind': 'ready', 'text': 'ready'});
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 4));
+      expect(chat.desktopAutoCompacting, isFalse);
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+
+      // 2) Sin ninguna señal más, la regla de caducidad (3 min sin latido) la
+      // retira: nunca se queda para siempre ni bloquea el chat.
+      gateway.emit('status.update', compacting);
+      await tester.pump();
+      expect(chat.desktopAutoCompacting, isTrue);
+      await tester.pump(const Duration(minutes: 2));
+      expect(
+        chat.desktopAutoCompacting,
+        isTrue,
+        reason: 'aún dentro del margen',
+      );
+      await tester.pump(const Duration(minutes: 2));
+      await tester.pump(const Duration(seconds: 4));
+      expect(chat.desktopAutoCompacting, isFalse);
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
+      expect(
+        find.textContaining('Compactado', findRichText: true),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'los latidos mantienen viva la compactación más allá de la caducidad',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-auto-compaction-heartbeats'),
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      await tester.pump(const Duration(milliseconds: 100));
+      const heartbeat = {
+        'kind': 'compacting',
+        'text': 'Compacting context — still summarizing earlier conversation',
+      };
+      for (var i = 0; i < 6; i++) {
+        gateway.emit('status.update', heartbeat);
+        await tester.pump(const Duration(seconds: 60));
+      }
+      // 6 minutos de compactación real con latidos cada 60 s: sigue en marcha.
+      expect(chat.desktopAutoCompacting, isTrue);
+      expect(_dockText('Compactando conversación'), findsOneWidget);
+      gateway.emit('status.update', const {
+        'kind': 'compacted',
+        'text': 'done',
+      });
+      await tester.pump();
+      expect(_dockText('Compactado · '), findsOneWidget);
+      await tester.pump(const Duration(seconds: 7));
+      expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
     },
   );
 
@@ -16116,8 +16533,8 @@ void main() {
                 'status': 'completed',
                 'id': 'reopen-1',
                 'detail': 'date',
-                'timestamp': 1000,
-                'completed_at': 1700,
+                'timestamp': 1700000000000,
+                'completed_at': 1700000000700,
               },
               {
                 'kind': 'tool',
@@ -16125,8 +16542,8 @@ void main() {
                 'status': 'failed',
                 'id': 'reopen-2',
                 'detail': 'config.yaml',
-                'timestamp': 2000,
-                'completed_at': 14000,
+                'timestamp': 1700000002000,
+                'completed_at': 1700000014000,
               },
             ],
           },
@@ -16159,6 +16576,82 @@ void main() {
               .dy,
         ),
       );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'historial reabierto sin ruido: sin herramientas puente, con Tareas, detalle y «Completado · 1:12»',
+    (tester) async {
+      final gateway = _TodoResumeGateway(
+        AgentTaskList.tryParse(const {
+          'revision': 3,
+          'todos': [
+            {'id': '1', 'content': 'PUBLIC_STEP_ONE', 'status': 'completed'},
+            {'id': '2', 'content': 'PUBLIC_STEP_TWO', 'status': 'completed'},
+          ],
+        }),
+      );
+      await pumpChat(
+        tester,
+        connection: _remoteConn('agent-history-no-noise'),
+        desktopGateway: gateway,
+        acquireDesktopRuntimeBeforeMount: true,
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': 'PUBLIC_HISTORY_ANSWER',
+            '_activity_duration_seconds': 72,
+            '_activity_trace': [
+              {'kind': 'tool', 'label': 'tool_search', 'status': 'completed'},
+              {'kind': 'tool', 'label': 'tool_describe', 'status': 'completed'},
+              {
+                'kind': 'tool',
+                'label': 'tool_call',
+                'status': 'completed',
+                'id': 'noise-1',
+              },
+              {
+                'kind': 'tool',
+                'label': 'terminal',
+                'status': 'completed',
+                'id': 'real-1',
+                'detail': 'sleep',
+                'timestamp': 1700000000000,
+                'completed_at': 1700000005000,
+              },
+              {
+                'kind': 'tool',
+                'label': 'todo',
+                'status': 'completed',
+                'id': 'todo-1',
+              },
+            ],
+          },
+          {'role': 'user', 'content': 'PUBLIC_HISTORY_REQUEST'},
+        ],
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      // El bloque plegado dice cómo acabó y cuánto tardó, no «Razonamiento».
+      expect(find.text('Completado · 1:12'), findsOneWidget);
+      expect(find.text('Razonamiento'), findsNothing);
+      await tester.tap(find.byIcon(Icons.expand_more).first);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.byKey(const ValueKey('activity-tasks-section')),
+        findsOneWidget,
+      );
+      expect(find.text('Tareas 2/2'), findsOneWidget);
+      expect(find.text('terminal · sleep', findRichText: true), findsOneWidget);
+      expect(find.text('5,0 s'), findsOneWidget);
+      for (final noise in const ['tool_call', 'tool_describe', 'tool_search']) {
+        expect(
+          find.textContaining(noise, findRichText: true),
+          findsNothing,
+          reason: noise,
+        );
+      }
       expect(tester.takeException(), isNull);
     },
   );
@@ -16316,8 +16809,6 @@ void main() {
       expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
 
       // the checklist now lives in the turn's single activity block
-      expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
-      expect(find.text('1/2'), findsOneWidget);
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump(const Duration(milliseconds: 300));
       expect(
@@ -16388,8 +16879,6 @@ void main() {
       expect(chat.agentTasks.isFinished, isTrue);
       // nothing running: no floating pill on reopen, only the activity block
       expect(find.byKey(const ValueKey('activity-pill')), findsNothing);
-      expect(find.byKey(const ValueKey('agent-task-chip')), findsOneWidget);
-      expect(find.text('2/2'), findsOneWidget);
       await tester.tap(find.byIcon(Icons.expand_more));
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.text('PUBLIC_STEP_TWO'), findsOneWidget);
@@ -17563,13 +18052,6 @@ void main() {
       expect(stoppedTrace, findsOneWidget);
       expect(
         find.descendant(of: stoppedTrace, matching: find.text('Detenido')),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(
-          of: stoppedTrace,
-          matching: find.byIcon(Icons.stop_circle),
-        ),
         findsOneWidget,
       );
       expect(tester.takeException(), isNull);

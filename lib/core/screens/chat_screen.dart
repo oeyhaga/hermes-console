@@ -52,6 +52,7 @@ import '../models/activity_snapshot.dart';
 import '../models/attachment_draft.dart';
 import '../models/agent_profile.dart';
 import '../models/chat_preferences.dart';
+import '../models/compaction_progress.dart';
 import '../models/command_descriptor.dart';
 import '../models/desktop_compression_result.dart';
 import '../models/desktop_context_breakdown.dart';
@@ -162,6 +163,7 @@ import '../widgets/mission_profile_avatar.dart';
 import '../widgets/motion_entrance.dart';
 import '../widgets/subagent_activity_card.dart';
 import '../widgets/activity_panel.dart';
+import '../widgets/compaction_dock.dart';
 import '../widgets/platform_setup_commands.dart';
 import '../widgets/read_only.dart';
 import '../widgets/read_aloud_button.dart';
@@ -1119,7 +1121,6 @@ class _ChatScreenState extends State<ChatScreen>
   ChatPipelineState get _pipelineState =>
       _editingPipelineSnapshot ?? _chat.state;
   set _pipelineState(ChatPipelineState v) => _chat.state = v;
-  List<ChatTraceEvent> get _trace => _chat.trace;
   String get _lastPrompt => _chat.lastPrompt;
 
   String? _error;
@@ -1394,7 +1395,15 @@ class _ChatScreenState extends State<ChatScreen>
   final SubagentActivityController _subagentController =
       SubagentActivityController();
   Map<String, dynamic>? _consumedCompressionResult;
-  int? _compactionTokensBefore;
+  int _seenCompactedEdges = 0;
+
+  /// El fin de esta compactación ya se conoce (resultado o borde `compacted`)
+  /// aunque el servicio aún no haya soltado su bandera: no debe arrancar otra.
+  bool _compactionSettledEarly = false;
+
+  /// Texto de `/compress …` que sigue en el composer mientras la compactación
+  /// está en marcha; se consume al terminar bien y se conserva si falla.
+  String? _compressionInvocation;
   void _setActivityPillExtent(double value) {
     if (_disposed || _activityPillExtent.value == value) return;
     _recordTranscriptOverlayExtentChange(
@@ -2916,24 +2925,6 @@ class _ChatScreenState extends State<ChatScreen>
     return friendlyModelName(model);
   }
 
-  /// Modelo activo para la segunda línea de la cabecera («gpt-5.5 · 12:04»).
-  String? get _headerModelLabel {
-    final model = _displayedSessionModel?.modelId ?? _activeModel?.model;
-    if (model == null || model.isEmpty || model == 'hermes-agent') return null;
-    return friendlyModelName(model);
-  }
-
-  Object? get _newestAssistantStamp {
-    for (final message in _messages) {
-      if (message['role'] != 'assistant') continue;
-      if (message['display_kind']?.toString().trim().isNotEmpty ?? false) {
-        continue;
-      }
-      return _messageStamp(message);
-    }
-    return null;
-  }
-
   void _syncDesktopSessionConfig() {
     if (!_chatBound) return;
     final info = _chat.desktopRuntimeInfo;
@@ -4453,7 +4444,6 @@ class _ChatScreenState extends State<ChatScreen>
       current: steps.current,
       done: steps.done,
       tasks: _chat.agentTasks,
-      compaction: _compaction.current,
       processes: activity.processes,
       schedules: activity.schedules,
       goal: activity.goal,
@@ -4508,14 +4498,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _syncCompaction() {
     if (!_chatBound) return;
-    final active =
+    final serviceActive =
         _chat.desktopCompressionInFlight || _compressionCommandInFlight;
+    if (!serviceActive) _compactionSettledEarly = false;
+    final active = serviceActive && !_compactionSettledEarly;
     final manual =
         _chat.desktopManualCompressionInFlight || _compressionCommandInFlight;
-    final used = _sessionContextMetrics.value.contextUsed;
-    // El tamaño de partida es el último uso de contexto ANTES de compactar: se
-    // congela al empezar para que la bajada posterior no lo pise.
-    if (!active && !_compaction.running) _compactionTokensBefore = used;
     Map<String, dynamic>? head;
     for (final message in _messages) {
       if (message['display_kind'] == 'compression_result') {
@@ -4524,31 +4512,100 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
     if (!active && !_compaction.running) _consumedCompressionResult = head;
-    final model = _displayedSessionModel?.modelId ?? _activeModel?.model ?? '';
+    // Solo hechos: lo que la línea de estado de Hermes dice y el tiempo local.
     _compaction.sync(
       active: active,
       manual: manual,
-      historyKey: CompactionHistoryStore.keyFor(_chat.connection.id, model),
       startedAt: _chat.desktopCompactionStartedAt,
-      tokensBefore:
-          _chat.desktopCompactionTokensBefore ?? _compactionTokensBefore,
+      tokensBefore: _chat.desktopCompactionTokensBefore,
       messagesBefore: _chat.desktopCompactionMessagesBefore,
+      chunkIndex: _chat.desktopCompactionChunkIndex,
+      chunkCount: _chat.desktopCompactionChunkCount,
     );
+    var succeeded = false;
     if (head != null && !identical(head, _consumedCompressionResult)) {
       _consumedCompressionResult = head;
       final meta = head['display_metadata'];
       if (meta is Map && meta['noop'] != true) {
         int? number(String key) =>
             meta[key] is num ? (meta[key] as num).toInt() : null;
+        final after = number('after_tokens');
         _compaction.reportResult(
           tokensBefore: number('before_tokens'),
-          tokensAfter: number('after_tokens'),
+          tokensAfter: after,
           messagesBefore: number('before_messages'),
           messagesAfter: number('after_messages'),
         );
+        if (after != null) _applyPostCompactionContext(after);
+        _compactionSettledEarly = serviceActive;
+        succeeded = true;
       }
     }
-    _compaction.observeContextTokens(used);
+    // Una compactación manual cuyo resultado llegó tarde (`pending` y luego
+    // `status.update(compacted)`) termina por ese borde, sin cifras.
+    final edges = _chat.desktopCompactedEdgeCount;
+    if (edges != _seenCompactedEdges) {
+      _seenCompactedEdges = edges;
+      if (_compaction.running) {
+        _compaction.reportResult();
+        _compactionSettledEarly = serviceActive;
+        succeeded = true;
+      }
+    }
+    if (succeeded) _consumeCompressionInvocation();
+  }
+
+  /// El resultado del RPC `session.compress` cierra la barra al instante: con
+  /// éxito enseña lo que Hermes midió (solo los recuentos que trajo); sin nada
+  /// que compactar, abortada o bloqueada se retira (el aviso ya lo da el chat).
+  void _finishCompactionBar(DesktopCommandDispatch result) {
+    final compression = result.compressionResult;
+    switch (result.compressionStatus) {
+      case DesktopCompressionStatus.compressed:
+        _compaction.reportResult(
+          tokensBefore: compression?.beforeTokens,
+          tokensAfter: compression?.afterTokens,
+          messagesBefore: compression?.beforeMessages,
+          messagesAfter: compression?.afterMessages,
+        );
+        _compactionSettledEarly = _chat.desktopCompressionInFlight;
+      case DesktopCompressionStatus.noOp ||
+          DesktopCompressionStatus.aborted ||
+          DesktopCompressionStatus.lockHeld:
+        _compaction.reset();
+        _compactionSettledEarly = _chat.desktopCompressionInFlight;
+      case DesktopCompressionStatus.pending || null:
+        break;
+    }
+  }
+
+  /// La compactación acabó bien: el `/compress` que sigue en el composer se
+  /// consume y la paleta de comandos se cierra.
+  void _consumeCompressionInvocation() {
+    final invocation = _compressionInvocation;
+    if (invocation == null) return;
+    _compressionInvocation = null;
+    _consumeSlashInvocation(invocation);
+  }
+
+  /// Tras compactar, el tamaño exacto que Hermes acaba de medir sustituye al
+  /// porcentaje anterior hasta que llegue el uso real del runtime.
+  void _applyPostCompactionContext(int after) {
+    final current = _sessionContextMetrics.value;
+    final max = current.contextMax;
+    if (max == null || max <= 0) return;
+    _commitSessionContextMetrics(
+      SessionContextMetrics(
+        contextUsed: after,
+        contextMax: max,
+        percent: (after * 100 / max).round().clamp(0, 100),
+        cumulativeTotal: current.cumulativeTotal,
+        inputTokens: current.inputTokens,
+        cacheReadTokens: current.cacheReadTokens,
+        cacheWriteTokens: current.cacheWriteTokens,
+        observedFirstTokenLatencyMs: current.observedFirstTokenLatencyMs,
+      ),
+    );
   }
 
   /// La cabecera del Bot Chat («@nombre · Pensando») y la pastilla de actividad
@@ -4694,9 +4751,9 @@ class _ChatScreenState extends State<ChatScreen>
       _activityPresentationFingerprint = activityPresentation;
       _desktopRuntimePresentationFingerprint = presentationFingerprint;
       _lastDesktopCompacting = compacting;
-      _syncSessionContextMetrics(
-        preserveKnownWindow: !invalidateAfterCompaction,
-      );
+      // Tras compactar el uso real llega más tarde: hasta entonces se conserva
+      // el último porcentaje en vez de caer a los tokens acumulados.
+      _syncSessionContextMetrics(preserveKnownWindow: true);
       if (invalidateAfterCompaction) {
         _sessionContextAwaitingPostCompactionMetrics = false;
       }
@@ -7235,6 +7292,13 @@ class _ChatScreenState extends State<ChatScreen>
     _executeSlash(cmd, '');
   }
 
+  /// La paleta de comandos slash está a la vista sobre el compositor.
+  bool get _slashPaletteVisible =>
+      !(_isRecording ||
+          _transcribing ||
+          _compressingSession ||
+          _slashSuggestions.isEmpty);
+
   void _consumeSlashInvocation(String invocation) {
     if (_textController.text != invocation) return;
     _textController.clear();
@@ -7381,10 +7445,15 @@ class _ChatScreenState extends State<ChatScreen>
       return false;
     }
 
+    // La invocación se queda en el composer (de solo lectura) mientras dura,
+    // pero la paleta de comandos se cierra: tapaba la pastilla de actividad.
+    _compressionInvocation = _textController.text;
     setState(() {
       _compressionCommandInFlight = true;
       _compressionDraftFocusRetained = false;
+      _slashSuggestions = const [];
     });
+    _syncCompaction();
     try {
       final presentation = await _chat.compressDesktopSessionForPresentation(
         focusTopic: focusTopic.trim(),
@@ -7413,6 +7482,7 @@ class _ChatScreenState extends State<ChatScreen>
         );
       }
       final succeeded = _compressionSucceeded(result);
+      _finishCompactionBar(result);
       if (!succeeded) {
         _restoreComposerFocusAfterCompression(
           retainWhileFenced: result.compressionStatus == null,
@@ -7443,6 +7513,10 @@ class _ChatScreenState extends State<ChatScreen>
       return false;
     } finally {
       _compressionCommandInFlight = false;
+      // Si el servicio ya soltó la compactación y no hubo éxito, la invocación
+      // se conserva tal cual; si sigue en marcha (resultado tardío), el final
+      // la consumirá.
+      if (!_chat.desktopCompressionInFlight) _compressionInvocation = null;
       if (mounted) setState(() {});
     }
   }
@@ -9352,16 +9426,12 @@ class _ChatScreenState extends State<ChatScreen>
                           Expanded(
                             child: Stack(
                               children: [
-                                _AssistantModelScope(
-                                  label: _headerModelLabel,
-                                  newest: _newestAssistantStamp,
-                                  child: AgentTaskScope(
-                                    tasks: _chat.agentTasks,
-                                    ownerStepId: _chat.agentTasks.isEmpty
-                                        ? null
-                                        : latestAgentTaskStepId(_messages),
-                                    child: _buildBody(),
-                                  ),
+                                AgentTaskScope(
+                                  tasks: _chat.agentTasks,
+                                  ownerStepId: _chat.agentTasks.isEmpty
+                                      ? null
+                                      : latestAgentTaskStepId(_messages),
+                                  child: _buildBody(),
                                 ),
                                 Positioned(
                                   top: 8,
@@ -9482,6 +9552,7 @@ class _ChatScreenState extends State<ChatScreen>
                                               snapshot:
                                                   _buildActivitySnapshot(),
                                               actions: _buildActivityActions(),
+                                              suspended: _slashPaletteVisible,
                                             ),
                                             KeyedSubtree(
                                               key: const ValueKey(
@@ -12082,11 +12153,11 @@ class _ChatScreenState extends State<ChatScreen>
           : KeyedSubtree(
               key: ValueKey(showStop ? 'stop' : 'send'),
               child: _SendButton(
+                // Sin lanzadera mientras compacta: la barra de compactación
+                // sobre el compositor es la única señal viva.
                 busy:
                     !showStop &&
-                    (_composerSubmissionInFlight ||
-                        _attachmentSubmitting ||
-                        _compressingSession),
+                    (_composerSubmissionInFlight || _attachmentSubmitting),
                 mode: showStop ? _SendMode.stop : _SendMode.send,
                 enabled: showStop
                     ? _chat.gatewayConnected
@@ -12229,8 +12300,7 @@ class _ChatScreenState extends State<ChatScreen>
         !_interactiveMessageRefreshPending &&
         !_attachmentSubmitting &&
         !_compressingSession;
-    final slashPalette =
-        _isRecording || _transcribing || _slashSuggestions.isEmpty
+    final slashPalette = !_slashPaletteVisible
         ? null
         : _SlashPalette(commands: _slashSuggestions, onPick: _pickSlash);
     final floatingPalette =
@@ -12288,52 +12358,24 @@ class _ChatScreenState extends State<ChatScreen>
                           onRetry: (localId) =>
                               unawaited(_retryPendingAttachment(localId)),
                         ),
-                      // La compactación en marcha la cuenta la pastilla de
-                      // actividad; esta fila solo queda para los estados que
-                      // exigen atención (pendiente de confirmar, incierto).
-                      if (_compressingSession &&
-                          (_chat.desktopCompressionNeedsConfirmation ||
-                              _chat.desktopCompressionTransportUncertain ||
-                              _chat.desktopCompressionAwaitingReconciliation))
-                        Semantics(
-                          key: const ValueKey(
-                            'desktop-session-compression-progress',
-                          ),
-                          liveRegion: true,
-                          label: compressionProgressLabel,
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
-                            child: Row(
-                              children: [
-                                SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child:
-                                      _chat.desktopCompressionNeedsConfirmation
-                                      ? Icon(
-                                          Icons.info_outline,
-                                          size: 16,
-                                          color: colors.accent,
-                                        )
-                                      : CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: colors.accent,
-                                        ),
-                                ),
-                                const SizedBox(width: 9),
-                                Expanded(
-                                  child: Text(
-                                    compressionProgressLabel,
-                                    style: TextStyle(
-                                      color: colors.textSecondary,
-                                      fontSize: 12.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                      // Barra de compactación pegada sobre el input: la misma
+                      // para la automática y la manual, haya o no turno vivo.
+                      if (_compaction.current != null || _compressingSession)
+                        CompactionDock(
+                          compaction:
+                              _compaction.current ??
+                              CompactionProgress(
+                                startedAt:
+                                    _chat.desktopCompactionStartedAt ??
+                                    DateTime.now(),
+                                manual: true,
+                              ),
+                          note:
+                              _chat.desktopCompressionNeedsConfirmation ||
+                                  _chat.desktopCompressionTransportUncertain ||
+                                  _chat.desktopCompressionAwaitingReconciliation
+                              ? compressionProgressLabel
+                              : null,
                         ),
                       Row(
                         key: const ValueKey('composer-input-row'),
@@ -12941,21 +12983,7 @@ class _ChatScreenState extends State<ChatScreen>
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
-          children: [
-            _AssistantLiveHeader(
-              agentName: _agentName,
-              mood: mood,
-              model: _headerModelLabel,
-            ),
-            ThinkingTraceCard(
-              events: _trace,
-              active: true,
-              liveInPill: true,
-              headline: _traceHeadline(),
-              activeMood: mood,
-              waitingForUser: _turnWaitsForUser,
-            ),
-          ],
+          children: [_AssistantLiveHeader(agentName: _agentName, mood: mood)],
         );
       },
     );
@@ -16239,44 +16267,29 @@ class _AssistantHeaderCompanion extends StatelessWidget {
   }
 }
 
-/// Cabecera de un mensaje del asistente: avatar-chip con la mascota (si la
-/// presencia está activa) o un avatar neutro, más «Hermes» y «modelo · hora».
+/// Cabecera de un mensaje del asistente: la mascota (o la inicial, sin
+/// presencia) + título en acento + la segunda línea que pase el llamador.
 class _AssistantAvatarHeader extends StatelessWidget {
   const _AssistantAvatarHeader({
     required this.name,
     required this.mood,
     required this.animate,
-    required this.ring,
-    this.model,
-    this.time,
+    this.subtitle,
     this.actions = const [],
   });
 
   final String name;
-  final String? model;
-  final String? time;
   final HermesSparkMood mood;
   final bool animate;
-  final AvatarRingState ring;
+  final Widget? subtitle;
   final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) {
-    final s = Strings.of(context);
-    final stateLabel = switch (ring) {
-      AvatarRingState.live => s.liveAvatarStateLive,
-      AvatarRingState.success => s.liveAvatarStateDone,
-      AvatarRingState.warning => s.liveAvatarStateRecovered,
-      AvatarRingState.error => s.liveAvatarStateFailed,
-      AvatarRingState.neutral => null,
-    };
     Widget header(Widget? mascot) => MessageAvatarHeader(
       name: name,
-      model: model,
-      time: time,
-      state: ring,
       mascot: mascot,
-      stateLabel: stateLabel,
+      subtitle: subtitle,
       actions: actions,
     );
     final app = context.findAncestorStateOfType<HermesAppState>();
@@ -16305,52 +16318,31 @@ class _AssistantAvatarHeader extends StatelessWidget {
   }
 }
 
-/// Modelo activo de la sesión y sello de la última respuesta, sin añadir
-/// parámetros a los envoltorios de mensaje del chat.
-class _AssistantModelScope extends InheritedWidget {
-  const _AssistantModelScope({
-    required this.label,
-    required this.newest,
-    required super.child,
-  });
-
-  final String? label;
-
-  /// Sello (`created_at`/`timestamp`) de la respuesta más reciente.
-  final Object? newest;
-
-  static _AssistantModelScope? maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<_AssistantModelScope>();
-
-  @override
-  bool updateShouldNotify(_AssistantModelScope oldWidget) =>
-      oldWidget.label != label || oldWidget.newest != newest;
-}
-
-Object? _messageStamp(Map<String, dynamic> message) =>
-    message['created_at'] ?? message['timestamp'] ?? message['createdAt'];
-
+/// Cabecera del turno en vivo antes de que haya texto: el estado lo cuenta la
+/// pastilla sobre el compositor; aquí, una sola palabra apagada.
 class _AssistantLiveHeader extends StatelessWidget {
-  const _AssistantLiveHeader({
-    required this.agentName,
-    required this.mood,
-    this.model,
-  });
+  const _AssistantLiveHeader({required this.agentName, required this.mood});
 
   final String agentName;
   final HermesSparkMood mood;
-  final String? model;
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).hermes;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 7, 16, 0),
       child: _AssistantAvatarHeader(
         name: agentName,
-        model: model,
         mood: mood,
         animate: true,
-        ring: AvatarRingState.live,
+        subtitle: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text(
+            Strings.of(context).liveHeaderWorking,
+            key: const ValueKey('assistant-header-working'),
+            style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
+          ),
+        ),
       ),
     );
   }
@@ -16444,28 +16436,7 @@ class _AssistantMessage extends StatelessWidget {
             HermesSparkMood.success,
         };
     final headerAnimated = isStreaming || metadata['_pipeline'] == true;
-    // Anillo del avatar: acento mientras vive; al terminar refleja el desenlace
-    // del turno. Una respuesta sin herramientas no lleva color: neutro.
-    final headerRing = headerAnimated
-        ? AvatarRingState.live
-        : stopped || activityEvents.isEmpty
-        ? AvatarRingState.neutral
-        : switch (activityOutcome) {
-            TraceOutcome.completed => AvatarRingState.success,
-            TraceOutcome.recovered => AvatarRingState.warning,
-            TraceOutcome.failed => AvatarRingState.error,
-            TraceOutcome.stopped ||
-            TraceOutcome.working => AvatarRingState.neutral,
-          };
-    // El modelo solo se conoce del turno vivo y de la última respuesta: el
-    // resto del historial no dice con qué modelo se generó.
-    final modelScope = _AssistantModelScope.maybeOf(context);
-    final stamp = _messageStamp(metadata);
-    final showModel =
-        headerAnimated ||
-        (stamp != null &&
-            modelScope?.newest != null &&
-            stamp == modelScope!.newest);
+    final showTrace = showHeader && (activityEvents.isNotEmpty || stopped);
     final structuredImages = _structuredGeneratedImages(metadata);
     final structuredVideos = _structuredGeneratedVideos(metadata);
     final textualGeneratedBasenames = <String, int>{};
@@ -16717,14 +16688,26 @@ class _AssistantMessage extends StatelessWidget {
             if (showHeader)
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: _AssistantAvatarHeader(
-                  name: agentName,
-                  model: showModel ? modelScope?.label : null,
-                  time: timestamp,
-                  mood: headerMood,
-                  animate: headerAnimated,
-                  ring: headerRing,
-                  actions: [
+                child: showTrace
+                    ? ThinkingTraceCard(
+                        key: const ValueKey('assistant-activity-trace'),
+                        events: activityEvents,
+                        active: isStreaming || metadata['_pipeline'] == true,
+                        liveInPill: true,
+                        headline: Strings.of(context).chatActivityThinking,
+                        activeMood: headerMood,
+                        waitingForUser: activityActive && waitingForUser,
+                        stopped: stopped,
+                        duration: _assistantActivityDuration(metadata),
+                        headerBuilder: (context, summary, details) => Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _AssistantAvatarHeader(
+                              name: agentName,
+                              mood: headerMood,
+                              animate: headerAnimated,
+                              subtitle: summary,
+                              actions: [
                     if (onSpeak != null && readAloudMessageKey != null) ...[
                       const SizedBox(width: 6),
                       ReadAloudButton(
@@ -16797,22 +16780,97 @@ class _AssistantMessage extends StatelessWidget {
                         ),
                       ),
                   ],
-                ),
+                            ),
+                            details,
+                          ],
+                        ),
+                      )
+                    : _AssistantAvatarHeader(
+                        name: agentName,
+                        mood: headerMood,
+                        animate: headerAnimated,
+                        actions: [
+                          if (onSpeak != null &&
+                              readAloudMessageKey != null) ...[
+                            const SizedBox(width: 6),
+                            ReadAloudButton(
+                              messageKey: readAloudMessageKey!,
+                              state: readAloud,
+                              stopBehavior: readAloudStopBehavior,
+                              onPressed: onSpeak,
+                            ),
+                          ],
+                          Semantics(
+                            button: true,
+                            label: Strings.of(context).chaCopyMessage,
+                            excludeSemantics: true,
+                            child: Tooltip(
+                              message: Strings.of(context).chaCopyMessage,
+                              child: InkWell(
+                                onTap: () {
+                                  Clipboard.setData(
+                                    ClipboardData(
+                                      text: markdownToClipboardText(
+                                        GeneratedMediaService.stripDirectives(
+                                          answer,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                  HermesNotice.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        Strings.of(context).chaCopied,
+                                      ),
+                                      duration: Duration(seconds: 1),
+                                    ),
+                                    kind: HermesNoticeKind.success,
+                                  );
+                                },
+                                borderRadius: BorderRadius.circular(24),
+                                child: SizedBox(
+                                  width: 48,
+                                  height: 48,
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.copy_rounded,
+                                      size: 16,
+                                      color: colors.textSecondary,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          if (onRegenerate != null)
+                            Semantics(
+                              button: true,
+                              label: Strings.of(context).chaRegenerate,
+                              excludeSemantics: true,
+                              child: Tooltip(
+                                message: Strings.of(context).chaRegenerate,
+                                child: InkWell(
+                                  onTap: onRegenerate,
+                                  borderRadius: BorderRadius.circular(24),
+                                  child: SizedBox(
+                                    width: 48,
+                                    height: 48,
+                                    child: Center(
+                                      child: Icon(
+                                        Icons.refresh_rounded,
+                                        size: 18,
+                                        color: colors.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
               ),
             if (showHeader && metaLines.isNotEmpty)
               _MetaBlock(lines: metaLines, onDark: false),
-            if (showHeader && (activityEvents.isNotEmpty || stopped))
-              ThinkingTraceCard(
-                key: const ValueKey('assistant-activity-trace'),
-                events: activityEvents,
-                active: isStreaming || metadata['_pipeline'] == true,
-                liveInPill: true,
-                headline: Strings.of(context).chatActivityThinking,
-                activeMood: headerMood,
-                waitingForUser: activityActive && waitingForUser,
-                stopped: stopped,
-                duration: _assistantActivityDuration(metadata),
-              ),
             if (answer.isNotEmpty) ...answerWidgets(),
             if (showFooter && technicalDetails.isNotEmpty)
               _AssistantTechnicalDetails(details: technicalDetails),
@@ -16835,6 +16893,7 @@ class _AssistantMessage extends StatelessWidget {
                   );
                 },
               ),
+            if (showFooter && timestamp != null) _MessageTimestamp(timestamp),
           ],
         ),
       ),

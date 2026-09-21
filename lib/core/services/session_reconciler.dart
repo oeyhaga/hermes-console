@@ -90,6 +90,55 @@ List<Map<String, dynamic>> normalizeAssistantActivityTrace(Object? raw) {
   );
 }
 
+/// Una invocación de herramienta tal como debe verse en el historial.
+typedef ActivityCallEntry = ({String label, String? id, Object? arguments});
+
+Object? _decodedArguments(Object? raw) {
+  if (raw is! String) return raw;
+  try {
+    return jsonDecode(raw);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Entradas visibles de una llamada. Hermes puede exponer solo tres
+/// herramientas puente (`tool_search`, `tool_describe`, `tool_call`) y llamar a
+/// la real dentro de `tool_call({calls:[{name, arguments}]})`: se desenvuelve
+/// para que el historial diga «terminal · sleep» y no «tool_call». Si no se
+/// puede desenvolver, queda la llamada original (que la vista oculta).
+List<ActivityCallEntry> activityCallEntries(
+  String label,
+  String? id,
+  Object? rawArguments,
+) {
+  final arguments = _decodedArguments(rawArguments);
+  if (label.trim().toLowerCase() != 'tool_call' || arguments is! Map) {
+    return [(label: label, id: id, arguments: arguments)];
+  }
+  final calls = arguments['calls'];
+  final candidates = calls is List ? calls : [arguments];
+  final entries = <ActivityCallEntry>[];
+  for (var i = 0; i < candidates.length && i < 32; i++) {
+    final candidate = candidates[i];
+    if (candidate is! Map) continue;
+    final name = candidate['name']?.toString().trim() ?? '';
+    if (name.isEmpty ||
+        name.length > 180 ||
+        name.contains(_unsafeDisplayTextPattern)) {
+      continue;
+    }
+    entries.add((
+      label: name,
+      id: id == null ? null : '$id:$i',
+      arguments: _decodedArguments(candidate['arguments']),
+    ));
+  }
+  return entries.isEmpty
+      ? [(label: label, id: id, arguments: arguments)]
+      : entries;
+}
+
 List<Map<String, dynamic>> assistantActivityFromToolCalls(
   Object? raw, {
   String status = 'running',
@@ -115,25 +164,24 @@ List<Map<String, dynamic>> assistantActivityFromToolCalls(
             value['type']?.toString().trim().toLowerCase() == 'skill'
         ? 'skill'
         : 'tool';
-    Object? arguments = function is Map
+    final rawArguments = function is Map
         ? function['arguments']
         : value['arguments'];
-    if (arguments is String) {
-      try {
-        arguments = jsonDecode(arguments);
-      } catch (_) {
-        arguments = null;
-      }
+    for (final entry in activityCallEntries(
+      label,
+      id != null && id.isNotEmpty && id.length <= 180 ? id : null,
+      rawArguments,
+    )) {
+      final step = normalizeAssistantActivityStep({
+        'kind': kind,
+        'label': entry.label,
+        'status': status,
+        'id': ?entry.id,
+        'timestamp': ?timestamp,
+        'detail': ?activityToolDetail(entry.label, entry.arguments),
+      });
+      if (step != null) steps.add(step);
     }
-    final step = normalizeAssistantActivityStep({
-      'kind': kind,
-      'label': label,
-      'status': status,
-      if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
-      'timestamp': ?timestamp,
-      'detail': ?activityToolDetail(label, arguments),
-    });
-    if (step != null) steps.add(step);
   }
   return List<Map<String, dynamic>>.unmodifiable(steps);
 }
@@ -210,13 +258,21 @@ List<Map<String, dynamic>> coalesceAssistantTurnsNewestFirst(
         )) {
       return;
     }
-    activity.add({
-      'kind': 'tool',
-      'label': label,
-      'status': 'running',
-      if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
-      'timestamp': ?timestampOf(message),
-    });
+    final rawArguments = function is Map
+        ? function['arguments']
+        : raw['arguments'];
+    final safeId = id != null && id.isNotEmpty && id.length <= 180 ? id : null;
+    for (final entry in activityCallEntries(label, safeId, rawArguments)) {
+      final detail = activityToolDetail(entry.label, entry.arguments);
+      activity.add({
+        'kind': 'tool',
+        'label': entry.label,
+        'status': 'running',
+        'id': ?entry.id,
+        'timestamp': ?timestampOf(message),
+        'detail': ?detail,
+      });
+    }
     appendToolCallEvidence(raw);
   }
 
@@ -225,9 +281,26 @@ List<Map<String, dynamic>> coalesceAssistantTurnsNewestFirst(
     final id = message['tool_call_id']?.toString().trim();
     var index = -1;
     if (id != null && id.isNotEmpty) {
-      index = activity.lastIndexWhere(
-        (step) => step['kind'] == 'tool' && step['id']?.toString() == id,
-      );
+      // También las entradas desenvueltas de una llamada puente (`id:0`, …).
+      final endedAt = timestampOf(message);
+      var matched = false;
+      for (var i = 0; i < activity.length; i++) {
+        final step = activity[i];
+        final stepId = step['id']?.toString();
+        if (step['kind'] != 'tool' ||
+            stepId == null ||
+            !(stepId == id || stepId.startsWith('$id:'))) {
+          continue;
+        }
+        matched = true;
+        activity[i] = {
+          ...step,
+          'status': 'completed',
+          if (endedAt != null && step['completed_at'] == null)
+            'completed_at': endedAt,
+        };
+      }
+      if (matched) return;
     }
     if (index < 0) {
       if ((id == null || id.isEmpty) &&

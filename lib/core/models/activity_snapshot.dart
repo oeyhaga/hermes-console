@@ -1,8 +1,17 @@
 import 'agent_task_list.dart';
-import 'compaction_progress.dart';
 import 'desktop_control_center.dart' show safeCommandProjection;
 import 'session_activity.dart';
 import 'subagent_activity.dart';
+
+/// Herramientas puente de Hermes (búsqueda diferida de herramientas): el
+/// modelo las llama para encontrar/describir/invocar la herramienta real. No
+/// son trabajo del usuario: nunca se pintan como pasos.
+bool isInternalActivityLabel(String label) {
+  final normalized = label.trim().toLowerCase();
+  return normalized == 'tool_call' ||
+      normalized == 'tool_describe' ||
+      normalized == 'tool_search';
+}
 
 enum ActivityStepKind { reasoning, tool, skill }
 
@@ -57,19 +66,22 @@ final class ActivityStep {
       'failed' || 'error' => ActivityStepStatus.failed,
       _ => ActivityStepStatus.done,
     };
-    final ts = step['timestamp'];
-    final started = ts is num && ts > 0
-        ? DateTime.fromMillisecondsSinceEpoch(ts.round())
-        : null;
-    final end = step['completed_at'];
-    final ended = end is num && end > 0
-        ? DateTime.fromMillisecondsSinceEpoch(end.round())
-        : null;
+    // Los pasos vivos guardan milisegundos; los reconstruidos del historial de
+    // Desktop, segundos. Nada real llega a 1e11 s (año 5138).
+    DateTime? instant(Object? raw) {
+      if (raw is! num || !raw.isFinite || raw <= 0) return null;
+      return DateTime.fromMillisecondsSinceEpoch(
+        (raw < 1e11 ? raw * 1000 : raw).round(),
+      );
+    }
+
+    final started = instant(step['timestamp']);
+    final ended = instant(step['completed_at']);
     Duration? duration;
     if (status != ActivityStepStatus.running &&
         started != null &&
         ended != null &&
-        !ended.isBefore(started)) {
+        ended.isAfter(started)) {
       duration = ended.difference(started);
     }
     final detail = step['detail']?.toString().trim();
@@ -174,7 +186,6 @@ final class ActivitySnapshot {
     this.current,
     this.done = const [],
     this.tasks,
-    this.compaction,
     this.processes = const [],
     this.schedules = const [],
     this.goal,
@@ -209,7 +220,6 @@ final class ActivitySnapshot {
   /// Pasos terminados de ESTE turno, el más reciente primero.
   final List<ActivityStep> done;
   final AgentTaskList? tasks;
-  final CompactionProgress? compaction;
   final List<SessionActivityProcess> processes;
   final List<SessionActivitySchedule> schedules;
   final SessionActivityGoal? goal;
@@ -250,11 +260,8 @@ final class ActivitySnapshot {
       subagentLive > 0 ||
       (subagents.isEmpty && (subagentCount > 0 || passiveRemote));
 
-  bool get hasCompaction => compaction != null;
-
   /// Algo distinto del turno mantiene la pastilla viva por sí solo.
-  bool get hasNonTurnActivity =>
-      hasCompaction || backgroundCount > 0 || hasSubagents;
+  bool get hasNonTurnActivity => backgroundCount > 0 || hasSubagents;
 
   bool get isLive => turnActive || hasNonTurnActivity;
 
@@ -267,7 +274,6 @@ final class ActivitySnapshot {
     ActivityStep? current,
     List<ActivityStep>? done,
     AgentTaskList? tasks,
-    CompactionProgress? compaction,
   }) => ActivitySnapshot(
     turnActive: turnActive ?? this.turnActive,
     tasksActive: tasksActive,
@@ -278,7 +284,6 @@ final class ActivitySnapshot {
     current: current ?? this.current,
     done: done ?? this.done,
     tasks: tasks ?? this.tasks,
-    compaction: compaction ?? this.compaction,
     processes: processes,
     schedules: schedules,
     goal: goal,
@@ -301,6 +306,7 @@ final class ActivitySnapshot {
       if (step == null || step.kind == ActivityStepKind.reasoning) continue;
       final normalized = step.label.trim().toLowerCase();
       if (normalized == 'todo_list' || normalized == 'todo') continue;
+      if (isInternalActivityLabel(step.label)) continue;
       steps.add(step);
     }
     ActivityStep? current;

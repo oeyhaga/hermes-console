@@ -530,6 +530,140 @@ void main() {
     expect(find.text('0.7 s'), findsOneWidget);
   });
 
+  testWidgets(
+    'la etiqueta del bloque terminado: trabajo, solo razonar, parado y puente',
+    (tester) async {
+      Future<void> pump(
+        List<ChatTraceEvent> events, {
+        Duration? duration,
+        bool stopped = false,
+      }) => tester.pumpWidget(
+        _cardHost(
+          card: ThinkingTraceCard(
+            events: events,
+            active: false,
+            duration: duration,
+            stopped: stopped,
+            liveInPill: true,
+          ),
+        ),
+      );
+      final tool = ChatTraceEvent(
+        id: 't',
+        label: 'terminal',
+        status: 'completed',
+      );
+      final thought = ChatTraceEvent(
+        id: 'r',
+        label: 'Reasoning',
+        status: 'completed',
+        kind: ChatTraceEventKind.reasoning,
+        preview: 'pienso',
+      );
+      // Herramientas + razonamiento: cuenta el trabajo, no «Razonamiento».
+      await pump([thought, tool], duration: const Duration(seconds: 72));
+      await tester.pump();
+      expect(find.text('Completed · 1:12'), findsOneWidget);
+      // Sin duración conocida: solo «Completed».
+      await pump([thought, tool]);
+      await tester.pump();
+      expect(find.text('Completed'), findsOneWidget);
+      // Solo razonar: «Thought for 4s».
+      await pump([thought], duration: const Duration(seconds: 4));
+      await tester.pump();
+      expect(find.text('Thought for 4s'), findsOneWidget);
+      // Parado conserva su desenlace.
+      await pump(
+        [thought, tool],
+        duration: const Duration(seconds: 9),
+        stopped: true,
+      );
+      await tester.pump();
+      expect(find.text('Stopped'), findsOneWidget);
+      // Solo herramientas puente: no hay nada que desplegar.
+      await pump([
+        ChatTraceEvent(id: 'a', label: 'tool_search', status: 'completed'),
+        ChatTraceEvent(id: 'b', label: 'tool_call', status: 'completed'),
+      ]);
+      await tester.pump();
+      expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.textContaining('tool_'), findsNothing);
+    },
+  );
+
+  testWidgets('en la cabecera: resumen apagado bajo el título y detalle debajo', (
+    tester,
+  ) async {
+    final theme = AppTheme.hermesRedDark;
+    final colors = theme.hermes;
+    Future<void> pump({required bool active}) => tester.pumpWidget(
+      _cardHost(
+        theme: theme,
+        card: ThinkingTraceCard(
+          events: [
+            ChatTraceEvent(
+              id: 't',
+              label: 'terminal',
+              status: active ? 'running' : 'completed',
+              detail: 'sleep',
+              duration: const Duration(seconds: 5),
+            ),
+          ],
+          active: active,
+          liveInPill: true,
+          duration: const Duration(seconds: 72),
+          headerBuilder: (context, summary, details) => Column(
+            children: [
+              Row(
+                children: [
+                  const Text('TITLE', key: ValueKey('fake-title')),
+                  Expanded(child: summary),
+                ],
+              ),
+              details,
+            ],
+          ),
+        ),
+      ),
+    );
+
+    // En vivo: una sola palabra apagada, sin icono ni spinner ni shimmer.
+    await pump(active: true);
+    await tester.pump();
+    final working = tester.widget<Text>(
+      find.byKey(const ValueKey('thinking-trace-live-in-pill')),
+    );
+    expect(working.data, 'Working…');
+    expect(working.style!.color, colors.textSecondary);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.byKey(const ValueKey('thinking-trace-state-icon')), findsNothing);
+    expect(find.byKey(const ValueKey('thinking-shimmer')), findsNothing);
+
+    // Terminado: «Completed · 1:12 ⌄» con el mismo tono del resto de la línea.
+    await pump(active: false);
+    await tester.pump();
+    final label = tester.widget<Text>(find.text('Completed · 1:12'));
+    expect(label.style!.color, colors.textSecondary);
+    expect(label.style!.fontSize, 11.5);
+    final chevron = tester.widget<Icon>(find.byIcon(Icons.expand_more));
+    expect(chevron.color, colors.textSecondary);
+    expect(chevron.size, lessThanOrEqualTo(16));
+    expect(find.byKey(const ValueKey('thinking-trace-state-icon')), findsNothing);
+    expect(find.byKey(const ValueKey('activity-done-section')), findsNothing);
+
+    // Al tocarlo se despliega el detalle debajo, con la marca en tono apagado.
+    await tester.tap(find.byKey(const ValueKey('thinking-trace-summary')));
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byKey(const ValueKey('activity-done-section')), findsOneWidget);
+    expect(find.text('terminal · sleep', findRichText: true), findsOneWidget);
+    final check = tester.widget<Icon>(find.byIcon(Icons.check_rounded));
+    expect(check.color, isNot(colors.success));
+    expect(
+      tester.getTopLeft(find.byKey(const ValueKey('activity-done-section'))).dy,
+      greaterThan(tester.getRect(find.byKey(const ValueKey('fake-title'))).bottom - 1),
+    );
+  });
+
   testWidgets('el cargador por defecto respeta locale=en', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

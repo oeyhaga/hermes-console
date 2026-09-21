@@ -26,7 +26,7 @@ final class ActivityPanelState {
 /// Cuerpo del panel: las secciones que tengan contenido, en orden fijo.
 ///
 /// 1 Tareas · 2 Ahora · 3 Hecho · 4 Segundo plano / Subagentes / Bucles /
-/// Objetivo · 5 Compactación. Lo que no tiene contenido se omite.
+/// Objetivo. Lo que no tiene contenido se omite.
 class ActivityPanelBody extends StatelessWidget {
   const ActivityPanelBody({
     required this.snapshot,
@@ -66,8 +66,6 @@ class ActivityPanelBody extends StatelessWidget {
         ActivityLoopsSection(snapshot: snapshot, actions: actions),
       if (snapshot.goal != null)
         ActivityGoalSection(goal: snapshot.goal!, actions: actions),
-      if (snapshot.compaction != null)
-        ActivityCompactionSection(compaction: snapshot.compaction!, now: now),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -326,7 +324,7 @@ class _ActivityPanelSurfaceState extends State<ActivityPanelSurface> {
                                           'activity-panel-header',
                                         ),
                                         onTap: _close,
-                                        child: ActivityPillContent(
+                                        child: ActivityPillRow(
                                           model: model,
                                           now: now,
                                           expanded: true,
@@ -405,6 +403,7 @@ class ActivityPillHost extends StatefulWidget {
     this.actions = ActivityPanelActions.none,
     this.clock,
     this.revealAfter = const Duration(seconds: 2),
+    this.suspended = false,
     super.key,
   });
 
@@ -412,6 +411,11 @@ class ActivityPillHost extends StatefulWidget {
   final ActivityPanelActions actions;
   final DateTime Function()? clock;
   final Duration revealAfter;
+
+  /// Otra superficie flotante (la paleta de comandos) ocupa ahora el hueco
+  /// sobre el compositor: la pastilla conserva su sitio pero no se pinta ni
+  /// recibe toques, para no solaparse con ella.
+  final bool suspended;
 
   @override
   State<ActivityPillHost> createState() => _ActivityPillHostState();
@@ -513,11 +517,11 @@ class _ActivityPillHostState extends State<ActivityPillHost> {
             child: CompositedTransformTarget(
               link: _link,
               child: ExcludeSemantics(
-                excluding: _open,
+                excluding: _open || widget.suspended,
                 child: Opacity(
-                  opacity: _open ? 0 : 1,
+                  opacity: _open || widget.suspended ? 0 : 1,
                   child: IgnorePointer(
-                    ignoring: _open,
+                    ignoring: _open || widget.suspended,
                     child: KeyedSubtree(
                       key: _pillKey,
                       child: ActivityPill(

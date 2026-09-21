@@ -1,30 +1,24 @@
-import 'dart:convert';
-
-/// Lo que el backend publica de una compactación, y nada más.
+/// Lo que se sabe de una compactación, y nada más.
 ///
-/// Hermes Agent NO envía porcentaje ni progreso: `status.update` con
-/// `kind=compacting` (más latidos periódicos) marca el inicio de la
-/// compactación automática y `kind=compacted` su final; la manual
-/// (`session.compress`) trae `before/after_tokens` solo en el RESULTADO. Por
-/// eso esta clase mide lo único que es real (el tiempo transcurrido) y estima
-/// el resto a partir de compactaciones anteriores medidas en este mismo
-/// dispositivo. Toda cifra estimada se pinta con «≈» y no supera [maxFraction]
-/// hasta que llega el evento de fin.
+/// Hermes Agent NO publica porcentaje ni progreso de la compactación: solo un
+/// inicio (`status.update` `compacting`/`compressing`, con latidos periódicos) y
+/// un final (`compacted`, o el resultado de `session.compress`). Por eso esta
+/// clase solo guarda hechos reales: el tiempo medido en el dispositivo, los
+/// recuentos que la línea de estado trae (`compressing N messages (~T tok)`), el
+/// resultado exacto de un `/compress` y —solo si el backend algún día lo
+/// publica— el trozo `chunk_index / chunk_count`. No hay estimaciones.
 final class CompactionProgress {
   const CompactionProgress({
     required this.startedAt,
     required this.manual,
     this.tokensBefore,
     this.messagesBefore,
-    this.estimate,
+    this.chunkIndex,
+    this.chunkCount,
     this.finishedAt,
     this.tokensAfter,
     this.messagesAfter,
-    this.note,
   });
-
-  /// La barra nunca llega al 100 % por estimación: solo el fin real la cierra.
-  static const double maxFraction = 0.95;
 
   final DateTime startedAt;
 
@@ -33,18 +27,14 @@ final class CompactionProgress {
   final int? tokensBefore;
   final int? messagesBefore;
 
-  /// Duración típica aprendida de compactaciones previas, o `null` sin
-  /// historial (entonces solo hay tiempo transcurrido).
-  final Duration? estimate;
+  /// Progreso determinado real (trozo actual / total), o `null`.
+  final int? chunkIndex;
+  final int? chunkCount;
 
   /// No nulo cuando la compactación terminó.
   final DateTime? finishedAt;
   final int? tokensAfter;
   final int? messagesAfter;
-
-  /// Texto libre del backend (línea fijada `compressing N messages…`), nunca
-  /// se pinta tal cual: solo sirve a los tests y al diagnóstico.
-  final String? note;
 
   bool get isFinished => finishedAt != null;
 
@@ -57,135 +47,52 @@ final class CompactionProgress {
   /// Duración total, solo una vez terminada.
   Duration? get duration => finishedAt == null ? null : elapsed(finishedAt!);
 
-  /// Fracción estimada `0..0.95`, o `null` si no hay estimación fiable.
-  double? fraction(DateTime now) {
-    final typical = estimate;
-    if (isFinished || typical == null || typical <= Duration.zero) return null;
-    final value = elapsed(now).inMilliseconds / typical.inMilliseconds;
-    return value.clamp(0.0, maxFraction).toDouble();
-  }
-
-  /// Tiempo restante estimado (`>= 0`), o `null` sin estimación.
-  Duration? remaining(DateTime now) {
-    final typical = estimate;
-    if (isFinished || typical == null) return null;
-    final left = typical - elapsed(now);
-    return left.isNegative ? Duration.zero : left;
+  /// Fracción `0..1` SOLO si el backend publicó el trozo actual y el total.
+  double? get fraction {
+    final index = chunkIndex;
+    final count = chunkCount;
+    if (isFinished || index == null || count == null || count <= 0) return null;
+    return (index / count).clamp(0.0, 1.0).toDouble();
   }
 
   CompactionProgress copyWith({
-    Duration? estimate,
     DateTime? finishedAt,
     int? tokensBefore,
     int? tokensAfter,
     int? messagesBefore,
     int? messagesAfter,
-    String? note,
+    int? chunkIndex,
+    int? chunkCount,
   }) => CompactionProgress(
     startedAt: startedAt,
     manual: manual,
     tokensBefore: tokensBefore ?? this.tokensBefore,
     messagesBefore: messagesBefore ?? this.messagesBefore,
-    estimate: estimate ?? this.estimate,
+    chunkIndex: chunkIndex ?? this.chunkIndex,
+    chunkCount: chunkCount ?? this.chunkCount,
     finishedAt: finishedAt ?? this.finishedAt,
     tokensAfter: tokensAfter ?? this.tokensAfter,
     messagesAfter: messagesAfter ?? this.messagesAfter,
-    note: note ?? this.note,
   );
 }
 
-/// Una compactación medida: duración y, si se conocía, tamaño de partida.
-final class CompactionSample {
-  const CompactionSample({required this.durationMs, this.tokensBefore});
-
-  final int durationMs;
-  final int? tokensBefore;
-
-  Map<String, Object?> toJson() => {
-    'd': durationMs,
-    if (tokensBefore != null) 't': tokensBefore,
-  };
-
-  static CompactionSample? tryParse(Object? raw) {
-    if (raw is! Map) return null;
-    final d = raw['d'];
-    if (d is! num || !d.isFinite || d <= 0 || d > 6 * 3600 * 1000) return null;
-    final t = raw['t'];
-    return CompactionSample(
-      durationMs: d.round(),
-      tokensBefore: t is num && t.isFinite && t > 0 ? t.round() : null,
-    );
-  }
-}
-
-/// Historial acotado de compactaciones de una conexión+modelo y su estimador.
-final class CompactionHistory {
-  const CompactionHistory(this.samples);
-
-  static const CompactionHistory empty = CompactionHistory([]);
-
-  /// Cuántas mediciones se conservan (las más recientes).
-  static const int capacity = 10;
-
-  /// Factor de escala permitido cuando se conoce el tamaño de partida.
-  static const double minScale = 0.5;
-  static const double maxScale = 3.0;
-
-  final List<CompactionSample> samples;
-
-  bool get isEmpty => samples.isEmpty;
-
-  CompactionHistory add(CompactionSample sample) {
-    final next = [...samples, sample];
-    return CompactionHistory(
-      next.length <= capacity ? next : next.sublist(next.length - capacity),
-    );
-  }
-
-  static num _median(List<num> values) {
-    final sorted = [...values]..sort();
-    final mid = sorted.length ~/ 2;
-    return sorted.length.isOdd
-        ? sorted[mid]
-        : (sorted[mid - 1] + sorted[mid]) / 2;
-  }
-
-  /// Duración típica: mediana de las mediciones, escalada por
-  /// `tokensBefore / mediana(tokens)` (acotado a 0.5x–3x) cuando ambos se
-  /// conocen. `null` sin historial: no se inventa una cifra.
-  Duration? estimate({int? tokensBefore}) {
-    if (samples.isEmpty) return null;
-    var ms = _median(samples.map((s) => s.durationMs).toList()).toDouble();
-    final known = samples.map((s) => s.tokensBefore).whereType<int>().toList();
-    if (tokensBefore != null && tokensBefore > 0 && known.isNotEmpty) {
-      final typicalTokens = _median(known).toDouble();
-      if (typicalTokens > 0) {
-        ms *= (tokensBefore / typicalTokens).clamp(minScale, maxScale);
-      }
-    }
-    return Duration(milliseconds: ms.round());
-  }
-
-  String encode() => jsonEncode([for (final s in samples) s.toJson()]);
-
-  static CompactionHistory decode(String? raw) {
-    if (raw == null || raw.isEmpty) return empty;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! List) return empty;
-      final parsed = decoded
-          .map(CompactionSample.tryParse)
-          .whereType<CompactionSample>()
-          .toList();
-      return CompactionHistory(
-        parsed.length <= capacity
-            ? parsed
-            : parsed.sublist(parsed.length - capacity),
-      );
-    } catch (_) {
-      return empty;
-    }
-  }
+/// Lee un progreso determinado de un payload de estado, o `null`.
+///
+/// Solo acepta los campos `chunk_index` (trozo actual, `0..count`) y
+/// `chunk_count` (total, `> 0`). El backend actual NO los envía: cualquier otro
+/// nombre («progress», «percent»…) se ignora a propósito, para no inventar una
+/// barra a partir de un campo que no significa lo que parece.
+({int index, int count})? parseCompactionChunks(Map<String, dynamic> payload) {
+  int? whole(Object? raw) => raw is int
+      ? raw
+      : raw is num && raw == raw.roundToDouble()
+      ? raw.toInt()
+      : null;
+  final index = whole(payload['chunk_index']);
+  final count = whole(payload['chunk_count']);
+  if (index == null || count == null || count <= 0) return null;
+  if (index < 0 || index > count) return null;
+  return (index: index, count: count);
 }
 
 /// Formatea tokens de forma compacta: `842`, `12.4k`, `180k`, `1.2M`.

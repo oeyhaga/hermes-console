@@ -1,14 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hermes_android/core/models/activity_snapshot.dart';
 import 'package:hermes_android/core/models/compaction_progress.dart';
 import 'package:hermes_android/core/services/compaction_tracker.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
-import 'package:hermes_android/core/widgets/activity_panel.dart';
-import 'package:hermes_android/core/widgets/activity_pill.dart';
+import 'package:hermes_android/core/widgets/compaction_dock.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'support/inter_font.dart';
 
 final DateTime _t0 = DateTime(2026, 9, 21, 12);
 
@@ -18,166 +16,108 @@ class _Clock {
   void advance(Duration d) => now = now.add(d);
 }
 
-CompactionSample _sample(int seconds, [int? tokens]) =>
-    CompactionSample(durationMs: seconds * 1000, tokensBefore: tokens);
-
 void main() {
-  group('CompactionProgress', () {
+  group('CompactionProgress: solo hechos', () {
     test(
-      'sin estimación solo hay tiempo transcurrido: nunca un porcentaje',
+      'sin progreso publicado no hay fracción, porcentaje ni estimación',
       () {
         final progress = CompactionProgress(startedAt: _t0, manual: false);
-        final now = _t0.add(const Duration(seconds: 23));
-        expect(progress.elapsed(now), const Duration(seconds: 23));
-        expect(progress.fraction(now), isNull);
-        expect(progress.remaining(now), isNull);
+        expect(progress.fraction, isNull);
+        expect(
+          progress.elapsed(_t0.add(const Duration(seconds: 23))),
+          const Duration(seconds: 23),
+        );
       },
     );
 
-    test('con estimación: fracción = transcurrido/típico, tope 95 %', () {
+    test('el progreso determinado sale solo de chunk_index / chunk_count', () {
+      expect(parseCompactionChunks({'chunk_index': 2, 'chunk_count': 4}), (
+        index: 2,
+        count: 4,
+      ));
       final progress = CompactionProgress(
         startedAt: _t0,
-        manual: true,
-        estimate: const Duration(seconds: 40),
+        manual: false,
+        chunkIndex: 1,
+        chunkCount: 4,
       );
-      expect(progress.fraction(_t0.add(const Duration(seconds: 10))), 0.25);
+      expect(progress.fraction, 0.25);
+      // Datos incoherentes no rellenan nada.
       expect(
-        progress.fraction(_t0.add(const Duration(seconds: 500))),
-        CompactionProgress.maxFraction,
-      );
-      expect(
-        progress.remaining(_t0.add(const Duration(seconds: 30))),
-        const Duration(seconds: 10),
+        parseCompactionChunks({'chunk_index': 5, 'chunk_count': 4}),
+        isNull,
       );
       expect(
-        progress.remaining(_t0.add(const Duration(seconds: 90))),
-        Duration.zero,
+        parseCompactionChunks({'chunk_index': 1, 'chunk_count': 0}),
+        isNull,
       );
+      expect(
+        parseCompactionChunks({'chunk_index': 'x', 'chunk_count': 2}),
+        isNull,
+      );
+      // Un campo inventado NO cuenta, aunque parezca un porcentaje.
+      for (final made in [
+        {'progress': 0.5},
+        {'percent': 50},
+        {'pct': 50, 'total': 100},
+        {'chunks': 4, 'done': 2},
+        {'chunk': 2, 'chunk_total': 4},
+      ]) {
+        expect(parseCompactionChunks(made), isNull, reason: '$made');
+      }
     });
 
-    test('terminada: sin fracción, duración fija y resumen exacto', () {
+    test('terminada: duración fija y sin fracción', () {
       final done = CompactionProgress(
         startedAt: _t0,
         manual: true,
-        estimate: const Duration(seconds: 40),
-        tokensBefore: 180000,
-        tokensAfter: 42000,
-        finishedAt: _t0.add(const Duration(seconds: 38)),
+        chunkIndex: 1,
+        chunkCount: 2,
+        finishedAt: _t0.add(const Duration(seconds: 71)),
       );
-      expect(done.isFinished, isTrue);
-      expect(done.duration, const Duration(seconds: 38));
-      expect(done.fraction(_t0.add(const Duration(hours: 1))), isNull);
+      expect(done.duration, const Duration(seconds: 71));
+      expect(done.fraction, isNull);
       expect(formatCompactTokens(180000), '180k');
-      expect(formatCompactTokens(42000), '42k');
-      expect(formatCompactTokens(12400), '12.4k');
+      expect(formatCompactTokens(21500), '21.5k');
       expect(formatCompactTokens(842), '842');
       expect(formatCompactTokens(1200000), '1.2M');
     });
   });
 
-  group('CompactionHistory', () {
-    test('mediana de las mediciones; sin historial no hay estimación', () {
-      expect(CompactionHistory.empty.estimate(), isNull);
-      final history = CompactionHistory([
-        _sample(10),
-        _sample(30),
-        _sample(20),
-      ]);
-      expect(history.estimate(), const Duration(seconds: 20));
-      expect(
-        CompactionHistory([_sample(10), _sample(20)]).estimate(),
-        const Duration(seconds: 15),
-      );
-    });
-
-    test('escala por tokens de partida acotada a 0.5x–3x', () {
-      final history = CompactionHistory([
-        _sample(20, 100000),
-        _sample(20, 100000),
-        _sample(20, 100000),
-      ]);
-      expect(
-        history.estimate(tokensBefore: 200000),
-        const Duration(seconds: 40),
-      );
-      expect(
-        history.estimate(tokensBefore: 1000),
-        const Duration(seconds: 10),
-        reason: 'no baja de 0.5x',
-      );
-      expect(
-        history.estimate(tokensBefore: 5000000),
-        const Duration(seconds: 60),
-        reason: 'no sube de 3x',
-      );
-      // Sin tamaños conocidos no se escala.
-      expect(
-        CompactionHistory([_sample(20)]).estimate(tokensBefore: 999999),
-        const Duration(seconds: 20),
-      );
-    });
-
-    test(
-      'conserva solo las 10 últimas y sobrevive a codificar/decodificar',
-      () {
-        var history = CompactionHistory.empty;
-        for (var i = 1; i <= 14; i++) {
-          history = history.add(_sample(i, i * 1000));
-        }
-        expect(history.samples, hasLength(CompactionHistory.capacity));
-        expect(history.samples.first.durationMs, 5000);
-        final round = CompactionHistory.decode(history.encode());
-        expect(round.samples.map((s) => s.durationMs), [
-          for (final s in history.samples) s.durationMs,
-        ]);
-        expect(CompactionHistory.decode('no json').isEmpty, isTrue);
-        expect(
-          CompactionHistory.decode('[{"d":-4},{"d":"x"},3]').isEmpty,
-          isTrue,
-        );
-      },
-    );
-  });
-
   group('CompactionTracker', () {
-    setUp(() => SharedPreferences.setMockInitialValues({}));
-
-    test('la clave es corta y por conexión+modelo', () {
-      expect(
-        CompactionHistoryStore.keyFor('conn1', 'openai/gpt-5.5'),
-        'hc.compact.v1.conn1.openai/gpt-5.5',
-      );
-      expect(CompactionHistoryStore.keyFor('c', ''), 'hc.compact.v1.c.-');
+    testWidgets('automática: solo el borde real `compacted` la da por buena', (
+      tester,
+    ) async {
+      final clock = _Clock(_t0);
+      final tracker = CompactionTracker(clock: () => clock.now);
+      addTearDown(tracker.dispose);
+      tracker.sync(active: true, manual: false, startedAt: _t0);
+      expect(tracker.running, isTrue);
+      expect(tracker.current!.manual, isFalse);
+      clock.advance(const Duration(seconds: 38));
+      // La bandera se apaga y llega el `compacted`.
+      tracker.sync(active: false, manual: false);
+      expect(tracker.running, isTrue, reason: 'margen para el final real');
+      tracker.reportResult();
+      expect(tracker.running, isFalse);
+      expect(tracker.current!.duration, const Duration(seconds: 38));
+      // Sin cifras del backend no se inventa ninguna.
+      expect(tracker.current!.tokensAfter, isNull);
+      expect(tracker.current!.messagesAfter, isNull);
+      await tester.pump(const Duration(seconds: 7));
+      expect(tracker.current, isNull);
     });
 
     testWidgets(
-      'automática: mide, termina y conserva el resumen unos segundos',
+      'automática que acaba sin `compacted` (ready, idle, atascada): se retira '
+      'en silencio, sin resultado inventado',
       (tester) async {
-        final clock = _Clock(_t0);
-        final tracker = CompactionTracker(clock: () => clock.now);
+        final tracker = CompactionTracker(clock: () => _t0);
         addTearDown(tracker.dispose);
+        tracker.sync(active: true, manual: false);
+        tracker.sync(active: false, manual: false);
+        await tester.pump(const Duration(seconds: 4));
         expect(tracker.current, isNull);
-        tracker.sync(
-          active: true,
-          manual: false,
-          historyKey: 'k',
-          startedAt: _t0,
-          tokensBefore: 180000,
-        );
-        expect(tracker.running, isTrue);
-        expect(tracker.current!.manual, isFalse);
-        clock.advance(const Duration(seconds: 38));
-        tracker.sync(active: false, manual: false, historyKey: 'k');
-        expect(tracker.running, isFalse);
-        expect(tracker.current!.isFinished, isTrue);
-        expect(tracker.current!.duration, const Duration(seconds: 38));
-        // «Después» de una automática: el uso de contexto observado tras el fin.
-        tracker.observeContextTokens(42000);
-        expect(tracker.current!.tokensAfter, 42000);
-        // Un valor que no baja no es evidencia de compactación.
-        tracker.observeContextTokens(null);
-        await tester.pump(const Duration(seconds: 7));
-        expect(tracker.current, isNull, reason: 'se oculta pasado el linger');
       },
     );
 
@@ -190,299 +130,321 @@ void main() {
       tracker.sync(
         active: true,
         manual: true,
-        historyKey: 'k',
         startedAt: _t0,
-        tokensBefore: 90000,
-        messagesBefore: 240,
+        tokensBefore: 21500,
+        messagesBefore: 22,
       );
-      clock.advance(const Duration(seconds: 20));
-      // La bandera se apaga un instante ANTES de que llegue el resultado.
-      tracker.sync(active: false, manual: true, historyKey: 'k');
+      clock.advance(const Duration(seconds: 70));
+      tracker.sync(active: false, manual: true);
       expect(tracker.running, isTrue, reason: 'aún se espera el resultado');
       tracker.reportResult(
-        tokensBefore: 91234,
-        tokensAfter: 20500,
-        messagesBefore: 240,
-        messagesAfter: 40,
+        tokensBefore: 21234,
+        tokensAfter: 5000,
+        messagesBefore: 22,
+        messagesAfter: 12,
       );
       final done = tracker.current!;
       expect(done.isFinished, isTrue);
-      expect(done.tokensBefore, 91234);
-      expect(done.tokensAfter, 20500);
-      expect(done.messagesAfter, 40);
-      expect(done.duration, const Duration(seconds: 20));
+      expect(done.tokensAfter, 5000);
+      expect(done.messagesAfter, 12);
+      expect(done.duration, const Duration(seconds: 70));
       await tester.pump(const Duration(seconds: 7));
       expect(tracker.current, isNull);
     });
 
-    testWidgets('manual sin resultado (abortada, lock, incierta): la barra se '
-        'retira sola', (tester) async {
-      final tracker = CompactionTracker(clock: () => _t0);
-      addTearDown(tracker.dispose);
-      tracker.sync(active: true, manual: true, historyKey: 'k');
-      tracker.sync(active: false, manual: true, historyKey: 'k');
-      expect(tracker.running, isTrue);
-      await tester.pump(const Duration(seconds: 4));
-      expect(tracker.current, isNull, reason: 'sin barra colgada');
-      // Y un resultado tardío ya no resucita nada.
-      tracker.reportResult(tokensBefore: 1, tokensAfter: 1);
-      expect(tracker.current, isNull);
-    });
-
     testWidgets(
-      'aprende la mediana: se guarda y se carga por conexión+modelo',
+      'manual sin resultado (abortada, lock…): la barra se retira sola',
       (tester) async {
-        final clock = _Clock(_t0);
-        Future<void> run(CompactionTracker tracker, int seconds) async {
-          tracker.sync(
-            active: true,
-            manual: false,
-            historyKey: 'hc.compact.v1.c.m',
-            startedAt: clock.now,
-            tokensBefore: 100000,
-          );
-          clock.advance(Duration(seconds: seconds));
-          tracker.sync(
-            active: false,
-            manual: false,
-            historyKey: 'hc.compact.v1.c.m',
-          );
-          await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 30)),
-          );
-          await tester.pump(const Duration(seconds: 7));
-        }
-
-        final first = CompactionTracker(clock: () => clock.now);
-        addTearDown(first.dispose);
-        for (final seconds in [10, 30, 20]) {
-          await run(first, seconds);
-        }
-        final prefs = await SharedPreferences.getInstance();
-        final stored = prefs.getString('hc.compact.v1.c.m');
-        expect(stored, isNotNull);
-        expect(CompactionHistory.decode(stored).samples, hasLength(3));
-
-        // Otro tracker (otra sesión de la app) carga el historial y estima.
-        final second = CompactionTracker(clock: () => clock.now);
-        addTearDown(second.dispose);
-        second.sync(
-          active: true,
-          manual: false,
-          historyKey: 'hc.compact.v1.c.m',
-          startedAt: clock.now,
-          tokensBefore: 100000,
-        );
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 30)),
-        );
-        expect(second.current!.estimate, const Duration(seconds: 20));
-        // Otra conexión/modelo no hereda nada.
-        final third = CompactionTracker(clock: () => clock.now);
-        addTearDown(third.dispose);
-        third.sync(
-          active: true,
-          manual: false,
-          historyKey: 'hc.compact.v1.c.other',
-          startedAt: clock.now,
-        );
-        await tester.runAsync(
-          () => Future<void>.delayed(const Duration(milliseconds: 30)),
-        );
-        expect(third.current!.estimate, isNull);
+        final tracker = CompactionTracker(clock: () => _t0);
+        addTearDown(tracker.dispose);
+        tracker.sync(active: true, manual: true);
+        tracker.sync(active: false, manual: true);
+        expect(tracker.running, isTrue);
+        await tester.pump(const Duration(seconds: 4));
+        expect(tracker.current, isNull, reason: 'sin barra colgada');
+        tracker.reportResult(tokensBefore: 1, tokensAfter: 1);
+        expect(tracker.current, isNull);
       },
     );
 
-    testWidgets('el historial no pisa el tamaño de partida', (tester) async {
+    test('los hechos nuevos actualizan la medición sin reiniciarla', () {
       final tracker = CompactionTracker(clock: () => _t0);
       addTearDown(tracker.dispose);
+      tracker.sync(active: true, manual: true, startedAt: _t0);
       tracker.sync(
         active: true,
-        manual: false,
-        historyKey: 'k',
-        tokensBefore: 180000,
+        manual: true,
+        messagesBefore: 22,
+        tokensBefore: 21500,
+        chunkIndex: 1,
+        chunkCount: 3,
       );
-      tracker.sync(
-        active: true,
-        manual: false,
-        historyKey: 'k',
-        tokensBefore: 180000,
-      );
-      expect(tracker.current!.tokensBefore, 180000);
+      final current = tracker.current!;
+      expect(current.startedAt, _t0);
+      expect(current.messagesBefore, 22);
+      expect(current.tokensBefore, 21500);
+      expect(current.fraction, closeTo(1 / 3, 1e-9));
       tracker.reset();
       expect(tracker.current, isNull);
     });
   });
 
-  group('pastilla y panel de compactación', () {
-    Widget app(ActivitySnapshot snapshot, _Clock clock) => MaterialApp(
-      locale: const Locale('es'),
-      localizationsDelegates: const [
-        Strings.delegate,
-        GlobalMaterialLocalizations.delegate,
-        GlobalWidgetsLocalizations.delegate,
-        GlobalCupertinoLocalizations.delegate,
-      ],
-      supportedLocales: Strings.supportedLocales,
-      theme: AppTheme.hermesRedDark,
-      builder: (context, child) => MediaQuery(
-        data: MediaQuery.of(context).copyWith(disableAnimations: true),
-        child: child!,
-      ),
-      home: Scaffold(
-        body: Align(
-          alignment: Alignment.bottomCenter,
-          child: ActivityPillHost(snapshot: snapshot, clock: () => clock.now),
-        ),
-      ),
-    );
+  group('CompactionDock', () {
+    Widget app(CompactionProgress progress, _Clock clock, {String? note}) =>
+        MaterialApp(
+          locale: const Locale('es'),
+          localizationsDelegates: const [
+            Strings.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: Strings.supportedLocales,
+          theme: AppTheme.hermesRedDark,
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: false),
+            child: child!,
+          ),
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: CompactionDock(
+                compaction: progress,
+                note: note,
+                clock: () => clock.now,
+              ),
+            ),
+          ),
+        );
 
-    String action(WidgetTester tester) => tester
-        .widget<Text>(find.byKey(const ValueKey('activity-pill-text')))
-        .textSpan!
-        .toPlainText();
-
-    testWidgets('sin historial: tiempo + barra indeterminada, sin porcentaje', (
+    testWidgets('sin progreso: línea que se mueve, hechos reales y cronómetro', (
       tester,
     ) async {
       final clock = _Clock(_t0.add(const Duration(seconds: 23)));
       await tester.pumpWidget(
         app(
-          ActivitySnapshot(
-            compaction: CompactionProgress(startedAt: _t0, manual: false),
+          CompactionProgress(
+            startedAt: _t0,
+            manual: true,
+            messagesBefore: 22,
+            tokensBefore: 21500,
           ),
           clock,
         ),
       );
-      expect(action(tester), 'Compactando conversación');
-      expect(find.textContaining('%'), findsNothing);
-      expect(find.textContaining('≈'), findsNothing);
+      expect(find.textContaining('Compactando conversación'), findsOneWidget);
+      expect(
+        find.textContaining('22 mensajes · ~21.5k tokens'),
+        findsOneWidget,
+      );
       expect(
         tester
-            .widget<Text>(find.byKey(const ValueKey('activity-pill-elapsed')))
+            .widget<Text>(find.byKey(const ValueKey('compaction-elapsed')))
             .data,
         '0:23',
       );
-      final bar = tester.widget<LinearProgressIndicator>(
-        find.byKey(const ValueKey('compaction-bar')),
-      );
-      // Movimiento reducido: raíl vacío, nunca un relleno inventado.
-      expect(bar.value, 0);
-      // La barra se superpone: no ensancha la pastilla a todo el ancho.
+      // Ni relleno determinado, ni porcentaje, ni tiempo restante, ni spinner.
       expect(
-        tester.getSize(find.byKey(const ValueKey('activity-pill'))).width,
-        tester.getSize(find.byType(ActivityPillRow)).width,
+        find.byKey(const ValueKey('compaction-line-moving')),
+        findsOneWidget,
       );
+      expect(find.byKey(const ValueKey('compaction-line-fill')), findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.textContaining('%'), findsNothing);
+      expect(find.textContaining('≈'), findsNothing);
+      // El segmento avanza de verdad.
+      dynamic painter() => tester
+          .widget<CustomPaint>(
+            find.byKey(const ValueKey('compaction-line-moving')),
+          )
+          .painter;
+      final first = painter().t as double?;
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(painter().t as double?, isNot(first));
     });
 
-    testWidgets('con estimación: «≈%» vivo y resto estimado en el panel', (
+    testWidgets('con movimiento reducido la línea queda quieta', (
       tester,
     ) async {
-      final clock = _Clock(_t0.add(const Duration(seconds: 30)));
       await tester.pumpWidget(
-        app(
-          ActivitySnapshot(
-            compaction: CompactionProgress(
-              startedAt: _t0,
-              manual: true,
-              tokensBefore: 180000,
-              messagesBefore: 240,
-              estimate: const Duration(seconds: 60),
+        MaterialApp(
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          theme: AppTheme.hermesRedDark,
+          home: MediaQuery(
+            data: const MediaQueryData(disableAnimations: true),
+            child: Scaffold(
+              body: CompactionDock(
+                compaction: CompactionProgress(startedAt: _t0, manual: false),
+              ),
             ),
           ),
-          clock,
         ),
       );
-      expect(action(tester), 'Compactando · ≈50 %');
+      final painter =
+          tester
+                  .widget<CustomPaint>(
+                    find.byKey(const ValueKey('compaction-line-moving')),
+                  )
+                  .painter!
+              as dynamic;
+      expect(painter.t, isNull);
+    });
+
+    testWidgets('con trozos reales: relleno determinado desde esos números', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        app(
+          CompactionProgress(
+            startedAt: _t0,
+            manual: false,
+            chunkIndex: 2,
+            chunkCount: 4,
+          ),
+          _Clock(_t0),
+        ),
+      );
       expect(
         tester
             .widget<LinearProgressIndicator>(
-              find.byKey(const ValueKey('compaction-bar')),
+              find.byKey(const ValueKey('compaction-line-fill')),
             )
             .value,
         0.5,
       );
-      await tester.tap(find.byKey(const ValueKey('activity-pill')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('parte 2 de 4'), findsOneWidget);
       expect(
-        find.byKey(const ValueKey('activity-compaction-title')),
-        findsOneWidget,
+        find.byKey(const ValueKey('compaction-line-moving')),
+        findsNothing,
       );
-      expect(find.text('Transcurrido 0:30'), findsOneWidget);
-      expect(find.text('≈ 0:30 restante'), findsOneWidget);
-      expect(
-        find.text('Manual · 240 mensajes · Antes: ~180k tokens'),
-        findsOneWidget,
-      );
-      // El porcentaje jamás llega al 100 % por estimación.
-      clock.advance(const Duration(hours: 1));
-      await tester.pump(const Duration(seconds: 1));
-      expect(find.textContaining('≈95 %'), findsWidgets);
     });
 
-    testWidgets('resultado: «Compactado: 180k → 42k tokens · 38 s»', (
-      tester,
-    ) async {
-      final clock = _Clock(_t0.add(const Duration(seconds: 39)));
+    testWidgets('un campo inventado no rellena la barra', (tester) async {
+      // El backend actual solo dice «empezó / latido / terminó»: aunque llegue
+      // algo con pinta de porcentaje, el parser lo ignora y la línea sigue
+      // indeterminada.
+      final chunks = parseCompactionChunks({'progress': 0.9, 'percent': 90});
+      expect(chunks, isNull);
       await tester.pumpWidget(
         app(
-          ActivitySnapshot(
-            compaction: CompactionProgress(
-              startedAt: _t0,
-              manual: true,
-              tokensBefore: 180000,
-              tokensAfter: 42000,
-              finishedAt: _t0.add(const Duration(seconds: 38)),
-            ),
+          CompactionProgress(
+            startedAt: _t0,
+            manual: false,
+            chunkIndex: chunks?.index,
+            chunkCount: chunks?.count,
           ),
-          clock,
+          _Clock(_t0),
         ),
       );
-      expect(action(tester), 'Compactado: 180k → 42k tokens · 38 s');
-      // Terminada: sin cronómetro y con la barra llena.
-      expect(find.byKey(const ValueKey('activity-pill-elapsed')), findsNothing);
+      expect(find.byKey(const ValueKey('compaction-line-fill')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('compaction-line-moving')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('resultado real: solo lo que el backend dio', (tester) async {
+      final finished = _t0.add(const Duration(seconds: 71));
+      Future<void> pump(CompactionProgress p) =>
+          tester.pumpWidget(app(p, _Clock(finished)));
+      await pump(
+        CompactionProgress(
+          startedAt: _t0,
+          manual: true,
+          messagesBefore: 22,
+          messagesAfter: 12,
+          finishedAt: finished,
+        ),
+      );
+      expect(
+        find.text('Compactado · 22 → 12 mensajes · 71 s', findRichText: true),
+        findsOneWidget,
+      );
+      // Con tokens reportados se añaden; sin ellos no se muestran.
+      await pump(
+        CompactionProgress(
+          startedAt: _t0,
+          manual: true,
+          messagesBefore: 22,
+          messagesAfter: 12,
+          tokensBefore: 96000,
+          tokensAfter: 4800,
+          finishedAt: finished,
+        ),
+      );
+      expect(
+        find.text(
+          'Compactado · 22 → 12 mensajes · 96k → 4.8k tokens · 71 s',
+          findRichText: true,
+        ),
+        findsOneWidget,
+      );
+      // Automática sin cifras: solo la duración medida.
+      await pump(
+        CompactionProgress(startedAt: _t0, manual: false, finishedAt: finished),
+      );
+      expect(
+        find.text('Compactado · 71 s', findRichText: true),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('compaction-elapsed')), findsNothing);
       expect(
         tester
             .widget<LinearProgressIndicator>(
-              find.byKey(const ValueKey('compaction-bar')),
+              find.byKey(const ValueKey('compaction-line-fill')),
             )
             .value,
         1,
       );
-      // Sin cifras (automática): solo la duración.
-      await tester.pumpWidget(
-        app(
-          ActivitySnapshot(
-            compaction: CompactionProgress(
-              startedAt: _t0,
-              manual: false,
-              finishedAt: _t0.add(const Duration(seconds: 38)),
-            ),
-          ),
-          clock,
-        ),
-      );
-      expect(action(tester), 'Contexto compactado · 38 s');
     });
 
-    testWidgets('mezclada con un turno de fondo: la compactación manda', (
+    testWidgets('aviso de estado que exige atención bajo la barra', (
       tester,
     ) async {
-      final clock = _Clock(_t0.add(const Duration(seconds: 5)));
       await tester.pumpWidget(
         app(
-          ActivitySnapshot(
-            turnActive: true,
-            turnStartedAt: _t0,
-            noActivityHint: true,
-            compaction: CompactionProgress(startedAt: _t0, manual: false),
-          ),
-          clock,
+          CompactionProgress(startedAt: _t0, manual: true),
+          _Clock(_t0),
+          note: 'La compresión sigue en curso.',
         ),
       );
-      expect(action(tester), 'Compactando conversación');
-      expect(find.textContaining('Sigo trabajando'), findsNothing);
+      expect(find.text('La compresión sigue en curso.'), findsOneWidget);
+    });
+
+    testWidgets('320 dp a escala 2 sin desbordes', (tester) async {
+      await loadInterFont();
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: Strings.localizationsDelegates,
+          supportedLocales: Strings.supportedLocales,
+          theme: AppTheme.hermesRedDark,
+          home: MediaQuery(
+            data: const MediaQueryData(
+              textScaler: TextScaler.linear(2),
+              disableAnimations: true,
+            ),
+            child: Scaffold(
+              body: CompactionDock(
+                compaction: CompactionProgress(
+                  startedAt: _t0,
+                  manual: true,
+                  messagesBefore: 22,
+                  tokensBefore: 21500,
+                  chunkIndex: 1,
+                  chunkCount: 3,
+                ),
+                note:
+                    'La compresión sigue en curso. Hermes actualizará esta conversación.',
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
     });
   });
 }

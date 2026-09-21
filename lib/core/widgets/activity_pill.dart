@@ -4,9 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../models/activity_snapshot.dart';
-import '../models/compaction_progress.dart';
 import '../theme/app_theme.dart';
-import 'compaction_bar.dart';
 
 /// `m:ss` (y `h:mm:ss` pasada la hora): el cronómetro vivo de la pastilla.
 String formatTurnElapsed(Duration elapsed) {
@@ -38,8 +36,6 @@ enum ActivityGlyph {
   tool,
   skill,
   waiting,
-  compaction,
-  compactionDone,
   background,
   subagents,
 }
@@ -50,8 +46,6 @@ IconData _glyphIcon(ActivityGlyph glyph) => switch (glyph) {
   ActivityGlyph.tool => Icons.terminal_rounded,
   ActivityGlyph.skill => Icons.auto_awesome_rounded,
   ActivityGlyph.waiting => Icons.help_outline_rounded,
-  ActivityGlyph.compaction => Icons.compress_rounded,
-  ActivityGlyph.compactionDone => Icons.check_rounded,
   ActivityGlyph.background => Icons.layers_outlined,
   ActivityGlyph.subagents => Icons.account_tree_outlined,
 };
@@ -69,7 +63,6 @@ final class ActivityPillModel {
     this.tasksFraction,
     this.extras,
     this.timerStart,
-    this.compaction,
     this.live = true,
   });
 
@@ -89,7 +82,6 @@ final class ActivityPillModel {
 
   /// Origen del cronómetro; `null` = sin cronómetro.
   final DateTime? timerStart;
-  final CompactionProgress? compaction;
 
   /// `false` cuando no hay nada corriendo (resultado de compactación, revisión
   /// de subagentes terminados): glifo estático, sin cronómetro.
@@ -98,27 +90,6 @@ final class ActivityPillModel {
   final String semanticsLabel;
 
   bool get hasTasks => tasksDone != null && tasksTotal != null;
-}
-
-String compactionDoneLabel(
-  Strings strings,
-  CompactionProgress compaction,
-  String languageCode,
-) {
-  final duration = formatStepDuration(
-    compaction.duration ?? Duration.zero,
-    languageCode: languageCode,
-  );
-  final before = compaction.tokensBefore;
-  final after = compaction.tokensAfter;
-  if (before != null && after != null) {
-    return strings.liveCompactionDone(
-      formatCompactTokens(before),
-      formatCompactTokens(after),
-      duration,
-    );
-  }
-  return strings.liveCompactionDoneShort(duration);
 }
 
 /// Construye el modelo de la pastilla, o `null` si no hay nada vivo que enseñar.
@@ -147,7 +118,6 @@ ActivityPillModel? buildActivityPillModel(
     }
   }
 
-  final compaction = snapshot.compaction;
   ActivityGlyph glyph;
   String action;
   String? detail;
@@ -155,21 +125,7 @@ ActivityPillModel? buildActivityPillModel(
   var live = true;
   var primary = 'turn';
 
-  if (compaction != null) {
-    primary = 'compaction';
-    if (compaction.isFinished) {
-      glyph = ActivityGlyph.compactionDone;
-      action = compactionDoneLabel(strings, compaction, languageCode);
-      live = false;
-    } else {
-      glyph = ActivityGlyph.compaction;
-      final fraction = compaction.fraction(now);
-      action = fraction == null
-          ? strings.liveCompacting
-          : strings.liveCompactingPercent((fraction * 100).round());
-      timerStart = compaction.startedAt;
-    }
-  } else if (snapshot.turnActive) {
+  if (snapshot.turnActive) {
     timerStart = snapshot.turnStartedAt;
     final current = snapshot.current;
     if (snapshot.noActivityHint) {
@@ -252,7 +208,6 @@ ActivityPillModel? buildActivityPillModel(
     tasksFraction: tasks?.progress,
     extras: extras.isEmpty ? null : extras.join(' · '),
     timerStart: timerStart,
-    compaction: compaction,
     live: live,
     semanticsLabel: semantics,
   );
@@ -345,7 +300,6 @@ double activityTextScale(BuildContext context) =>
 
 Color _glyphColor(HermesThemeColors colors, ActivityGlyph glyph) =>
     switch (glyph) {
-      ActivityGlyph.compactionDone => colors.success,
       ActivityGlyph.waiting => colors.warning,
       _ => colors.accent,
     };
@@ -577,52 +531,6 @@ class ActivityPillRow extends StatelessWidget {
   }
 }
 
-/// Contenido de la superficie de la pastilla: la línea y, si hay compactación,
-/// su barra fina pegada al borde inferior. La barra se superpone (no suma alto
-/// ni ancho): el tamaño de la pastilla lo sigue mandando la línea de texto.
-class ActivityPillContent extends StatelessWidget {
-  const ActivityPillContent({
-    required this.model,
-    required this.now,
-    this.expanded = false,
-    this.fill = false,
-    super.key,
-  });
-
-  final ActivityPillModel model;
-  final DateTime now;
-  final bool expanded;
-  final bool fill;
-
-  @override
-  Widget build(BuildContext context) {
-    final compaction = model.compaction;
-    final row = ActivityPillRow(
-      model: model,
-      now: now,
-      expanded: expanded,
-      fill: fill,
-    );
-    if (compaction == null) return row;
-    return Stack(
-      children: [
-        row,
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: CompactionBar(
-            key: const ValueKey('activity-pill-compaction-line'),
-            compaction: compaction,
-            now: now,
-            minHeight: 2.5,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 /// La pastilla plegada: UNA superficie flotante para todo lo vivo.
 class ActivityPill extends StatelessWidget {
   const ActivityPill({
@@ -659,7 +567,7 @@ class ActivityPill extends StatelessWidget {
         shadowColor: Colors.black.withValues(alpha: 0.45),
         child: InkWell(
           onTap: onTap,
-          child: ActivityPillContent(model: model, now: now),
+          child: ActivityPillRow(model: model, now: now),
         ),
       ),
     );

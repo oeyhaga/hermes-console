@@ -3,12 +3,13 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/activity_snapshot.dart';
 import 'package:hermes_android/core/models/agent_task_list.dart';
-import 'package:hermes_android/core/models/compaction_progress.dart';
 import 'package:hermes_android/core/models/session_activity.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
 import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/activity_panel.dart';
+import 'package:hermes_android/core/widgets/agent_task_widgets.dart'
+    show latestAgentTaskStepId;
 import 'package:hermes_android/core/widgets/activity_pill.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 
@@ -95,7 +96,6 @@ ActivitySnapshot _everything() => ActivitySnapshot(
   ]),
   processes: const [_proc],
   subagents: [_sub()],
-  compaction: CompactionProgress(startedAt: _t0, manual: false),
 );
 
 Widget _app(
@@ -231,7 +231,7 @@ Future<void> _openPanel(WidgetTester tester) async {
 
 void main() {
   group('pastilla única', () {
-    testWidgets('turno + tareas + fondo + subagentes + compactación: UNA sola '
+    testWidgets('turno + tareas + fondo + subagentes: UNA sola '
         'pastilla y ninguna de las antiguas', (tester) async {
       await _pump(tester, _everything());
       expect(_pill, findsOneWidget);
@@ -243,9 +243,11 @@ void main() {
       ]) {
         expect(find.byKey(ValueKey(legacy)), findsNothing, reason: legacy);
       }
-      // La compactación manda sobre el resto y lo demás se resume.
-      expect(find.textContaining('Compactando'), findsWidgets);
+      // La acción manda, las tareas van dentro y lo demás se resume.
+      expect(find.textContaining('terminal'), findsWidgets);
       expect(find.byKey(const ValueKey('activity-task-chip')), findsOneWidget);
+      // La compactación NO vive en la pastilla: tiene su barra sobre el input.
+      expect(find.textContaining('Compactando'), findsNothing);
       expect(find.textContaining('Sigo trabajando'), findsNothing);
     });
 
@@ -373,19 +375,27 @@ void main() {
       expect(tester.getSize(_pill).width, lessThanOrEqualTo(320));
     });
 
-    testWidgets('cronómetro y porcentaje salen del MISMO ticker', (
-      tester,
-    ) async {
+    testWidgets('cronómetro y detalle salen del MISMO ticker', (tester) async {
       final clock = _Clock(_t0.add(const Duration(seconds: 3)));
       await _pump(
         tester,
         ActivitySnapshot(
           turnActive: true,
           turnStartedAt: _t0,
-          compaction: CompactionProgress(
+          processes: [
+            SessionActivityProcess(
+              id: 'p',
+              command: 'flutter test',
+              notifyOnComplete: false,
+              startedAt: _t0,
+            ),
+          ],
+          current: _step(
+            'terminal',
+            detail: 'date',
+            status: ActivityStepStatus.running,
+            duration: null,
             startedAt: _t0,
-            manual: false,
-            estimate: const Duration(seconds: 100),
           ),
         ),
         clock: clock,
@@ -393,17 +403,29 @@ void main() {
       String elapsed() => tester
           .widget<Text>(find.byKey(const ValueKey('activity-pill-elapsed')))
           .data!;
-      String action() => tester
-          .widget<Text>(find.byKey(const ValueKey('activity-pill-text')))
-          .textSpan!
-          .toPlainText();
       expect(elapsed(), '0:03');
-      expect(action(), 'Compactando · ≈3 %');
-      // Un solo pump con el reloj avanzado actualiza AMBOS a la vez.
+      // Un solo pump con el reloj avanzado actualiza el cronómetro de la
+      // pastilla y el de «Ahora» del panel (mismo `now`), sin otros relojes.
       clock.advance(const Duration(seconds: 12));
       await tester.pump(const Duration(seconds: 1));
       expect(elapsed(), '0:15');
-      expect(action(), 'Compactando · ≈15 %');
+      await _openPanel(tester);
+      expect(
+        tester
+            .widgetList<Text>(
+              find.byKey(const ValueKey('activity-now-elapsed')),
+            )
+            .map((t) => t.data),
+        everyElement('0:15'),
+      );
+      expect(
+        tester
+            .widgetList<Text>(
+              find.byKey(const ValueKey('activity-pill-elapsed')),
+            )
+            .map((t) => t.data),
+        everyElement('0:15'),
+      );
     });
   });
 
@@ -447,7 +469,6 @@ void main() {
         'activity-done-title',
         'activity-background-title',
         'activity-subagents-title',
-        'activity-compaction-title',
       ];
       double? last;
       for (final key in order) {
@@ -482,10 +503,6 @@ void main() {
       await _openPanel(tester);
       expect(find.byKey(const ValueKey('activity-tasks-title')), findsNothing);
       expect(find.byKey(const ValueKey('activity-done-title')), findsNothing);
-      expect(
-        find.byKey(const ValueKey('activity-compaction-title')),
-        findsNothing,
-      );
       expect(find.byKey(const ValueKey('activity-now-title')), findsOneWidget);
     });
 
@@ -527,9 +544,9 @@ void main() {
         find.byKey(const ValueKey('activity-task-row-t1')),
         findsOneWidget,
       );
-      // El fondo y la compactación ya no existen.
+      // El fondo y los subagentes ya no existen.
       expect(
-        find.byKey(const ValueKey('activity-compaction-title')),
+        find.byKey(const ValueKey('activity-background-title')),
         findsNothing,
       );
     });
@@ -906,8 +923,8 @@ void main() {
         'label': 'terminal',
         'status': 'completed',
         'detail': 'date',
-        'timestamp': 1000,
-        'completed_at': 1700,
+        'timestamp': 1700000000000,
+        'completed_at': 1700000000700,
       })!;
       expect(step.duration, const Duration(milliseconds: 700));
       expect(step.detail, 'date');
@@ -965,6 +982,110 @@ void main() {
         expect(steps.map((s) => s['detail']), ['git', 'c.md', null]);
       },
     );
+
+    test(
+      'las herramientas puente nunca son pasos; segundos y ms se leen bien',
+      () {
+        final split = ActivitySnapshot.splitSteps([
+          {'kind': 'tool', 'label': 'tool_call', 'status': 'completed'},
+          {'kind': 'tool', 'label': 'tool_describe', 'status': 'completed'},
+          {'kind': 'tool', 'label': 'tool_search', 'status': 'running'},
+          {
+            'kind': 'tool',
+            'label': 'terminal',
+            'status': 'completed',
+            'detail': 'sleep',
+            'timestamp': 1000.0,
+            'completed_at': 1002.5,
+          },
+        ]);
+        expect(split.current, isNull);
+        expect(split.done.map((s) => s.label), ['terminal']);
+        // Historial de Desktop: segundos con decimales.
+        expect(split.done.single.duration, const Duration(milliseconds: 2500));
+        final equal = ActivityStep.fromTrace({
+          'kind': 'tool',
+          'label': 'x',
+          'status': 'completed',
+          'timestamp': 5,
+          'completed_at': 5,
+        })!;
+        expect(equal.duration, isNull, reason: 'una duración 0 no se inventa');
+      },
+    );
+
+    test('el historial de Desktop desenvuelve tool_call y oculta el resto', () {
+      final messages = coalesceAssistantTurnsNewestFirst([
+        // más nuevo primero
+        {
+          'role': 'tool',
+          'tool_call_id': 'c2',
+          'tool_name': 'tool_call',
+          'content': '',
+          'timestamp': 1013.0,
+        },
+        {
+          'role': 'assistant',
+          'content': '',
+          'timestamp': 1010.0,
+          'tool_calls': [
+            {
+              'id': 'c2',
+              'function': {
+                'name': 'tool_call',
+                'arguments':
+                    '{"calls":[{"name":"todo","arguments":{"todos":[]}}]}',
+              },
+            },
+          ],
+        },
+        {
+          'role': 'tool',
+          'tool_call_id': 'c1',
+          'tool_name': 'tool_call',
+          'content': '',
+          'timestamp': 1007.0,
+        },
+        {
+          'role': 'assistant',
+          'content': '',
+          'timestamp': 1000.0,
+          'tool_calls': [
+            {
+              'id': 'c0',
+              'function': {'name': 'tool_search', 'arguments': '{"q":"x"}'},
+            },
+            {
+              'id': 'c1',
+              'function': {
+                'name': 'tool_call',
+                'arguments':
+                    '{"calls":[{"name":"terminal","arguments":{"command":"sleep 5 --token=SECRET"}}]}',
+              },
+            },
+          ],
+        },
+      ]);
+      final trace = normalizeAssistantActivityTrace(
+        messages.single[assistantActivityTraceKey],
+      );
+      final split = ActivitySnapshot.splitSteps(trace);
+      expect(split.done.map((s) => s.label), ['terminal']);
+      final terminal = split.done.single;
+      expect(terminal.detail, 'sleep');
+      expect(terminal.duration, const Duration(seconds: 7));
+      expect(terminal.status, ActivityStepStatus.done);
+      expect(trace.toString(), isNot(contains('SECRET')));
+      // El `todo` desenvuelto conserva un paso propio: es el dueño de Tareas.
+      final todo = trace.firstWhere((step) => step['label'] == 'todo');
+      expect(todo['id'], 'c2:0');
+      expect(
+        latestAgentTaskStepId([
+          {'role': 'assistant', assistantActivityTraceKey: trace},
+        ]),
+        'c2:0',
+      );
+    });
 
     test('splitSteps separa vivo/hecho y omite razonamiento y todo_list', () {
       final split = ActivitySnapshot.splitSteps([

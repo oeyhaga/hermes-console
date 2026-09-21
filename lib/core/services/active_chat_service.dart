@@ -26,6 +26,7 @@ import '../widgets/chat_event_cards.dart';
 import '../models/activity_snapshot.dart' show activityToolDetail;
 import '../models/agent_task_list.dart';
 import '../models/attachment_draft.dart';
+import '../models/compaction_progress.dart' show parseCompactionChunks;
 import '../models/command_descriptor.dart';
 import '../models/core_read.dart';
 import '../models/desktop_compression_authority.dart';
@@ -3876,9 +3877,18 @@ class ActiveChat {
   _PendingDesktopCompression? _pendingDesktopCompression;
   Timer? _desktopCompressionReconciliationTimer;
   bool _desktopAutoCompacting = false;
+
+  /// Hermes repite `compacting` cada ~60 s mientras dura; si dejan de llegar
+  /// (desconexión que se comió el `compacted`, servidor caído) la bandera no
+  /// puede quedarse para siempre bloqueando el chat.
+  Timer? _autoCompactionStaleTimer;
+  static const Duration _autoCompactionStaleAfter = Duration(minutes: 3);
   DateTime? _desktopCompactionStartedAt;
   int? _desktopCompactionTokensBefore;
   int? _desktopCompactionMessagesBefore;
+  int? _desktopCompactionChunkIndex;
+  int? _desktopCompactionChunkCount;
+  int _desktopCompactedEdgeCount = 0;
   bool _suppressTerminalHydrationAfterCompaction = false;
   String? _desktopCompactionLineageId;
   SessionConfigScope? _sessionConfigScope;
@@ -4636,6 +4646,18 @@ class ActiveChat {
       desktopCompressionInFlight ? _desktopCompactionTokensBefore : null;
   int? get desktopCompactionMessagesBefore =>
       desktopCompressionInFlight ? _desktopCompactionMessagesBefore : null;
+
+  /// Progreso determinado real (trozo / total) si el backend lo publica en el
+  /// estado de compactación. El actual NO lo envía: casi siempre es `null`.
+  int? get desktopCompactionChunkIndex =>
+      desktopCompressionInFlight ? _desktopCompactionChunkIndex : null;
+  int? get desktopCompactionChunkCount =>
+      desktopCompressionInFlight ? _desktopCompactionChunkCount : null;
+
+  /// Cuántos `status.update(compacted)` ha visto esta sesión. Es la señal de
+  /// fin de una compactación cuyo resultado llega tarde (compute host): el RPC
+  /// respondió `pending` y el final solo se sabe por este borde.
+  int get desktopCompactedEdgeCount => _desktopCompactedEdgeCount;
   String get desktopCompactionLineageId =>
       _desktopCompactionLineageId ?? logicalSessionId;
   bool get canLoadDesktopContextBreakdown =>
@@ -7292,6 +7314,8 @@ class ActiveChat {
     _desktopRuntimeOwnershipReceipt = null;
     _coreReadIdentity = _coreReadIdentity.withoutRuntime();
     _desktopAutoCompacting = false;
+    _autoCompactionStaleTimer?.cancel();
+    _autoCompactionStaleTimer = null;
     _suppressTerminalHydrationAfterCompaction = false;
     // The indicator belongs to the retired runtime, but the lineage is durable
     // session authority and must survive Stop/runtime retirement.
@@ -13495,6 +13519,8 @@ class ActiveChat {
       _desktopCompactionStartedAt = DateTime.now();
       _desktopCompactionTokensBefore = null;
       _desktopCompactionMessagesBefore = null;
+      _desktopCompactionChunkIndex = null;
+      _desktopCompactionChunkCount = null;
     }
     _desktopCompressionInFlight = true;
     _emit(ActiveChatEvent.sessionInfo);
@@ -17383,6 +17409,7 @@ class ActiveChat {
       return;
     }
     if (kind == 'compacted') {
+      _desktopCompactedEdgeCount += 1;
       final pending = _pendingDesktopCompression;
       final evidence = pending == null
           ? const DesktopCompressionFenceEvidence.none()
@@ -17395,8 +17422,14 @@ class ActiveChat {
       _clearDesktopCompactingIndicator();
       return;
     }
+    if (kind == 'ready') {
+      // `ready` es la señal de reposo del gateway: ninguna compactación sigue.
+      _clearDesktopCompactingIndicator();
+      return;
+    }
     if (kind == 'compressing') {
       _noteDesktopCompressingText(payload['text']);
+      _noteDesktopCompactionChunks(payload);
       return;
     }
     if (kind != 'compacting') return;
@@ -17415,8 +17448,12 @@ class ActiveChat {
       _desktopCompactionStartedAt = DateTime.now();
       _desktopCompactionTokensBefore = null;
       _desktopCompactionMessagesBefore = null;
+      _desktopCompactionChunkIndex = null;
+      _desktopCompactionChunkCount = null;
     }
     _desktopAutoCompacting = true;
+    _armAutoCompactionStaleTimer();
+    _noteDesktopCompactionChunks(payload);
     _suppressTerminalHydrationAfterCompaction = true;
     // Cualquier snapshot iniciado antes del evento ya es potencialmente
     // obsoleto y no puede reemplazar la proyección viva.
@@ -17445,7 +17482,25 @@ class ActiveChat {
     _emit(ActiveChatEvent.sessionInfo);
   }
 
+  void _noteDesktopCompactionChunks(Map<String, dynamic> payload) {
+    final chunks = parseCompactionChunks(payload);
+    if (chunks == null) return;
+    _desktopCompactionChunkIndex = chunks.index;
+    _desktopCompactionChunkCount = chunks.count;
+  }
+
+  void _armAutoCompactionStaleTimer() {
+    _autoCompactionStaleTimer?.cancel();
+    _autoCompactionStaleTimer = Timer(_autoCompactionStaleAfter, () {
+      _autoCompactionStaleTimer = null;
+      if (_disposed) return;
+      _clearDesktopCompactingIndicator();
+    });
+  }
+
   void _clearDesktopCompactingIndicator() {
+    _autoCompactionStaleTimer?.cancel();
+    _autoCompactionStaleTimer = null;
     if (!_desktopAutoCompacting) return;
     _desktopAutoCompacting = false;
     _emit(ActiveChatEvent.sessionInfo);
@@ -17511,7 +17566,11 @@ class ActiveChat {
     // bloquearía cada turno posterior con 4009 aunque el servidor ya esté idle.
     final autoCompactionCleared =
         _desktopAutoCompacting && parsed.running == false;
-    if (autoCompactionCleared) _desktopAutoCompacting = false;
+    if (autoCompactionCleared) {
+      _desktopAutoCompacting = false;
+      _autoCompactionStaleTimer?.cancel();
+      _autoCompactionStaleTimer = null;
+    }
     final storedId = parsed.storedSessionId?.trim();
     if (!settlesPendingCompression &&
         storedId != null &&
@@ -23605,6 +23664,8 @@ class ActiveChat {
   void dispose() {
     if (_disposed) return;
     suspendSubagentForegroundPresentation();
+    _autoCompactionStaleTimer?.cancel();
+    _autoCompactionStaleTimer = null;
     _disposed = true;
     _messageLoadEpoch++;
     final stop = _stopTransition;
