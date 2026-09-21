@@ -728,6 +728,164 @@ class _TicketSocketOutageFixture {
   }
 }
 
+class _MultiClientOutageFixture {
+  late final HttpServer server;
+  final sockets = <WebSocket>{};
+  final issuedTickets = <String>[];
+  final acceptedTickets = <String>[];
+  final resumeSessionIds = <String>[];
+  final rpcMethods = <String>[];
+  final firstResume = Completer<void>();
+  bool networkAvailable = true;
+  bool turnCompleted = false;
+  int restoredTicketFailuresRemaining = 0;
+  int loginRequests = 0;
+  int ticketRequests = 0;
+  int promptSubmissions = 0;
+
+  static const storedSessionId = 'durable-network-session';
+  static const initialRuntimeSessionId = 'runtime-before-outage';
+  static const recoveredRuntimeSessionId = 'runtime-after-outage';
+
+  Future<void> start() async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen(_handleRequest);
+  }
+
+  Future<http.Response> dashboardRequest(http.Request request) async {
+    if (request.url.path == '/auth/password-login') {
+      loginRequests += 1;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      return http.Response(
+        '{}',
+        HttpStatus.ok,
+        headers: {
+          HttpHeaders.setCookieHeader:
+              'hermes_session_at=fixture-session; Path=/',
+        },
+      );
+    }
+    if (request.url.path == '/api/auth/ws-ticket') {
+      ticketRequests += 1;
+      if (!networkAvailable || restoredTicketFailuresRemaining > 0) {
+        if (networkAvailable) restoredTicketFailuresRemaining -= 1;
+        return http.Response('', HttpStatus.serviceUnavailable);
+      }
+      final ticket = 'ticket-$ticketRequests';
+      issuedTickets.add(ticket);
+      return http.Response(jsonEncode({'ticket': ticket}), HttpStatus.ok);
+    }
+    return http.Response('', HttpStatus.notFound);
+  }
+
+  Future<void> _handleRequest(HttpRequest request) async {
+    if (request.uri.path == '/api/ws') {
+      final ticket = request.uri.queryParameters['ticket'] ?? '';
+      if (!issuedTickets.remove(ticket)) {
+        request.response.statusCode = HttpStatus.unauthorized;
+        await request.response.close();
+        return;
+      }
+      acceptedTickets.add(ticket);
+      final socket = await WebSocketTransformer.upgrade(request);
+      sockets.add(socket);
+      socket.done.whenComplete(() => sockets.remove(socket));
+      socket.add(
+        jsonEncode({
+          'jsonrpc': '2.0',
+          'method': 'event',
+          'params': {
+            'type': 'gateway.ready',
+            'payload': {'replay_epoch': 'multi-client-recovery'},
+          },
+        }),
+      );
+      await for (final raw in socket) {
+        final frame = jsonDecode(raw as String) as Map<String, dynamic>;
+        final method = frame['method']?.toString() ?? '';
+        final params = frame['params'] is Map
+            ? Map<String, dynamic>.from(frame['params'] as Map)
+            : <String, dynamic>{};
+        rpcMethods.add(method);
+        final result = switch (method) {
+          'gateway.capabilities' => <String, dynamic>{
+            'per_session_exclusive_submit': true,
+          },
+          'session.create' => <String, dynamic>{
+            'session_id': initialRuntimeSessionId,
+            'stored_session_id': storedSessionId,
+            'messages': <dynamic>[],
+            'running': false,
+            'status': 'idle',
+          },
+          'prompt.submit' => _promptSubmitResult(params),
+          'session.resume' => _resumeResult(params),
+          'turn.status' => <String, dynamic>{
+            'known': true,
+            'client_turn_id': params['client_turn_id'],
+            'server_turn_id': 'server-turn-network',
+            'state': turnCompleted ? 'terminal' : 'running',
+          },
+          _ => <String, dynamic>{},
+        };
+        if (socket.readyState != WebSocket.open) break;
+        try {
+          socket.add(
+            jsonEncode({'jsonrpc': '2.0', 'id': frame['id'], 'result': result}),
+          );
+        } on StateError {
+          break;
+        }
+      }
+      return;
+    }
+    request.response.statusCode = HttpStatus.notFound;
+    await request.response.close();
+  }
+
+  Map<String, dynamic> _promptSubmitResult(Map<String, dynamic> params) {
+    promptSubmissions += 1;
+    return {
+      'accepted': true,
+      'client_turn_id': params['client_turn_id'],
+      'server_turn_id': 'server-turn-network',
+      'state': 'running',
+      'duplicate': false,
+    };
+  }
+
+  Map<String, dynamic> _resumeResult(Map<String, dynamic> params) {
+    resumeSessionIds.add(params['session_id']?.toString() ?? '');
+    if (!firstResume.isCompleted) firstResume.complete();
+    return {
+      'session_id': recoveredRuntimeSessionId,
+      'stored_session_id': storedSessionId,
+      'messages_omitted': true,
+      'running': !turnCompleted,
+      'status': turnCompleted ? 'completed' : 'running',
+    };
+  }
+
+  DashboardClient dashboardClient() => DashboardClient(
+    host: '127.0.0.1',
+    port: server.port,
+    basicUser: 'fixture-user',
+    basicPass: 'fixture-password',
+    httpClientOverride: MockClient(dashboardRequest),
+  );
+
+  Future<void> dropSockets() async {
+    for (final socket in sockets.toList(growable: false)) {
+      await socket.close(WebSocketStatus.goingAway, 'network unavailable');
+    }
+  }
+
+  Future<void> close() async {
+    await dropSockets();
+    await server.close(force: true);
+  }
+}
+
 class _RealTransportRecoverableGateway extends _RecoverableDesktopGateway {
   _RealTransportRecoverableGateway(this.transport);
 
@@ -8007,6 +8165,163 @@ void main() {
       expect(chat.transportStatus.state, ChatTransportState.connected);
     },
   );
+
+  for (final chatReconnectsFirst in const [true, false]) {
+    test('three clients converge one durable turn when '
+        '${chatReconnectsFirst ? 'chat' : 'home'} reconnects first', () async {
+      final fixture = _MultiClientOutageFixture();
+      await fixture.start();
+      addTearDown(fixture.close);
+      final connection = SavedConnection(
+        id: 'multi-client-${chatReconnectsFirst ? 'chat' : 'home'}',
+        label: 'Multi-client recovery',
+        host: '127.0.0.1',
+        port: 8642,
+        apiKey: 'fixture-key',
+        kind: InstanceKind.vps,
+        dashboardUrl: 'http://127.0.0.1:${fixture.server.port}',
+      );
+      final dashboards = List.generate(
+        3,
+        (_) => fixture.dashboardClient(),
+        growable: false,
+      );
+      for (final dashboard in dashboards) {
+        addTearDown(dashboard.close);
+      }
+      TuiGatewayClient client(int index) => TuiGatewayClient(
+        connection,
+        dashboard: dashboards[index],
+        heartbeatInterval: const Duration(hours: 1),
+        heartbeatDeadline: const Duration(hours: 2),
+      );
+      final chatGateway = client(0);
+      final homeGateway = client(1);
+      final listGateway = client(2);
+      addTearDown(homeGateway.close);
+      addTearDown(listGateway.close);
+
+      await Future.wait([
+        chatGateway.connect(),
+        homeGateway.connect(),
+        listGateway.connect(),
+      ]);
+      expect(fixture.loginRequests, 1);
+      expect(fixture.acceptedTickets, hasLength(3));
+
+      final id = connection.id;
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: connection,
+        sessionId: 'mob-$id',
+        sessionTitle: id,
+        notifications: null,
+        onTerminal: () {},
+        api: ApiClient(
+          baseUrl: 'http://127.0.0.1:1',
+          apiKey: 'fixture-key',
+          httpClient: MockClient((_) async => http.Response('not found', 404)),
+        ),
+        desktopGateway: chatGateway,
+        turnIdempotencyCapability: () async => true,
+        desktopRecoveryBackoff: const [Duration(hours: 1)],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [
+          {
+            'message_id': 'multi-client-user',
+            'role': 'user',
+            'content': 'finish while every client is offline',
+          },
+          {
+            'message_id': 'multi-client-final',
+            'role': 'assistant',
+            'content': 'durable final after outage',
+          },
+        ],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: 'finish while every client is offline',
+        model: 'hermes-agent',
+        history: const [],
+        delivery: _delivery(id, _NoopOutbox()),
+      );
+      expect(fixture.promptSubmissions, 1);
+      expect(chat.storedSessionId, _MultiClientOutageFixture.storedSessionId);
+
+      fixture.networkAvailable = false;
+      fixture.turnCompleted = true;
+      await fixture.dropSockets();
+      await _waitUntil(() => fixture.ticketRequests >= 4);
+      expect(chat.storedSessionId, _MultiClientOutageFixture.storedSessionId);
+      await _waitUntil(
+        () => !homeGateway.isConnected && !listGateway.isConnected,
+      );
+
+      fixture.networkAvailable = true;
+      fixture.restoredTicketFailuresRemaining = 1;
+      if (chatReconnectsFirst) {
+        chat.requestImmediateTransportRecovery();
+        await _waitUntil(() => fixture.restoredTicketFailuresRemaining == 0);
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        chat.requestImmediateTransportRecovery();
+        await fixture.firstResume.future.timeout(const Duration(seconds: 2));
+      } else {
+        await expectLater(homeGateway.connect(), throwsA(isA<Exception>()));
+        await homeGateway.connect();
+        await listGateway.connect();
+        chat.requestImmediateTransportRecovery();
+        await fixture.firstResume.future.timeout(const Duration(seconds: 2));
+      }
+
+      expect(
+        fixture.resumeSessionIds.single,
+        _MultiClientOutageFixture.storedSessionId,
+      );
+      await _waitUntil(() => chat.state == ChatPipelineState.completed);
+      if (chatReconnectsFirst) {
+        await homeGateway.connect();
+        await listGateway.connect();
+      }
+
+      expect(fixture.resumeSessionIds, [
+        _MultiClientOutageFixture.storedSessionId,
+      ]);
+      expect(fixture.promptSubmissions, 1);
+      expect(
+        chat.messages.where(
+          (message) =>
+              message['content'] == 'finish while every client is offline',
+        ),
+        hasLength(1),
+      );
+      expect(
+        chat.messages.where(
+          (message) => message['content'] == 'durable final after outage',
+        ),
+        hasLength(1),
+      );
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.transportStatus.state, ChatTransportState.connected);
+
+      final ticketCount = fixture.ticketRequests;
+      final turnStatusCount = fixture.rpcMethods
+          .where((method) => method == 'turn.status')
+          .length;
+      await chat.reconcileAfterResume();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(fixture.ticketRequests, ticketCount);
+      expect(
+        fixture.rpcMethods.where((method) => method == 'turn.status'),
+        hasLength(turnStatusCount),
+      );
+      expect(fixture.resumeSessionIds, [
+        _MultiClientOutageFixture.storedSessionId,
+      ]);
+      expect(fixture.promptSubmissions, 1);
+    });
+  }
 
   test(
     'ticket and socket outage beyond capped retries adopts one durable final',
