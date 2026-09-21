@@ -2987,6 +2987,8 @@ class _RewriteReservation {
   int turnEpoch;
   String? runtimeSessionId;
   bool transportStarted = false;
+  bool terminalNotificationDeferred = false;
+  Object? rejection;
 }
 
 typedef StoredSessionMessageLoader =
@@ -11759,6 +11761,95 @@ class ActiveChat {
     return next != null && next['role'] == 'assistant_error';
   }
 
+  bool _isStaleRewriteTarget(Object? error) {
+    if (error is TuiGatewayRpcError && error.code == 4018) return true;
+    final message = error is TuiGatewayRpcError
+        ? error.message
+        : error?.toString() ?? '';
+    final normalized = message.toLowerCase();
+    return normalized.contains('no longer in session history') ||
+        normalized.contains('not in session history') ||
+        normalized.contains('stale truncate_before_user_ordinal') ||
+        (error is TuiGatewayRpcError &&
+            error.code == 4030 &&
+            normalized.contains('truncate_before_user_ordinal'));
+  }
+
+  Future<
+    ({
+      DesktopSessionSnapshot snapshot,
+      List<Map<String, dynamic>> messagesNewestFirst,
+      int targetIndex,
+      int userOrdinal,
+      int rowId,
+      int? fallbackOrdinal,
+    })?
+  >
+  _resyncStaleRewriteTarget({
+    required HermesDesktopGateway gateway,
+    required _RewriteReservation reservation,
+    required String sourceText,
+    required bool sourceWasNewestUser,
+    required String model,
+  }) async {
+    final durableId = _desktopStoredSessionId ?? serverSessionId;
+    final expectedTurnEpoch = _turnEpoch;
+    final expectedProfile = _storedSessionProfile;
+    final snapshot = await _resumeDesktopSessionForRecovery(
+      gateway,
+      durableId,
+      profile: expectedProfile,
+      legacyModel: model,
+    );
+    if (!identical(_activeRewrite, reservation) ||
+        !identical(_desktopGateway, gateway) ||
+        _turnEpoch != expectedTurnEpoch ||
+        snapshot.created ||
+        snapshot.storedSessionId != durableId ||
+        !_desktopSnapshotTranscriptIsComplete(snapshot) ||
+        !snapshot.messagesProvided) {
+      return null;
+    }
+
+    final messagesNewestFirst = const DesktopSessionReconciler()
+        .project(snapshot)
+        .messagesNewestFirst
+        .map(Map<String, dynamic>.from)
+        .toList(growable: false);
+    final chronological = messagesNewestFirst.reversed.toList(growable: false);
+    final matches = <int>[];
+    for (var index = 0; index < chronological.length; index++) {
+      final message = chronological[index];
+      if (isRealUserTurn(message) &&
+          (message['content'] ?? '').toString().trim() == sourceText.trim()) {
+        matches.add(index);
+      }
+    }
+    if (matches.isEmpty || (matches.length > 1 && !sourceWasNewestUser)) {
+      return null;
+    }
+    final targetIndex = matches.length == 1 ? matches.single : matches.last;
+    final target = chronological[targetIndex];
+    final rowId = canonicalTranscriptRowId(target);
+    if (rowId == null) return null;
+    var userOrdinal = 0;
+    for (var index = 0; index < targetIndex; index++) {
+      if (isRealUserTurn(chronological[index])) userOrdinal++;
+    }
+    return (
+      snapshot: snapshot,
+      messagesNewestFirst: messagesNewestFirst,
+      targetIndex: targetIndex,
+      userOrdinal: userOrdinal,
+      rowId: rowId,
+      fallbackOrdinal: modelSwitchRepairFallbackOrdinal(
+        messagesNewestFirst,
+        target,
+        desktopOrdinal: userOrdinal,
+      ),
+    );
+  }
+
   /// Rebobina hasta un prompt visible y lo vuelve a ejecutar. El ordinal usa el
   /// mismo índice de usuarios (0-based, de antiguo a nuevo) que Hermes Desktop.
   /// La conversación visible se recorta de forma optimista; si el transporte
@@ -11807,6 +11898,9 @@ class ActiveChat {
         throw StateError('The message is no longer in this conversation');
       }
       final target = chronological[targetIndex];
+      final sourceText = (target['content'] ?? '').toString();
+      final sourceWasNewestUser =
+          userOrdinal == chronological.where(isRealUserTurn).length - 1;
       final fallbackOrdinal = modelSwitchRepairFallbackOrdinal(
         _messages,
         target,
@@ -11844,7 +11938,7 @@ class ActiveChat {
         if (runtimeId != null && resolver != null) {
           truncateBeforeRowId = await resolver.resolveDurableUserRowId(
             runtimeId,
-            sourceText: (target['content'] ?? '').toString(),
+            sourceText: sourceText,
             expectedOrdinal: userOrdinal,
           );
         }
@@ -11915,8 +12009,8 @@ class ActiveChat {
       reservation.runtimeSessionId = _desktopRuntimeSessionId;
       reservation.transcriptRevision = _transcriptRevision;
 
-      final rollbackState = state;
-      final rollbackMessages = snapshot
+      var rollbackState = state;
+      var rollbackMessages = snapshot
           .where((message) => message['_pipeline'] != true)
           .map((message) => Map<String, dynamic>.from(message))
           .toList(growable: false);
@@ -11957,6 +12051,87 @@ class ActiveChat {
           rewriteReservation: reservation,
           capturedLifecycle: capturedLifecycle,
         );
+        if (!accepted &&
+            truncatesDurably &&
+            !isFailedTurn &&
+            gateway != null &&
+            _isStaleRewriteTarget(reservation.rejection)) {
+          ({
+            DesktopSessionSnapshot snapshot,
+            List<Map<String, dynamic>> messagesNewestFirst,
+            int targetIndex,
+            int userOrdinal,
+            int rowId,
+            int? fallbackOrdinal,
+          })? retryPlan;
+          try {
+            retryPlan = await _resyncStaleRewriteTarget(
+              gateway: gateway,
+              reservation: reservation,
+              sourceText: sourceText,
+              sourceWasNewestUser: sourceWasNewestUser,
+              model: model,
+            );
+          } catch (error) {
+            reservation.rejection = error;
+          }
+          if (retryPlan != null && identical(_activeRewrite, reservation)) {
+            final refreshedRollback = retryPlan.messagesNewestFirst
+                .where((message) => message['_pipeline'] != true)
+                .map((message) => Map<String, dynamic>.from(message))
+                .toList(growable: false);
+            final refreshedChronological =
+                retryPlan.messagesNewestFirst.reversed.toList(growable: false);
+            _desktopStoredSessionId = retryPlan.snapshot.storedSessionId;
+            _desktopStoredSessionKnownMissing = false;
+            _adoptDesktopRuntime(
+              retryPlan.snapshot.runtimeSessionId,
+              info: retryPlan.snapshot.info,
+            );
+            _desktopRuntimeInfo = retryPlan.snapshot.info;
+            _rememberDesktopLiveStatus(
+              retryPlan.snapshot.status,
+              running: retryPlan.snapshot.running,
+            );
+            _usingDesktopGateway = true;
+            _messages = refreshedChronological
+                .take(retryPlan.targetIndex)
+                .where((message) {
+                  final role = message['role'];
+                  return (role == 'user' || role == 'assistant') &&
+                      message['_pipeline'] != true;
+                })
+                .map((message) => Map<String, dynamic>.from(message))
+                .toList()
+                .reversed
+                .toList();
+            _transcriptRevision += 1;
+            rollbackMessages = refreshedRollback;
+            rollbackState = state;
+            _rewindRollbackMessages = refreshedRollback;
+            _rewindRollbackState = rollbackState;
+            _rewind4018FallbackOrdinal = retryPlan.fallbackOrdinal;
+            _rewindRestoredOnError = false;
+            reservation
+              ..transcriptRevision = _transcriptRevision
+              ..turnEpoch = _turnEpoch
+              ..runtimeSessionId = retryPlan.snapshot.runtimeSessionId
+              ..transportStarted = false
+              ..terminalNotificationDeferred = false
+              ..rejection = null;
+            final retryAccepted = await _send(
+              fullText: mentionPayload,
+              model: model,
+              history: _buildHistoryFromMessages(),
+              profile: profile,
+              truncateBeforeUserOrdinal: retryPlan.userOrdinal,
+              truncateBeforeRowId: retryPlan.rowId,
+              rewriteReservation: reservation,
+              capturedLifecycle: capturedLifecycle,
+            );
+            if (retryAccepted) return;
+          }
+        }
         if (!accepted) {
           if (truncatesDurably) {
             _messages = rollbackMessages;
@@ -11972,6 +12147,11 @@ class ActiveChat {
           // ya el turno vivo: el usuario perdía la respuesta y la edición sin
           // ver nada.
           _rewindRestoredOnError = true;
+          if (reservation.terminalNotificationDeferred) {
+            reservation.terminalNotificationDeferred = false;
+            _emit(ActiveChatEvent.error);
+            _onTerminal();
+          }
           return;
         }
       } catch (_) {
@@ -14914,6 +15094,9 @@ class ActiveChat {
       }
       return true;
     } catch (error) {
+      if (truncateBeforeUserOrdinal != null) {
+        _activeRewrite?.rejection = error;
+      }
       if (_turnEpoch != turnEpoch || _runTerminal) return false;
       if (promptRecoverySuperseded) return false;
       final failedRuntimeId = attemptedRuntimeId;
@@ -14965,8 +15148,13 @@ class ActiveChat {
           traceActive = false;
           pendingApproval = null;
           state = rollbackState ?? ChatPipelineState.completed;
-          _emit(ActiveChatEvent.error);
-          _onTerminal();
+          final activeRewrite = _activeRewrite;
+          if (_isStaleRewriteTarget(error) && activeRewrite != null) {
+            activeRewrite.terminalNotificationDeferred = true;
+          } else {
+            _emit(ActiveChatEvent.error);
+            _onTerminal();
+          }
           return false;
         }
       }
@@ -14992,8 +15180,13 @@ class ActiveChat {
           traceActive = false;
           pendingApproval = null;
           state = rollbackState ?? ChatPipelineState.completed;
-          _emit(ActiveChatEvent.error);
-          _onTerminal();
+          final activeRewrite = _activeRewrite;
+          if (_isStaleRewriteTarget(error) && activeRewrite != null) {
+            activeRewrite.terminalNotificationDeferred = true;
+          } else {
+            _emit(ActiveChatEvent.error);
+            _onTerminal();
+          }
           return false;
         }
         // Sin un error JSON-RPC con código, el servidor pudo haber aplicado el
