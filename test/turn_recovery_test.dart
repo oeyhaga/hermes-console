@@ -1200,7 +1200,7 @@ void main() {
       await expectLater(chat.cancel(), throwsA(isA<StateError>()));
       expect(gateway.interruptCalls, 1);
       expect(chat.stopConfirmationState, StopConfirmationState.failed);
-      expect(chat.state, isNot(ChatPipelineState.cancelled));
+      expect(chat.state, ChatPipelineState.cancelled);
 
       gateway.interruptError = null;
       final retryGate = Completer<void>();
@@ -1217,7 +1217,7 @@ void main() {
     },
   );
 
-  test('terminal autoritativo gana mientras Stop espera el ACK', () async {
+  test('terminal autoritativo confirma Stop mientras espera el ACK', () async {
     final interruptGate = Completer<void>();
     final gateway = _DesktopGateway()..interruptGate = interruptGate;
     final api = ApiClient(
@@ -1261,16 +1261,8 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
     interruptGate.complete();
     await stop;
-    for (
-      var attempt = 0;
-      attempt < 20 && chat.state != ChatPipelineState.completed;
-      attempt++
-    ) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
-
-    expect(chat.state, ChatPipelineState.completed);
-    expect(chat.stopConfirmationState, StopConfirmationState.idle);
+    expect(chat.state, ChatPipelineState.cancelled);
+    expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
     expect(gateway.interruptCalls, 1);
   });
 

@@ -35,6 +35,7 @@ class _DeferrableGateway
   Completer<DesktopSessionSnapshot>? resumeGate;
   Object? resumeError;
   int resumeExistingCalls = 0;
+  int interruptCalls = 0;
   bool? lastDeferHistory;
   bool? lastOmitMessages;
   final List<({String runtimeId, String subagentId})> subagentTailCalls = [];
@@ -89,7 +90,9 @@ class _DeferrableGateway
   Future<void> steer(String runtimeSessionId, String text) async {}
 
   @override
-  Future<void> interrupt(String runtimeSessionId) async {}
+  Future<void> interrupt(String runtimeSessionId) async {
+    interruptCalls++;
+  }
 
   @override
   DesktopGatewayCapabilityState capabilityState(
@@ -3063,9 +3066,10 @@ void main() {
       }
 
       expect(chat.hasEarlierMessages, isTrue);
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
+      expect(gateway.interruptCalls, 1);
       expect(recorded.where((tombstone) => tombstone.firstUser), isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
     },
   );
 
@@ -6880,10 +6884,11 @@ void main() {
 
     expect(chat.hasEarlierMessages, isFalse);
     expect(chat.isStreaming, isTrue);
-    await expectLater(chat.cancel(), throwsStateError);
+    await chat.cancel();
 
+    expect(gateway.interruptCalls, 1);
     expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
   test(
@@ -6931,10 +6936,11 @@ void main() {
         hasLength(2),
       );
 
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
 
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
     },
   );
 
@@ -7013,10 +7019,11 @@ void main() {
             'pero el inflight ya representado no añade una tercera burbuja',
       );
 
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
 
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
     },
   );
 
@@ -7088,16 +7095,17 @@ void main() {
       );
 
       final requestsBeforeStop = server.requests.length;
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
 
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
       expect(
         server.requests,
-        hasLength(requestsBeforeStop + 1),
+        hasLength(requestsBeforeStop),
         reason:
-            'la página se consulta, pero su fila anterior a inflight.started_at '
-            'no acredita el turno vivo',
+            'Stop llega al wire sin esperar una página incapaz de acreditar '
+            'el turno vivo',
       );
     },
   );
@@ -7154,9 +7162,8 @@ void main() {
 
       await chat.cancel();
 
-      expect(recorded, hasLength(1));
-      expect(recorded.single.anchorRowId, 301);
-      expect(recorded.single.cancelledRowId, isNull);
+      expect(gateway.interruptCalls, 1);
+      expect(recorded, isEmpty);
       expect(chat.state, ChatPipelineState.cancelled);
     },
   );
@@ -7209,10 +7216,11 @@ void main() {
       ),
     );
 
-    await expectLater(chat.cancel(), throwsStateError);
+    await chat.cancel();
 
+    expect(gateway.interruptCalls, 1);
     expect(recorded, isEmpty);
-    expect(chat.isStreaming, isTrue);
+    expect(chat.isStreaming, isFalse);
   });
 
   test(
@@ -7281,10 +7289,11 @@ void main() {
         ),
       );
 
-      await expectLater(chat.cancel(), throwsStateError);
+      await chat.cancel();
 
+      expect(gateway.interruptCalls, 1);
       expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
+      expect(chat.isStreaming, isFalse);
       expect(
         chat.messages.any(
           (message) => message['content'] == 'respuesta local B legítima',
@@ -7357,8 +7366,8 @@ void main() {
 
       await chat.cancel();
 
-      expect(recorded, hasLength(1));
-      expect(recorded.single.cancelledRowId, 301);
+      expect(gateway.interruptCalls, 1);
+      expect(recorded, isEmpty);
       expect(chat.state, ChatPipelineState.cancelled);
     },
   );
@@ -7432,8 +7441,8 @@ void main() {
 
       await chat.cancel();
 
-      expect(recorded, hasLength(1));
-      expect(recorded.single.cancelledRowId, 301);
+      expect(gateway.interruptCalls, 1);
+      expect(recorded, isEmpty);
       expect(chat.state, ChatPipelineState.cancelled);
     },
   );
@@ -7507,19 +7516,16 @@ void main() {
         ),
       );
 
-      final cancellation = chat.cancel();
-      await server.waitForRequests(2);
+      await chat.cancel();
+      expect(gateway.interruptCalls, 1);
+      expect(recorded, isEmpty);
+      expect(chat.isStreaming, isFalse);
+
       final refresh = chat.loadMessages(
         expectedMessageCount: currentRows.length,
       );
-      await server.waitForRequests(3);
-
+      await server.waitForRequests(2);
       server.complete(1, currentRows, paginated: true);
-      await expectLater(cancellation, throwsStateError);
-      expect(recorded, isEmpty);
-      expect(chat.isStreaming, isTrue);
-
-      server.complete(2, currentRows, paginated: true);
       await refresh;
     },
   );
@@ -7614,9 +7620,10 @@ void main() {
         ),
       );
 
-      await expectLater(chat.cancel(), throwsStateError, reason: invalid);
+      await chat.cancel();
+      expect(gateway.interruptCalls, 1, reason: invalid);
       expect(recorded, isEmpty, reason: invalid);
-      expect(chat.isStreaming, isTrue, reason: invalid);
+      expect(chat.isStreaming, isFalse, reason: invalid);
       chat.dispose();
       client.close();
     }
@@ -9569,11 +9576,13 @@ void main() {
       );
       expect(requests.where((uri) => uri.path.endsWith('/messages')).length, 2);
 
-      // La ambigüedad que esto protegía sigue cerrada donde toca: el tombstone
-      // del turno nuevo no se puede anclar cruzando la fila detenida sin
-      // identidad, así que Stop falla de forma visible y reintentable.
-      await expectLater(chat.cancel(), throwsA(isA<StateError>()));
-      expect(chat.stopConfirmationState, StopConfirmationState.failed);
+      // La ambigüedad que esto protegía sigue cerrada: el turno nuevo no crea
+      // un tombstone cruzando la fila detenida sin identidad.
+      final tombstonesBeforeSecondStop = recorded.length;
+      await chat.cancel();
+      expect(gateway.interruptCalls, 2);
+      expect(recorded, hasLength(tombstonesBeforeSecondStop));
+      expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
     });
   });
 }

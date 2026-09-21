@@ -205,10 +205,9 @@ ActiveChat _chat(
   return (chat: chat, saved: saved);
 }
 
-/// Reproduce la carrera del informe: el terminal autoritativo llega mientras
-/// `session.interrupt` sigue esperando, así que el coordinador queda
-/// `superseded` y la tira de Stop desaparece.
-Future<void> _stopSupersededByAuthoritativeTerminal(
+/// El terminal autoritativo puede llegar mientras `session.interrupt` espera.
+/// Cualquier `message.complete` confirma Stop sin inspeccionar su texto.
+Future<void> _stopSettledByAuthoritativeTerminal(
   ActiveChat chat,
   _StopGateway gateway,
 ) async {
@@ -221,13 +220,13 @@ Future<void> _stopSupersededByAuthoritativeTerminal(
   await Future<void>.delayed(const Duration(milliseconds: 50));
   gate.complete();
   await stop;
-  expect(chat.stopConfirmationState, StopConfirmationState.idle);
+  expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
 }
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('stop superseded no bloquea el envío siguiente', () async {
+  test('terminal durante Stop no bloquea el envío siguiente', () async {
     final gateway = _StopGateway();
     final chat = _chat(gateway);
     addTearDown(chat.dispose);
@@ -242,7 +241,7 @@ void main() {
     );
     expect(chat.enqueue('encolado'), isTrue);
 
-    await _stopSupersededByAuthoritativeTerminal(chat, gateway);
+    await _stopSettledByAuthoritativeTerminal(chat, gateway);
     expect(chat.queueParked, isTrue);
 
     // Un gesto explícito del usuario siempre se admite y levanta el park.
@@ -260,7 +259,7 @@ void main() {
     expect(gateway.submittedTexts, contains('mensaje nuevo'));
   });
 
-  test('stop superseded deja el lease reutilizable', () async {
+  test('terminal durante Stop deja el lease reutilizable', () async {
     final gateway = _StopGateway();
     final chat = _chat(gateway, id: 'conn-stop-superseded-lease');
     addTearDown(chat.dispose);
@@ -274,7 +273,7 @@ void main() {
       isTrue,
     );
 
-    await _stopSupersededByAuthoritativeTerminal(chat, gateway);
+    await _stopSettledByAuthoritativeTerminal(chat, gateway);
 
     expect(chat.queueParked, isFalse);
     expect(chat.queueDrainSuspendedForTesting, isFalse);
@@ -467,6 +466,49 @@ void main() {
       // interrumpido y la edición desaparecía sin aviso.
       expect(chat.takeRewindRestoredOnError(), isTrue);
     });
+  });
+
+  test('fallo de persistencia no bloquea Stop ni el siguiente envío', () async {
+    final gateway = _StopGateway()..emitInterruptTerminal = true;
+    final chat = _chat(
+      gateway,
+      id: 'conn-stop-persistence-failure',
+      storedMessageLoader: (_, _) async => const [
+        {'role': 'user', 'content': 'primero', 'id': 1},
+        {'role': 'assistant', 'content': 'respuesta', 'id': 2},
+      ],
+      onCancelledTurn: (_) async => throw StateError('keystore unavailable'),
+    );
+    addTearDown(chat.dispose);
+    await chat.loadMessages();
+
+    expect(
+      await chat.send(
+        fullText: 'turno detenido',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+
+    Object? stopError;
+    try {
+      await chat.cancel();
+    } catch (error) {
+      stopError = error;
+    }
+
+    expect(stopError, isNull);
+    expect(gateway.interruptCalls, 1);
+    expect(
+      await chat.send(
+        fullText: 'turno posterior',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    expect(gateway.submittedTexts, ['turno detenido', 'turno posterior']);
   });
 
   test('dos drenajes solapados no envían la misma entrada dos veces', () async {
