@@ -3652,7 +3652,7 @@ class ActiveChat {
   static const int _authoritativeTranscriptPageSize = 500;
   static final Stopwatch _defaultMonotonicClock = Stopwatch()..start();
   static const Duration _voiceBargeHandoffRetention = Duration(seconds: 30);
-  static const Duration _desktopRecoveryDelayCap = Duration(seconds: 30);
+  static const Duration _desktopRecoveryDelayCap = Duration(seconds: 15);
   static const Duration _desktopRecoveryFallbackDelay = Duration(seconds: 1);
   static const Duration _desktopCompressionReconcileRpcBudget = Duration(
     seconds: 10,
@@ -6216,6 +6216,7 @@ class ActiveChat {
   Future<void>? _terminalTranscriptRecovery;
   int? _terminalTranscriptRecoveryEpoch;
   Completer<void> _detachedIdleParked = Completer<void>();
+  Completer<void> _desktopRecoveryWake = Completer<void>();
   _TerminalCommitGate _terminalCommitGate = _TerminalCommitGate(0);
   // Por defecto conserva la cadencia histórica que consumen modo voz y tareas
   // sin pantalla. ChatScreen activa el modo fluido o inmediato explícitamente.
@@ -6301,13 +6302,20 @@ class ActiveChat {
     _emit(ActiveChatEvent.dashboardAuthChanged);
   }
 
+  void _publishDashboardAuthRequired(bool value) {
+    final attemptEpoch = ++_dashboardAuthAttemptEpoch;
+    _setDashboardAuthRequired(value, attemptEpoch: attemptEpoch);
+  }
+
   static bool _isDashboardAuthRequired(Object error) =>
-      error is DashboardAuthException &&
-      const {
-        DashboardAuthFailureCode.loginRequired,
-        DashboardAuthFailureCode.invalidCredentials,
-        DashboardAuthFailureCode.sessionCookieMissing,
-      }.contains(error.code);
+      (error is DashboardAuthException &&
+          const {
+            DashboardAuthFailureCode.loginRequired,
+            DashboardAuthFailureCode.invalidCredentials,
+            DashboardAuthFailureCode.sessionCookieMissing,
+          }.contains(error.code)) ||
+      (error is DashboardWebSocketAuthException &&
+          (error.statusCode == 401 || error.statusCode == 403));
 
   /// La pantalla consume esta señal para explicar que la edición falló pero la
   /// línea temporal original ya fue restaurada.
@@ -6393,7 +6401,6 @@ class ActiveChat {
       Duration(seconds: 4),
       Duration(seconds: 8),
       Duration(seconds: 15),
-      Duration(seconds: 30),
     ],
   }) : logicalSessionId = logicalSessionId ?? sessionId,
        assert(
@@ -14996,8 +15003,11 @@ class ActiveChat {
       final delay = _desktopRecoveryDelayForAttempt(attempt);
       attempt += 1;
       if (delay > Duration.zero) {
-        await Future<void>.delayed(delay);
-        if (!isCurrent()) return;
+        final elapsed = await _waitForDesktopRecoveryDelay(
+          delay,
+          _disposeSignal.future,
+        );
+        if (!elapsed || !isCurrent()) return;
       } else if (attempt > 1) {
         // A zero-duration test policy must still yield and cannot hot-loop.
         await Future<void>.delayed(Duration.zero);
@@ -15263,6 +15273,10 @@ class ActiveChat {
       }
       return true;
     }
+    if (error is DashboardWebSocketAuthException) {
+      return _viewerAttachmentDisposition(error) !=
+          _ViewerAttachmentDisposition.retryTransient;
+    }
     if (error is DashboardHttpException) {
       final status = error.statusCode;
       return status >= 400 && status < 500 && status != 408 && status != 429;
@@ -15361,7 +15375,7 @@ class ActiveChat {
 
       // Paridad con Desktop: una pérdida de cobertura no es un fallo terminal.
       // Seguimos marcando el turno como vivo y reemplazamos el socket con
-      // backoff acotado (30 s máximo entre intentos) hasta que vuelva la red,
+      // backoff acotado (15 s máximo entre intentos) hasta que vuelva la red,
       // el usuario cancele, llegue un terminal o se destruya el chat.
       final epochInvalidated = _turnEpochInvalidated.future;
       var attempt = 0;
@@ -15371,7 +15385,7 @@ class ActiveChat {
         attempt++;
         if (!_canRecoverTurn(turnEpoch)) return;
         if (delay > Duration.zero) {
-          final elapsed = await _waitForTerminalReconcileDelay(
+          final elapsed = await _waitForDesktopRecoveryDelay(
             delay,
             epochInvalidated,
           );
@@ -15404,6 +15418,7 @@ class ActiveChat {
             epochInvalidated,
           );
           if (status == null || !_canRecoverTurn(turnEpoch)) return;
+          _publishDashboardAuthRequired(false);
           if (!status.known || status.state == null) continue;
           switch (status.state!) {
             case DesktopTurnState.accepted:
@@ -15490,6 +15505,9 @@ class ActiveChat {
                 : ChatTransportState.offline,
           );
           lastError = error;
+          if (_isDashboardAuthRequired(error)) {
+            _publishDashboardAuthRequired(true);
+          }
           if (_isTerminalDesktopRecoveryError(error)) break;
         }
       }
@@ -15520,7 +15538,7 @@ class ActiveChat {
       final delay = _desktopRecoveryDelayForAttempt(attempt);
       attempt++;
       if (delay > Duration.zero) {
-        final elapsed = await _waitForTerminalReconcileDelay(
+        final elapsed = await _waitForDesktopRecoveryDelay(
           delay,
           epochInvalidated,
         );
@@ -15555,11 +15573,15 @@ class ActiveChat {
           return;
         }
         if (!_commitDesktopRecoverySnapshot(gateway, snapshot)) return;
+        _publishDashboardAuthRequired(false);
         _applyDesktopRecoverySnapshot(snapshot, turnEpoch);
         return;
       } catch (error) {
         if (!_canRecoverTurn(turnEpoch)) return;
         lastError = error;
+        if (_isDashboardAuthRequired(error)) {
+          _publishDashboardAuthRequired(true);
+        }
         if (_isTerminalDesktopRecoveryError(error)) break;
       }
     }
@@ -21020,6 +21042,34 @@ class ActiveChat {
     return false;
   }
 
+  void requestImmediateTransportRecovery() {
+    if (_disposed || _desktopRecoveryWake.isCompleted) return;
+    _desktopRecoveryWake.complete();
+  }
+
+  Future<bool> _waitForDesktopRecoveryDelay(
+    Duration delay,
+    Future<void> epochInvalidated,
+  ) async {
+    final wake = _desktopRecoveryWake;
+    final elapsed = Completer<bool>();
+    final timer = Timer(delay, () => elapsed.complete(true));
+    try {
+      return await Future.any<bool>([
+        elapsed.future,
+        wake.future.then((_) => true),
+        _disposeSignal.future.then((_) => false),
+        epochInvalidated.then((_) => false),
+        _detachedIdleParked.future.then((_) => false),
+      ]);
+    } finally {
+      timer.cancel();
+      if (identical(_desktopRecoveryWake, wake) && wake.isCompleted) {
+        _desktopRecoveryWake = Completer<void>();
+      }
+    }
+  }
+
   /// Espera un backoff cancelable sin dejar un `Future.delayed` vivo después
   /// de cerrar el chat o invalidar el turno.
   Future<bool> _waitForTerminalReconcileDelay(
@@ -22560,6 +22610,7 @@ class ActiveChat {
   /// obsoleto por un turno creado en Desktop. Las llamadas concurrentes
   /// comparten una única lectura; un stream vivo conserva siempre la autoridad.
   Future<bool> reconcileAfterResume() {
+    requestImmediateTransportRecovery();
     if (_runtimeReleaseInFlight) return Future<bool>.value(false);
     final existing = _resumeReconcileFlight;
     if (existing != null) return existing;
@@ -23933,6 +23984,12 @@ class ActiveChatService {
       }
     }
     _refreshActiveIds();
+  }
+
+  void requestImmediateTransportRecovery() {
+    for (final chat in _chats.values) {
+      chat.requestImmediateTransportRecovery();
+    }
   }
 
   /// Reconciliación global al volver de 2º plano: re-sincroniza cualquier chat

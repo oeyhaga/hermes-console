@@ -305,6 +305,7 @@ void main() {
       final failures = <Object>[
         TimeoutException('timeout detail'),
         const SocketException('socket detail'),
+        const HandshakeException('handshake detail'),
         http.ClientException('client detail'),
       ];
       for (final failure in failures) {

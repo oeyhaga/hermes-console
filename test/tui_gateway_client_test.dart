@@ -30,6 +30,29 @@ class _TicketDashboardClient extends DashboardClient {
 }
 
 void main() {
+  test('reconnect backoff uses full jitter and caps at fifteen seconds', () {
+    final samples = <double>[0, 0.5, 1, 1, 1, 1].iterator;
+    final backoff = GatewayReconnectBackoff(
+      random: () {
+        samples.moveNext();
+        return samples.current;
+      },
+    );
+
+    expect(backoff.nextDelay(), Duration.zero);
+    expect(backoff.nextDelay(), const Duration(seconds: 1));
+    expect(backoff.nextDelay(), const Duration(seconds: 4));
+    expect(backoff.nextDelay(), const Duration(seconds: 8));
+    expect(backoff.nextDelay(), const Duration(seconds: 15));
+    expect(backoff.nextDelay(), const Duration(seconds: 15));
+
+    final reset = GatewayReconnectBackoff(random: () => 1);
+    reset.nextDelay();
+    reset.nextDelay();
+    reset.markHealthy();
+    expect(reset.nextDelay(), const Duration(seconds: 1));
+  });
+
   test(
     'failed real WebSocket upgrade preserves package typed wrapper',
     () async {
