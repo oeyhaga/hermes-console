@@ -566,6 +566,170 @@ class _LifecycleRecoverableGateway extends _RecoverableDesktopGateway
   }
 }
 
+class _NonIdempotentLifecycleGateway extends _DroppingDesktopGateway
+    implements
+        HermesDesktopSessionLifecycleGateway,
+        HermesDesktopRecoverySessionLifecycleGateway,
+        HermesDesktopRosterBoundRecoveryGateway,
+        HermesDesktopTypedRecoveryGateway {
+  _NonIdempotentLifecycleGateway(String storedSessionId)
+    : super(canonicalStoredId: storedSessionId);
+
+  final ReplayCoordinator _recovery = ReplayCoordinator();
+  final Object _recoveryChannel = Object();
+  int createForFirstSubmitCalls = 0;
+  int resumeExistingCalls = 0;
+  int rosterResumeCalls = 0;
+  int recoveryCommits = 0;
+  int restoredFailuresRemaining = 0;
+  bool networkAvailable = true;
+  DesktopSessionSnapshot? recoverySnapshot;
+  final List<String> resumeExistingStoredIds = [];
+
+  @override
+  Future<void> connect() async {
+    await super.connect();
+    if (connectCalls <= 1) return;
+    if (!networkAvailable || restoredFailuresRemaining > 0) {
+      if (networkAvailable) restoredFailuresRemaining -= 1;
+      _connected = false;
+      throw const DashboardWebSocketAuthException(
+        DashboardWebSocketAuthFailureCode.unavailable,
+        cause: DashboardWebSocketAuthFailureCause.transport,
+      );
+    }
+  }
+
+  @override
+  Future<DesktopSessionSnapshot> createForFirstSubmit({
+    String profile = '',
+    List<Map<String, dynamic>> seedMessages = const [],
+    String model = '',
+  }) async {
+    createForFirstSubmitCalls += 1;
+    return DesktopSessionBinding(
+      runtimeSessionId: 'runtime-initial-$canonicalStoredId',
+      storedSessionId: canonicalStoredId!,
+      created: true,
+    );
+  }
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) => resumeExistingForRecovery(storedSessionId, profile: profile);
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExistingForRecovery(
+    String storedSessionId, {
+    String profile = '',
+  }) async {
+    resumeExistingCalls += 1;
+    resumeExistingStoredIds.add(storedSessionId);
+    return recoverySnapshot ??
+        DesktopSessionBinding(
+          runtimeSessionId: 'runtime-recovered-$resumeExistingCalls',
+          storedSessionId: storedSessionId,
+          created: false,
+        );
+  }
+
+  @override
+  Future<DesktopRosterBoundRecovery> resumeAdvertisedExistingForRecovery(
+    String storedSessionId, {
+    String profile = '',
+  }) async {
+    rosterResumeCalls += 1;
+    final snapshot = recoverySnapshot;
+    if (snapshot == null || !snapshot.running) {
+      throw const TuiGatewayRpcError(
+        'session.active_list',
+        'test roster has no active owner',
+      );
+    }
+    resumeExistingCalls += 1;
+    resumeExistingStoredIds.add(storedSessionId);
+    return DesktopRosterBoundRecovery.forTesting(snapshot, this);
+  }
+
+  @override
+  bool consumeRosterBoundRecovery(DesktopRosterBoundRecovery recovery) {
+    recoveryCommits += 1;
+    return true;
+  }
+
+  @override
+  bool consumeRosterBoundViewerAttachment(
+    DesktopRosterBoundRecovery recovery,
+  ) => false;
+
+  @override
+  RecoveryProof recoveryProofForSnapshot(
+    DesktopSessionSnapshot snapshot, {
+    required String connectionId,
+    required String profile,
+    required int bindGeneration,
+    required int sessionGeneration,
+    required int turnGeneration,
+    required Set<RecoveryDomain> coverage,
+    int? postSnapshotSequence,
+  }) {
+    _recovery.quarantine(snapshot.runtimeSessionId);
+    return _recovery.mintRecoveryProof(
+      connectionId: connectionId,
+      durableSessionId: snapshot.storedSessionId,
+      runtimeSessionId: snapshot.runtimeSessionId,
+      profile: profile,
+      socketGeneration: 1,
+      channel: _recoveryChannel,
+      bindGeneration: bindGeneration,
+      sessionGeneration: sessionGeneration,
+      turnGeneration: turnGeneration,
+      replayEpoch: null,
+      created: snapshot.created,
+      durableIdentityExplicit: snapshot.storedSessionIdentityExplicit,
+      identityAliasesConsistent: snapshot.identityAliasesConsistent,
+      coverage: coverage,
+      postSnapshotSequence: 1,
+    );
+  }
+
+  @override
+  bool validateRecovery(RecoveryProof proof) => _recovery.canCommitRecovery(
+    proof,
+    socketGeneration: 1,
+    channel: _recoveryChannel,
+    replayEpoch: null,
+  );
+
+  @override
+  bool commitRecovery(RecoveryProof proof) {
+    final committed = _recovery.commitRecovery(
+      proof,
+      socketGeneration: 1,
+      channel: _recoveryChannel,
+      replayEpoch: null,
+    );
+    if (committed) recoveryCommits += 1;
+    return committed;
+  }
+
+  @override
+  bool recoveryAuthorityStillCurrent(RecoveryProof proof) =>
+      _recovery.isRecoveryAuthorityCurrent(
+        proof,
+        socketGeneration: 1,
+        channel: _recoveryChannel,
+        replayEpoch: null,
+      );
+
+  @override
+  void commitRecoveryRuntime(String runtimeSessionId) {}
+}
+
 class _ActivityLifecycleRecoverableGateway extends _LifecycleRecoverableGateway
     implements HermesDesktopSessionActivityGateway {
   int activateCalls = 0;
@@ -1465,7 +1629,7 @@ Future<void> _expectRecoveryErrorClassification(
 
 ActiveChat _recoverableChat(
   String id,
-  _RecoverableDesktopGateway gateway, {
+  HermesDesktopGateway gateway, {
   ApiClient? api,
   Duration terminalReconcileBudget = const Duration(seconds: 4),
   Duration desktopRecoveryAttemptTimeout = const Duration(seconds: 15),
@@ -3954,6 +4118,179 @@ void main() {
         ),
         isFalse,
       );
+    },
+  );
+
+  for (final resumedStatus in const <String?>['completed', null]) {
+    test(
+      'non-idempotent long outage adopts durable final after '
+      '${resumedStatus ?? 'plain idle'} resume without takeover',
+      () async {
+        const storedId = 'session-nonidem-long-outage';
+        const prompt = 'sleep 70 then answer';
+        const finalAnswer = 'durable final after long outage';
+        final gateway = _NonIdempotentLifecycleGateway(storedId)
+          ..recoverySnapshot = DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-lightweight-viewer',
+            storedSessionId: storedId,
+            created: false,
+            running: false,
+            status: resumedStatus,
+          );
+        var durableReads = 0;
+        final chat = _recoverableChat(
+          'nonidem-long-outage-${resumedStatus ?? 'plain'}',
+          gateway,
+          desktopRecoveryBackoff: const [
+            Duration.zero,
+            Duration(milliseconds: 1),
+            Duration(milliseconds: 2),
+            Duration(milliseconds: 4),
+            Duration(milliseconds: 8),
+            Duration(milliseconds: 15),
+          ],
+          desktopRecoveryRandom: () => 1.0,
+          storedMessageLoader: (_, _) async {
+            durableReads += 1;
+            if (!gateway.networkAvailable) {
+              throw const SocketException('durable transcript unavailable');
+            }
+            return const [
+              {
+                'message_id': 'nonidem-outage-user',
+                'role': 'user',
+                'content': prompt,
+              },
+              {
+                'message_id': 'nonidem-outage-final',
+                'role': 'assistant',
+                'content': finalAnswer,
+              },
+            ];
+          },
+        );
+        addTearDown(chat.dispose);
+
+        await chat.send(
+          fullText: prompt,
+          model: 'hermes-agent',
+          history: const [],
+        );
+        expect(gateway, isNot(isA<HermesDesktopIdempotentGateway>()));
+        expect(gateway.submitCalls, 1);
+        final createsBeforeOutage = gateway.createForFirstSubmitCalls;
+        final resumesBeforeOutage = gateway.resumeExistingCalls;
+        final resumeIdsBeforeOutage = gateway.resumeExistingStoredIds.length;
+
+        gateway.networkAvailable = false;
+        gateway.drop();
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        expect(gateway.connectCalls, greaterThanOrEqualTo(8));
+        expect(durableReads, 1);
+
+        gateway
+          ..networkAvailable = true
+          ..restoredFailuresRemaining = 1;
+        chat.requestImmediateTransportRecovery();
+        await _waitUntil(() => chat.state == ChatPipelineState.completed);
+
+        expect(gateway.rosterResumeCalls, 1);
+        expect(gateway.resumeExistingCalls, resumesBeforeOutage + 1);
+        expect(chat.state, ChatPipelineState.completed);
+        expect(chat.assistantContent, finalAnswer);
+        expect(
+          chat.messages.where((message) => message['content'] == finalAnswer),
+          hasLength(1),
+        );
+        expect(
+          chat.messages.where((message) => message['content'] == prompt),
+          hasLength(1),
+        );
+        expect(
+          gateway.resumeExistingStoredIds.skip(resumeIdsBeforeOutage),
+          [storedId],
+        );
+        expect(gateway.submitCalls, 1);
+        expect(gateway.createForFirstSubmitCalls, createsBeforeOutage);
+        expect(gateway.recoveryCommits, 0);
+        expect(chat.desktopRuntimeSessionId, isNull);
+
+        final connects = gateway.connectCalls;
+        final resumes = gateway.resumeExistingCalls;
+        chat.requestImmediateTransportRecovery();
+        await chat.reconcileAfterResume();
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(gateway.connectCalls, connects);
+        expect(gateway.resumeExistingCalls, resumes);
+        expect(chat.state, ChatPipelineState.completed);
+        expect(
+          chat.messages.where((message) => message['content'] == finalAnswer),
+          hasLength(1),
+        );
+        expect(gateway.submitCalls, 1);
+      },
+    );
+  }
+
+  test(
+    'non-idempotent running snapshot reattaches after capped outage',
+    () async {
+      const storedId = 'session-nonidem-running';
+      const prompt = 'keep working after reconnect';
+      final gateway = _NonIdempotentLifecycleGateway(storedId)
+        ..recoverySnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-nonidem-running-recovered',
+          storedSessionId: storedId,
+          created: false,
+          inflight: DesktopInflightTurn(
+            user: prompt,
+            assistant: 'partial after reconnect',
+            streaming: true,
+          ),
+          running: true,
+          status: 'running',
+        );
+      final chat = _recoverableChat(
+        'nonidem-running',
+        gateway,
+        desktopRecoveryBackoff: const [
+          Duration.zero,
+          Duration(milliseconds: 1),
+          Duration(milliseconds: 15),
+        ],
+        desktopRecoveryRandom: () => 1.0,
+        storedMessageLoader: (_, _) async => const [],
+      );
+      addTearDown(chat.dispose);
+
+      await chat.send(
+        fullText: prompt,
+        model: 'hermes-agent',
+        history: const [],
+      );
+      final createsBeforeOutage = gateway.createForFirstSubmitCalls;
+      final resumeIdsBeforeOutage = gateway.resumeExistingStoredIds.length;
+      gateway.networkAvailable = false;
+      gateway.drop();
+      await _waitUntil(() => gateway.connectCalls >= 5);
+      gateway
+        ..networkAvailable = true
+        ..restoredFailuresRemaining = 1;
+      chat.requestImmediateTransportRecovery();
+
+      await _waitUntil(
+        () => chat.desktopRuntimeSessionId == 'runtime-nonidem-running-recovered',
+      );
+      expect(chat.state, ChatPipelineState.streaming);
+      expect(chat.assistantContent, 'partial after reconnect');
+      expect(gateway.rosterResumeCalls, 1);
+      expect(gateway.recoveryCommits, 1);
+      expect(
+        gateway.resumeExistingStoredIds.skip(resumeIdsBeforeOutage),
+        [storedId],
+      );
+      expect(gateway.submitCalls, 1);
+      expect(gateway.createForFirstSubmitCalls, createsBeforeOutage);
     },
   );
 
