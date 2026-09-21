@@ -28,6 +28,7 @@ import '../theme/app_theme.dart';
 import '../widgets/accent_card.dart';
 import '../widgets/general_dock_shell.dart';
 import '../widgets/hermes_drawer.dart';
+import '../widgets/hermes_notice.dart';
 import '../widgets/hermes_pill.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_ui.dart';
@@ -1038,7 +1039,7 @@ class _SessionListScreenState extends State<SessionListScreen>
 
   void _showArchiveResult(bool archived, {required bool localOnly}) {
     final strings = Strings.of(context);
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(
         duration: const Duration(seconds: 3),
         content: Text(
@@ -1063,8 +1064,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     if (trimmed == null) return;
     if (trimmed.isEmpty) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).slRenameEmpty)),
+        kind: HermesNoticeKind.warning,
       );
       return;
     }
@@ -1072,9 +1074,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     await _archive!.setSessionTitle(session, trimmed);
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
+    HermesNotice.of(context).showSnackBar(
+      SnackBar(content: Text(Strings.of(context).slRenamed)),
+      kind: HermesNoticeKind.success,
+    );
   }
 
   Future<void> _toggleArchive(Session session) async {
@@ -1139,8 +1142,9 @@ class _SessionListScreenState extends State<SessionListScreen>
     });
     await _fetchSessions();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(content: Text(Strings.of(context).slArchiveSyncFailed)),
+      kind: HermesNoticeKind.error,
     );
   }
 
@@ -1279,23 +1283,25 @@ class _SessionListScreenState extends State<SessionListScreen>
         return false;
       case LinkedSessionDeleteStatus.cronDeleteFailed:
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          HermesNotice.of(context).showSnackBar(
             SnackBar(
               content: Text(
                 sessionDeletionFailureMessage(Strings.of(context), result),
               ),
             ),
+            kind: HermesNoticeKind.error,
           );
         }
         return false;
       case LinkedSessionDeleteStatus.sessionDeleteFailed:
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          HermesNotice.of(context).showSnackBar(
             SnackBar(
               content: Text(
                 sessionDeletionFailureMessage(Strings.of(context), result),
               ),
             ),
+            kind: HermesNoticeKind.error,
           );
         }
         return false;
@@ -1305,7 +1311,7 @@ class _SessionListScreenState extends State<SessionListScreen>
   /// El servidor respondió OK pero no borró la sesión (suele ser una sesión de
   /// un canal activo que se recrea). Ofrece ocultarla localmente — honesto.
   void _offerHideAfterFailedDelete(Session session, {String? message}) {
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = HermesNotice.of(context);
     final s = Strings.of(context);
     messenger.showSnackBar(
       SnackBar(
@@ -1519,8 +1525,9 @@ class _SessionListScreenState extends State<SessionListScreen>
               onTap: () {
                 Clipboard.setData(ClipboardData(text: session.id));
                 Navigator.pop(ctx);
-                ScaffoldMessenger.of(context).showSnackBar(
+                HermesNotice.of(context).showSnackBar(
                   SnackBar(content: Text(Strings.of(context).slIdCopied)),
+                  kind: HermesNoticeKind.success,
                 );
               },
             ),

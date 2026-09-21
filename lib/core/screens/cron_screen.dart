@@ -30,6 +30,7 @@ import '../widgets/dock_anchored_popover.dart';
 import '../widgets/feature_dependency_notice.dart';
 import '../widgets/general_dock_shell.dart';
 import '../widgets/hermes_app_bar.dart';
+import '../widgets/hermes_notice.dart';
 import '../widgets/hermes_pill.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/hermes_ui.dart';
@@ -329,7 +330,7 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       final updated = await _repository.pauseOrResume(job);
       if (!mounted) return;
       _replaceJob(updated);
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(
             job.isPaused
@@ -349,8 +350,9 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       final updated = await _repository.trigger(job);
       if (!mounted) return;
       _replaceJob(updated);
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).crnJobTriggered)),
+        kind: HermesNoticeKind.success,
       );
     } catch (error) {
       _showFailure(error);
@@ -360,11 +362,12 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
   void _showFailure(Object error) {
     if (!mounted) return;
     final s = Strings.of(context);
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(
         content: Text(s.crnFailed(localizedApiError(s, error))),
         backgroundColor: Theme.of(context).hermes.warning,
       ),
+      kind: HermesNoticeKind.error,
     );
   }
 
@@ -424,28 +427,31 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       }
       if (!mounted) return;
       setState(() => _jobs = _jobs.where((row) => row.id != job.id).toList());
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).crnJobDeleted(job.title))),
+        kind: HermesNoticeKind.success,
       );
     } on CronDeleteRejectedException {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        HermesNotice.of(context).showSnackBar(
           SnackBar(
             content: Text(Strings.of(context).crnDeleteRejected),
             backgroundColor: Theme.of(context).hermes.warning,
           ),
+          kind: HermesNoticeKind.warning,
         );
       }
     } catch (error) {
       if (!mounted) return;
       final strings = Strings.of(context);
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(
             strings.crnDeleteFailed(localizedApiError(strings, error)),
           ),
           backgroundColor: Theme.of(context).hermes.warning,
         ),
+        kind: HermesNoticeKind.error,
       );
     }
   }
@@ -519,7 +525,7 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       }
       if (!mounted) return;
       _replaceJob(updated);
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(
             job == null
@@ -535,11 +541,12 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
       final message = job == null
           ? strings.crnAddFailed(localizedApiError(strings, error))
           : strings.crnUpdateFailed(localizedApiError(strings, error));
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(message),
           backgroundColor: Theme.of(context).hermes.warning,
         ),
+        kind: HermesNoticeKind.warning,
       );
     }
   }

@@ -12,6 +12,7 @@ import '../services/generated_media_service.dart';
 import '../theme/app_theme.dart';
 import 'attachment_card.dart';
 import 'hermes_app_bar.dart';
+import 'hermes_notice.dart';
 
 @visibleForTesting
 const attachmentDocumentPreviewChannelName = 'hermes/document_preview';
@@ -66,10 +67,11 @@ class _AttachmentHistoryCardState extends State<AttachmentHistoryCard> {
     final file = await _resolve();
     if (!mounted) return;
     if (file == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(Strings.of(context).chaAttachmentPreviewUnavailable),
         ),
+        kind: HermesNoticeKind.warning,
       );
       return;
     }
