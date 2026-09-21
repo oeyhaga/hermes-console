@@ -93,7 +93,17 @@ credentials.
 This is an independent, unofficial application. It is not affiliated with,
 sponsored by, or maintained by Nous Research or the Hermes Agent authors.
 
-## Novedades — `1.2.11 (9009)`
+## Novedades — `1.2.12 (9010)`
+
+### Español (máximo 500 caracteres)
+
+Fiabilidad en sesiones largas: una sola burbuja por turno con un bloque de actividad que reúne razonamiento y herramientas; archivos, PDF, imágenes, vídeo y texto se ven solos y se abren en visores propios; el trabajo en segundo plano (procesos, bucles, subagentes) se ve en el chat, Inicio y la lista; reabrir la app sin duplicados ni bloqueos; reconexión más estable, menos consultas e historial largo accesible.
+
+### English (maximum 500 characters)
+
+Long-session reliability: one bubble per turn with a single activity block for reasoning and tools; files, PDFs, images, video and text load by themselves and open in built-in viewers; background work (processes, loops, subagents) is visible in the chat, Home and the list; reopening the app no longer duplicates or sticks; steadier reconnection, fewer polls and long history stays reachable.
+
+## Novedades anteriores — `1.2.11 (9009)`
 
 ### Español (máximo 500 caracteres)
 
