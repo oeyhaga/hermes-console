@@ -18902,6 +18902,45 @@ void main() {
   );
 
   testWidgets(
+    'server-resolved canonical Bot Chat resumes and submits without legacy pin verification',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      addTearDown(gateway.close);
+      await pumpChat(
+        tester,
+        connection: _remoteConn('conn-canonical-bot'),
+        session: const Session(
+          id: 'mob-bot-infra',
+          lineageRootId: 'canonical-tip',
+          title: 'Bot Chat',
+          model: 'hermes-agent',
+          source: 'bot-mode-canonical',
+          messageCount: 12,
+          isActive: true,
+          preview: '',
+          startedAt: 1,
+          profile: 'infra',
+        ),
+        initialStoredSessionId: 'canonical-tip',
+        desktopGateway: gateway,
+      );
+
+      final composer = find.byType(TextField).last;
+      await tester.enterText(composer, 'continúa la conversación canónica');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+
+      expect(gateway.resumeExistingCalls, 1);
+      expect(gateway.createConfigs, isEmpty);
+      expect(gateway.submissions, ['continúa la conversación canónica']);
+      gateway.emit('message.complete', const {'text': 'continuación completa'});
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'local Bot Chat durable pin missing fails closed without replacement',
     (tester) async {
       final gateway = _UiRewindGateway()

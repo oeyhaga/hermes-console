@@ -562,17 +562,20 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
     }
     if (calls.isNotEmpty) normalized['tool_calls'] = calls;
   }
-  // `process_complete` viaja como `role=user` con su clasificación estructural:
-  // sin ella el carrier durable queda vacío tras el stripping y desaparece del
-  // transcript. Solo se acepta desde `display_kind`, nunca leyendo el texto.
+  // Estos eventos viajan como `role=user`; su clasificación estructural es la
+  // que impide que el transcript los atribuya a la persona.
   final displayKind =
       rawDisplayKind == 'model_switch' ||
+          rawDisplayKind == 'personality_switch' ||
+          rawDisplayKind == 'auto_continue' ||
           rawDisplayKind == 'async_delegation_complete' ||
           rawDisplayKind == 'compression_result' ||
           rawDisplayKind == 'process_complete'
       ? rawDisplayKind
       : effectiveUserDisplayKind(normalized);
-  if (displayKind == 'model_switch') {
+  if (displayKind == 'model_switch' ||
+      displayKind == 'personality_switch' ||
+      displayKind == 'auto_continue') {
     normalized['display_kind'] = displayKind;
   } else if (displayKind == 'async_delegation_complete' ||
       displayKind == 'process_complete') {
@@ -10640,7 +10643,9 @@ class ActiveChat {
     } else if (!mentionsFrozen) {
       final annotation = buildBotMentionAnnotation(mentionResolver.resolve(fullText));
       fullText = appendBotMentionNote(fullText, annotation);
-      if (desktopText != null) desktopText = appendBotMentionNote(desktopText, annotation);
+      if (desktopText != null) {
+        desktopText = appendBotMentionNote(desktopText, annotation);
+      }
     }
     final pendingManualProbeClientTurnId =
         _pendingManualOwnershipProbeClientTurnId;
@@ -12158,7 +12163,9 @@ class ActiveChat {
       final gateway = _desktopGateway;
       if (gateway is! BotMentionRosterGateway) return;
       final profiles = await (gateway as BotMentionRosterGateway).loadMentionProfiles();
-      if (!_disposed) BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+      if (!_disposed) {
+        BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+      }
     } catch (_) {
       // A cold/unavailable roster must never block ordinary chat admission.
     } finally {

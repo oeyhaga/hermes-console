@@ -22,6 +22,7 @@ import '../services/session_archive.dart';
 import '../services/session_deletion.dart';
 import '../services/session_repository.dart';
 import '../services/tui_gateway_client.dart';
+import '../utils/home_recent_sessions.dart';
 import '../utils/session_timestamp.dart';
 import '../theme/app_theme.dart';
 import '../widgets/accent_card.dart';
@@ -2554,7 +2555,8 @@ class _SessionTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
-    final preview = session.cleanPreview.trim();
+    final preview =
+        sessionListPreview(session) ?? strings.sessionPreviewUnavailable;
     final activityLabel = localActivity?.active == true
         ? _sessionActivityLabel(strings, localActivity!)
         : activity != null

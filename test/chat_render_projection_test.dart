@@ -283,6 +283,45 @@ void main() {
     },
   );
 
+  test('un personality_switch durable conserva su etiqueta y nunca es turno de usuario', () {
+    final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{
+      'row_id': 9098,
+      'role': 'user',
+      'content': '[System: The user has changed the assistant\'s personality to concise.]',
+      'display_kind': 'personality_switch',
+    });
+
+    expect(normalized, isNotNull);
+    expect(normalized!['display_kind'], 'personality_switch');
+    expect(isRealUserTurn(normalized), isFalse);
+
+    final projection = ChatRenderProjection.build([normalized]);
+    expect(projection.units.single, isA<ChatMessageUnitPlan>());
+    expect(projection.visibleUserCount, 0);
+    expect(projection.userOrdinalFor(normalized), isNull);
+  });
+
+  test(
+    'un auto_continue etiquetado conserva la autoridad estructural del backend',
+    () {
+      final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{
+        'row_id': 9099,
+        'role': 'user',
+        'content': '[Continuing toward your standing goal]\nGoal: termina las tareas\n\nContinue working toward this goal.',
+        'display_kind': 'auto_continue',
+      });
+
+      expect(normalized, isNotNull);
+      expect(normalized!['display_kind'], 'auto_continue');
+      expect(isRealUserTurn(normalized), isFalse);
+
+      final projection = ChatRenderProjection.build([normalized]);
+      expect(projection.units.single, isA<ChatMessageUnitPlan>());
+      expect(projection.visibleUserCount, 0);
+      expect(projection.userOrdinalFor(normalized), isNull);
+    },
+  );
+
   test('un process_complete durable sobrevive a la normalización y se proyecta '
       'como evento del sistema', () {
     final normalized = normalizeTranscriptMessageForDisplay(<String, dynamic>{

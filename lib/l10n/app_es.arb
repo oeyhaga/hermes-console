@@ -3788,6 +3788,7 @@
   "sesMessagesError": "No se pudieron cargar los mensajes",
   "sesMessagesRetry": "reintentar",
   "sesNoMessages": "sesión sin mensajes",
+  "sessionPreviewUnavailable": "Sin mensajes visibles",
   "sesMetricMessages": "mensajes",
   "sesMetricToolCalls": "tool calls",
   "sesMetricTokens": "tokens",

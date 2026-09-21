@@ -1791,6 +1791,7 @@ class _ChatScreenState extends State<ChatScreen>
     'mobile-bot',
     'bot-mode',
     'bot-mode-local',
+    'bot-mode-canonical',
   }.contains(widget.session.source.trim().toLowerCase());
 
   bool get _allowsDedicatedVoiceLaunch => !_isBotChatSurface;
@@ -2779,21 +2780,22 @@ class _ChatScreenState extends State<ChatScreen>
   DesktopSessionCreateConfig get _firstSubmitConfig {
     final source = widget.session.source.trim().toLowerCase();
     final createsBotChat = source == 'mobile-bot' || source == 'bot-mode-local';
-    final isOfficialBotPin = source == 'bot-mode';
+    final resumesStoredBotChat =
+        source == 'bot-mode' || source == 'bot-mode-canonical';
     return DesktopSessionCreateConfig(
       model: _selectedModelPair,
       reasoningEffort: _selectedReasoning,
       fastMode: _selectedFastMode,
       title: createsBotChat ? 'Bot Chat' : null,
       hidden: createsBotChat,
-      createIfMissing: !isOfficialBotPin,
+      createIfMissing: !resumesStoredBotChat,
       // Bot surfaces own a durable canonical pin. Their -32601 compatibility
       // fallback is handled by the pin hook itself; falling back to REST here
       // would submit without the verified pin after an RMW failure.
       allowTransportFallback:
           widget.connection.kind == InstanceKind.localhost &&
           widget.connection.onDeviceLoopback &&
-          !isOfficialBotPin &&
+          !resumesStoredBotChat &&
           !createsBotChat,
     );
   }
@@ -4496,7 +4498,7 @@ class _ChatScreenState extends State<ChatScreen>
   Future<void> _persistBotChatPin() async {
     if (widget.connection.readOnly) return;
     final source = widget.session.source.trim().toLowerCase();
-    if (source == 'bot-mode') {
+    if (source == 'bot-mode' || source == 'bot-mode-canonical') {
       try {
         await _botChatStore?.clear(
           connectionId: widget.connection.id,

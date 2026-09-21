@@ -40,11 +40,15 @@ Map<String, dynamic> _row(
   required int lastActive,
   String source = 'mobile',
   String preview = '',
+  String? lastUserPreview,
+  String? lastAssistantPreview,
 }) => {
   'id': id,
   '_lineage_root_id': id,
   'title': title,
   'preview': preview,
+  'last_user_preview': ?lastUserPreview,
+  'last_assistant_preview': ?lastAssistantPreview,
   'model': 'model-a',
   'source': source,
   'message_count': 2,
@@ -410,6 +414,40 @@ void main() {
       expect(draft.data, isNot(contains('BORRADOR')));
       // Y el texto del borrador nunca se filtra a la lista.
       expect(find.text('texto sin enviar'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'la lista nunca muestra JSON de tools y recupera el último texto humano',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      const rawToolCall = '[{"id":"call_latest","type":"function"}]';
+      await pump(tester, [
+        _row(
+          'tool-preview',
+          title: 'Deploy a staging',
+          lastActive: nowSeconds(),
+          preview: rawToolCall,
+          lastUserPreview: 'Comprueba el despliegue',
+          lastAssistantPreview: rawToolCall,
+        ),
+        _row(
+          'tool-only-preview',
+          title: 'Tarea automatizada',
+          lastActive: nowSeconds() - 1,
+          preview: rawToolCall,
+          lastAssistantPreview: rawToolCall,
+        ),
+      ]);
+      await _pumpUntil(tester, find.text('Deploy a staging'));
+
+      expect(find.text(rawToolCall), findsNothing);
+      expect(find.text('Comprueba el despliegue'), findsOneWidget);
+      expect(find.text('Sin mensajes visibles'), findsOneWidget);
     },
   );
 
