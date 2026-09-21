@@ -1129,9 +1129,15 @@ class _ChatScreenState extends State<ChatScreen>
   ForegroundConversationReader? _passiveConversationReader;
   bool _chatRouteVisible = false;
   late bool _appInForeground;
+  // Relative delays place the follow-up checks at +1.5s and +4s.
+  static const _postControlRepairDelays = [
+    Duration(milliseconds: 1500),
+    Duration(milliseconds: 2500),
+  ];
   Timer? _subagentPollTimer;
   Timer? _subagentRepairDebounce;
   Timer? _processControlRepairDebounce;
+  int _postControlRepairDelayIndex = -1;
   String? _subagentPollingRuntimeId;
   bool _adaptiveSnapshotInFlight = false;
   bool _adaptiveSnapshotQueued = false;
@@ -3930,9 +3936,7 @@ class _ChatScreenState extends State<ChatScreen>
       return;
     }
 
-    if (_chat.desktopChangeEventsAvailable) {
-      _consumeAdaptiveRefreshSignals();
-    }
+    _consumeAdaptiveRefreshSignals();
     if (_subagentPollTimer == null && !_adaptiveSnapshotInFlight) {
       _scheduleAdaptiveSnapshot(_adaptiveBackstopDelay());
     }
@@ -3954,6 +3958,7 @@ class _ChatScreenState extends State<ChatScreen>
     _subagentRepairDebounce = null;
     _processControlRepairDebounce?.cancel();
     _processControlRepairDebounce = null;
+    _postControlRepairDelayIndex = -1;
     _adaptiveSnapshotQueued = false;
     _queuedSubagentRefresh = false;
     _queuedProcessRefresh = false;
@@ -4000,6 +4005,7 @@ class _ChatScreenState extends State<ChatScreen>
     final fullRevision = _chat.adaptiveFullRefreshRevision;
     if (fullRevision != _seenAdaptiveFullRefreshRevision) {
       _captureAdaptiveRefreshRevisions();
+      _postControlRepairDelayIndex = 0;
       _subagentRepairDebounce?.cancel();
       _subagentRepairDebounce = null;
       _processControlRepairDebounce?.cancel();
@@ -4108,6 +4114,7 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     if (failed) {
+      _postControlRepairDelayIndex = -1;
       const delays = [5, 15, 30, 60];
       final index = _adaptiveRefreshFailureIndex.clamp(0, delays.length - 1);
       _adaptiveRefreshFailureIndex = (index + 1).clamp(0, delays.length - 1);
@@ -4121,6 +4128,14 @@ class _ChatScreenState extends State<ChatScreen>
     }
 
     _adaptiveRefreshFailureIndex = 0;
+    if (_postControlRepairDelayIndex >= 0 &&
+        _postControlRepairDelayIndex < _postControlRepairDelays.length) {
+      final delay = _postControlRepairDelays[_postControlRepairDelayIndex];
+      _postControlRepairDelayIndex += 1;
+      _scheduleAdaptiveSnapshot(delay);
+      return;
+    }
+    _postControlRepairDelayIndex = -1;
     _scheduleAdaptiveSnapshot(_adaptiveBackstopDelay());
   }
 
@@ -11548,7 +11563,9 @@ class _ChatScreenState extends State<ChatScreen>
     final label = switch (stop) {
       StopConfirmationState.stopping => strings.chaStopStopping,
       StopConfirmationState.retrying => strings.chaStopRetrying,
-      StopConfirmationState.confirmed => strings.chaStopConfirmed,
+      StopConfirmationState.confirmed => _chat.stopConfirmationOnlyBackground
+          ? strings.chaBackgroundWorkStopped
+          : strings.chaStopConfirmed,
       StopConfirmationState.failed => strings.chaStopFailed,
       StopConfirmationState.idle => '',
     };

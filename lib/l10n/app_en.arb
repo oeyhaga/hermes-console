@@ -4377,6 +4377,7 @@
   "chaStopStopping": "Stopping…",
   "chaStopRetrying": "Retrying Stop…",
   "chaStopConfirmed": "Stopped",
+  "chaBackgroundWorkStopped": "Background work stopped",
   "chaStopFailed": "Stop wasn't confirmed",
   "chaStopRetry": "Retry Stop",
   "chaStopPersistenceFailed": "Stop could not be saved or confirmed safely. Try again.",
