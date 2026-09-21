@@ -40,6 +40,7 @@ import 'package:hermes_android/core/companion/models/companion_presence_level.da
 import 'package:hermes_android/core/companion/render/companion_status_indicator.dart';
 import 'package:hermes_android/core/companion/render/companion_view.dart';
 import 'package:hermes_android/core/config/flavor.dart';
+import 'package:hermes_android/core/widgets/hermes_spark_mascot.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/models/agent_profile.dart';
 import 'package:hermes_android/core/models/agent_task_list.dart';
@@ -3849,7 +3850,60 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('refresh durable completo retira el control anterior', (
+  testWidgets('flecha superior se oculta en chat corto sin historial anterior', (
+    tester,
+  ) async {
+    await pumpChat(
+      tester,
+      messages: const [
+        {'role': 'assistant', 'content': 'Respuesta corta'},
+        {'role': 'user', 'content': 'Pregunta corta'},
+      ],
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('flecha superior alcanza contenido anterior y se oculta arriba', (
+    tester,
+  ) async {
+    await pumpChat(
+      tester,
+      messages: List.generate(20, (index) {
+        return {
+          'id': 'top-arrow-$index',
+          'role': index.isEven ? 'assistant' : 'user',
+          'content': 'Mensaje alto $index ${List.filled(8, 'contenido').join(' ')}',
+        };
+      }),
+    );
+    await tester.pump();
+
+    final list = find.descendant(
+      of: find.byType(ChatScrollInteractionGuard),
+      matching: find.byType(ListView),
+    );
+    final controller = tester.widget<ListView>(list).controller!;
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('chat-load-earlier')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 240));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(
+      controller.position.pixels,
+      closeTo(controller.position.maxScrollExtent - 48, 1),
+    );
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('refresh completo conserva salto si hay contenido anterior', (
     tester,
   ) async {
     var paginate = true;
@@ -3907,7 +3961,8 @@ void main() {
 
     expect(requests, hasLength(2));
     expect(chat.hasEarlierMessages, isFalse);
-    expect(find.byKey(control), findsNothing);
+    expect(find.byKey(control), findsOneWidget);
+    expect(find.byTooltip('Ir al inicio de la conversación'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -4194,7 +4249,8 @@ void main() {
       chat.messages.any((message) => message['content'] == 'RETRY_ANTERIOR_OK'),
       isTrue,
     );
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+    expect(find.byTooltip('Ir al inicio de la conversación'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -13275,7 +13331,7 @@ void main() {
   );
 
   testWidgets(
-    'un turno activo pipeline false vacío proyecta Thinking sin cabecera huérfana',
+    'un turno activo pipeline false vacío proyecta Thinking con cabecera',
     (tester) async {
       await pumpChat(
         tester,
@@ -13287,7 +13343,7 @@ void main() {
       );
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsNothing);
+      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13305,7 +13361,7 @@ void main() {
       );
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsNothing);
+      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -13372,7 +13428,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 350));
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.text('>_ HERMES CONSOLE'), findsNothing);
+      expect(find.text('>_ HERMES CONSOLE'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -15024,22 +15080,28 @@ void main() {
       await enableFullCompanion(tester);
 
       expect(find.byType(ThinkingTraceCard), findsOneWidget);
-      expect(find.byType(CompanionStatusIndicator), findsNothing);
+      expect(find.byType(CompanionStatusIndicator), findsOneWidget);
       expect(find.byType(CompanionView), findsOneWidget);
       expect(
         find.descendant(
           of: find.byType(ThinkingTraceCard),
-          matching: find.byType(CompanionView),
+          matching: find.byType(CompanionStatusIndicator),
         ),
         findsNothing,
       );
+      final companion = tester.widget<CompanionStatusIndicator>(
+        find.byType(CompanionStatusIndicator),
+      );
+      expect(companion.size, 44);
+      expect(companion.mood, HermesSparkMood.success);
+      expect(companion.animate, isFalse);
       expect(find.byIcon(Icons.check_circle), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
 
   testWidgets(
-    'cabecera cede la mascota a actividad sin mover contenido al terminar',
+    'cabecera conserva una mascota activa sin mover contenido al terminar',
     (tester) async {
       mockCompanionStorage();
       final gateway = _UiRewindGateway();
@@ -15061,6 +15123,26 @@ void main() {
         ),
         isTrue,
       );
+      await tester.pump();
+
+      expect(chat.state, ChatPipelineState.waiting);
+      expect(find.byType(ThinkingTraceCard), findsOneWidget);
+      expect(find.byType(CompanionStatusIndicator), findsOneWidget);
+      final waitingCompanion = tester.widget<CompanionStatusIndicator>(
+        find.byType(CompanionStatusIndicator),
+      );
+      expect(waitingCompanion.size, 44);
+      expect(waitingCompanion.mood, HermesSparkMood.waiting);
+      expect(waitingCompanion.animate, isTrue);
+      expect(find.byIcon(Icons.cloud_queue_rounded), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(ThinkingTraceCard),
+          matching: find.byType(CompanionStatusIndicator),
+        ),
+        findsNothing,
+      );
+
       gateway.emit('message.start');
       gateway.emit('tool.start', const {
         'id': 'call-single-sprite',
@@ -15075,10 +15157,16 @@ void main() {
       expect(
         find.descendant(
           of: find.byType(ThinkingTraceCard),
-          matching: find.byType(CompanionView),
+          matching: find.byType(CompanionStatusIndicator),
         ),
-        findsOneWidget,
+        findsNothing,
       );
+      final activeCompanion = tester.widget<CompanionStatusIndicator>(
+        find.byType(CompanionStatusIndicator),
+      );
+      expect(activeCompanion.size, 44);
+      expect(activeCompanion.mood, HermesSparkMood.thinking);
+      expect(activeCompanion.animate, isTrue);
       final activeHeader = tester.getRect(find.text('>_ HERMES CONSOLE'));
       final activeAnswer = tester.getRect(
         find.textContaining('PUBLIC_ACTIVE_ANSWER'),
@@ -15093,8 +15181,14 @@ void main() {
       gateway.emit('message.complete', const {'text': 'PUBLIC_ACTIVE_ANSWER'});
       await tester.pump(const Duration(milliseconds: 700));
 
-      expect(find.byType(CompanionStatusIndicator), findsNothing);
+      expect(find.byType(CompanionStatusIndicator), findsOneWidget);
       expect(find.byType(CompanionView), findsOneWidget);
+      final finishedCompanion = tester.widget<CompanionStatusIndicator>(
+        find.byType(CompanionStatusIndicator),
+      );
+      expect(finishedCompanion.size, 44);
+      expect(finishedCompanion.mood, HermesSparkMood.success);
+      expect(finishedCompanion.animate, isFalse);
       expect(find.byIcon(Icons.check_circle), findsOneWidget);
       expect(
         tester.getRect(find.text('>_ HERMES CONSOLE')).left,
@@ -15107,6 +15201,121 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('historial fallido usa error estático en cabecera y actividad', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 900);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    mockCompanionStorage();
+    await pumpChat(
+      tester,
+      initialPreferences: const {'companion.presence_level': 'full'},
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': 'PUBLIC_FAILED_HISTORY',
+          '_activity_trace': [
+            {
+              'kind': 'tool',
+              'label': 'terminal',
+              'status': 'failed',
+              'id': 'call-history-failed',
+            },
+          ],
+        },
+        {'role': 'user', 'content': 'Provoca un fallo'},
+      ],
+    );
+    await enableFullCompanion(tester);
+
+    final companion = tester.widget<CompanionStatusIndicator>(
+      find.byType(CompanionStatusIndicator),
+    );
+    expect(companion.size, 44);
+    expect(companion.mood, HermesSparkMood.error);
+    expect(companion.animate, isFalse);
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('presencia off elimina la mascota pero conserva el estado', (
+    tester,
+  ) async {
+    mockCompanionStorage();
+    await pumpChat(
+      tester,
+      initialPreferences: const {'companion.presence_level': 'off'},
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': 'PUBLIC_PRESENCE_OFF',
+          '_activity_trace': [
+            {
+              'kind': 'tool',
+              'label': 'read_file',
+              'status': 'completed',
+              'id': 'call-presence-off',
+            },
+          ],
+        },
+        {'role': 'user', 'content': 'Sin mascota'},
+      ],
+    );
+
+    expect(find.byType(CompanionStatusIndicator), findsNothing);
+    expect(find.byType(CompanionView), findsNothing);
+    expect(find.byIcon(Icons.check_circle), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('turno detenido conserva trace con estado neutral veraz', (
+    tester,
+  ) async {
+    mockCompanionStorage();
+    await pumpChat(
+      tester,
+      initialPreferences: const {'companion.presence_level': 'full'},
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': 'RESPUESTA_PARCIAL_DETENIDA',
+          '_cancelled': true,
+          '_stopped': true,
+          '_activity_trace': [
+            {
+              'kind': 'tool',
+              'label': 'terminal',
+              'status': 'completed',
+              'id': 'call-stopped',
+            },
+          ],
+        },
+        {'role': 'user', 'content': 'Detén este turno'},
+      ],
+    );
+    await enableFullCompanion(tester);
+
+    expect(find.text('Detenido'), findsOneWidget);
+    expect(find.byIcon(Icons.stop_circle), findsOneWidget);
+    final companion = tester.widget<CompanionStatusIndicator>(
+      find.byType(CompanionStatusIndicator),
+    );
+    expect(companion.mood, HermesSparkMood.idle);
+    expect(companion.animate, isFalse);
+    expect(
+      find.descendant(
+        of: find.byType(ThinkingTraceCard),
+        matching: find.byType(CompanionStatusIndicator),
+      ),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('turno tool-only usa una sola tarjeta de actividad', (
     tester,
@@ -17014,6 +17223,7 @@ void main() {
 
       expect(chat.state, ChatPipelineState.cancelled);
       expect(chat.messages.first['_cancelled'], isTrue);
+      expect(chat.messages.first['_stopped'], isTrue);
       expect(
         find.text('cancelled'),
         findsOneWidget,
@@ -17026,6 +17236,32 @@ void main() {
         reason:
             'el parcial cancelado largo genera un plan troceado (varios '
             'slices proyectados), no un único MarkdownBody gigante',
+      );
+
+      final transcript = tester.widget<ListView>(
+        find.descendant(
+          of: find.byType(ChatScrollInteractionGuard),
+          matching: find.byType(ListView),
+        ),
+      );
+      for (var attempt = 0; attempt < 3; attempt++) {
+        transcript.controller!.jumpTo(
+          transcript.controller!.position.maxScrollExtent,
+        );
+        await tester.pump();
+      }
+      final stoppedTrace = find.byType(ThinkingTraceCard);
+      expect(stoppedTrace, findsOneWidget);
+      expect(
+        find.descendant(of: stoppedTrace, matching: find.text('Detenido')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: stoppedTrace,
+          matching: find.byIcon(Icons.stop_circle),
+        ),
+        findsOneWidget,
       );
       expect(tester.takeException(), isNull);
     },
@@ -17917,6 +18153,7 @@ void main() {
       final liveAssistant = find.byKey(chatLiveAssistantViewportKey);
       expect(chat.state, ChatPipelineState.cancelled);
       expect(chat.messages.first['_cancelled'], isTrue);
+      expect(chat.messages.first['_stopped'], isTrue);
       expect(liveAssistant, findsOneWidget);
       expect(find.text('cancelled'), findsOneWidget);
       expect(

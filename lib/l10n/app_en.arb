@@ -1061,6 +1061,7 @@
   },
   "cevTraceFailed": "Error · view details",
   "cevTraceRecovered": "Completed · retried (view details)",
+  "cevTraceStopped": "Stopped",
   "cevTraceCompleted": "Completed",
   "cevTraceCompletedActions": "Completed · {count, plural, =1{1 action} other{{count} actions}}",
   "@cevTraceCompletedActions": {
@@ -4424,6 +4425,7 @@
   "chaContinueReading": "Continue reading",
   "chaReadAloud": "Read aloud",
   "chaScrollToBottom": "Go to the end of the conversation",
+  "chaScrollToTop": "Go to the start of the conversation",
   "chaLoadEarlierMessages": "Load earlier messages",
   "chaEarlierMessagesError": "Earlier messages could not be loaded. Try again.",
   "chaScrollToPreviousAnswer": "Go to the previous response",

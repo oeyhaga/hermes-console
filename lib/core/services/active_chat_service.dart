@@ -628,6 +628,7 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
       '_pipeline',
       '_interim',
       '_cancelled',
+      '_stopped',
       '_cancelledUser',
       '_steer',
       '_optimistic',
@@ -22334,6 +22335,7 @@ class ActiveChat {
       requestServerStop: requestServerStop,
       deferConfirmation: true,
       markUserCancelled: false,
+      stopped: terminalState == _StopTransitionState.confirmed,
       clearQueue: false,
     );
     _persistLatestUserCancellationInBackground();
@@ -22590,6 +22592,7 @@ class ActiveChat {
     required bool requestServerStop,
     bool deferConfirmation = false,
     bool markUserCancelled = true,
+    bool stopped = false,
     bool clearQueue = true,
   }) {
     if (_cancelling) return;
@@ -22636,7 +22639,12 @@ class ActiveChat {
     } else if (hasPartial &&
         _messages.isNotEmpty &&
         _messages[0]['role'] == 'assistant') {
-      _messages[0] = {..._messages[0], '_cancelled': true, '_pipeline': false};
+      _messages[0] = {
+        ..._messages[0],
+        '_cancelled': true,
+        if (stopped) '_stopped': true,
+        '_pipeline': false,
+      };
     }
     // Stop conserva el tema como memoria, pero buildHistory lo etiqueta para que
     // ni voz ni texto lo retomen salvo referencia explícita. Steering no pasa
