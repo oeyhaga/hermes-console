@@ -603,7 +603,7 @@
   "genMediaOffline": "Offline — reconnect to load this file",
   "genMediaLoad": "Load generated media",
   "genMediaLoadFrom": "Load generated media from {domain}",
-  "genMediaTextSummary": "{lineCount} lines · {size}",
+  "genMediaTextSummary": "{lineCount, plural, =1{1 line} other{{lineCount} lines}} · {size}",
   "@genMediaTextSummary": {"placeholders": {"lineCount": {"type": "int"}, "size": {"type": "String"}}},
   "genMediaViewFullText": "View full text",
   "genMediaOpenWith": "Open with…",

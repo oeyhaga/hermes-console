@@ -423,6 +423,7 @@ Future<void> showVideoViewer(
           backgroundColor: Colors.black,
           body: SafeArea(
             child: Stack(
+              key: const ValueKey<String>('generated-video-viewer-safe-area'),
               children: [
                 Positioned.fill(
                   child: GestureDetector(

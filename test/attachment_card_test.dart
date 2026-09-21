@@ -11,7 +11,11 @@ import 'package:hermes_android/core/services/generated_media_service.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
+import 'package:hermes_android/core/widgets/generated_video_card.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
+import 'package:hermes_android/l10n/app_localizations_en.dart';
+import 'package:hermes_android/l10n/app_localizations_es.dart';
+import 'package:video_player/video_player.dart';
 
 class _FakeAudioPlayback implements GeneratedAudioPlayback {
   final durations = StreamController<Duration>.broadcast();
@@ -63,8 +67,11 @@ class _FakeAudioPlayback implements GeneratedAudioPlayback {
 }
 
 void main() {
-  Widget host(Widget child) => MaterialApp(
-    locale: const Locale('es'),
+  Widget host(
+    Widget child, {
+    Locale locale = const Locale('es'),
+  }) => MaterialApp(
+    locale: locale,
     localizationsDelegates: Strings.localizationsDelegates,
     supportedLocales: Strings.supportedLocales,
     theme: AppTheme.hermesRedDark,
@@ -339,6 +346,132 @@ void main() {
     await tester.tap(find.byIcon(Icons.close));
     expect(retries, 1);
     expect(removes, 1);
+  });
+
+  testWidgets('text summary pluralizes one line in English and Spanish', (
+    tester,
+  ) async {
+    Widget preview() => GeneratedTextPreviewCard(
+      name: 'note.txt',
+      text: 'hello world',
+      sizeBytes: 11,
+      onOpen: () {},
+      onShare: () {},
+      onSave: () {},
+    );
+
+    await tester.pumpWidget(host(preview()));
+    expect(find.text('1 línea · 11 B'), findsOneWidget);
+
+    await tester.pumpWidget(host(preview(), locale: const Locale('en')));
+    expect(find.text('1 line · 11 B'), findsOneWidget);
+
+    expect(StringsEn().genMediaPages(1), '1 page');
+    expect(StringsEn().genMediaPages(2), '2 pages');
+    expect(StringsEs().genMediaPages(1), '1 página');
+    expect(StringsEs().genMediaPages(2), '2 páginas');
+  });
+
+  testWidgets('text viewer keeps content above the system navigation inset', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 28, bottom: 48)
+      ..viewPadding = const FakeViewPadding(top: 28, bottom: 48);
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      host(
+        GeneratedTextViewerScreen(
+          name: 'note.txt',
+          text: 'hello world',
+          sizeBytes: 11,
+          onShare: () {},
+          onSave: () {},
+        ),
+      ),
+    );
+
+    final viewport = find.byKey(
+      const ValueKey('generated-text-viewer-safe-area'),
+    );
+    expect(tester.getRect(viewport).bottom, lessThanOrEqualTo(752));
+  });
+
+  testWidgets('image viewer keeps controls inside system safe areas', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 28, bottom: 48)
+      ..viewPadding = const FakeViewPadding(top: 28, bottom: 48);
+    addTearDown(tester.view.reset);
+    final directory = Directory.systemTemp.createTempSync('image-viewer-safe-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/pixel.png')
+      ..writeAsBytesSync(
+        base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+          'AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        ),
+      );
+
+    await tester.pumpWidget(
+      host(
+        Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => showImageViewer(context, file),
+            child: const Text('Launch'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Launch'));
+    await tester.pumpAndSettle();
+
+    final close = find.byIcon(Icons.close);
+    final viewer = find.byKey(const ValueKey('generated-image-viewer-safe-area'));
+    expect(tester.getRect(close).top, greaterThanOrEqualTo(28));
+    expect(tester.getRect(viewer).bottom, lessThanOrEqualTo(752));
+  });
+
+  testWidgets('video viewer keeps playback controls above navigation inset', (
+    tester,
+  ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 28, bottom: 48)
+      ..viewPadding = const FakeViewPadding(top: 28, bottom: 48);
+    addTearDown(tester.view.reset);
+    final directory = Directory.systemTemp.createTempSync('video-viewer-safe-');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/clip.mp4')
+      ..writeAsBytesSync(<int>[0, 0, 0, 24]);
+    final controller = VideoPlayerController.file(file);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      host(
+        Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => showVideoViewer(context, file, controller),
+            child: const Text('Launch'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Launch'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    final viewer = find.byKey(const ValueKey('generated-video-viewer-safe-area'));
+    final playback = find.byIcon(Icons.play_arrow_rounded);
+    expect(tester.getRect(viewer).bottom, lessThanOrEqualTo(752));
+    expect(tester.getRect(playback).bottom, lessThanOrEqualTo(752));
   });
 
   testWidgets('MEDIA text auto-loads and opens a selectable full viewer', (
@@ -879,8 +1012,32 @@ void main() {
     expect(arguments['generatedFileKey'], fileKey);
     expect(arguments.containsKey('path'), isFalse);
     expect(arguments['storageKey'], arguments['expectedSha256']);
-    expect(find.byKey(const ValueKey('generated-pdf-thumbnail')), findsOneWidget);
+    final thumbnail = find.byKey(
+      const ValueKey<String>('generated-pdf-thumbnail'),
+    );
+    final caption = find.byKey(
+      const ValueKey<String>('generated-pdf-caption'),
+    );
+    final card = find.byKey(
+      const ValueKey<String>('generated-pdf-preview-card'),
+    );
+    final actions = find.byKey(
+      const ValueKey<String>('generated-pdf-actions'),
+    );
+    expect(thumbnail, findsOneWidget);
     expect(find.textContaining('3 páginas'), findsOneWidget);
+    expect(tester.getRect(thumbnail).width, tester.getRect(caption).width);
+    expect(
+      tester.getRect(thumbnail).bottom,
+      lessThanOrEqualTo(tester.getRect(caption).top),
+    );
+    final thumbnailRect = tester.getRect(thumbnail);
+    expect(
+      thumbnailRect.width / thumbnailRect.height,
+      closeTo(1, 0.01),
+    );
+    expect(tester.getRect(thumbnail).height, lessThanOrEqualTo(320));
+    expect(tester.getRect(card).left, tester.getRect(actions).left);
 
     await tester.tap(find.text('Abrir'));
     await tester.tap(find.text('Compartir'));
@@ -891,6 +1048,12 @@ void main() {
   testWidgets('PDF viewer renders pages lazily with per-page zoom', (
     tester,
   ) async {
+    tester.view
+      ..devicePixelRatio = 1
+      ..physicalSize = const Size(360, 800)
+      ..padding = const FakeViewPadding(top: 28, bottom: 48)
+      ..viewPadding = const FakeViewPadding(top: 28, bottom: 48);
+    addTearDown(tester.view.reset);
     final directory = Directory.systemTemp.createTempSync('generated-pdf-');
     addTearDown(() => directory.deleteSync(recursive: true));
     final connectionKey = 'c' * 64;
@@ -946,6 +1109,7 @@ void main() {
     expect(renderedPages, isNot(contains(2)));
     expect(find.byKey(const ValueKey('attachment-pdf-page-0')), findsOneWidget);
     expect(find.byType(InteractiveViewer), findsWidgets);
+    expect(tester.getRect(find.byType(ListView)).bottom, lessThanOrEqualTo(752));
 
     await tester.drag(find.byType(ListView), const Offset(0, -1000));
     await tester.pump(const Duration(milliseconds: 500));
