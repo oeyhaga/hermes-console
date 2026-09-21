@@ -1038,6 +1038,8 @@ class _NoLiveMutationGateway extends _UiRewindGateway
     implements HermesDesktopRedirectGateway {
   final List<String> redirects = [];
   Object? redirectError;
+  DesktopRedirectDisposition redirectDisposition =
+      DesktopRedirectDisposition.redirected;
 
   int get redirectCalls => redirects.length;
   int get steerCalls => steers.length;
@@ -1050,7 +1052,7 @@ class _NoLiveMutationGateway extends _UiRewindGateway
     redirects.add(text);
     final error = redirectError;
     if (error != null) throw error;
-    return DesktopRedirectDisposition.redirected;
+    return redirectDisposition;
   }
 }
 
@@ -20738,7 +20740,22 @@ void main() {
     tester,
   ) async {
     final semantics = tester.ensureSemantics();
-    final chat = await pumpChat(tester, chatState: ChatPipelineState.streaming);
+    final gateway = _NoLiveMutationGateway();
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-queue-actions'),
+      initialStoredSessionId: 'sess-test',
+      acquireDesktopRuntimeBeforeMount: true,
+    );
+    expect(
+      await chat.send(
+        fullText: 'turno vivo',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
     expect(chat.enqueue('corrige el rumbo'), isTrue);
     await tester.pump();
     await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
@@ -20794,17 +20811,49 @@ void main() {
       ),
     );
     semantics.dispose();
+    gateway.emit('message.complete', {'text': 'turno terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
+    gateway.emit('message.complete', {'text': 'seguimiento terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
   });
 
-  testWidgets('rechazo de redirección conserva la cola y explica el resultado', (
+  testWidgets('Steer se oculta en el bridge localhost', (tester) async {
+    final chat = await pumpChat(
+      tester,
+      connection: _conn(),
+      chatState: ChatPipelineState.streaming,
+    );
+    expect(chat.enqueue('corrige el rumbo'), isTrue);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+    await tester.pump();
+    final id = chat.queuedEntries.single.id;
+
+    expect(find.byKey(ValueKey('chat-queue-steer-$id')), findsNothing);
+  });
+
+  testWidgets('Steer se oculta sin gateway Desktop', (tester) async {
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('conn-queue-no-desktop'),
+      chatState: ChatPipelineState.streaming,
+      attachDesktopRuntimeOnLoad: false,
+    );
+    expect(chat.enqueue('corrige el rumbo'), isTrue);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+    await tester.pump();
+    final id = chat.queuedEntries.single.id;
+
+    expect(find.byKey(ValueKey('chat-queue-steer-$id')), findsNothing);
+  });
+
+  testWidgets('rechazo de redirección conserva la cola en silencio', (
     tester,
   ) async {
     final gateway = _NoLiveMutationGateway()
-      ..redirectError = const TuiGatewayRpcError(
-        'session.redirect',
-        'Session is not accepting a redirect',
-        code: 4009,
-      );
+      ..redirectDisposition = DesktopRedirectDisposition.rejected;
     final chat = await pumpChat(
       tester,
       desktopGateway: gateway,
@@ -20835,11 +20884,55 @@ void main() {
       find.text(
         'Hermes no aceptó la redirección. El mensaje sigue en cola y se enviará después.',
       ),
-      findsOneWidget,
+      findsNothing,
     );
     gateway.emit('message.complete', {'text': 'turno terminado'});
     await tester.pump(const Duration(milliseconds: 400));
     expect(gateway.submissions, ['turno vivo', 'corrige el rumbo']);
+    gateway.emit('message.complete', {'text': 'seguimiento terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('resultado incierto conserva la cola y advierte duplicados', (
+    tester,
+  ) async {
+    final gateway = _NoLiveMutationGateway()
+      ..redirectError = StateError('redirect ACK lost');
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-queue-steer-unconfirmed'),
+      initialStoredSessionId: 'sess-test',
+      acquireDesktopRuntimeBeforeMount: true,
+    );
+    expect(
+      await chat.send(
+        fullText: 'turno vivo',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    expect(chat.enqueue('corrige el rumbo'), isTrue);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+    await tester.pump();
+    final id = chat.queuedEntries.single.id;
+
+    await tester.tap(find.byKey(ValueKey('chat-queue-steer-$id')));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(chat.queuedMessages, ['corrige el rumbo']);
+    expect(
+      find.text(
+        'Hermes no confirmó la redirección. El mensaje sigue en cola; '
+        'revísalo antes de reintentar para evitar duplicados.',
+      ),
+      findsOneWidget,
+    );
+    gateway.emit('message.complete', {'text': 'turno terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
     gateway.emit('message.complete', {'text': 'seguimiento terminado'});
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);

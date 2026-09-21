@@ -1051,7 +1051,11 @@ void main() {
               'session.resume' => {'session_id': 'runtime-qa'},
               'gateway.capabilities' => {'per_session_exclusive_submit': true},
               'session.steer' => {'status': 'queued'},
-              'session.redirect' => {'status': 'redirected'},
+              'session.redirect' => {
+                'status': params['text'] == 'rechaza'
+                    ? 'rejected'
+                    : 'redirected',
+              },
               _ => <String, dynamic>{'status': 'ok'},
             };
             socket.add(
@@ -1121,6 +1125,10 @@ void main() {
         binding.runtimeSessionId,
         'corrige el cierre',
       );
+      final rejectedRedirect = await client.redirect(
+        binding.runtimeSessionId,
+        'rechaza',
+      );
       final event = await eventFuture.timeout(const Duration(seconds: 2));
       final subagent = await subagentFuture.timeout(const Duration(seconds: 2));
 
@@ -1129,6 +1137,7 @@ void main() {
       expect(binding.storedSessionId, 'stored-qa');
       expect(binding.created, isFalse);
       expect(redirect, DesktopRedirectDisposition.redirected);
+      expect(rejectedRedirect, DesktopRedirectDisposition.rejected);
       expect(requests.map((request) => request['method']), [
         'gateway.capabilities',
         'session.resume',
@@ -1136,6 +1145,7 @@ void main() {
         'prompt.submit',
         'prompt.submit',
         'session.steer',
+        'session.redirect',
         'session.redirect',
       ]);
       expect(requests[0]['params'], isEmpty);
@@ -1205,7 +1215,8 @@ void main() {
             'gateway.capabilities' => {'per_session_exclusive_submit': true},
             'prompt.submit' => {
               'accepted': true,
-              'client_turn_id': 'client-opaque',
+              'client_turn_id':
+                  (frame['params'] as Map<String, dynamic>)['client_turn_id'],
               'server_turn_id': 'server-opaque',
               'state': 'accepted',
               'duplicate': false,
@@ -1243,6 +1254,11 @@ void main() {
         'pregunta moderna',
         'client-opaque',
       );
+      final queuedAck = await client.submitQueuedPromptIdempotent(
+        binding.runtimeSessionId,
+        'seguimiento moderno',
+        'client-queued',
+      );
       final status = await client.getTurnStatus(
         binding.runtimeSessionId,
         'client-opaque',
@@ -1251,6 +1267,7 @@ void main() {
       expect(requests.map((request) => request['method']), [
         'gateway.capabilities',
         'session.resume',
+        'prompt.submit',
         'prompt.submit',
         'turn.status',
       ]);
@@ -1261,10 +1278,17 @@ void main() {
       });
       expect(requests[3]['params'], {
         'session_id': 'runtime-modern',
+        'text': 'seguimiento moderno',
+        'client_turn_id': 'client-queued',
+        'queued': true,
+      });
+      expect(requests[4]['params'], {
+        'session_id': 'runtime-modern',
         'client_turn_id': 'client-opaque',
       });
       expect(ack.serverTurnId, 'server-opaque');
       expect(ack.duplicate, isFalse);
+      expect(queuedAck.clientTurnId, 'client-queued');
       expect(status.known, isTrue);
       expect(status.state, DesktopTurnState.running);
     },
@@ -2212,11 +2236,16 @@ void main() {
       'corregido',
       2,
       truncateBeforeRowId: 73,
+      rebindSurvivorRowIds: const [11, 22],
     );
     await client.submitRewindPrompt(
       binding.runtimeSessionId,
       'primer turno',
       0,
+    );
+    await client.submitQueuedPrompt(
+      binding.runtimeSessionId,
+      'seguimiento en cola',
     );
 
     expect(requests.map((request) => request['method']), [
@@ -2225,6 +2254,7 @@ void main() {
       'image.attach_bytes',
       'file.attach',
       'image.detach',
+      'prompt.submit',
       'prompt.submit',
       'prompt.submit',
     ]);
@@ -2245,6 +2275,7 @@ void main() {
       'truncate_before_row_id': 73,
       'confirm_truncate': true,
       'confirm_empty_truncate': true,
+      'rebind_survivor_row_ids': [11, 22],
     });
     expect(requests[6]['params'], {
       'session_id': 'runtime-native',
@@ -2253,10 +2284,15 @@ void main() {
       'confirm_truncate': true,
       'confirm_empty_truncate': true,
     });
+    expect(requests[7]['params'], {
+      'session_id': 'runtime-native',
+      'text': 'seguimiento en cola',
+      'queued': true,
+    });
   });
 
   test(
-    'durable row resolver refreshes once and selects by user ordinal',
+    'durable row resolver matches content across shifted ordinals and rejects ambiguity',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(server.close);
@@ -2324,12 +2360,23 @@ void main() {
       expect(
         await client.resolveDurableUserRowId(
           'runtime-history',
+          sourceText: 'última',
+          expectedOrdinal: 0,
+        ),
+        76,
+      );
+      expect(
+        await client.resolveDurableUserRowId(
+          'runtime-history',
           sourceText: 'duplicada',
           expectedOrdinal: 1,
         ),
-        75,
+        isNull,
       );
-      expect(requests.map((request) => request['method']), ['session.history']);
+      expect(requests.map((request) => request['method']), [
+        'session.history',
+        'session.history',
+      ]);
     },
   );
 

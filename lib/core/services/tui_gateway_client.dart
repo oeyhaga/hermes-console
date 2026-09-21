@@ -333,7 +333,7 @@ abstract class HermesDesktopRedirectGateway {
   );
 }
 
-enum DesktopRedirectDisposition { redirected, queued }
+enum DesktopRedirectDisposition { redirected, queued, rejected }
 
 /// Envío que sigue a una interrupción de la reproducción de voz.
 ///
@@ -1098,6 +1098,16 @@ abstract class HermesDesktopIdempotentGateway {
   );
 }
 
+abstract class HermesDesktopQueuedPromptGateway {
+  Future<void> submitQueuedPrompt(String runtimeSessionId, String text);
+
+  Future<DesktopTurnAck> submitQueuedPromptIdempotent(
+    String runtimeSessionId,
+    String text,
+    String clientTurnId,
+  );
+}
+
 /// Identidad durable posterior a un `prompt.submit` que recorta.
 ///
 /// Los gateways nuevos devuelven un mapa `old → new` por fila física
@@ -1236,6 +1246,7 @@ class TuiGatewayClient
         HermesDesktopConfiguredSessionLifecycleGateway,
         HermesDesktopLifecycleGateway,
         HermesDesktopIdempotentGateway,
+        HermesDesktopQueuedPromptGateway,
         HermesDesktopRewindResolverGateway,
         HermesDesktopRewindGateway,
         HermesDesktopDurableRewindGateway,
@@ -5437,6 +5448,16 @@ class TuiGatewayClient
   }
 
   @override
+  Future<void> submitQueuedPrompt(String runtimeSessionId, String text) async {
+    await _requestPromptSubmit({
+      'session_id': runtimeSessionId,
+      'text': text,
+      'queued': true,
+    });
+    _markWatchdogRuntimeBusy(runtimeSessionId);
+  }
+
+  @override
   Future<void> submitInterruptedPrompt(
     String runtimeSessionId,
     String text,
@@ -5480,6 +5501,26 @@ class TuiGatewayClient
   }
 
   @override
+  Future<DesktopTurnAck> submitQueuedPromptIdempotent(
+    String runtimeSessionId,
+    String text,
+    String clientTurnId,
+  ) async {
+    final result = await _requestPromptSubmit({
+      'session_id': runtimeSessionId,
+      'text': text,
+      'client_turn_id': clientTurnId,
+      'queued': true,
+    });
+    final ack = DesktopTurnAck.fromJson(
+      result,
+      expectedClientTurnId: clientTurnId,
+    );
+    _markWatchdogRuntimeBusy(runtimeSessionId);
+    return ack;
+  }
+
+  @override
   Future<DesktopTurnStatus> getTurnStatus(
     String sessionId,
     String clientTurnId,
@@ -5510,15 +5551,21 @@ class TuiGatewayClient
             rowId is int &&
             rowId > 0;
       }).toList(growable: false);
-      if (expectedOrdinal < 0 || expectedOrdinal >= durableUsers.length) {
-        return null;
+      final wanted = sourceText.trim();
+      if (wanted.isEmpty) return null;
+      final matches = durableUsers.where((message) {
+        final durableText = (message['text'] ?? message['content'] ?? '')
+            .toString()
+            .trim();
+        return durableText == wanted;
+      }).toList(growable: false);
+      if (matches.length == 1) return matches.single['row_id'] as int;
+      if (matches.length > 1 &&
+          expectedOrdinal >= durableUsers.length - 1 &&
+          identical(matches.last, durableUsers.last)) {
+        return matches.last['row_id'] as int;
       }
-      final target = durableUsers[expectedOrdinal];
-      final durableText = (target['text'] ?? target['content'] ?? '')
-          .toString()
-          .trim();
-      if (durableText != sourceText.trim()) return null;
-      return target['row_id'] as int;
+      return null;
     } catch (_) {
       return null;
     }
@@ -5649,10 +5696,7 @@ class TuiGatewayClient
     return switch (result['status']) {
       'redirected' => DesktopRedirectDisposition.redirected,
       'queued' => DesktopRedirectDisposition.queued,
-      _ => throw const TuiGatewayRpcError(
-        method,
-        'Hermes rejected the live correction',
-      ),
+      _ => DesktopRedirectDisposition.rejected,
     };
   }
 
