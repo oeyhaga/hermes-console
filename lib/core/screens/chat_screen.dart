@@ -16259,6 +16259,9 @@ class _AssistantMessage extends StatelessWidget {
       metadata,
       split.reasoning,
     );
+    final activityActive =
+        activityEvents.isNotEmpty &&
+        (isStreaming || metadata['_pipeline'] == true);
     final structuredImages = _structuredGeneratedImages(metadata);
     final structuredVideos = _structuredGeneratedVideos(metadata);
     final textualGeneratedBasenames = <String, int>{};
@@ -16517,16 +16520,28 @@ class _AssistantMessage extends StatelessWidget {
                         final app = ctx
                             .findAncestorStateOfType<HermesAppState>();
                         if (app == null) return const SizedBox.shrink();
-                        final mood = isStreaming
-                            ? HermesSparkMood.thinking
-                            : HermesSparkMood.idle;
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: CompanionMessagePresence(
-                            companion: app.companion,
-                            mood: mood,
-                            size: 32,
-                          ),
+                        final companion = app.companion;
+                        return AnimatedBuilder(
+                          animation: companion,
+                          builder: (context, _) {
+                            final showsAvatar =
+                                companion.isInitialized &&
+                                companion.enabled &&
+                                companion.presenceLevel.showsStatusPresence;
+                            if (!showsAvatar) return const SizedBox.shrink();
+                            // El bloque activo posee la mascota; el hueco evita saltos.
+                            return SizedBox(
+                              width: 38,
+                              height: 32,
+                              child: activityActive
+                                  ? null
+                                  : CompanionMessagePresence(
+                                      companion: companion,
+                                      mood: HermesSparkMood.idle,
+                                      size: 32,
+                                    ),
+                            );
+                          },
                         );
                       },
                     ),
