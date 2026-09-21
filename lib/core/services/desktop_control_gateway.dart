@@ -27,6 +27,10 @@ final class DesktopControlFailure implements Exception {
 /// Keeping this separate from the chat gateway lets legacy fakes and legacy
 /// Hermes servers continue to work. Screens must treat method-not-found as an
 /// unsupported capability, never as an empty successful inventory.
+abstract class HermesDesktopProcessStopGateway {
+  Future<void> stopBackgroundProcesses();
+}
+
 abstract class HermesDesktopControlGateway {
   Future<RecoveryTimeline> listRecovery(String runtimeSessionId);
 

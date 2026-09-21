@@ -31,6 +31,7 @@ class _AdaptiveGateway
         HermesDesktopGateway,
         HermesDesktopSessionLifecycleGateway,
         HermesDesktopSubagentGateway,
+        HermesDesktopProcessStopGateway,
         HermesDesktopControlGateway,
         HermesDesktopSessionControlGateway {
   _AdaptiveGateway({required this.changeEventsAvailable});
@@ -48,6 +49,8 @@ class _AdaptiveGateway
   );
   final List<AgentCenterSnapshot> processSnapshots = [];
   final List<String> killedProcesses = [];
+  final List<String> interruptedSubagents = [];
+  int processStopCalls = 0;
   int listCalls = 0;
   int processCalls = 0;
   int controlCalls = 0;
@@ -124,6 +127,18 @@ class _AdaptiveGateway
   }
 
   @override
+  Future<DesktopSubagentInterruptResult> interruptSubagent(
+    String runtimeSessionId,
+    String subagentId,
+  ) async {
+    interruptedSubagents.add(subagentId);
+    return DesktopSubagentInterruptResult(
+      found: true,
+      subagentId: subagentId,
+    );
+  }
+
+  @override
   Future<AgentCenterSnapshot> agentCenterSnapshot({
     String runtimeSessionId = '',
   }) async {
@@ -139,6 +154,11 @@ class _AdaptiveGateway
     String processId,
   ) async {
     killedProcesses.add(processId);
+  }
+
+  @override
+  Future<void> stopBackgroundProcesses() async {
+    processStopCalls += 1;
   }
 
   @override
@@ -504,37 +524,36 @@ void main() {
       );
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
 
-      fixture.gateway.processSnapshots.addAll([running, running, empty, empty]);
+      fixture.gateway.processSnapshots.addAll([running, empty, empty]);
       fixture.gateway.processSnapshot = empty;
       final processCallsBeforeStop = fixture.gateway.processCalls;
-      final fullRevisionBeforeStop = fixture.chat.adaptiveFullRefreshRevision;
       await tester.tap(find.byKey(const ValueKey('stop')));
       await tester.pump();
       await tester.pump();
 
-      expect(fixture.gateway.killedProcesses, ['process-stop-recheck']);
+      expect(fixture.gateway.processStopCalls, 1);
+      expect(fixture.gateway.killedProcesses, isEmpty);
+      expect(fixture.gateway.processCalls - processCallsBeforeStop, 1);
       expect(
-        fixture.chat.adaptiveFullRefreshRevision,
-        fullRevisionBeforeStop + 1,
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
       );
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+      expect(find.text('Background work stopped'), findsNothing);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump();
       expect(fixture.gateway.processCalls - processCallsBeforeStop, 2);
       expect(
         find.byKey(const ValueKey('chat-background-process-status')),
         findsOneWidget,
       );
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
-
-      await tester.pump(const Duration(milliseconds: 1500));
-      await tester.pump();
-      expect(fixture.gateway.processCalls - processCallsBeforeStop, 3);
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+      expect(find.text('Background work stopped'), findsNothing);
 
       await tester.pump(const Duration(milliseconds: 2500));
       await tester.pump();
+      expect(fixture.gateway.processCalls - processCallsBeforeStop, 3);
       expect(
         find.byKey(const ValueKey('chat-background-process-status')),
         findsNothing,
@@ -552,6 +571,66 @@ void main() {
         isFalse,
       );
       expect(find.text('Background work stopped'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 1200));
+
+      await _disposeFixture(tester, fixture);
+    },
+  );
+
+  testWidgets(
+    'Stop warns and keeps the control when background work remains listed',
+    (tester) async {
+      const running = AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-still-running',
+            status: AgentCenterStatus.running,
+            uptimeSeconds: 5,
+            command: 'sleep 200',
+          ),
+        ],
+      );
+      final fixture = await _mountChat(tester, changeEventsAvailable: true);
+      expect(
+        await fixture.chat.send(
+          fullText: 'Finish before background Stop',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      fixture.gateway.emit('message.start');
+      fixture.gateway.emit('message.complete', const {'text': 'Done'});
+      await tester.pump();
+      fixture.gateway.resumedSessionRunning = false;
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump();
+
+      fixture.gateway.processSnapshot = running;
+      fixture.gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('stop')));
+      await tester.pump();
+      expect(find.text('Background work stopped'), findsNothing);
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump(const Duration(milliseconds: 2500));
+      await tester.pump();
+
+      expect(fixture.gateway.processStopCalls, 1);
+      expect(
+        find.text('Could not stop everything: 1 background tasks remain'),
+        findsWidgets,
+      );
+      expect(find.text('Background work stopped'), findsNothing);
+      expect(find.byKey(const ValueKey('stop')), findsOneWidget);
+      expect(fixture.chat.backgroundProcesses, hasLength(1));
+      expect(fixture.chat.canStopSessionWork, isTrue);
+      await tester.pump(const Duration(milliseconds: 1200));
 
       await _disposeFixture(tester, fixture);
     },

@@ -1375,10 +1375,22 @@ class _SessionListScreenState extends State<SessionListScreen>
       return;
     }
     try {
-      await activeChats.stopSessionWork(
+      final result = await activeChats.stopSessionWork(
         connection: widget.connection,
         session: session,
       );
+      if (!result.allBackgroundWorkStopped && mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              Strings.of(
+                context,
+              ).chaBackgroundWorkRemaining(result.remainingBackgroundTasks),
+            ),
+          ),
+          kind: HermesNoticeKind.warning,
+        );
+      }
     } catch (_) {
       if (!mounted) return;
       HermesNotice.of(context).showSnackBar(
