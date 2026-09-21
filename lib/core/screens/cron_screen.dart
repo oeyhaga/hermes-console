@@ -82,6 +82,10 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
   final TextEditingController _searchController = TextEditingController();
   Timer? _refreshTimer;
   Timer? _eventRefreshDebounce;
+  Timer? _eventReconnectTimer;
+  Timer? _eventStableTimer;
+  final GatewayReconnectBackoff _eventReconnectBackoff =
+      GatewayReconnectBackoff();
   StreamSubscription<TuiGatewayEvent>? _eventSubscription;
   TuiGatewayClient? _ownedEventClient;
   Stream<TuiGatewayEvent>? _eventStream;
@@ -108,10 +112,13 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
     _client = widget.clientOverride ?? DashboardClient.lazy(widget.connection);
     _repository = CronRepository(_client);
     _refreshTimer = Timer.periodic(cronBackstopRefreshInterval, (_) {
-      if (_foreground && !_fetching) unawaited(_loadJobs(showLoader: false));
+      if (_refreshAllowed && !_fetching) unawaited(_loadJobs(showLoader: false));
     });
     _startEventUpdates();
   }
+
+  bool get _refreshAllowed =>
+      mounted && _foreground && ModalRoute.of(context)?.isCurrent != false;
 
   void _startEventUpdates() {
     final override = widget.eventStreamOverride;
@@ -126,7 +133,9 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
     _eventSubscription = _eventStream?.listen(
       _onDesktopEvent,
       onError: (_) {
-        // El backstop y el refresh manual siguen disponibles en legacy/offline.
+        _eventStableTimer?.cancel();
+        _eventStableTimer = null;
+        _scheduleEventReconnect();
       },
     );
   }
@@ -136,13 +145,35 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
     if (client == null || client.isConnected) return;
     try {
       await client.connect();
+      _eventStableTimer?.cancel();
+      _eventStableTimer = Timer(GatewayReconnectBackoff.stableInterval, () {
+        _eventStableTimer = null;
+        if (_refreshAllowed) _eventReconnectBackoff.markHealthy();
+      });
     } catch (_) {
-      // Un Dashboard sin WebSocket conserva el contrato REST y el backstop.
+      _scheduleEventReconnect();
     }
   }
 
+  void _scheduleEventReconnect({bool immediate = false}) {
+    final client = _ownedEventClient;
+    if (!_refreshAllowed ||
+        client == null ||
+        client.isConnected ||
+        _eventReconnectTimer != null) {
+      return;
+    }
+    final delay = immediate
+        ? Duration.zero
+        : _eventReconnectBackoff.nextDelay();
+    _eventReconnectTimer = Timer(delay, () {
+      _eventReconnectTimer = null;
+      if (_refreshAllowed) unawaited(_connectEventClient());
+    });
+  }
+
   void _onDesktopEvent(TuiGatewayEvent event) {
-    if (!_foreground || !isCronRefreshEvent(event)) return;
+    if (!_refreshAllowed || !isCronRefreshEvent(event)) return;
     _eventRefreshDebounce?.cancel();
     _eventRefreshDebounce = Timer(const Duration(milliseconds: 350), () {
       if (mounted && _foreground) unawaited(_loadJobs(showLoader: false));
@@ -170,8 +201,13 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
     if (_foreground) {
-      unawaited(_connectEventClient());
+      _scheduleEventReconnect(immediate: true);
       if (!_fetching) unawaited(_loadJobs(showLoader: false));
+    } else {
+      _eventReconnectTimer?.cancel();
+      _eventReconnectTimer = null;
+      _eventStableTimer?.cancel();
+      _eventStableTimer = null;
     }
   }
 
@@ -180,6 +216,8 @@ class _CronScreenState extends State<CronScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _refreshTimer?.cancel();
     _eventRefreshDebounce?.cancel();
+    _eventReconnectTimer?.cancel();
+    _eventStableTimer?.cancel();
     unawaited(_eventSubscription?.cancel());
     unawaited(_ownedEventClient?.close());
     _searchController.dispose();
@@ -1048,18 +1086,24 @@ class _CronJobDetailState extends State<_CronJobDetail> {
   bool _loading = true;
   bool _fetching = false;
 
+  bool get _refreshAllowed =>
+      mounted &&
+      WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed &&
+      ModalRoute.of(context)?.isCurrent != false;
+
   @override
   void initState() {
     super.initState();
     unawaited(_refresh());
-    _timer = Timer.periodic(cronBackstopRefreshInterval, (_) => _refresh());
+    _timer = Timer.periodic(cronBackstopRefreshInterval, (_) {
+      if (_refreshAllowed) unawaited(_refresh());
+    });
     _eventSubscription = widget.eventStream?.listen((event) {
-      if (!isCronRefreshEvent(event)) return;
+      if (!_refreshAllowed || !isCronRefreshEvent(event)) return;
       _eventRefreshDebounce?.cancel();
-      _eventRefreshDebounce = Timer(
-        const Duration(milliseconds: 350),
-        _refresh,
-      );
+      _eventRefreshDebounce = Timer(const Duration(milliseconds: 350), () {
+        if (_refreshAllowed) unawaited(_refresh());
+      });
     });
   }
 
