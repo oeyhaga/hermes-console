@@ -3117,98 +3117,118 @@ void main() {
     },
   );
 
-  test('V1 viewer turn reattaches after event-stream loss', () async {
-    final recoveryGate = Completer<DesktopSessionSnapshot>();
-    final gateway = _LifecycleRecoverableGateway()
-      ..initialSnapshot = DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-desktop-1',
-        storedSessionId: 'session-desktop-owned',
-        created: false,
-        messagesProvided: true,
-        messages: [
-          DesktopSessionMessage.tryParse(const {
-            'role': 'user',
-            'content': 'turno iniciado en Desktop',
-          })!,
-        ],
-        inflight: DesktopInflightTurn(
-          user: 'turno iniciado en Desktop',
-          streaming: true,
-        ),
-        running: true,
-      )
-      ..recoveryExistingGate = recoveryGate;
-    final chat = _recoverableChat(
-      'desktop-owned',
-      gateway,
-      attachDesktopRuntimeOnLoad: true,
-    );
-    addTearDown(chat.dispose);
+  test(
+    'V1 viewer stays unbound after loss and converges from durable state',
+    () async {
+      var durableFinalReady = false;
+      var transcriptCalls = 0;
+      final gateway = _ActivityLifecycleRecoverableGateway()
+        ..initialSnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-desktop-1',
+          storedSessionId: 'session-desktop-owned',
+          created: false,
+          messagesProvided: true,
+          messages: [
+            DesktopSessionMessage.tryParse(const {
+              'message_id': 'desktop-owned-user',
+              'role': 'user',
+              'content': 'turno iniciado en Desktop',
+            })!,
+          ],
+          inflight: DesktopInflightTurn(
+            user: 'turno iniciado en Desktop',
+            assistant: 'parcial Desktop visible',
+            streaming: true,
+          ),
+          running: true,
+        )
+        ..recoverySnapshot = DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-desktop-2',
+          storedSessionId: 'session-desktop-owned',
+          created: false,
+          messagesProvided: true,
+          messages: [
+            DesktopSessionMessage.tryParse(const {
+              'message_id': 'desktop-owned-user',
+              'role': 'user',
+              'content': 'turno iniciado en Desktop',
+            })!,
+          ],
+          inflight: DesktopInflightTurn(
+            user: 'turno iniciado en Desktop',
+            assistant: 'snapshot de recovery no publicable',
+            streaming: true,
+          ),
+          running: true,
+        );
+      final chat = _productionAttachChat(
+        'desktop-owned',
+        gateway,
+        storedMessageLoader: (_, _) async {
+          transcriptCalls += 1;
+          if (!durableFinalReady) {
+            return const [
+              {
+                'message_id': 'desktop-owned-user',
+                'role': 'user',
+                'content': 'turno iniciado en Desktop',
+              },
+            ];
+          }
+          return const [
+            {
+              'message_id': 'desktop-owned-user',
+              'role': 'user',
+              'content': 'turno iniciado en Desktop',
+            },
+            {
+              'message_id': 'desktop-owned-answer',
+              'role': 'assistant',
+              'content': 'respuesta durable final',
+            },
+          ];
+        },
+      );
+      addTearDown(chat.dispose);
 
-    await chat.loadMessages();
-    expect(chat.isStreaming, isTrue);
-    expect(chat.desktopRuntimeSessionId, 'runtime-desktop-1');
-    gateway.emit(
-      'tool.start',
-      sessionId: 'runtime-desktop-1',
-      payload: const {'name': 'terminal'},
-    );
-    await _waitUntil(() => chat.trace.isNotEmpty);
+      await chat.loadMessages(profile: 'owner-profile');
+      expect(chat.isStreaming, isTrue);
+      expect(chat.desktopRuntimeSessionId, 'runtime-desktop-1');
+      final visibleBeforeCut = jsonEncode(chat.messages);
 
-    gateway.drop();
-    await _waitUntil(() => gateway.resumeExistingCalls == 2);
-    expect(chat.state, ChatPipelineState.connecting);
+      gateway.drop();
+      await _waitUntil(() => gateway.resumeExistingCalls == 1);
 
-    final steer = chat.steer('ajuste durante recovery');
-    await Future<void>.delayed(Duration.zero);
-    expect(gateway.steers, isEmpty);
-    recoveryGate.complete(
-      DesktopSessionSnapshot(
-        runtimeSessionId: 'runtime-desktop-2',
-        storedSessionId: 'session-desktop-owned',
-        created: false,
-        messagesProvided: true,
-        messages: [
-          DesktopSessionMessage.tryParse(const {
-            'role': 'user',
-            'content': 'turno iniciado en Desktop',
-          })!,
-        ],
-        inflight: DesktopInflightTurn(
-          user: 'turno iniciado en Desktop',
-          streaming: true,
-        ),
-        running: true,
-      ),
-    );
-    await steer.timeout(const Duration(seconds: 1));
-    expect(gateway.connectCalls, 2);
-    expect(gateway.committedRecoveryRuntimeIds, ['runtime-desktop-2']);
-    expect(gateway.viewerAttachmentCommits, 1);
-    expect(gateway.turnRecoveryCommits, 0);
-    expect(gateway.steers, [
-      (runtimeId: 'runtime-desktop-2', text: 'ajuste durante recovery'),
-    ]);
+      expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(jsonEncode(chat.messages), visibleBeforeCut);
+      expect(
+        jsonEncode(chat.messages),
+        isNot(contains('snapshot de recovery no publicable')),
+      );
+      expect(gateway.viewerAttachmentCommits, 0);
+      expect(gateway.turnRecoveryCommits, 0);
 
-    gateway.emit(
-      'tool.complete',
-      sessionId: 'runtime-desktop-2',
-      payload: const {'name': 'terminal', 'preview': 'ok'},
-    );
-    gateway.emit(
-      'message.complete',
-      sessionId: 'runtime-desktop-2',
-      payload: const {'text': 'respuesta tras reconectar'},
-    );
-    await _waitUntil(() => chat.state == ChatPipelineState.completed);
-    expect(chat.assistantContent, 'respuesta tras reconectar');
-    expect(
-      chat.messages.any(
-        (message) => message['content'].toString().contains('StateError'),
-      ),
-      isFalse,
-    );
-  });
+      durableFinalReady = true;
+      gateway.activeListOverride = const DesktopActiveSessionList();
+      await chat.refreshPassiveRemoteActivity();
+      expect(chat.isStreaming, isTrue);
+      await chat.refreshPassiveRemoteActivity();
+
+      expect(chat.state, ChatPipelineState.completed);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(chat.assistantContent, 'respuesta durable final');
+      expect(transcriptCalls, 2);
+      expect(gateway.createForFirstSubmitCalls, 0);
+      expect(gateway.submitCalls, 0);
+      expect(gateway.interruptCalls, 0);
+      expect(gateway.resumeCalls, 0);
+      expect(
+        chat.messages.any((message) => message['role'] == 'assistant_error'),
+        isFalse,
+      );
+    },
+  );
 
   test(
     'V2 viewer loss converges after two terminal stored-session rosters',
@@ -3518,6 +3538,7 @@ void main() {
         hasLength(1),
       );
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains('runtime-anchor-2'),
@@ -3594,6 +3615,7 @@ void main() {
       );
       expect(chat.subagentActivities, isEmpty);
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(() => chat.state == ChatPipelineState.completed);
 
@@ -3922,14 +3944,15 @@ void main() {
       await chat.loadMessages(expectedMessageCount: 300);
       expect(chat.assistantContent, 'respuesta local incompleta');
 
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
       gateway.drop();
       await _waitUntil(
-        () => gateway.committedRecoveryRuntimeIds.contains(
-          'runtime-terminal-partial-2',
-        ),
+        () => gateway.resumeExistingCalls == resumesBeforeDrop + 1,
       );
 
       expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(gateway.committedRecoveryRuntimeIds, isEmpty);
       expect(chat.isStreaming, isTrue);
       expect(chat.awaitingDurableTurnRecovery, isFalse);
       expect(transcriptCalls, 1);
@@ -3997,14 +4020,15 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages();
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
       gateway.drop();
       await _waitUntil(
-        () => gateway.committedRecoveryRuntimeIds.contains(
-          'runtime-terminal-no-user-2',
-        ),
+        () => gateway.resumeExistingCalls == resumesBeforeDrop + 1,
       );
 
       expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(gateway.committedRecoveryRuntimeIds, isEmpty);
       expect(chat.isStreaming, isTrue);
       expect(
         chat.messages.any(
@@ -4082,14 +4106,15 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages();
+      final resumesBeforeDrop = gateway.resumeExistingCalls;
       gateway.drop();
       await _waitUntil(
-        () => gateway.committedRecoveryRuntimeIds.contains(
-          'runtime-terminal-tool-tail-2',
-        ),
+        () => gateway.resumeExistingCalls == resumesBeforeDrop + 1,
       );
 
       expect(chat.state, ChatPipelineState.connecting);
+      expect(chat.desktopRuntimeSessionId, isNull);
+      expect(gateway.committedRecoveryRuntimeIds, isEmpty);
       expect(chat.isStreaming, isTrue);
       expect(chat.awaitingDurableTurnRecovery, isFalse);
       expect(transcriptCalls, 1);
@@ -4142,6 +4167,7 @@ void main() {
     addTearDown(chat.dispose);
 
     await chat.loadMessages();
+    chat.markCurrentTurnClientSubmittedForTesting();
     gateway.drop();
     await _waitUntil(() => chat.state == ChatPipelineState.failed);
 
@@ -4226,6 +4252,7 @@ void main() {
         isTrue,
       );
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains('runtime-partial-2'),
@@ -4370,6 +4397,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 300);
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () =>
@@ -4471,6 +4499,7 @@ void main() {
 
       await chat.loadMessages(expectedMessageCount: 2);
       expect(chat.hasEarlierMessages, isFalse);
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -4552,6 +4581,7 @@ void main() {
         'content': 'prompt repetido tras compactación',
       };
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -4643,6 +4673,7 @@ void main() {
         'content': 'prompt repetido tras recovery idless',
       };
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -4738,6 +4769,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 2);
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -4833,6 +4865,7 @@ void main() {
         'content': 'prompt repetido antes del recovery vacío',
       };
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -4930,6 +4963,7 @@ void main() {
       };
       durableRows[0] = {...durableRows[0], 'content': 'prompt repetido'};
 
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -5029,6 +5063,7 @@ void main() {
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 300);
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -5114,6 +5149,7 @@ void main() {
     addTearDown(chat.dispose);
 
     await chat.loadMessages(expectedMessageCount: 300);
+    chat.markCurrentTurnClientSubmittedForTesting();
     gateway.drop();
     await _waitUntil(
       () => gateway.committedRecoveryRuntimeIds.contains(
@@ -5187,6 +5223,7 @@ void main() {
 
       await chat.loadMessages(expectedMessageCount: 300);
       expect(chat.hasEarlierMessages, isTrue);
+      chat.markCurrentTurnClientSubmittedForTesting();
       gateway.drop();
       await _waitUntil(
         () => gateway.committedRecoveryRuntimeIds.contains(
@@ -5264,6 +5301,7 @@ void main() {
     await chat.loadMessages(expectedMessageCount: 300);
     expect(chat.hasEarlierMessages, isTrue);
 
+    chat.markCurrentTurnClientSubmittedForTesting();
     gateway.drop();
     await _waitUntil(
       () => gateway.committedRecoveryRuntimeIds.contains(

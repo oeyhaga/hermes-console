@@ -6446,6 +6446,14 @@ class ActiveChat {
   }
 
   @visibleForTesting
+  void markCurrentTurnClientSubmittedForTesting() {
+    if (!isStreaming || _runTerminal) {
+      throw StateError('A live turn is required before marking its owner');
+    }
+    _turnSubmittedAtMs = _wallClockMs();
+  }
+
+  @visibleForTesting
   void markDesktopRuntimeConsoleOwnedForTesting() {
     final gateway = _desktopGateway;
     final runtimeId = _desktopRuntimeSessionId;
@@ -14276,13 +14284,24 @@ class ActiveChat {
         if (!isCurrent()) return;
       }
       try {
-        final recovery = await _resumeAdvertisedDesktopSessionForRecovery(
-          gateway,
-          durableId,
-          profile: expectedProfile,
-        );
+        DesktopRosterBoundRecovery? recovery;
+        late final DesktopSessionSnapshot snapshot;
+        if (_viewerTurnConvergenceIsCurrent) {
+          final recoveryGateway =
+              gateway as HermesDesktopRecoverySessionLifecycleGateway;
+          snapshot = await recoveryGateway.resumeExistingForRecovery(
+            durableId,
+            profile: expectedProfile,
+          );
+        } else {
+          recovery = await _resumeAdvertisedDesktopSessionForRecovery(
+            gateway,
+            durableId,
+            profile: expectedProfile,
+          );
+          snapshot = recovery.snapshot;
+        }
         if (!isCurrent()) return;
-        final snapshot = recovery.snapshot;
         final runtimeId = snapshot.runtimeSessionId;
         final advertisedRoot = snapshot.lineageRootId;
         final identityAccepted =
@@ -14298,19 +14317,18 @@ class ActiveChat {
           _closeViewerRecovery(gateway);
           return;
         }
+        if (_viewerTurnConvergenceIsCurrent) {
+          // Unproven post-cut viewers may publish only durable privacy vetoes.
+          if (_recordDurablePrivateTranscriptVetoes(snapshot.messages)) {
+            _emit(ActiveChatEvent.messagesHydrated);
+          }
+          return;
+        }
 
         final rosterGateway =
             gateway as HermesDesktopRosterBoundRecoveryGateway;
-        if (!rosterGateway.consumeRosterBoundViewerAttachment(recovery)) {
+        if (!rosterGateway.consumeRosterBoundViewerAttachment(recovery!)) {
           _closeViewerRecovery(gateway);
-          return;
-        }
-        if (_viewerTurnConvergenceIsCurrent &&
-            (snapshot.running ||
-                _desktopSnapshotTranscriptIsComplete(snapshot) ||
-                snapshot.inflight?.error?.trim().isNotEmpty == true ||
-                snapshot.inflight?.status?.trim().toLowerCase() == 'error')) {
-          _applyDesktopRecoverySnapshot(snapshot, expectedTurnEpoch);
           return;
         }
         _desktopStoredSessionId = snapshot.storedSessionId;
