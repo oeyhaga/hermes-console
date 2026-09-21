@@ -3923,9 +3923,11 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('flecha superior se oculta en chat corto sin historial anterior', (
-    tester,
-  ) async {
+  testWidgets('chat corto sin overflow oculta ambas flechas', (tester) async {
+    tester.view
+      ..physicalSize = const Size(960, 2142)
+      ..devicePixelRatio = 2.5;
+    addTearDown(tester.view.reset);
     await pumpChat(
       tester,
       messages: const [
@@ -3935,7 +3937,149 @@ void main() {
     );
     await tester.pump();
 
+    final list = find.descendant(
+      of: find.byType(ChatScrollInteractionGuard),
+      matching: find.byType(ListView),
+    );
+    final position = tester.widget<ListView>(list).controller!.position;
+    expect(position.maxScrollExtent, position.minScrollExtent);
     expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('chat corto sigue sin flechas tras arrastre y cierre del stream', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(960, 2142)
+      ..devicePixelRatio = 2.5;
+    addTearDown(tester.view.reset);
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('conn-short-scroll-arrows'),
+      desktopGateway: gateway,
+    );
+    expect(
+      await chat.send(
+        fullText: 'Pregunta corta',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('message.delta', const {'text': 'Respuesta corta'});
+    for (var frame = 0; frame < 30 && chat.assistantContent.isEmpty; frame++) {
+      await tester.pump(const Duration(milliseconds: 33));
+    }
+
+    final list = find.descendant(
+      of: find.byType(ChatScrollInteractionGuard),
+      matching: find.byType(ListView),
+    );
+    final controller = tester.widget<ListView>(list).controller!;
+    expect(
+      controller.position.maxScrollExtent,
+      controller.position.minScrollExtent,
+    );
+    final gesture = await tester.startGesture(tester.getCenter(list));
+    await gesture.moveBy(const Offset(0, 80));
+    await tester.pump();
+    await gesture.up();
+    for (
+      var frame = 0;
+      frame < 30 &&
+          controller.position.pixels != controller.position.minScrollExtent;
+      frame++
+    ) {
+      await tester.pump(const Duration(milliseconds: 33));
+    }
+    expect(controller.position.pixels, controller.position.minScrollExtent);
+
+    gateway.emit('message.complete', const {'text': 'Respuesta corta'});
+    for (var frame = 0; frame < 30 && chat.isStreaming; frame++) {
+      await tester.pump(const Duration(milliseconds: 33));
+    }
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('las flechas reaccionan cuando el stream empieza a desbordar', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(960, 2142)
+      ..devicePixelRatio = 2.5;
+    addTearDown(tester.view.reset);
+    final gateway = _UiRewindGateway();
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('conn-growing-scroll-arrows'),
+      desktopGateway: gateway,
+    );
+    expect(
+      await chat.send(
+        fullText: 'Pregunta corta',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    await tester.pump();
+
+    final list = find.descendant(
+      of: find.byType(ChatScrollInteractionGuard),
+      matching: find.byType(ListView),
+    );
+    final controller = tester.widget<ListView>(list).controller!;
+    expect(
+      controller.position.maxScrollExtent,
+      controller.position.minScrollExtent,
+    );
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+
+    final response = List.filled(
+      100,
+      'Respuesta que hace crecer la conversación.',
+    ).join(' ');
+    gateway.emit('message.delta', {'text': response});
+    for (
+      var frame = 0;
+      frame < 100 && controller.position.maxScrollExtent <= 0;
+      frame++
+    ) {
+      await tester.pump(const Duration(milliseconds: 33));
+    }
+
+    expect(controller.position.maxScrollExtent, greaterThan(0));
+    expect(controller.position.pixels, controller.position.minScrollExtent);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+
+    gateway.emit('message.complete', {'text': response});
+    for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
+      await tester.pump(const Duration(milliseconds: 33));
+    }
     expect(tester.takeException(), isNull);
   });
 
@@ -3959,9 +4103,28 @@ void main() {
       matching: find.byType(ListView),
     );
     final controller = tester.widget<ListView>(list).controller!;
-    expect(controller.position.maxScrollExtent, greaterThan(0));
+    expect(controller.position.maxScrollExtent, greaterThan(200));
     expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
 
+    controller.jumpTo(controller.position.minScrollExtent + 160);
+    await tester.pump();
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-visible')),
+      findsOneWidget,
+    );
+
+    controller.jumpTo(controller.position.minScrollExtent);
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+    final expectedTop = controller.position.maxScrollExtent;
     await tester.tap(find.byKey(const ValueKey('chat-load-earlier')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 240));
@@ -3970,7 +4133,7 @@ void main() {
 
     expect(
       controller.position.pixels,
-      closeTo(controller.position.maxScrollExtent - 48, 1),
+      closeTo(expectedTop, 1),
     );
     expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
     expect(tester.takeException(), isNull);
