@@ -3,6 +3,56 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
+## 1.2.12 (9010) — 2026-09-21
+
+Reliability release: long sessions, closing the app, and background work. The
+Hermes backend already kept working when Console was closed or lost its
+connection; what failed was what Console showed afterwards.
+
+- Reopening the app while a turn is still running no longer duplicates your
+  first message, no longer sticks on "Conectando / Sigo trabajando", and shows
+  the final reply when the turn ends. The same fix covers a reply that arrived
+  but stayed hidden while the chat looked stuck until the app was restarted:
+  Console now checks the active-session roster and reads the durable transcript
+  instead of waiting forever for a lost event.
+- After closing the app completely, Home and the conversation list show which
+  session Hermes is still working on. Activity is keyed by the durable session
+  id, refreshes on `sessions.changed`, and never flaps between adjacent polls.
+- Silence no longer fails a turn: a long foreground tool no longer produces a
+  false "Modelo sin respuesta". After five minutes without activity Console
+  shows a non-terminal hint, like Hermes Desktop.
+- Background work stays visible: a subagent or background process that is still
+  running keeps the activity indicator in the chat, on Home and in the list
+  after the parent turn ends, and the subagent pill only settles when the
+  backend confirms it is gone. Background-process completions are shown as
+  their own row instead of being hidden.
+- A turn that Hermes starts by itself (for example after a background process
+  finishes) is appended as its own message instead of overwriting the previous
+  reply.
+- Editing a message while a turn is running interrupts the turn and retries the
+  rewind with its cut intact, like Desktop, instead of leaving two bubbles. A
+  queued message that the backend refuses to redirect now says why.
+- Files and media Hermes sends with `MEDIA:` are shown instead of vanishing:
+  documents, audio and other files appear as cards with Download, Open, Share
+  and Save, audio has an inline player, and images and video keep their
+  tap-to-load preview. Model-authored host paths stay inert until you act and
+  the backend remains the authority over what may be downloaded.
+- The model's reasoning, and reply text Hermes stores outside the message body,
+  are no longer lost after a turn: reasoning appears in a collapsed
+  "Razonamiento" block, as in Desktop. This deliberately changes the previous
+  rule that the mobile app never carries reasoning; it is only carried in that
+  block and never in copied text.
+- Sharing a link to Console pastes just the link (no page title or preview
+  image), and an empty shared session no longer fails with "session not found".
+- The scroll-to-bottom button is no longer hidden behind the activity pills, the
+  "load earlier messages" control no longer stays visible when nothing is left
+  to load, and in-app notices follow the app theme (no coloured side bar) and
+  are placed so they do not cover the composer.
+- Known limits: notifications for work finishing on another device (for example
+  the tablet) are not included; Hermes routes those events only to the surface
+  that owns the session. Force-stopping the app from Android settings still
+  stops all delivery until it is opened again.
+
 ## 1.2.11 (9009) — 2026-09-19
 
 - Bot Mode reaches parity with Hermes Desktop's bundled plugin, using only the
