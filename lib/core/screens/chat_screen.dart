@@ -3648,7 +3648,17 @@ class _ChatScreenState extends State<ChatScreen>
       );
       _passiveConversationReader = ForegroundConversationReader(
         successInterval: const Duration(seconds: 3),
-        failureIntervals: const [Duration(seconds: 5), Duration(seconds: 15)],
+        failureIntervals: const [
+          Duration(seconds: 5),
+          Duration(seconds: 15),
+          Duration(seconds: 30),
+          Duration(seconds: 60),
+        ],
+        changeEventsAvailable:
+            _chat.desktopRuntimeInfo.raw['change_events'] == true,
+        durableChatId: () => _chat.serverSessionId,
+        externallyOwnedTurnActive: () => _chat.remoteSurfaceOwnsLiveTurn,
+        recoveryConverging: () => _chat.resumeReconciliationInFlight,
         canRead: () => _canProbePassiveRemoteActivity,
         read: _refreshPassiveTranscript,
       );
@@ -3938,20 +3948,39 @@ class _ChatScreenState extends State<ChatScreen>
       (!_chat.hasDesktopRuntime || _chat.remoteSurfaceOwnsLiveTurn) &&
       _messageRefreshInFlightEpoch == null;
 
-  void _syncPassiveTranscriptRefresh({bool refreshNow = false}) {
+  void _syncPassiveTranscriptRefresh({
+    bool refreshNow = false,
+    bool recoveryConverging = false,
+    bool terminal = false,
+    String? changedDurableChatId,
+  }) {
+    final reader = _passiveConversationReader;
+    reader?.setChangeEventsAvailable(
+      _chat.desktopRuntimeInfo.raw['change_events'] == true,
+      immediate: false,
+    );
     final shouldRun = _canProbePassiveRemoteActivity;
     if (!shouldRun) {
       // Lifecycle, reconciliation, or local production is an authority
       // transition. Retire both the reader timer and any REST request that
       // captured the previous observation tuple before it can publish.
-      _passiveConversationReader?.setVisible(false);
+      reader?.setVisible(false);
       _invalidatePassiveMessageRefresh();
       return;
     }
     // Un turno vivo sigue siendo una transición de autoridad para la lectura
     // durable: retira la petición REST en vuelo, pero conserva el sondeo.
     if (_chat.isStreaming) _invalidatePassiveMessageRefresh();
-    _passiveConversationReader?.setVisible(true, immediate: refreshNow);
+    reader?.setVisible(true);
+    if (!refreshNow) return;
+    if (changedDurableChatId != null) {
+      reader?.notifySessionsChanged(changedDurableChatId);
+      return;
+    }
+    reader?.notifyRelevantEvent(
+      recoveryConverging: recoveryConverging,
+      terminal: terminal,
+    );
   }
 
   Future<bool> _refreshPassiveTranscript() async {
@@ -4515,12 +4544,28 @@ class _ChatScreenState extends State<ChatScreen>
     }
     _syncTurnActivityClock();
     _syncSubagentPolling();
-    if (_chat.hasDesktopRuntime) {
-      // The service publishes attachment on its event stream. Fence a passive
-      // null-runtime read at that same ownership boundary before any early
-      // return (including context-only updates) can bypass reader shutdown.
-      _syncPassiveTranscriptRefresh();
-    }
+    final passiveTerminalEvent =
+        event == ActiveChatEvent.done ||
+        event == ActiveChatEvent.error ||
+        event == ActiveChatEvent.cancelled;
+    final passiveRecoveryEvent =
+        event == ActiveChatEvent.connected ||
+        event == ActiveChatEvent.sessionInfo ||
+        (event == ActiveChatEvent.messagesHydrated &&
+            _messageRefreshInFlightEpoch == null);
+    final passiveRuntimeEvent =
+        event == ActiveChatEvent.started ||
+        event == ActiveChatEvent.waiting ||
+        event == ActiveChatEvent.approvalRequest ||
+        event == ActiveChatEvent.interactiveRequest;
+    _syncPassiveTranscriptRefresh(
+      refreshNow:
+          passiveTerminalEvent ||
+          passiveRecoveryEvent ||
+          passiveRuntimeEvent,
+      recoveryConverging: passiveRecoveryEvent,
+      terminal: passiveTerminalEvent,
+    );
     if (_editingRewriteSubmitted &&
         ((event == ActiveChatEvent.started &&
                 (_editingPipelineSnapshot == ChatPipelineState.connecting ||
@@ -5276,7 +5321,12 @@ class _ChatScreenState extends State<ChatScreen>
     if (wasInForeground != _appInForeground && mounted && !_disposed) {
       setState(() {});
     }
-    _syncPassiveTranscriptRefresh();
+    _syncPassiveTranscriptRefresh(
+      refreshNow:
+          wasInForeground != _appInForeground &&
+          state == AppLifecycleState.resumed,
+      recoveryConverging: state == AppLifecycleState.resumed,
+    );
     _syncSubagentPolling();
     // El modo voz lo gobierna el controlador global (vía HermesAppState), que
     // ya recibe el ciclo de vida globalmente. Aquí solo paramos el dictado del
