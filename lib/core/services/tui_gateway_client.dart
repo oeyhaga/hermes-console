@@ -1446,6 +1446,7 @@ class TuiGatewayClient
       }
       _capabilityCache.resetForReconnect();
       _connected = true;
+      _advertiseServerRequestCapability(generation, channel);
       // A recovery caller resumes its stored session only after connect() ends.
       // Drain the server's sequence gap first so replayed deltas/tools cannot
       // race the new snapshot or be delivered out of order with live frames.
@@ -1474,6 +1475,28 @@ class TuiGatewayClient
       // ActiveChat pueda degradar a `/v1/runs` sin quedar en "Conectando".
       await _teardownTransport(channel, subscription);
       rethrow;
+    }
+  }
+
+  void _advertiseServerRequestCapability(
+    int generation,
+    WebSocketChannel channel,
+  ) {
+    if (generation != _socketGeneration || !identical(_channel, channel)) return;
+    try {
+      final advertisement = _requestConnected(
+        'client.capabilities',
+        const <String, dynamic>{'server_requests': true},
+        timeout: const Duration(seconds: 10),
+      );
+      unawaited(
+        advertisement.then<void>(
+          (_) {},
+          onError: (Object _, StackTrace _) {},
+        ),
+      );
+    } catch (_) {
+      // Capability discovery is optional and must not own transport readiness.
     }
   }
 
