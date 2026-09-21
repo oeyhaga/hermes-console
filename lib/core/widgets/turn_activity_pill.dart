@@ -59,6 +59,8 @@ class TurnActivityPill extends StatefulWidget {
 
   /// Reloj inyectable (tests). Por defecto [DateTime.now].
   final DateTime Function()? clock;
+  final bool showElapsed;
+  final VoidCallback? onTap;
 
   const TurnActivityPill({
     required this.active,
@@ -67,6 +69,8 @@ class TurnActivityPill extends StatefulWidget {
     this.revealAfter = const Duration(seconds: 3),
     this.reassureAfter = const Duration(seconds: 20),
     this.clock,
+    this.showElapsed = true,
+    this.onTap,
     super.key,
   });
 
@@ -124,6 +128,7 @@ class _TurnActivityPillState extends State<TurnActivityPill>
   void _syncTicker() {
     final shouldTick =
         widget.active &&
+        widget.showElapsed &&
         widget.startedAt != null &&
         _foreground &&
         _viewEnabled;
@@ -148,19 +153,22 @@ class _TurnActivityPillState extends State<TurnActivityPill>
   @override
   Widget build(BuildContext context) {
     final elapsed = _elapsed;
-    if (elapsed == null || elapsed < widget.revealAfter) {
+    if (!widget.active ||
+        (widget.showElapsed &&
+            (elapsed == null || elapsed < widget.revealAfter))) {
       return const SizedBox.shrink(key: ValueKey('turn-activity-idle'));
     }
     final colors = Theme.of(context).hermes;
     final strings = Strings.of(context);
-    final label = elapsed >= widget.reassureAfter
+    final label = elapsed != null && elapsed >= widget.reassureAfter
         ? strings.chaTurnStillWorking
         : widget.statusLabel;
-    final timer = formatTurnElapsed(elapsed);
+    final timer = elapsed == null ? null : formatTurnElapsed(elapsed);
 
     return Semantics(
       liveRegion: true,
-      label: label == null ? timer : '$label · $timer',
+      button: widget.onTap != null,
+      label: [?label, ?timer].join(' · '),
       child: Material(
         key: const ValueKey('turn-activity-pill'),
         color: colors.surface,
@@ -168,49 +176,52 @@ class _TurnActivityPillState extends State<TurnActivityPill>
         clipBehavior: Clip.antiAlias,
         elevation: 10,
         shadowColor: Colors.black.withValues(alpha: 0.45),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 9, 16, 9),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.2,
-                  color: colors.accent,
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (label != null) ...[
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 220),
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: colors.textPrimary,
-                    ),
+        child: InkWell(
+          onTap: widget.onTap,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 9, 16, 9),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: colors.accent,
                   ),
                 ),
                 const SizedBox(width: 8),
+                if (label != null) ...[
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 220),
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: colors.textPrimary,
+                      ),
+                    ),
+                  ),
+                  if (timer != null) const SizedBox(width: 8),
+                ],
+                // Keep the elapsed label stable as the digits change.
+                if (timer != null)
+                  Text(
+                    timer,
+                    key: const ValueKey('turn-activity-elapsed'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                      color: colors.textSecondary,
+                    ),
+                  ),
               ],
-              // `tabular-nums` en Desktop: sin anchura fija de dígito el
-              // contador baila de ancho en cada tic y arrastra la etiqueta.
-              Text(
-                timer,
-                key: const ValueKey('turn-activity-elapsed'),
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                  color: colors.textSecondary,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

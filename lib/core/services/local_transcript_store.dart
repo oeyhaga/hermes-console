@@ -57,8 +57,8 @@ final class LocalTranscriptSnapshot {
 /// copia v3 previa en SharedPreferences solo se admite como fallback de lectura.
 class LocalTranscriptStore {
   static const _storage = FlutterSecureStorage();
-  static const _maxStoredMessages = 120;
-  static const _maxEncodedBytes = 512 * 1024;
+  static const _maxStoredMessages = 1000;
+  static const _maxEncodedBytes = 2 * 1024 * 1024;
 
   static const _v3Prefix = 'hermes.transcript.v3.';
   static final Map<String, Future<void>> _writeTails = {};
@@ -513,25 +513,26 @@ class LocalTranscriptStore {
       }
       hadValidMessage = true;
       messages.add(sanitized);
-      if (messages.length > _maxStoredMessages) {
-        messages.removeAt(0);
-        truncated = true;
-        cappedOlderHistory = true;
-      }
     }
-    while (messages.isNotEmpty &&
-        utf8
-                .encode(
-                  _encodeSnapshot(
-                    LocalTranscriptSnapshot(
-                      messages: messages,
-                      olderHistoryTruncated: cappedOlderHistory,
-                    ),
-                  ),
-                )
-                .length >
+    if (messages.length > _maxStoredMessages) {
+      messages.removeRange(0, messages.length - _maxStoredMessages);
+      truncated = true;
+      cappedOlderHistory = true;
+    }
+    if (_encodedTranscriptBytes(messages, cappedOlderHistory) >
+        _maxEncodedBytes) {
+      var low = 0;
+      var high = messages.length;
+      while (low < high) {
+        final middle = low + ((high - low) ~/ 2);
+        if (_encodedTranscriptBytes(messages.sublist(middle), true) <=
             _maxEncodedBytes) {
-      messages.removeAt(0);
+          high = middle;
+        } else {
+          low = middle + 1;
+        }
+      }
+      messages.removeRange(0, low);
       truncated = true;
       cappedOlderHistory = true;
     }
@@ -542,6 +543,20 @@ class LocalTranscriptStore {
       hadValidMessage: hadValidMessage,
     );
   }
+
+  static int _encodedTranscriptBytes(
+    List<Map<String, dynamic>> messages,
+    bool olderHistoryTruncated,
+  ) => utf8
+      .encode(
+        _encodeSnapshot(
+          LocalTranscriptSnapshot(
+            messages: messages,
+            olderHistoryTruncated: olderHistoryTruncated,
+          ),
+        ),
+      )
+      .length;
 
   static Future<void> clear(
     String connId,

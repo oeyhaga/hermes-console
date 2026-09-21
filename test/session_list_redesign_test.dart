@@ -40,11 +40,15 @@ Map<String, dynamic> _row(
   required int lastActive,
   String source = 'mobile',
   String preview = '',
+  String? lastUserPreview,
+  String? lastAssistantPreview,
 }) => {
   'id': id,
   '_lineage_root_id': id,
   'title': title,
   'preview': preview,
+  'last_user_preview': ?lastUserPreview,
+  'last_assistant_preview': ?lastAssistantPreview,
   'model': 'model-a',
   'source': source,
   'message_count': 2,
@@ -413,6 +417,40 @@ void main() {
     },
   );
 
+  testWidgets(
+    'la lista nunca muestra JSON de tools y recupera el último texto humano',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      const rawToolCall = '[{"id":"call_latest","type":"function"}]';
+      await pump(tester, [
+        _row(
+          'tool-preview',
+          title: 'Deploy a staging',
+          lastActive: nowSeconds(),
+          preview: rawToolCall,
+          lastUserPreview: 'Comprueba el despliegue',
+          lastAssistantPreview: rawToolCall,
+        ),
+        _row(
+          'tool-only-preview',
+          title: 'Tarea automatizada',
+          lastActive: nowSeconds() - 1,
+          preview: rawToolCall,
+          lastAssistantPreview: rawToolCall,
+        ),
+      ]);
+      await _pumpUntil(tester, find.text('Deploy a staging'));
+
+      expect(find.text(rawToolCall), findsNothing);
+      expect(find.text('Comprueba el despliegue'), findsOneWidget);
+      expect(find.text('Sin mensajes visibles'), findsOneWidget);
+    },
+  );
+
   testWidgets('deslizar a la izquierda sigue abriendo el menú de acciones', (
     tester,
   ) async {
@@ -519,7 +557,7 @@ void main() {
       await _pumpUntil(tester, find.text('Informe prolongado'));
 
       final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
-      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsOneWidget);
       expect(
         find.byKey(const ValueKey('session-running-background-1')),
         findsOneWidget,
@@ -541,6 +579,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
 
       expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsNothing);
       expect(
         find.byKey(const ValueKey('session-running-background-1')),
         findsNothing,
@@ -883,7 +922,7 @@ void main() {
       final strings = Strings.of(
         tester.element(find.byType(HomeDashboardScreen)),
       );
-      expect(find.text(strings.slActivityBackground), findsOneWidget);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsOneWidget);
       expect(
         find.byKey(const ValueKey('home-activity-background-1')),
         findsOneWidget,
@@ -905,6 +944,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
 
       expect(find.text(strings.slActivityBackground), findsNothing);
+      expect(find.text(strings.chaBackgroundActivityCount(1)), findsNothing);
       expect(find.text(strings.chaPipelineThinking), findsOneWidget);
       expect(
         find.byKey(const ValueKey('home-activity-background-1')),

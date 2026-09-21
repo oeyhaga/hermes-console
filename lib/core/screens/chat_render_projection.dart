@@ -1,3 +1,4 @@
+import '../services/session_reconciler.dart';
 import '../utils/chat_turn.dart';
 import '../widgets/chat_event_cards.dart';
 
@@ -119,8 +120,7 @@ final class ChatRenderProjection {
        _headHasVisibleText =
            source.isNotEmpty && _hasVisibleText(source.first['content']),
        _headHasStructuredReasoning =
-           source.isNotEmpty &&
-           _hasCanonicalReasoning(source.first);
+           source.isNotEmpty && _hasCanonicalReasoning(source.first);
 
   factory ChatRenderProjection.build(List<Map<String, dynamic>> messages) {
     final chronologicalUnits = <ChatRenderUnitPlan>[];
@@ -209,8 +209,14 @@ final class ChatRenderProjection {
       final event = ChatEventInfo.classify(message);
       final hasStructuredReasoning =
           role == 'assistant' && _hasCanonicalReasoning(message);
-      if (event.kind == ChatEventKind.toolEvent ||
-          event.kind == ChatEventKind.approval) {
+      final hasUnifiedActivity =
+          role == 'assistant' &&
+          normalizeAssistantActivityTrace(
+            message[assistantActivityTraceKey],
+          ).isNotEmpty;
+      if (!hasUnifiedActivity &&
+          (event.kind == ChatEventKind.toolEvent ||
+              event.kind == ChatEventKind.approval)) {
         if (hasStructuredReasoning) {
           flushTools();
           chronologicalUnits.add(ChatMessageUnitPlan(index));
@@ -221,7 +227,9 @@ final class ChatRenderProjection {
         continue;
       }
 
-      if (event.text.trim().isEmpty && !hasStructuredReasoning) {
+      if (event.text.trim().isEmpty &&
+          !hasStructuredReasoning &&
+          !hasUnifiedActivity) {
         continue;
       }
       flushTools();

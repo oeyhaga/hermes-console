@@ -9,10 +9,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:hermes_android/core/models/attachment_draft.dart';
 import 'package:hermes_android/core/models/prepared_turn.dart';
+import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
+import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/local_transcript_store.dart';
 import 'package:hermes_android/core/services/session_deletion.dart';
 import 'package:hermes_android/core/services/turn_outbox_store.dart';
+
+import 'support/in_memory_compression_fence_storage.dart';
+
+const _maxLocalTranscriptMessages = 1000;
+const _maxLocalTranscriptEncodedBytes = 2 * 1024 * 1024;
 
 String _scope(String value) =>
     base64Url.encode(utf8.encode(value)).replaceAll('=', '');
@@ -1775,7 +1782,7 @@ void main() {
       'conn-list',
       _legacyTranscriptSession,
     )] = jsonEncode([
-      for (var index = 1; index <= 150; index++)
+      for (var index = 1; index <= 1050; index++)
         {
           'role': index.isOdd ? 'user' : 'assistant',
           'content': 'mensaje listado $index',
@@ -1786,8 +1793,8 @@ void main() {
     final sessions = await LocalTranscriptStore.listForConnection('conn-list');
 
     expect(sessions, hasLength(1));
-    expect(sessions.single.messageCount, 120);
-    expect(sessions.single.preview, contains('mensaje listado 150'));
+    expect(sessions.single.messageCount, _maxLocalTranscriptMessages);
+    expect(sessions.single.preview, contains('mensaje listado 1050'));
     expect(sessions.single.preview, isNot(contains('PRIVATE_TRACE')));
   });
 
@@ -1795,7 +1802,7 @@ void main() {
     'transcript local limita tamaño conservando los mensajes recientes',
     () async {
       final newestFirst = <Map<String, dynamic>>[
-        for (var index = 150; index >= 1; index--)
+        for (var index = 1050; index >= 1; index--)
           {
             'role': index.isOdd ? 'user' : 'assistant',
             'content': 'mensaje $index',
@@ -1812,21 +1819,21 @@ void main() {
         'session-bounded',
       );
 
-      expect(restored, hasLength(120));
-      expect(restored.first['content'], 'mensaje 31');
-      expect(restored.last['content'], 'mensaje 150');
+      expect(restored, hasLength(_maxLocalTranscriptMessages));
+      expect(restored.first['content'], 'mensaje 51');
+      expect(restored.last['content'], 'mensaje 1050');
       expect(
         utf8
             .encode(secureStore[_transcriptKey('conn-a', 'session-bounded')]!)
             .length,
-        lessThanOrEqualTo(512 * 1024),
+        lessThanOrEqualTo(_maxLocalTranscriptEncodedBytes),
       );
     },
   );
 
-  test('transcript local registra recorte por cantidad al reabrir', () async {
+  test('transcript local conserva más de 500 mensajes al reabrir', () async {
     final newestFirst = <Map<String, dynamic>>[
-      for (var index = 150; index >= 1; index--)
+      for (var index = 501; index >= 1; index--)
         {
           'role': index.isOdd ? 'user' : 'assistant',
           'content': 'mensaje $index',
@@ -1852,23 +1859,137 @@ void main() {
       'session-count',
     );
 
-    expect(firstOpen.olderHistoryTruncated, isTrue);
-    expect(reopened.olderHistoryTruncated, isTrue);
-    expect(reopened.messages, hasLength(120));
-    expect(reopened.messages.first['content'], 'mensaje 31');
-    expect(reopened.messages.last['content'], 'mensaje 150');
+    expect(firstOpen.olderHistoryTruncated, isFalse);
+    expect(reopened.olderHistoryTruncated, isFalse);
+    expect(reopened.messages, hasLength(501));
+    expect(reopened.messages.first['content'], 'mensaje 1');
+    expect(reopened.messages.last['content'], 'mensaje 501');
+
+    final chat = ActiveChat(
+      compressionFenceStore: testCompressionFenceStore(),
+      connection: SavedConnection(
+        id: 'conn-count',
+        label: 'Local',
+        host: '127.0.0.1',
+        port: 8642,
+        apiKey: 'test-key',
+        kind: InstanceKind.localhost,
+        onDeviceLoopback: true,
+      ),
+      sessionId: 'session-count',
+      sessionTitle: 'Historial local largo',
+      notifications: null,
+      onTerminal: () {},
+    );
+    addTearDown(chat.dispose);
+    await chat.loadMessages();
+
+    expect(chat.messages, hasLength(501));
+    expect(chat.messages.first['content'], 'mensaje 501');
+    expect(chat.messages.last['content'], 'mensaje 1');
+    expect(chat.transcriptExtentForTesting, 'complete');
+    expect(chat.hasEarlierMessages, isFalse);
+
     final envelope =
         jsonDecode(secureStore[_transcriptKey('conn-count', 'session-count')]!)
             as Map<String, dynamic>;
+    expect(envelope['older_history_truncated'], isFalse);
+  });
+
+  test('transcript local registra recorte por cantidad al reabrir', () async {
+    final newestFirst = <Map<String, dynamic>>[
+      for (var index = 1050; index >= 1; index--)
+        {
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'mensaje $index',
+        },
+    ];
+
+    await LocalTranscriptStore.saveFromNewestFirst(
+      'conn-count-cap',
+      'session-count-cap',
+      newestFirst,
+    );
+    final firstOpen = await LocalTranscriptStore.loadSnapshot(
+      'conn-count-cap',
+      'session-count-cap',
+    );
+    await LocalTranscriptStore.saveFromNewestFirst(
+      'conn-count-cap',
+      'session-count-cap',
+      firstOpen.messages.reversed.toList(growable: false),
+    );
+    final reopened = await LocalTranscriptStore.loadSnapshot(
+      'conn-count-cap',
+      'session-count-cap',
+    );
+
+    expect(firstOpen.olderHistoryTruncated, isTrue);
+    expect(reopened.olderHistoryTruncated, isTrue);
+    expect(reopened.messages, hasLength(_maxLocalTranscriptMessages));
+    expect(reopened.messages.first['content'], 'mensaje 51');
+    expect(reopened.messages.last['content'], 'mensaje 1050');
+    final envelope =
+        jsonDecode(
+              secureStore[_transcriptKey(
+                'conn-count-cap',
+                'session-count-cap',
+              )]!,
+            )
+            as Map<String, dynamic>;
     expect(envelope['older_history_truncated'], isTrue);
   });
+
+  test(
+    'reapertura sobre el límite expone aviso y cargar anteriores',
+    () async {
+      await LocalTranscriptStore.saveFromNewestFirst(
+        'conn-truncated',
+        'session-truncated',
+        [
+          for (var index = 1001; index >= 1; index--)
+            {
+              'role': index.isOdd ? 'user' : 'assistant',
+              'content': 'mensaje $index',
+            },
+        ],
+      );
+      final chat = ActiveChat(
+        compressionFenceStore: testCompressionFenceStore(),
+        connection: SavedConnection(
+          id: 'conn-truncated',
+          label: 'Local',
+          host: '127.0.0.1',
+          port: 8642,
+          apiKey: 'test-key',
+          kind: InstanceKind.localhost,
+          onDeviceLoopback: true,
+        ),
+        sessionId: 'session-truncated',
+        sessionTitle: 'Historial local',
+        notifications: null,
+        onTerminal: () {},
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      expect(chat.messages, hasLength(_maxLocalTranscriptMessages));
+      expect(chat.messages.first['content'], 'mensaje 1001');
+      expect(chat.messages.last['content'], 'mensaje 2');
+      expect(chat.localTranscriptOlderHistoryTruncated, isTrue);
+      expect(chat.transcriptExtentForTesting, 'partial');
+      expect(chat.needsTranscriptTailHydrationForTesting, isTrue);
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
 
   test('transcript local registra recorte por bytes al reabrir', () async {
     final newestFirst = <Map<String, dynamic>>[
       for (var index = 8; index >= 1; index--)
         {
           'role': index.isOdd ? 'user' : 'assistant',
-          'content': 'mensaje-$index:${'x' * 100000}',
+          'content': 'mensaje-$index:${'x' * 350000}',
         },
     ];
 
@@ -1894,8 +2015,39 @@ void main() {
       utf8
           .encode(secureStore[_transcriptKey('conn-bytes', 'session-bytes')]!)
           .length,
-      lessThanOrEqualTo(512 * 1024),
+      lessThanOrEqualTo(_maxLocalTranscriptEncodedBytes),
     );
+  });
+
+  test('1000 message transcript encode measurement stays under 2 MiB', () async {
+    final newestFirst = <Map<String, dynamic>>[
+      for (var index = 1000; index >= 1; index--)
+        {
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'mensaje-$index:${'x' * 1800}',
+        },
+    ];
+    final stopwatch = Stopwatch()..start();
+
+    final snapshot = await LocalTranscriptStore.saveFromNewestFirst(
+      'conn-measure',
+      'session-measure',
+      newestFirst,
+    );
+    stopwatch.stop();
+    final encodedBytes = utf8
+        .encode(
+          secureStore[_transcriptKey('conn-measure', 'session-measure')]!,
+        )
+        .length;
+    debugPrint(
+      'local transcript encode measurement: $encodedBytes bytes in '
+      '${stopwatch.elapsedMicroseconds} us',
+    );
+
+    expect(snapshot.messages, hasLength(_maxLocalTranscriptMessages));
+    expect(snapshot.olderHistoryTruncated, isFalse);
+    expect(encodedBytes, lessThanOrEqualTo(_maxLocalTranscriptEncodedBytes));
   });
 
   test(

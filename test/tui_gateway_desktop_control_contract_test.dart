@@ -119,6 +119,22 @@ void main() {
             },
             'prompt.background' => {'task_id': 'bg-a'},
             'process.kill' => {'killed': true},
+            'session.control.read' => {
+              'control': {
+                'loop': {
+                  'status': 'active',
+                  'interval_seconds': 300,
+                  'ticks_fired': 2,
+                },
+                'heartbeat': {
+                  'status': 'paused',
+                  'interval_seconds': 600,
+                  'fire_count': 4,
+                },
+                'revision': 'control-a',
+              },
+            },
+            'session.control' => {'accepted': true},
             'projects.tree' => {
               'active_id': 'project-a',
               'projects': [
@@ -168,6 +184,12 @@ void main() {
       final tree = await client.loadSpawnTree('/opaque/spawn-tree.json');
       final taskId = await client.startBackgroundTask('runtime-a', 'Audit UI');
       await client.killBackgroundProcess('runtime-a', 'process-a');
+      final control = await client.readSessionControl('runtime-a');
+      await client.sendSessionControlAction('runtime-a', 'heartbeat.pause');
+      await expectLater(
+        client.sendSessionControlAction('runtime-a', 'loop.delete'),
+        throwsArgumentError,
+      );
       final projects = await client.projectTree();
       final project = await client.projectSessions('project-a');
       await client.setSessionWorkingDirectory('runtime-a', '/srv/hermes');
@@ -182,6 +204,8 @@ void main() {
       expect(agents.processes.single.status.name, 'running');
       expect(tree.subagents.single.status.name, 'completed');
       expect(taskId, 'bg-a');
+      expect(control.loop?.ticksFired, 2);
+      expect(control.heartbeat?.fireCount, 4);
       expect(projects.activeId, 'project-a');
       expect(project?.label, 'Hermes Console');
 
@@ -228,6 +252,11 @@ void main() {
       expect(paramsFor('process.kill'), {
         'session_id': 'runtime-a',
         'process_id': 'process-a',
+      });
+      expect(paramsFor('session.control.read'), {'session_id': 'runtime-a'});
+      expect(paramsFor('session.control'), {
+        'session_id': 'runtime-a',
+        'action': 'heartbeat.pause',
       });
       expect(paramsFor('projects.tree'), {'preview_limit': 3});
       expect(paramsFor('projects.project_sessions'), {

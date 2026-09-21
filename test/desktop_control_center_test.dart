@@ -247,6 +247,49 @@ void main() {
     });
   });
 
+  group('SessionControlSnapshot', () {
+    test('parses loop and heartbeat timing without retaining prompts', () {
+      final control = SessionControlSnapshot.fromJson({
+        'revision': 'rev-4',
+        'updated_at': 1720000400,
+        'loop': {
+          'prompt': 'PRIVATE LOOP PROMPT',
+          'status': 'active',
+          'interval_seconds': 300,
+          'last_fired_at': 1720000000,
+          'next_due_at': 1720000300,
+          'ticks_fired': 2,
+          'awaiting_response': true,
+          'deferred_by_goal': true,
+        },
+        'heartbeat': {
+          'prompt': 'PRIVATE HEARTBEAT PROMPT',
+          'status': 'active',
+          'interval_seconds': 60,
+          'last_fired_at': 1720000100,
+          'fire_count': 7,
+        },
+      });
+
+      expect(control.revision, 'rev-4');
+      expect(control.loop?.interval, const Duration(minutes: 5));
+      expect(control.loop?.ticksFired, 2);
+      expect(control.loop?.awaitingResponse, isTrue);
+      expect(control.loop?.deferredByGoal, isTrue);
+      expect(
+        control.loop?.nextDueAt,
+        DateTime.fromMillisecondsSinceEpoch(1720000300000, isUtc: true),
+      );
+      expect(control.heartbeat?.interval, const Duration(minutes: 1));
+      expect(control.heartbeat?.fireCount, 7);
+      expect(
+        control.heartbeat?.nextDueAt,
+        DateTime.fromMillisecondsSinceEpoch(1720000160000, isUtc: true),
+      );
+      expect(control.toString(), isNot(contains('PRIVATE')));
+    });
+  });
+
   group('SessionGoalSnapshot', () {
     test('parses an active goal with contract, subgoals and gates', () {
       final goal = SessionGoalSnapshot.tryParse({

@@ -892,6 +892,120 @@ final class SessionGoalWaitBarrier {
   }
 }
 
+DateTime? _epochDateTime(Object? raw) {
+  final seconds = _safeDouble(raw);
+  if (seconds <= 0) return null;
+  return DateTime.fromMillisecondsSinceEpoch(
+    (seconds * 1000).round(),
+    isUtc: true,
+  );
+}
+
+final class SessionLoopSnapshot {
+  const SessionLoopSnapshot({
+    required this.status,
+    required this.interval,
+    required this.lastRunAt,
+    required this.nextDueAt,
+    required this.ticksFired,
+    required this.awaitingResponse,
+    this.deferredByGoal = false,
+  });
+
+  final String status;
+  final Duration interval;
+  final DateTime? lastRunAt;
+  final DateTime? nextDueAt;
+  final int ticksFired;
+  final bool awaitingResponse;
+  final bool deferredByGoal;
+
+  static SessionLoopSnapshot? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final json = Map<String, dynamic>.from(raw);
+    final status = _cleanText(json['status'], max: 40);
+    if (status.isEmpty || status == 'cleared') return null;
+    return SessionLoopSnapshot(
+      status: status,
+      interval: Duration(
+        milliseconds: (_safeDouble(json['interval_seconds']) * 1000)
+            .round()
+            .clamp(0, 315360000000),
+      ),
+      lastRunAt: _epochDateTime(json['last_fired_at']),
+      nextDueAt: _epochDateTime(json['next_due_at']),
+      ticksFired: _safeInt(json['ticks_fired']).clamp(0, 1000000000),
+      awaitingResponse: json['awaiting_response'] == true,
+      deferredByGoal: json['deferred_by_goal'] == true,
+    );
+  }
+}
+
+final class SessionHeartbeatSnapshot {
+  const SessionHeartbeatSnapshot({
+    required this.status,
+    required this.interval,
+    required this.lastRunAt,
+    required this.nextDueAt,
+    required this.fireCount,
+  });
+
+  final String status;
+  final Duration interval;
+  final DateTime? lastRunAt;
+  final DateTime? nextDueAt;
+  final int fireCount;
+
+  static SessionHeartbeatSnapshot? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final json = Map<String, dynamic>.from(raw);
+    final status = _cleanText(json['status'], max: 40);
+    if (status.isEmpty || status == 'cleared') return null;
+    final interval = Duration(
+      seconds: _safeInt(json['interval_seconds']).clamp(0, 315360000),
+    );
+    final lastRunAt = _epochDateTime(json['last_fired_at']);
+    return SessionHeartbeatSnapshot(
+      status: status,
+      interval: interval,
+      lastRunAt: lastRunAt,
+      nextDueAt: status == 'active' && lastRunAt != null
+          ? lastRunAt.add(interval)
+          : null,
+      fireCount: _safeInt(json['fire_count']).clamp(0, 1000000000),
+    );
+  }
+}
+
+final class SessionControlSnapshot {
+  const SessionControlSnapshot({
+    required this.goal,
+    required this.loop,
+    required this.heartbeat,
+    required this.revision,
+    required this.updatedAt,
+  });
+
+  final SessionGoalSnapshot? goal;
+  final SessionLoopSnapshot? loop;
+  final SessionHeartbeatSnapshot? heartbeat;
+  final String revision;
+  final DateTime? updatedAt;
+
+  factory SessionControlSnapshot.fromJson(Object? raw) {
+    final json = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : const <String, dynamic>{};
+    return SessionControlSnapshot(
+      goal: SessionGoalSnapshot.tryParse(json['goal']),
+      loop: SessionLoopSnapshot.tryParse(json['loop']),
+      heartbeat: SessionHeartbeatSnapshot.tryParse(json['heartbeat']),
+      revision: _cleanText(json['revision'], max: 128),
+      updatedAt: _epochDateTime(json['updated_at']),
+    );
+  }
+}
+
 /// Live standing-goal state for one session, from `session.control.read` /
 /// `session.control.update` (`session.control.goal` in the gateway contract).
 /// A `null` snapshot (from a "cleared" status) means no active goal.

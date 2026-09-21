@@ -502,11 +502,22 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   if (role == 'user' && !retainUserMentionNote) {
     content = stripBotMentionNote(content);
   }
+  final activity = role == 'assistant'
+      ? normalizeAssistantActivityTrace(message[assistantActivityTraceKey])
+      : const <Map<String, dynamic>>[];
   final normalized = <String, dynamic>{
     'role': role,
     'content': content,
     if (reasoning.isNotEmpty) 'reasoning': reasoning,
+    if (activity.isNotEmpty) assistantActivityTraceKey: activity,
   };
+  final activityDuration = message['_activity_duration_seconds'];
+  if (activityDuration is num &&
+      activityDuration.isFinite &&
+      activityDuration > 0 &&
+      activityDuration <= 604800) {
+    normalized['_activity_duration_seconds'] = activityDuration;
+  }
   for (final key in const ['id', 'message_id', 'row_id']) {
     final value = message[key];
     if (value is int && value > 0) {
@@ -562,17 +573,20 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
     }
     if (calls.isNotEmpty) normalized['tool_calls'] = calls;
   }
-  // `process_complete` viaja como `role=user` con su clasificación estructural:
-  // sin ella el carrier durable queda vacío tras el stripping y desaparece del
-  // transcript. Solo se acepta desde `display_kind`, nunca leyendo el texto.
+  // Estos eventos viajan como `role=user`; su clasificación estructural es la
+  // que impide que el transcript los atribuya a la persona.
   final displayKind =
       rawDisplayKind == 'model_switch' ||
+          rawDisplayKind == 'personality_switch' ||
+          rawDisplayKind == 'auto_continue' ||
           rawDisplayKind == 'async_delegation_complete' ||
           rawDisplayKind == 'compression_result' ||
           rawDisplayKind == 'process_complete'
       ? rawDisplayKind
       : effectiveUserDisplayKind(normalized);
-  if (displayKind == 'model_switch') {
+  if (displayKind == 'model_switch' ||
+      displayKind == 'personality_switch' ||
+      displayKind == 'auto_continue') {
     normalized['display_kind'] = displayKind;
   } else if (displayKind == 'async_delegation_complete' ||
       displayKind == 'process_complete') {
@@ -595,6 +609,15 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
   final generatedImages = _generatedImageMetadataOf(message);
   if (generatedImages.isNotEmpty) {
     normalized[_generatedImagesMetadataKey] = generatedImages;
+  }
+  final toolResultEvidence = message[assistantToolResultEvidenceKey];
+  if (retainMediaEvidence &&
+      role == 'assistant' &&
+      toolResultEvidence is List) {
+    normalized[assistantToolResultEvidenceKey] = toolResultEvidence
+        .whereType<Map>()
+        .map(Map<String, dynamic>.from)
+        .toList(growable: false);
   }
   if (retainProjectionState) {
     for (final key in const [
@@ -657,6 +680,7 @@ Map<String, dynamic>? normalizeTranscriptMessageForDisplay(
       assistantToolCalls is List && assistantToolCalls.isNotEmpty;
   if (content.trim().isEmpty &&
       reasoning.isEmpty &&
+      activity.isEmpty &&
       generatedImages.isEmpty &&
       !isEditorial &&
       !isLivePlaceholder &&
@@ -813,7 +837,9 @@ List<Map<String, dynamic>> _projectTranscriptForInternalState(
       index += 1;
     }
   }
-  return projected;
+  return coalesceAssistantTurnsNewestFirst(
+    _associateGeneratedImagesNewestFirst(projected),
+  );
 }
 
 List<Map<String, dynamic>> _normalizedNewestFirst(
@@ -1056,6 +1082,45 @@ List<Map<String, dynamic>> _associateGeneratedImagesNewestFirst(
   final pending = <Map<String, dynamic>>[];
   final additions = <int, List<Map<String, dynamic>>>{};
 
+  void collectToolResult(Map<String, dynamic> message) {
+    final callId = _toolCallId(message);
+    if (callId == null) return;
+    final name = _toolName(message) ?? mediaCallNames[callId];
+    final rawResult =
+        message['result'] ?? message['output'] ?? message['content'];
+    final isVideoResult =
+        _isVideoGenerateName(name) ||
+        (name == null && _looksLikeGeneratedVideoResult(rawResult));
+    final videoReferences = isVideoResult
+        ? GeneratedMediaService.referencesFromToolResult(
+            'video_generate',
+            rawResult,
+          )
+        : const <GeneratedMediaReference>[];
+    if (videoReferences.isNotEmpty &&
+        (mediaCallNames.containsKey(callId) ||
+            _isVideoGenerateName(name) ||
+            _looksLikeGeneratedVideoResult(rawResult))) {
+      for (final reference in videoReferences) {
+        pending.add(_generatedVideoMetadata(reference, callId));
+      }
+      return;
+    }
+
+    final references = GeneratedImageService.imageReferencesFromResult(
+      rawResult,
+    );
+    if (references.isEmpty ||
+        (!mediaCallNames.containsKey(callId) &&
+            !_isImageGenerateName(name) &&
+            !_looksLikeGeneratedImageResult(rawResult))) {
+      return;
+    }
+    for (final reference in references) {
+      pending.add(_generatedImageMetadata(reference, callId));
+    }
+  }
+
   for (var index = messages.length - 1; index >= 0; index--) {
     final message = messages[index];
     final role = message['role']?.toString().trim().toLowerCase();
@@ -1078,49 +1143,34 @@ List<Map<String, dynamic>> _associateGeneratedImagesNewestFirst(
           mediaCallNames[call.id] = call.name;
         }
       }
-      continue;
-    }
-    if (role != 'tool') continue;
-    final callId = _toolCallId(message);
-    if (callId == null) continue;
-    final name = _toolName(message) ?? mediaCallNames[callId];
-    final rawResult =
-        message['result'] ?? message['output'] ?? message['content'];
-    final isVideoResult =
-        _isVideoGenerateName(name) ||
-        (name == null && _looksLikeGeneratedVideoResult(rawResult));
-    final videoReferences = isVideoResult
-        ? GeneratedMediaService.referencesFromToolResult(
-            'video_generate',
-            rawResult,
-          )
-        : const <GeneratedMediaReference>[];
-    if (videoReferences.isNotEmpty &&
-        (mediaCallNames.containsKey(callId) ||
-            _isVideoGenerateName(name) ||
-            _looksLikeGeneratedVideoResult(rawResult))) {
-      for (final reference in videoReferences) {
-        pending.add(_generatedVideoMetadata(reference, callId));
+      final nestedResults = message[assistantToolResultEvidenceKey];
+      if (nestedResults is List) {
+        for (final raw in nestedResults) {
+          if (raw is Map) collectToolResult(Map<String, dynamic>.from(raw));
+        }
+        final content = message['content'];
+        if (pending.isNotEmpty &&
+            message['_pipeline'] != true &&
+            content is String &&
+            content.trim().isNotEmpty) {
+          additions[index] = List<Map<String, dynamic>>.of(pending);
+          pending.clear();
+        }
       }
       continue;
     }
-
-    final references = GeneratedImageService.imageReferencesFromResult(
-      rawResult,
-    );
-    if (references.isEmpty ||
-        (!mediaCallNames.containsKey(callId) &&
-            !_isImageGenerateName(name) &&
-            !_looksLikeGeneratedImageResult(rawResult))) {
-      continue;
-    }
-    for (final reference in references) {
-      pending.add(_generatedImageMetadata(reference, callId));
-    }
+    if (role != 'tool') continue;
+    collectToolResult(message);
   }
 
-  if (additions.isEmpty) return messages;
   final projected = List<Map<String, dynamic>>.of(messages);
+  for (var index = 0; index < projected.length; index++) {
+    if (!projected[index].containsKey(assistantToolResultEvidenceKey)) continue;
+    final sanitized = Map<String, dynamic>.from(projected[index])
+      ..remove(assistantToolResultEvidenceKey);
+    projected[index] = Map<String, dynamic>.unmodifiable(sanitized);
+  }
+  if (additions.isEmpty) return projected;
   for (final entry in additions.entries) {
     final message = projected[entry.key];
     final merged = _mergeGeneratedImageMetadata(
@@ -2283,7 +2333,9 @@ class ActiveTurnDelivery {
     String updateProjection(String source) => source.startsWith(_current.text)
         ? '$normalized${source.substring(_current.text.length)}'
         : normalized;
-    final mentions = BotMentionRoster.shared.resolver(_current.connectionId, _current.profile).resolve(normalized);
+    final mentions = BotMentionRoster.shared
+        .resolver(_current.connectionId, _current.profile)
+        .resolve(normalized);
     final next = _current.copyWith(
       updatedAtMs: _nowMs(),
       mentions: List.unmodifiable(mentions),
@@ -2759,12 +2811,7 @@ class QueuedPreparedTurn {
 
 enum QueuedEntryKind { desktopAccepted, text, prepared }
 
-enum QueuedSteerOutcome {
-  accepted,
-  rejected,
-  unconfirmed,
-  queueRemovalFailed,
-}
+enum QueuedSteerOutcome { accepted, rejected, unconfirmed, queueRemovalFailed }
 
 /// Proyección única y estable de la cola. La UI y el drenaje consumen el mismo
 /// `queueOrder`; `id` no depende de la posición visible.
@@ -3083,6 +3130,19 @@ enum _SessionMessagesPageAction {
 }
 
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
+
+final class _NativeSessionHistoryPage extends SessionMessagesPage {
+  _NativeSessionHistoryPage(SessionMessagesPage page)
+    : super(
+        messages: page.messages,
+        pagination: null,
+        paginationProvided: false,
+        rawMessageCount: page.rawMessageCount,
+        messagesFullyParsed: page.messagesFullyParsed,
+        resolvedTipId: page.resolvedTipId,
+        coverage: page.coverage,
+      );
+}
 
 final class _SessionMessagesPageReadContext {
   const _SessionMessagesPageReadContext({
@@ -4468,18 +4528,87 @@ class ActiveChat {
   bool get activityWatchdogArmed => _activityWatchdogTimer != null;
   bool get noActivityHint => _noActivityHint;
 
-  /// Live standing-goal state for this session (`session.control`), null when
-  /// there is no active goal. Hydrated once via [_hydrateGoal] and kept fresh
-  /// by `session.control.update` while the socket stays connected.
+  // Live control state refreshed by reads and `session.control.update` pushes.
   SessionGoalSnapshot? _goal;
+  SessionLoopSnapshot? _loop;
+  SessionHeartbeatSnapshot? _heartbeat;
+  List<SessionActivityTask> _sessionTasks = const [];
+  int _sessionTaskRevision = -1;
+  bool _sessionControlStale = false;
+  int _sessionControlAbsenceStreak = 0;
+  Future<void>? _sessionControlRefreshFlight;
+  bool _sessionControlRefreshQueued = false;
   SessionGoalSnapshot? get goal => _goal;
   String? _lastNotifiedGoalStatus;
 
-  void _applyGoalUpdate(Object? control) {
-    if (control is! Map) return;
-    _goal = SessionGoalSnapshot.tryParse(control['goal']);
+  bool get _hasSessionControl =>
+      _goal != null || _loop != null || _heartbeat != null;
+
+  void _applySessionControl(
+    SessionControlSnapshot snapshot, {
+    required bool authoritativePush,
+  }) {
+    final absent =
+        snapshot.goal == null &&
+        snapshot.loop == null &&
+        snapshot.heartbeat == null;
+    if (!authoritativePush && absent && _hasSessionControl) {
+      _sessionControlAbsenceStreak += 1;
+      if (_sessionControlAbsenceStreak < 2) return;
+    } else {
+      _sessionControlAbsenceStreak = 0;
+    }
+    _goal = snapshot.goal;
+    _loop = snapshot.loop;
+    _heartbeat = snapshot.heartbeat;
+    _sessionControlStale = false;
     _syncGoalWatch();
     _emit(ActiveChatEvent.goalUpdated);
+  }
+
+  void _applySessionControlUpdate(Object? control) {
+    if (control is! Map) return;
+    _applySessionControl(
+      SessionControlSnapshot.fromJson(control),
+      authoritativePush: true,
+    );
+  }
+
+  void _applyTodoUpdate(Map<String, dynamic> payload) {
+    final revision = payload['revision'];
+    final parsedRevision = revision is num
+        ? revision.toInt()
+        : int.tryParse(revision?.toString() ?? '');
+    if (parsedRevision == null || parsedRevision <= _sessionTaskRevision) return;
+    final rawTodos = payload['todos'];
+    if (rawTodos is! List) return;
+    final next = <SessionActivityTask>[];
+    for (final raw in rawTodos.take(200)) {
+      if (raw is! Map) continue;
+      final id = (raw['id'] ?? '').toString().trim();
+      final content = (raw['content'] ?? '')
+          .toString()
+          .replaceAll(RegExp(r'[\x00-\x1f\x7f]+'), ' ')
+          .trim();
+      final status = switch ((raw['status'] ?? '').toString()) {
+        'pending' => SessionActivityTaskStatus.pending,
+        'in_progress' => SessionActivityTaskStatus.inProgress,
+        'completed' => SessionActivityTaskStatus.completed,
+        'cancelled' => SessionActivityTaskStatus.cancelled,
+        _ => null,
+      };
+      if (id.isEmpty || content.isEmpty || status == null) continue;
+      next.add(
+        SessionActivityTask(
+          id: id.length <= 512 ? id : id.substring(0, 512),
+          content: content.length <= 200 ? content : content.substring(0, 200),
+          status: status,
+        ),
+      );
+    }
+    _sessionTasks = List.unmodifiable(next);
+    _sessionTaskRevision = parsedRevision;
+    _emit(ActiveChatEvent.subagentActivity);
   }
 
   /// Registers/unregisters this session with [BackgroundGoalWatch] so the
@@ -4522,21 +4651,52 @@ class ActiveChat {
     }());
   }
 
-  /// One-shot hydration for a freshly opened/resumed chat — the live push
-  /// (`session.control.update`) only carries deltas from here on.
-  Future<void> _hydrateGoal(String runtimeSessionId) async {
+  Future<void> _hydrateSessionControl(String runtimeSessionId) async {
     if (!_usingDesktopGateway) return;
     try {
-      final snapshot = await desktopControlGateway?.readSessionGoal(
-        runtimeSessionId,
-      );
+      final gateway = _desktopGateway;
+      final snapshot = gateway is HermesDesktopSessionControlGateway
+          ? await (gateway as HermesDesktopSessionControlGateway)
+                .readSessionControl(runtimeSessionId)
+          : SessionControlSnapshot(
+              goal: await desktopControlGateway?.readSessionGoal(
+                runtimeSessionId,
+              ),
+              loop: null,
+              heartbeat: null,
+              revision: '',
+              updatedAt: null,
+            );
       if (_disposed || _desktopRuntimeSessionId != runtimeSessionId) return;
-      _goal = snapshot;
-      _syncGoalWatch();
-      _emit(ActiveChatEvent.goalUpdated);
+      _applySessionControl(snapshot, authoritativePush: false);
     } catch (_) {
-      // Best-effort: an unsupported/older gateway simply shows no goal state.
+      if (_disposed || _desktopRuntimeSessionId != runtimeSessionId) return;
+      if (_hasSessionControl && !_sessionControlStale) {
+        _sessionControlStale = true;
+        _emit(ActiveChatEvent.goalUpdated);
+      }
     }
+  }
+
+  Future<void> refreshSessionControl() {
+    final activeFlight = _sessionControlRefreshFlight;
+    if (activeFlight != null) {
+      _sessionControlRefreshQueued = true;
+      return activeFlight;
+    }
+    final runtimeId = _desktopRuntimeSessionId;
+    if (runtimeId == null) return Future.value();
+    late final Future<void> flight;
+    flight = _hydrateSessionControl(runtimeId).whenComplete(() {
+      if (!identical(_sessionControlRefreshFlight, flight)) return;
+      _sessionControlRefreshFlight = null;
+      if (_sessionControlRefreshQueued) {
+        _sessionControlRefreshQueued = false;
+        unawaited(refreshSessionControl());
+      }
+    });
+    _sessionControlRefreshFlight = flight;
+    return flight;
   }
 
   /// Sends a `session.control` goal action (pause/resume/unwait/clear). The
@@ -4546,8 +4706,51 @@ class ActiveChat {
   Future<void> sendGoalAction(String action) async {
     final runtimeId = _desktopRuntimeSessionId;
     if (runtimeId == null) return;
+    final gateway = _desktopGateway;
+    if (gateway is HermesDesktopSessionControlGateway) {
+      await (gateway as HermesDesktopSessionControlGateway)
+          .sendSessionControlAction(runtimeId, action);
+      return;
+    }
     await desktopControlGateway?.sendGoalAction(runtimeId, action);
   }
+
+  Future<void> sendSessionControlAction(String action) async {
+    final runtimeId = _desktopRuntimeSessionId;
+    final gateway = _desktopGateway;
+    if (runtimeId == null || gateway is! HermesDesktopSessionControlGateway) {
+      return;
+    }
+    await (gateway as HermesDesktopSessionControlGateway)
+        .sendSessionControlAction(runtimeId, action);
+  }
+
+  Future<void> stopBackgroundProcess(String processId) async {
+    final runtimeId = _desktopRuntimeSessionId;
+    final gateway = _desktopGateway;
+    if (runtimeId == null || gateway is! HermesDesktopControlGateway) return;
+    await (gateway as HermesDesktopControlGateway).killBackgroundProcess(
+      runtimeId,
+      processId,
+    );
+    await refreshBackgroundProcesses();
+  }
+
+  bool get canControlGoal =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      (_desktopGateway is HermesDesktopSessionControlGateway ||
+          desktopControlGateway != null);
+
+  bool get canControlSessionActivity =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      _desktopGateway is HermesDesktopSessionControlGateway;
+
+  bool get canStopBackgroundProcesses =>
+      !connection.readOnly &&
+      !mutationsBlockedByOwnershipConflict &&
+      _desktopGateway is HermesDesktopControlGateway;
 
   List<SubagentActivity> get subagentActivities {
     if (_disposed ||
@@ -4665,14 +4868,41 @@ class ActiveChat {
               SessionActivityKind.waitingForUser,
             null => SessionActivityKind.idle,
           };
+    final schedules = <SessionActivitySchedule>[
+      if (_loop case final loop?)
+        SessionActivitySchedule(
+          kind: SessionActivityScheduleKind.loop,
+          status: loop.status,
+          interval: loop.interval,
+          lastRunAt: loop.lastRunAt,
+          nextDueAt: loop.nextDueAt,
+          runCount: loop.ticksFired,
+          awaitingResponse: loop.awaitingResponse,
+          deferredByGoal: loop.deferredByGoal,
+        ),
+      if (_heartbeat case final heartbeat?)
+        SessionActivitySchedule(
+          kind: SessionActivityScheduleKind.heartbeat,
+          status: heartbeat.status,
+          interval: heartbeat.interval,
+          lastRunAt: heartbeat.lastRunAt,
+          nextDueAt: heartbeat.nextDueAt,
+          runCount: heartbeat.fireCount,
+        ),
+    ];
     return SessionActivity(
       foregroundTurn: isStreaming,
       rosterTurn: remoteSurfaceOwnsLiveTurn,
       subagentCount: safeActiveSubagentCount,
       processes: _backgroundProcesses,
+      schedules: schedules,
+      goal: _goal == null
+          ? null
+          : SessionActivityGoal(title: _goal!.title, status: _goal!.status),
+      tasks: _sessionTasks,
       foregroundKind: foregroundKind,
       observedAt: _backgroundProcessesObservedAt ?? _desktopTurnStartedAt,
-      stale: _backgroundProcessesStale,
+      stale: _backgroundProcessesStale || _sessionControlStale,
     );
   }
 
@@ -4707,7 +4937,9 @@ class ActiveChat {
       left.id == right.id &&
       left.command == right.command &&
       left.notifyOnComplete == right.notifyOnComplete &&
-      left.startedAt == right.startedAt;
+      left.startedAt == right.startedAt &&
+      left.watchHit == right.watchHit &&
+      listEquals(left.watchPatterns, right.watchPatterns);
 
   bool get hasPendingBackgroundProcessRefresh =>
       _backgroundProcessRefreshFlight != null;
@@ -4768,7 +5000,11 @@ class ActiveChat {
         requestGeneration: requestGeneration,
         mutationGeneration: mutationGeneration,
       )) {
-        _backgroundProcessesStale = _backgroundProcesses.isNotEmpty;
+        final nextStale = _backgroundProcesses.isNotEmpty;
+        if (_backgroundProcessesStale != nextStale) {
+          _backgroundProcessesStale = nextStale;
+          _emit(ActiveChatEvent.subagentActivity);
+        }
       }
       return;
     }
@@ -4818,19 +5054,22 @@ class ActiveChat {
       next.add(
         SessionActivityProcess(
           id: row.opaqueId,
-          command: row.command.isEmpty
-              ? current?.command ?? ''
-              : row.command,
+          command: row.command.isEmpty ? current?.command ?? '' : row.command,
           notifyOnComplete: row.notifyOnComplete,
           startedAt:
               row.startedAt ??
               current?.startedAt ??
               now.subtract(Duration(seconds: row.uptimeSeconds)),
+          watchPatterns: row.watchPatterns.isEmpty
+              ? current?.watchPatterns ?? const []
+              : row.watchPatterns,
+          watchHit: row.watchHit,
         ),
       );
     }
     for (final current in _backgroundProcesses) {
-      if (activeRows.containsKey(current.id) || terminalIds.contains(current.id)) {
+      if (activeRows.containsKey(current.id) ||
+          terminalIds.contains(current.id)) {
         _backgroundProcessAbsenceStreaks.remove(current.id);
         continue;
       }
@@ -4844,14 +5083,17 @@ class ActiveChat {
       }
     }
     next.sort((left, right) => left.id.compareTo(right.id));
-    final changed = next.length != _backgroundProcesses.length ||
+    final changed =
+        next.length != _backgroundProcesses.length ||
         List.generate(
           next.length,
-          (index) => !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
+          (index) =>
+              !_sameBackgroundProcess(next[index], _backgroundProcesses[index]),
         ).any((different) => different);
+    final staleChanged = _backgroundProcessesStale;
     _backgroundProcessesObservedAt = now;
     _backgroundProcessesStale = false;
-    if (!changed) return;
+    if (!changed && !staleChanged) return;
     _backgroundProcesses = List.unmodifiable(next);
     _backgroundProcessMutationGeneration += 1;
     _emit(ActiveChatEvent.subagentActivity);
@@ -5684,19 +5926,24 @@ class ActiveChat {
   }
 
   List<String> get queuedTextMessages => List<String>.unmodifiable([
-    if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
+    if (_desktopAcceptedQueuedPrompt != null)
+      stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
     ..._messageQueue.map((item) => stripBotMentionNote(item.text)),
   ]);
 
   List<String> get queuedMessages {
     final local = <({int order, String text})>[
-      ..._messageQueue.map((item) => (order: item.queueOrder, text: stripBotMentionNote(item.text))),
+      ..._messageQueue.map(
+        (item) =>
+            (order: item.queueOrder, text: stripBotMentionNote(item.text)),
+      ),
       ..._preparedTurnQueue.map(
         (item) => (order: item.queueOrder, text: item.turn.text),
       ),
     ]..sort((left, right) => left.order.compareTo(right.order));
     return List<String>.unmodifiable([
-      if (_desktopAcceptedQueuedPrompt != null) stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
+      if (_desktopAcceptedQueuedPrompt != null)
+        stripBotMentionNote(_desktopAcceptedQueuedPrompt!),
       ...local.map((item) => item.text),
     ]);
   }
@@ -6680,7 +6927,7 @@ class ActiveChat {
     }
     if (didAdopt) {
       unawaited(_hydrateSubagentsForCurrentRuntime());
-      unawaited(_hydrateGoal(runtimeId));
+      unawaited(_hydrateSessionControl(runtimeId));
     }
   }
 
@@ -6731,6 +6978,14 @@ class ActiveChat {
     _abandonPendingDesktopCompression();
     _desktopBindEpoch += 1;
     _goal = null;
+    _loop = null;
+    _heartbeat = null;
+    _sessionTasks = const [];
+    _sessionTaskRevision = -1;
+    _sessionControlStale = false;
+    _sessionControlAbsenceStreak = 0;
+    _sessionControlRefreshFlight = null;
+    _sessionControlRefreshQueued = false;
     _lastNotifiedGoalStatus = null;
     final retiredRuntimeId = _desktopRuntimeSessionId;
     if (retiredRuntimeId != null) {
@@ -8042,6 +8297,8 @@ class ActiveChat {
     limit: context.requestedLimit,
     offset: context.requestedOffset,
     runtimeSessionId: runtimeSessionId,
+    allowNativeHistory:
+        context.consumer != _SessionMessagesPageConsumer.loadEarlier,
   );
 
   Future<SessionMessagesPage> _requestStoredMessagesPage({
@@ -8050,6 +8307,7 @@ class ActiveChat {
     int? limit,
     int offset = 0,
     String? runtimeSessionId,
+    bool allowNativeHistory = true,
   }) async {
     final injected = _storedMessageLoader;
     if (injected != null) {
@@ -8067,15 +8325,20 @@ class ActiveChat {
             : null);
     // Keep the same automatic gateway opt-in as loadMessages: a runtime bound
     // by an explicit action does not authorize RPCs from a REST-only load.
-    if ((_attachDesktopRuntimeOnLoad ||
+    if (allowNativeHistory &&
+        (_attachDesktopRuntimeOnLoad ||
             _allowUnownedDesktopSnapshotForTesting) &&
         gateway != null &&
         gateway.isConnected &&
         gateway is HermesDesktopSessionHistoryGateway &&
         runtime != null) {
       try {
-        return await (gateway as HermesDesktopSessionHistoryGateway)
-            .sessionHistory(sessionId: runtime, profile: profile);
+        return _NativeSessionHistoryPage(
+          await (gateway as HermesDesktopSessionHistoryGateway).sessionHistory(
+            sessionId: runtime,
+            profile: profile,
+          ),
+        );
       } catch (_) {
         // Older gateways and transient RPC failures retain the REST path.
         // Do not log remote payloads or profile credentials.
@@ -8107,6 +8370,7 @@ class ActiveChat {
     }
     prepareProjection?.call();
 
+    final nativeSessionHistory = page is _NativeSessionHistoryPage;
     final legacyPage = !page.paginationProvided;
     final limit = page.limit;
     final terminalPage =
@@ -8120,7 +8384,10 @@ class ActiveChat {
         page.paginationFullyParsed &&
         rowsHaveSafePaginationIdentity;
     final pageProvesWholeTranscript =
-        page.offset == 0 && terminalPage && pageFullyValid;
+        !nativeSessionHistory &&
+        page.offset == 0 &&
+        terminalPage &&
+        pageFullyValid;
     final incomingTip = page.resolvedTipId;
     final currentTip = _coreReadIdentity.resolvedTipId;
     final emptyIdentityIsCompatible =
@@ -8160,6 +8427,7 @@ class ActiveChat {
         !consumesAsBackfill;
 
     if (validEmptyAtTail &&
+        !nativeSessionHistory &&
         !hardExpectedCountMismatch &&
         !softExpectedCountMismatch &&
         hasDurableVisibleTranscript) {
@@ -8335,6 +8603,21 @@ class ActiveChat {
       // repara siempre desde offset cero.
       applyCoreEvidence(replaceCoverage: false);
       armTailRecovery(recordsParseGap: true);
+    } else if (nativeSessionHistory) {
+      applyCoreEvidence(replaceCoverage: false);
+      nextLineageComplete = false;
+      nextExtent = _TranscriptExtent.partial;
+      nextEarlierAvailable = true;
+      nextOffset = 0;
+      nextTailHydration = true;
+      if (projection.disposition ==
+          _SessionMessagesPageProjectionDisposition.publish) {
+        acceptProjectionEvidence();
+        action = _SessionMessagesPageAction.publish;
+      } else {
+        action = _SessionMessagesPageAction.preserveVisible;
+      }
+      mutates = true;
     } else if (projection.preservesExistingCoverage &&
         page.messages.isNotEmpty) {
       applyCoreEvidence(replaceCoverage: false);
@@ -8454,9 +8737,9 @@ class ActiveChat {
     _transcriptCoverageRevision += 1;
     _transcriptExtent = _TranscriptExtent.partial;
     _transcriptCoverageHasParseGap = true;
-    _earlierMessagesAvailable = false;
-    _earlierMessagesNextOffset = snapshot.messages.length;
-    _needsTranscriptTailHydration = false;
+    _earlierMessagesAvailable = true;
+    _earlierMessagesNextOffset = 0;
+    _needsTranscriptTailHydration = true;
     _desktopHydrationExpectedMessageCount = null;
     _unconfirmedRetainedTranscriptIdentities.clear();
   }
@@ -9409,6 +9692,15 @@ class ActiveChat {
       if (_allTranscriptRowsHaveDurableIds(refreshedNewestFirst) &&
           canPartitionPrevious &&
           _allTranscriptRowsHaveDurableIds(durablePrevious)) {
+        final refreshedIdentities = _transcriptIdentities(refreshedNewestFirst);
+        final unconfirmedRetainedIdentities = _transcriptIdentities(
+          durablePrevious,
+        ).where(
+          (identity) => !_identityCollectionContains(
+            refreshedIdentities,
+            identity,
+          ),
+        ).toList(growable: false);
         return (
           messages: withRetainedLocal(
             _mergeOlderTranscriptPage(refreshedNewestFirst, durablePrevious),
@@ -9417,7 +9709,7 @@ class ActiveChat {
           acceptedRefreshed: true,
           retainsExistingRows:
               durablePrevious.isNotEmpty || retainedLocal.isNotEmpty,
-          unconfirmedRetainedIdentities: _transcriptIdentities(durablePrevious),
+          unconfirmedRetainedIdentities: unconfirmedRetainedIdentities,
         );
       }
       return (
@@ -9894,8 +10186,7 @@ class ActiveChat {
   Future<bool> _loadEarlierMessagesPage() async {
     if (_disposed ||
         !_earlierMessagesAvailable ||
-        _earlierMessagesInFlight ||
-        connection.kind == InstanceKind.localhost) {
+        _earlierMessagesInFlight) {
       return false;
     }
     _earlierMessagesInFlight = true;
@@ -9911,10 +10202,8 @@ class ActiveChat {
     );
     try {
       final page = await _fetchStoredMessagesPage(context);
-      // A native history read is the whole transcript even when the caller
-      // requested an older REST offset. Reconcile it as a fresh complete
-      // transcript, not as an older prefix to append to a potentially stale
-      // tail. Its absent pagination also retires the earlier-page cursor.
+      // Tail repair starts at REST offset zero; legacy REST can still return a
+      // complete one-shot transcript without pagination metadata.
       final replacesTranscript =
           requestedTailHydration || !page.paginationProvided;
       var normalized = const <Map<String, dynamic>>[];
@@ -10634,13 +10923,18 @@ class ActiveChat {
         profile = turn.profile;
         nativeAttachments = turn.activeAttachments;
         fullText = appendBotMentionNote(turn.fullText, turn.mentionAnnotation);
-        desktopText = turn.desktopText == null ? null
+        desktopText = turn.desktopText == null
+            ? null
             : appendBotMentionNote(turn.desktopText!, turn.mentionAnnotation);
       }
     } else if (!mentionsFrozen) {
-      final annotation = buildBotMentionAnnotation(mentionResolver.resolve(fullText));
+      final annotation = buildBotMentionAnnotation(
+        mentionResolver.resolve(fullText),
+      );
       fullText = appendBotMentionNote(fullText, annotation);
-      if (desktopText != null) desktopText = appendBotMentionNote(desktopText, annotation);
+      if (desktopText != null) {
+        desktopText = appendBotMentionNote(desktopText, annotation);
+      }
     }
     final pendingManualProbeClientTurnId =
         _pendingManualOwnershipProbeClientTurnId;
@@ -11215,8 +11509,10 @@ class ActiveChat {
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.rewind');
     }
-    final mentionPayload = appendBotMentionNote(text,
-        buildBotMentionAnnotation(mentionResolver.resolve(text)));
+    final mentionPayload = appendBotMentionNote(
+      text,
+      buildBotMentionAnnotation(mentionResolver.resolve(text)),
+    );
     final capturedLifecycle = _localConversationLifecycle;
     if (_activeRewrite != null) {
       throw StateError('Another conversation rewrite is already active');
@@ -12143,7 +12439,8 @@ class ActiveChat {
   }
 
   BotMentionResolver get mentionResolver => BotMentionRoster.shared.resolver(
-    connection.id, sessionProfile.isEmpty ? 'default' : sessionProfile,
+    connection.id,
+    sessionProfile.isEmpty ? 'default' : sessionProfile,
   );
 
   Future<void>? _mentionRosterLoad;
@@ -12157,8 +12454,16 @@ class ActiveChat {
     try {
       final gateway = _desktopGateway;
       if (gateway is! BotMentionRosterGateway) return;
-      final profiles = await (gateway as BotMentionRosterGateway).loadMentionProfiles();
-      if (!_disposed) BotMentionRoster.shared.replace(connection.id, connection.label, profiles, expectedGeneration: rosterGeneration);
+      final profiles = await (gateway as BotMentionRosterGateway)
+          .loadMentionProfiles();
+      if (!_disposed) {
+        BotMentionRoster.shared.replace(
+          connection.id,
+          connection.label,
+          profiles,
+          expectedGeneration: rosterGeneration,
+        );
+      }
     } catch (_) {
       // A cold/unavailable roster must never block ordinary chat admission.
     } finally {
@@ -14501,8 +14806,7 @@ class ActiveChat {
   }
 
   void _scheduleAutomaticDesktopReattach(HermesDesktopGateway gateway) {
-    if ((!_attachDesktopRuntimeOnLoad &&
-            !_viewerTurnConvergenceIsCurrent) ||
+    if ((!_attachDesktopRuntimeOnLoad && !_viewerTurnConvergenceIsCurrent) ||
         gateway is! HermesDesktopRecoverySessionLifecycleGateway ||
         _disposed ||
         (isStreaming && !_viewerTurnConvergenceIsCurrent) ||
@@ -15462,6 +15766,7 @@ class ActiveChat {
         profile: profile,
         limit: 500,
         offset: offset,
+        allowNativeHistory: false,
       );
       if (!page.messagesFullyParsed || !page.paginationFullyParsed) {
         throw StateError('Incomplete recovery transcript');
@@ -15921,12 +16226,23 @@ class ActiveChat {
           : '\n⟦adjunto⟧\n';
       fallbackText = '$fallbackText$separator${refs.join('\n')}';
     }
-    return _startRemoteRun(appendBotMentionNote(fallbackText, mentionAnnotation), model, history, turnEpoch);
+    return _startRemoteRun(
+      appendBotMentionNote(fallbackText, mentionAnnotation),
+      model,
+      history,
+      turnEpoch,
+    );
   }
 
   void _onDesktopEvent(TuiGatewayEvent event) {
     final runtimeId = _desktopRuntimeSessionId;
-    if (runtimeId == null || event.sessionId != runtimeId) return;
+    if (runtimeId == null) return;
+    if (event.type == 'sessions.changed') {
+      unawaited(refreshBackgroundProcesses());
+      unawaited(refreshSessionControl());
+      return;
+    }
+    if (event.sessionId != runtimeId) return;
     if (event.type == 'session.reclaimed') {
       final receipt = _desktopRuntimeOwnershipReceipt;
       final reclaimedStoredId = event.payload['stored_session_id']?.toString();
@@ -15966,7 +16282,11 @@ class ActiveChat {
       _observeRuntimeActivity();
     }
     if (event.type == 'session.control.update') {
-      _applyGoalUpdate(payload['control']);
+      _applySessionControlUpdate(payload['control']);
+      return;
+    }
+    if (event.type == 'todo.updated') {
+      _applyTodoUpdate(payload);
       return;
     }
     final isTerminal =
@@ -16131,6 +16451,9 @@ class ActiveChat {
       'message.start',
       'message.delta',
       'message.interim',
+      'reasoning.delta',
+      'reasoning.available',
+      'thinking.delta',
       'tool.start',
       'tool.progress',
       'tool.generating',
@@ -16160,12 +16483,30 @@ class ActiveChat {
         _desktopTurnStartedAt = DateTime.now();
         state = ChatPipelineState.waiting;
         _emit(ActiveChatEvent.waiting);
+      case 'reasoning.delta':
+      case 'thinking.delta':
+        final delta = payload['text'] ?? payload['delta'];
+        if (delta is String && delta.isNotEmpty) {
+          _retireDesktopInterimSegment();
+          _appendAssistantReasoningActivity(delta);
+          state = ChatPipelineState.executing;
+          _emit(ActiveChatEvent.toolProgress);
+        }
+      case 'reasoning.available':
+        final reasoning = payload['text'] ?? payload['reasoning'];
+        if (reasoning is String && reasoning.trim().isNotEmpty) {
+          _retireDesktopInterimSegment();
+          _appendAssistantReasoningActivity(reasoning, authoritative: true);
+          state = ChatPipelineState.executing;
+          _emit(ActiveChatEvent.toolProgress);
+        }
       case 'message.delta':
         final deltaText = payload['text'];
         final narratable =
             deltaText is String &&
             _isNarrableDesktopAssistantPayload(event.type, payload);
         if (!narratable) break;
+        _prepareDesktopPostInterimSegment();
         if (!_streamingConfirmed) {
           _streamingConfirmed = true;
           ConnectionManager.markStreamingSupported(connection.id);
@@ -16186,6 +16527,7 @@ class ActiveChat {
       case 'tool.start':
       case 'tool.progress':
       case 'tool.generating':
+        _retireDesktopInterimSegment();
         _flushTokenBuffer();
         state = ChatPipelineState.executing;
         if (event.type == 'tool.start') {
@@ -16200,8 +16542,14 @@ class ActiveChat {
           'tool': payload['name'] ?? payload['tool'] ?? payload['tool_id'],
           'preview': payload['preview'] ?? payload['input'] ?? '',
         }, running: true);
+        _upsertAssistantToolActivity(
+          payload,
+          running: true,
+          startsNew: event.type == 'tool.start',
+        );
         _emit(ActiveChatEvent.toolProgress);
       case 'tool.complete':
+        _retireDesktopInterimSegment();
         _flushTokenBuffer();
         _captureDesktopGeneratedImage(payload);
         _handleLegacyDelegateEvent(event.type, runtimeId, payload);
@@ -16211,6 +16559,7 @@ class ActiveChat {
           'preview': payload['preview'] ?? payload['input'] ?? '',
           'error': payload['error'] != null || payload['status'] == 'error',
         }, running: false);
+        _upsertAssistantToolActivity(payload, running: false, startsNew: false);
         _emit(ActiveChatEvent.toolProgress);
       case 'approval.request':
         _flushTokenBuffer();
@@ -16242,14 +16591,16 @@ class ActiveChat {
           break;
         }
         _recordTerminalWarning(payload['warning']);
-        if (narratable) {
-          _settleDesktopInterim(
-            text,
-            responsePreviewed: payload['response_previewed'] == true,
-          );
-        }
+        final settledText = narratable
+            ? _settleDesktopInterim(
+                text,
+                responsePreviewed: payload['response_previewed'] == true,
+              )
+            : text;
         _completeRun(
-          finalOutput: narratable && text.isNotEmpty ? text : null,
+          finalOutput: narratable && settledText.isNotEmpty
+              ? settledText
+              : null,
           finalReasoning: reasoning.isNotEmpty ? reasoning : null,
           finalOutputNarratable: narratable,
         );
@@ -16303,6 +16654,10 @@ class ActiveChat {
         .toLowerCase();
     if (kind == 'process') {
       unawaited(refreshBackgroundProcesses());
+      return;
+    }
+    if (const {'goal', 'loop', 'heartbeat'}.contains(kind)) {
+      unawaited(refreshSessionControl());
       return;
     }
     if (kind == 'compacted') {
@@ -17092,6 +17447,205 @@ class ActiveChat {
     return true;
   }
 
+  int _assistantActivityMessageIndex() => _messages.indexWhere(
+    (message) =>
+        message['role'] == 'assistant' &&
+        (message['display_kind']?.toString().trim().isEmpty ?? true),
+  );
+
+  void _appendAssistantReasoningActivity(
+    String incoming, {
+    bool authoritative = false,
+  }) {
+    if (incoming.trim().isEmpty) return;
+    var index = _assistantActivityMessageIndex();
+    if (index < 0) {
+      _messages.insert(0, {
+        'role': 'assistant',
+        'content': '',
+        '_pipeline': true,
+      });
+      index = 0;
+    }
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: true);
+    final lastReasoningIndex = activity.lastIndexWhere(
+      (step) => step['kind'] == 'reasoning' && step['status'] == 'running',
+    );
+    final canUpdateLatest =
+        lastReasoningIndex >= 0 && lastReasoningIndex == activity.length - 1;
+    if (canUpdateLatest) {
+      final current = activity[lastReasoningIndex]['text']?.toString() ?? '';
+      final text = authoritative
+          ? incoming.startsWith(current)
+                ? incoming
+                : current.startsWith(incoming)
+                ? current
+                : incoming
+          : '$current$incoming';
+      activity[lastReasoningIndex] = {
+        ...activity[lastReasoningIndex],
+        'text': text,
+      };
+    } else {
+      activity.add({
+        'kind': 'reasoning',
+        'text': incoming,
+        'status': 'running',
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    final reasoning = activity
+        .where((step) => step['kind'] == 'reasoning')
+        .map((step) => step['text']?.toString().trim() ?? '')
+        .where((text) => text.isNotEmpty)
+        .join('\n\n');
+    _messages[index] = {
+      ...message,
+      'reasoning': reasoning,
+      assistantActivityTraceKey: activity,
+    };
+  }
+
+  void _upsertAssistantToolActivity(
+    Map<String, dynamic> payload, {
+    required bool running,
+    required bool startsNew,
+  }) {
+    var index = _assistantActivityMessageIndex();
+    if (index < 0) {
+      _messages.insert(0, {
+        'role': 'assistant',
+        'content': '',
+        '_pipeline': true,
+      });
+      index = 0;
+    }
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: true);
+    final rawId =
+        payload['tool_call_id'] ??
+        payload['call_id'] ??
+        payload['tool_id'] ??
+        payload['id'];
+    final id = rawId?.toString().trim();
+    final rawLabel =
+        payload['skill'] ??
+        payload['name'] ??
+        payload['tool'] ??
+        payload['tool_id'];
+    final label = rawLabel?.toString().trim() ?? '';
+    if (label.isEmpty) return;
+    final rawKind = (payload['kind'] ?? payload['type'])
+        ?.toString()
+        .trim()
+        .toLowerCase();
+    final kind =
+        rawKind == 'skill' ||
+            payload.containsKey('skill') ||
+            label.toLowerCase() == 'skill'
+        ? 'skill'
+        : 'tool';
+    var activityIndex = id == null || id.isEmpty
+        ? -1
+        : activity.lastIndexWhere(
+            (step) =>
+                (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+                step['id'] == id,
+          );
+    if (activityIndex < 0 && !startsNew) {
+      activityIndex = activity.lastIndexWhere(
+        (step) =>
+            (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+            step['label'] == label &&
+            step['status'] == 'running',
+      );
+    }
+    final status = running
+        ? 'running'
+        : payload['error'] != null || payload['status'] == 'error'
+        ? 'failed'
+        : 'completed';
+    if (activityIndex >= 0) {
+      activity[activityIndex] = {
+        ...activity[activityIndex],
+        'label': label,
+        'status': status,
+      };
+    } else {
+      activity.add({
+        'kind': kind,
+        'label': label,
+        'status': status,
+        if (id != null && id.isNotEmpty) 'id': id,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+    _messages[index] = {...message, assistantActivityTraceKey: activity};
+  }
+
+  void _settleAssistantActivity(String? finalReasoning) {
+    if (finalReasoning?.trim().isNotEmpty == true) {
+      _appendAssistantReasoningActivity(finalReasoning!, authoritative: true);
+    }
+    final index = _assistantActivityMessageIndex();
+    if (index < 0) return;
+    final message = _messages[index];
+    final activity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    ).map(Map<String, dynamic>.from).toList(growable: false);
+    if (activity.isEmpty) return;
+    for (var step = 0; step < activity.length; step++) {
+      if (activity[step]['status'] == 'running') {
+        activity[step] = {...activity[step], 'status': 'completed'};
+      }
+    }
+    final firstTimestamp = activity
+        .map((step) => step['timestamp'])
+        .whereType<num>()
+        .firstOrNull;
+    final durationSeconds = firstTimestamp == null
+        ? null
+        : ((DateTime.now().millisecondsSinceEpoch - firstTimestamp) / 1000)
+              .clamp(0, 604800);
+    _messages[index] = {
+      ...message,
+      assistantActivityTraceKey: activity,
+      '_activity_duration_seconds': ?durationSeconds,
+    };
+  }
+
+  void _retireDesktopInterimSegment() {
+    if (_messages.isEmpty ||
+        _messages.first['role'] != 'assistant' ||
+        _messages.first['_desktopReplaceInterimOnDelta'] != true) {
+      return;
+    }
+    _messages[0] = Map<String, dynamic>.from(_messages.first)
+      ..remove('_desktopPreserveInterimOnDelta');
+  }
+
+  void _prepareDesktopPostInterimSegment() {
+    if (_messages.isEmpty ||
+        _messages.first['role'] != 'assistant' ||
+        _messages.first['_desktopReplaceInterimOnDelta'] != true) {
+      return;
+    }
+    final preserve =
+        _messages.first['_desktopPreserveInterimOnDelta'] == true;
+    final current = (_messages.first['content'] as String?) ?? '';
+    final next = Map<String, dynamic>.from(_messages.first)
+      ..['content'] = preserve && current.isNotEmpty ? '$current\n\n' : ''
+      ..['_desktopInterimWasPreserved'] = preserve
+      ..remove('_desktopReplaceInterimOnDelta')
+      ..remove('_desktopPreserveInterimOnDelta');
+    _messages[0] = next;
+  }
+
   void _sealDesktopInterim(
     Map<String, dynamic> payload, {
     required bool narratable,
@@ -17107,103 +17661,81 @@ class ActiveChat {
       _messages[0] = {
         ..._messages[0],
         'content': rawText,
-        '_pipeline': false,
+        '_pipeline': true,
         '_desktopInterim': true,
         '_desktopInterimPublic': narratable,
         '_desktopInterimKey': key,
+        '_desktopInterimText': rawText,
+        '_desktopReplaceInterimOnDelta': true,
+        '_desktopPreserveInterimOnDelta': true,
       };
     } else {
       _messages.insert(0, {
         'role': 'assistant',
         'content': rawText,
-        '_pipeline': false,
+        '_pipeline': true,
         '_desktopInterim': true,
         '_desktopInterimPublic': narratable,
         '_desktopInterimKey': key,
+        '_desktopInterimText': rawText,
+        '_desktopReplaceInterimOnDelta': true,
+        '_desktopPreserveInterimOnDelta': true,
       });
     }
-    // Subsequent deltas belong to a new assistant segment while the same turn
-    // keeps running. The event remains visual for chat, while Voz observes the
-    // separate monotonic narration projection populated above.
-    _messages.insert(0, {
-      'role': 'assistant',
-      'content': '',
-      '_pipeline': true,
-      '_desktopPostInterimKey': key,
-    });
     _pendingDesktopInterimKey = key;
     state = ChatPipelineState.executing;
     _emit(ActiveChatEvent.toolProgress);
   }
 
-  bool _settleDesktopInterim(
+  String _settleDesktopInterim(
     String finalText, {
     required bool responsePreviewed,
   }) {
     final key = _pendingDesktopInterimKey;
     _pendingDesktopInterimKey = null;
-    if (key == null || finalText.trim().isEmpty) {
-      return false;
-    }
+    if (key == null || finalText.trim().isEmpty) return finalText;
     final interimIndex = _messages.indexWhere(
       (message) => message['_desktopInterimKey'] == key,
     );
-    if (interimIndex < 0) return false;
-    final interimText = (_messages[interimIndex]['content'] as String? ?? '')
-        .trim();
-    if (interimText.isEmpty) return false;
+    if (interimIndex < 0) return finalText;
+    final message = _messages[interimIndex];
+    final interimText =
+        (message['_desktopInterimText'] as String? ??
+                message['content'] as String? ??
+                '')
+            .trim();
+    if (interimText.isEmpty) return finalText;
     final trimmedFinal = finalText.trim();
-    // Continuidad, no igualdad exacta (paridad con Desktop, fix #63679): el
-    // streaming puede perder caracteres y el terminal añadir un delta final,
-    // así que un prefijo en cualquier dirección cuenta como el MISMO mensaje.
-    // `responsePreviewed` sigue cubriendo el caso verify-on-stop aunque el
-    // final reescrito ya no comparta prefijo con el preview.
     final finalContinuesInterim =
         trimmedFinal == interimText ||
         trimmedFinal.startsWith(interimText) ||
         interimText.startsWith(trimmedFinal);
-    if (!responsePreviewed && !finalContinuesInterim) return false;
-    final retainedGeneratedMedia = _messages
-        .where((message) => message['_desktopPostInterimKey'] == key)
-        .expand(_generatedImageMetadataOf)
-        .toList(growable: false);
-    _messages.removeWhere(
-      (message) => message['_desktopPostInterimKey'] == key,
-    );
-    final settledIndex = _messages.indexWhere(
-      (message) => message['_desktopInterimKey'] == key,
-    );
-    if (settledIndex < 0) return false;
-    if (trimmedFinal.startsWith(interimText)) {
-      // Conserva el prefijo que ya estaba visible: _completeRun encola el
-      // sufijo autoritativo y lo revela con la misma cadencia que los deltas.
-      _messages[settledIndex] = {
-        ..._messages[settledIndex],
-        '_pipeline': false,
-        '_responsePreviewed': true,
-        if (retainedGeneratedMedia.isNotEmpty)
-          '_generatedImages': _mergeGeneratedImageMetadata(
-            _generatedImageMetadataOf(_messages[settledIndex]),
-            retainedGeneratedMedia,
-          ),
-      };
-    } else {
-      // Final reescrito o más corto que el preview: el texto autoritativo
-      // sustituye al interim entero. Conservar el prefijo aquí dejaría en el
-      // transcript caracteres que el servidor nunca produjo.
-      _messages[settledIndex] = {
-        ..._messages[settledIndex],
-        'content': finalText,
-        '_pipeline': false,
-        '_responsePreviewed': true,
-        if (retainedGeneratedMedia.isNotEmpty)
-          '_generatedImages': _mergeGeneratedImageMetadata(
-            _generatedImageMetadataOf(_messages[settledIndex]),
-            retainedGeneratedMedia,
-          ),
-      };
-    }
-    return true;
+    final preserveInterim =
+        !responsePreviewed &&
+        !finalContinuesInterim &&
+        (message['_desktopPreserveInterimOnDelta'] == true ||
+            message['_desktopInterimWasPreserved'] == true);
+    final currentText = ((message['content'] as String?) ?? '').trim();
+    final settledText = preserveInterim
+        ? currentText.startsWith(interimText) &&
+                  currentText.endsWith(trimmedFinal)
+              ? currentText
+              : '$interimText\n\n$trimmedFinal'
+        : finalText;
+    final streamFinalTail =
+        currentText == interimText &&
+        trimmedFinal.startsWith(interimText) &&
+        trimmedFinal.length > interimText.length;
+    final settled = Map<String, dynamic>.from(message)
+      ..['content'] = streamFinalTail ? currentText : settledText
+      ..['_pipeline'] = false
+      ..['_responsePreviewed'] = true
+      ..remove('_desktopInterimText')
+      ..remove('_desktopReplaceInterimOnDelta')
+      ..remove('_desktopPreserveInterimOnDelta')
+      ..remove('_desktopInterimWasPreserved');
+    _messages[interimIndex] = settled;
+    return settledText;
   }
 
   /// Lanza el turno remoto vía `/v1/runs` (motor de runs con aprobaciones
@@ -17785,7 +18317,10 @@ class ActiveChat {
     final queueOrder = _nextQueueOrder++;
     _messageQueue.add(
       _QueuedTextTurn(
-        appendBotMentionNote(trimmed, buildBotMentionAnnotation(mentionResolver.resolve(trimmed))),
+        appendBotMentionNote(
+          trimmed,
+          buildBotMentionAnnotation(mentionResolver.resolve(trimmed)),
+        ),
         queueOrder,
         id: 'text:$queueOrder',
         // Solo un turno vivo o en admisión puede transferir su policy. Una cola
@@ -18080,7 +18615,10 @@ class ActiveChat {
     if (textIndex >= 0) {
       final target = textItems[textIndex];
       final replacement = _QueuedTextTurn(
-        appendBotMentionNote(text.trim(), buildBotMentionAnnotation(mentionResolver.resolve(text.trim()))),
+        appendBotMentionNote(
+          text.trim(),
+          buildBotMentionAnnotation(mentionResolver.resolve(text.trim())),
+        ),
         target.queueOrder,
         id: target.id,
         allowTransportFallback: target.allowTransportFallback,
@@ -18160,7 +18698,9 @@ class ActiveChat {
               prepared.first.turn.fullText,
               prepared.first.turn.mentionAnnotation,
             )
-          : legacy.isNotEmpty ? legacy.first.text : entry.text;
+          : legacy.isNotEmpty
+          ? legacy.first.text
+          : entry.text;
       await steer(payload, mentionsFrozen: true);
     } catch (error) {
       return activeChatSteerFailureIsSafeToQueue(error)
@@ -18735,16 +19275,31 @@ class ActiveChat {
           ConnectionManager.markStreamingSupported(connection.id);
         }
         _enqueueToken((event['delta'] ?? '').toString());
+      case 'reasoning.delta':
+      case 'thinking.delta':
+        final delta = event['text'] ?? event['delta'];
+        if (delta is String && delta.isNotEmpty) {
+          _appendAssistantReasoningActivity(delta);
+          _emit(ActiveChatEvent.toolProgress);
+        }
+      case 'reasoning.available':
+        final reasoning = event['text'] ?? event['reasoning'];
+        if (reasoning is String && reasoning.trim().isNotEmpty) {
+          _appendAssistantReasoningActivity(reasoning, authoritative: true);
+          _emit(ActiveChatEvent.toolProgress);
+        }
       case 'tool.started':
         _flushTokenBuffer();
         state = ChatPipelineState.executing;
         _trackVoiceToolEvent(event, running: true, startsNew: true);
         _upsertRunTool(event, running: true);
+        _upsertAssistantToolActivity(event, running: true, startsNew: true);
         _emit(ActiveChatEvent.toolProgress);
       case 'tool.completed':
         _flushTokenBuffer();
         _trackVoiceToolEvent(event, running: false, startsNew: false);
         _upsertRunTool(event, running: false);
+        _upsertAssistantToolActivity(event, running: false, startsNew: false);
         _emit(ActiveChatEvent.toolProgress);
       case 'approval.request':
         _flushTokenBuffer();
@@ -19901,6 +20456,7 @@ class ActiveChat {
     }
     if (!_isCurrentEpoch(completingEpoch)) return;
     _flushTokenBuffer();
+    _settleAssistantActivity(invocationReasoning);
     if (pendingApproval != null) {
       _cancelApprovalNotification(pendingApproval!, terminal: true);
     }
@@ -20400,12 +20956,14 @@ class ActiveChat {
       accepts: (message) => message['display_kind'] == 'process_complete',
     );
     if (resolved.kind != _TranscriptIdentityResolutionKind.unique) return false;
-    return newestFirst.take(resolved.index).any(
-      (message) =>
-          message['role'] == 'assistant' &&
-          _hasDurableTranscriptIdentity(message) &&
-          (message['content'] ?? '').toString().trim().isNotEmpty,
-    );
+    return newestFirst
+        .take(resolved.index)
+        .any(
+          (message) =>
+              message['role'] == 'assistant' &&
+              _hasDurableTranscriptIdentity(message) &&
+              (message['content'] ?? '').toString().trim().isNotEmpty,
+        );
   }
 
   /// Prefix comparison remains a projection concern; terminal semantics come
@@ -21654,8 +22212,10 @@ class ActiveChat {
   /// `session.steer` únicamente cuando no publican el RPC moderno.
   Future<void> steer(String fullText, {bool mentionsFrozen = false}) async {
     if (!mentionsFrozen) {
-      fullText = appendBotMentionNote(fullText,
-          buildBotMentionAnnotation(mentionResolver.resolve(fullText)));
+      fullText = appendBotMentionNote(
+        fullText,
+        buildBotMentionAnnotation(mentionResolver.resolve(fullText)),
+      );
     }
     if (mutationsBlockedByOwnershipConflict) {
       throw _ownershipConflictError('session.redirect');

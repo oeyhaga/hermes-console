@@ -14,6 +14,7 @@ import 'package:hermes_android/core/screens/chat_render_projection.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
+import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/services/subagent_transcript_projection.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
@@ -603,7 +604,10 @@ void main() {
       expect(assistant['reasoning'], reasoningMarker);
       expect(chat.messages.toString(), isNot(contains(privateMarker)));
       expect(chat.messages.toString(), isNot(contains('/home/private')));
-      expect(chat.messages.toString(), isNot(contains('IGNORED_REASONING_FALLBACK')));
+      expect(
+        chat.messages.toString(),
+        isNot(contains('IGNORED_REASONING_FALLBACK')),
+      );
       expect(
         chat.messages.where((message) => message['role'] == 'tool'),
         isEmpty,
@@ -611,7 +615,11 @@ void main() {
       for (final message in chat.messages) {
         expect(message['content'].toString(), isNot(contains(reasoningMarker)));
         for (final entry in message.entries) {
-          if (identical(message, assistant) && entry.key == 'reasoning') continue;
+          if (identical(message, assistant) &&
+              (entry.key == 'reasoning' ||
+                  entry.key == assistantActivityTraceKey)) {
+            continue;
+          }
           expect(
             entry.value.toString(),
             isNot(contains(reasoningMarker)),
@@ -721,7 +729,11 @@ void main() {
     for (final message in chat.messages) {
       expect(message['content'].toString(), isNot(contains(reasoningMarker)));
       for (final entry in message.entries) {
-        if (identical(message, assistant) && entry.key == 'reasoning') continue;
+        if (identical(message, assistant) &&
+            (entry.key == 'reasoning' ||
+                entry.key == assistantActivityTraceKey)) {
+          continue;
+        }
         expect(
           entry.value.toString(),
           isNot(contains(reasoningMarker)),
@@ -1175,12 +1187,7 @@ void main() {
         'rest-inflight-assistant-without-identity',
         gateway,
         storedMessageLoader: (_, _) async => const [
-          {
-            'id': 401,
-            'role': 'user',
-            'content': prompt,
-            'timestamp': 101.0,
-          },
+          {'id': 401, 'role': 'user', 'content': prompt, 'timestamp': 101.0},
           {
             'role': 'assistant',
             'content': '',
@@ -2829,8 +2836,14 @@ void main() {
         chat.internalMessagesForTesting.any(
           (message) => message['role'] == 'tool',
         ),
-        isTrue,
+        isFalse,
       );
+      final assistant = chat.internalMessagesForTesting.singleWhere(
+        (message) => message['role'] == 'assistant',
+      );
+      final activity = assistant[assistantActivityTraceKey] as List<dynamic>;
+      expect(activity, hasLength(1));
+      expect(activity.single['status'], 'running');
     },
   );
 
@@ -2871,10 +2884,15 @@ void main() {
 
       final changed = await chat.reconcileAfterResume();
 
-      expect(changed, isFalse);
+      expect(changed, isTrue);
       expect(gateway.resumeExistingCalls, 0);
       expect(chat.state, ChatPipelineState.completed);
-      expect(chat.internalMessagesForTesting.first['role'], 'tool');
+      expect(chat.internalMessagesForTesting.first['role'], 'assistant');
+      final activity =
+          chat.internalMessagesForTesting.first[assistantActivityTraceKey]
+              as List<dynamic>;
+      expect(activity, hasLength(1));
+      expect(activity.single['status'], 'completed');
     },
   );
 
@@ -3161,9 +3179,7 @@ void main() {
           'role': 'user',
           'content': processPayload,
           'display_kind': 'process_complete',
-          'display_metadata': {
-            'display_text': 'Background Process Finished',
-          },
+          'display_metadata': {'display_text': 'Background Process Finished'},
           'timestamp': 118,
         },
       ];
@@ -3181,15 +3197,12 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       final liveChronological = chat.messages.reversed.toList(growable: false);
-      expect(
-        liveChronological.map((message) => message['content']),
-        const [
-          'Lanza el proceso',
-          'Lanzado en segundo plano con aviso al terminar.',
-          processPayload,
-          'Terminó correctamente: HECHO-BG.',
-        ],
-      );
+      expect(liveChronological.map((message) => message['content']), const [
+        'Lanza el proceso',
+        'Lanzado en segundo plano con aviso al terminar.',
+        processPayload,
+        'Terminó correctamente: HECHO-BG.',
+      ]);
       expect(liveChronological[1]['message_id'], 'turn-1-assistant');
       expect(liveChronological[1]['timestamp'], 101);
       expect(liveChronological[2]['display_kind'], 'process_complete');

@@ -37,6 +37,384 @@ class DesktopSessionProjection {
   });
 }
 
+const assistantActivityTraceKey = '_activity_trace';
+const assistantToolResultEvidenceKey = '_activity_tool_results';
+
+Map<String, dynamic>? normalizeAssistantActivityStep(Object? raw) {
+  if (raw is! Map) return null;
+  final kind = raw['kind']?.toString().trim().toLowerCase();
+  if (kind == 'reasoning') {
+    final text = raw['text'];
+    if (text is! String || text.trim().isEmpty) return null;
+    return Map<String, dynamic>.unmodifiable({
+      'kind': 'reasoning',
+      'text': text,
+      'status': raw['status'] == 'running' ? 'running' : 'completed',
+      if (raw['timestamp'] is num) 'timestamp': raw['timestamp'],
+    });
+  }
+  if (kind != 'tool' && kind != 'skill') return null;
+  final label = raw['label']?.toString().trim() ?? '';
+  if (label.isEmpty ||
+      label.length > 180 ||
+      label.contains(_unsafeDisplayTextPattern)) {
+    return null;
+  }
+  final id = raw['id']?.toString().trim();
+  final status = switch (raw['status']?.toString().trim().toLowerCase()) {
+    'running' => 'running',
+    'failed' || 'error' => 'failed',
+    _ => 'completed',
+  };
+  return Map<String, dynamic>.unmodifiable({
+    'kind': kind,
+    'label': label,
+    'status': status,
+    if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
+    if (raw['timestamp'] is num) 'timestamp': raw['timestamp'],
+  });
+}
+
+List<Map<String, dynamic>> normalizeAssistantActivityTrace(Object? raw) {
+  if (raw is! List) return const [];
+  return List<Map<String, dynamic>>.unmodifiable(
+    raw.take(256).map(normalizeAssistantActivityStep).whereType(),
+  );
+}
+
+List<Map<String, dynamic>> assistantActivityFromToolCalls(
+  Object? raw, {
+  String status = 'running',
+  num? timestamp,
+}) {
+  if (raw is! List) return const [];
+  final steps = <Map<String, dynamic>>[];
+  for (final value in raw.take(256)) {
+    if (value is! Map) continue;
+    final function = value['function'];
+    final label = function is Map
+        ? function['name']?.toString().trim() ?? ''
+        : value['name']?.toString().trim() ?? '';
+    if (label.isEmpty ||
+        label.length > 180 ||
+        label.contains(_unsafeDisplayTextPattern)) {
+      continue;
+    }
+    final id = value['id']?.toString().trim();
+    final rawKind = value['kind']?.toString().trim().toLowerCase();
+    final kind =
+        rawKind == 'skill' ||
+            value['type']?.toString().trim().toLowerCase() == 'skill'
+        ? 'skill'
+        : 'tool';
+    final step = normalizeAssistantActivityStep({
+      'kind': kind,
+      'label': label,
+      'status': status,
+      if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
+      'timestamp': ?timestamp,
+    });
+    if (step != null) steps.add(step);
+  }
+  return List<Map<String, dynamic>>.unmodifiable(steps);
+}
+
+List<Map<String, dynamic>> coalesceAssistantTurnsNewestFirst(
+  Iterable<Map<String, dynamic>> messagesNewestFirst,
+) {
+  final chronological = messagesNewestFirst.toList(growable: false).reversed;
+  final result = <Map<String, dynamic>>[];
+  Map<String, dynamic>? assistant;
+  final textParts = <String>[];
+  final reasoningParts = <String>[];
+  final activity = <Map<String, dynamic>>[];
+  final toolCalls = <Map<String, dynamic>>[];
+  final toolResults = <Map<String, dynamic>>[];
+  final delegateTaskCallIds = <String>{};
+
+  num? timestampOf(Map<String, dynamic> message) {
+    final raw = message['timestamp'];
+    return raw is num ? raw : null;
+  }
+
+  void appendReasoning(String text, Map<String, dynamic> message) {
+    if (text.trim().isEmpty) return;
+    reasoningParts.add(text.trim());
+    activity.add({
+      'kind': 'reasoning',
+      'text': text,
+      'status': message['_pipeline'] == true ? 'running' : 'completed',
+      'timestamp': ?timestampOf(message),
+    });
+  }
+
+  void appendToolCallEvidence(Map raw) {
+    final function = raw['function'];
+    final label = function is Map
+        ? function['name']?.toString().trim() ?? ''
+        : raw['name']?.toString().trim() ?? '';
+    if (label.isEmpty ||
+        label.length > 180 ||
+        label.contains(_unsafeDisplayTextPattern)) {
+      return;
+    }
+    final id = raw['id']?.toString().trim();
+    if (id != null &&
+        id.isNotEmpty &&
+        toolCalls.any((call) => call['id']?.toString() == id)) {
+      return;
+    }
+    toolCalls.add({
+      if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
+      'type': 'function',
+      'function': {'name': label},
+    });
+  }
+
+  void appendToolCall(Map raw, Map<String, dynamic> message) {
+    final function = raw['function'];
+    final label = function is Map
+        ? function['name']?.toString().trim() ?? ''
+        : raw['name']?.toString().trim() ?? '';
+    if (label.isEmpty ||
+        label.length > 180 ||
+        label.contains(_unsafeDisplayTextPattern)) {
+      return;
+    }
+    final id = raw['id']?.toString().trim();
+    if (id != null &&
+        id.isNotEmpty &&
+        activity.any(
+          (step) =>
+              (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+              step['id']?.toString() == id,
+        )) {
+      return;
+    }
+    activity.add({
+      'kind': 'tool',
+      'label': label,
+      'status': 'running',
+      if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
+      'timestamp': ?timestampOf(message),
+    });
+    appendToolCallEvidence(raw);
+  }
+
+  void completeTool(Map<String, dynamic> message) {
+    toolResults.add(message);
+    final id = message['tool_call_id']?.toString().trim();
+    var index = -1;
+    if (id != null && id.isNotEmpty) {
+      index = activity.lastIndexWhere(
+        (step) => step['kind'] == 'tool' && step['id']?.toString() == id,
+      );
+    }
+    if (index < 0) {
+      if ((id == null || id.isEmpty) &&
+          activity.any(
+            (step) =>
+                (step['kind'] == 'tool' || step['kind'] == 'skill') &&
+                step['status'] == 'running',
+          )) {
+        return;
+      }
+      final label =
+          message['tool_name']?.toString().trim() ??
+          message['name']?.toString().trim() ??
+          '';
+      if (label.isEmpty ||
+          label.length > 180 ||
+          label.contains(_unsafeDisplayTextPattern)) {
+        return;
+      }
+      activity.add({
+        'kind': 'tool',
+        'label': label,
+        'status': 'completed',
+        if (id != null && id.isNotEmpty && id.length <= 180) 'id': id,
+        'timestamp': ?timestampOf(message),
+      });
+      return;
+    }
+    activity[index] = {...activity[index], 'status': 'completed'};
+  }
+
+  void absorbAssistant(Map<String, dynamic> message) {
+    assistant = {...?assistant, ...message};
+    final content = message['content'];
+    if (content is String && content.trim().isNotEmpty) {
+      if (textParts.isEmpty || textParts.last != content) {
+        textParts.add(content);
+      }
+    }
+    final existingToolResults = message[assistantToolResultEvidenceKey];
+    if (existingToolResults is List) {
+      toolResults.addAll(
+        existingToolResults.whereType<Map>().map(Map<String, dynamic>.from),
+      );
+    }
+
+    final existingActivity = normalizeAssistantActivityTrace(
+      message[assistantActivityTraceKey],
+    );
+    if (existingActivity.isNotEmpty) {
+      final hasReasoningStep = existingActivity.any(
+        (step) => step['kind'] == 'reasoning',
+      );
+      final reasoning = message['reasoning'];
+      if (!hasReasoningStep && reasoning is String) {
+        appendReasoning(reasoning, message);
+      }
+      activity.addAll(existingActivity.map(Map<String, dynamic>.from));
+      for (final step in existingActivity) {
+        if (step['kind'] == 'reasoning') {
+          final text = step['text']?.toString().trim() ?? '';
+          if (text.isNotEmpty) reasoningParts.add(text);
+        }
+      }
+      final calls = message['tool_calls'];
+      if (calls is List) {
+        for (final raw in calls) {
+          if (raw is Map) appendToolCallEvidence(raw);
+        }
+      }
+      return;
+    }
+
+    final reasoning = message['reasoning'];
+    if (reasoning is String) appendReasoning(reasoning, message);
+    final calls = message['tool_calls'];
+    if (calls is List) {
+      for (final raw in calls) {
+        if (raw is Map) appendToolCall(raw, message);
+      }
+    }
+  }
+
+  void flushAssistant() {
+    final current = assistant;
+    if (current == null) return;
+    final hasMedia =
+        current['_generatedImages'] is List &&
+        (current['_generatedImages'] as List).isNotEmpty;
+    final keep =
+        textParts.isNotEmpty ||
+        activity.isNotEmpty ||
+        current['_pipeline'] == true ||
+        hasMedia;
+    if (keep) {
+      final merged = <String, dynamic>{
+        ...current,
+        'content': textParts.join('\n\n'),
+      };
+      if (reasoningParts.isEmpty) {
+        merged.remove('reasoning');
+      } else {
+        merged['reasoning'] = reasoningParts.join('\n\n');
+      }
+      if (activity.isEmpty) {
+        merged.remove(assistantActivityTraceKey);
+      } else {
+        merged[assistantActivityTraceKey] =
+            List<Map<String, dynamic>>.unmodifiable(
+              activity.map((step) => Map<String, dynamic>.unmodifiable(step)),
+            );
+      }
+      if (toolCalls.isEmpty) {
+        merged.remove('tool_calls');
+      } else {
+        merged['tool_calls'] = List<Map<String, dynamic>>.unmodifiable(
+          toolCalls.map((call) => Map<String, dynamic>.unmodifiable(call)),
+        );
+      }
+      if (toolResults.isEmpty) {
+        merged.remove(assistantToolResultEvidenceKey);
+      } else {
+        merged[assistantToolResultEvidenceKey] =
+            List<Map<String, dynamic>>.unmodifiable(toolResults);
+      }
+      result.add(merged);
+    }
+    assistant = null;
+    textParts.clear();
+    reasoningParts.clear();
+    activity.clear();
+    toolCalls.clear();
+    toolResults.clear();
+  }
+
+  for (final message in chronological) {
+    final role = message['role']?.toString().trim().toLowerCase() ?? '';
+    final displayKind = message['display_kind']?.toString().trim() ?? '';
+    if (role == 'assistant' && displayKind.isEmpty) {
+      final calls = message['tool_calls'];
+      final isDelegateTask =
+          calls is List &&
+          calls.any((raw) {
+            if (raw is! Map) return false;
+            final function = raw['function'];
+            final name = function is Map ? function['name'] : raw['name'];
+            return name?.toString().trim().toLowerCase() == 'delegate_task';
+          });
+      if (isDelegateTask) {
+        for (final raw in calls) {
+          if (raw is! Map) continue;
+          final function = raw['function'];
+          final name = function is Map ? function['name'] : raw['name'];
+          if (name?.toString().trim().toLowerCase() != 'delegate_task') {
+            continue;
+          }
+          final id = raw['id']?.toString().trim();
+          if (id != null && id.isNotEmpty) delegateTaskCallIds.add(id);
+        }
+        flushAssistant();
+        result.add(Map<String, dynamic>.from(message));
+        continue;
+      }
+      final incomingContent = message['content'];
+      final incomingHasText =
+          incomingContent is String && incomingContent.trim().isNotEmpty;
+      if (assistant != null && textParts.isNotEmpty && incomingHasText) {
+        flushAssistant();
+      }
+      absorbAssistant(message);
+      continue;
+    }
+    if (role == 'tool') {
+      final toolName =
+          message['tool_name']?.toString().trim().toLowerCase() ??
+          message['name']?.toString().trim().toLowerCase() ??
+          '';
+      final callId = message['tool_call_id']?.toString().trim();
+      if (toolName == 'delegate_task' ||
+          (callId != null && delegateTaskCallIds.contains(callId))) {
+        flushAssistant();
+        result.add(Map<String, dynamic>.from(message));
+        continue;
+      }
+      assistant ??= {'role': 'assistant', 'content': ''};
+      completeTool(message);
+      continue;
+    }
+    final repeatsOpenTurnInput =
+        role == 'user' &&
+        message['_desktopSnapshotKind'] == 'inflight' &&
+        message['_steer'] != true &&
+        assistant != null &&
+        textParts.isEmpty &&
+        result.isNotEmpty &&
+        result.last['role'] == 'user' &&
+        result.last['content'] == message['content'];
+    if (repeatsOpenTurnInput) continue;
+    flushAssistant();
+    if (role != 'tool') result.add(Map<String, dynamic>.from(message));
+  }
+  flushAssistant();
+
+  return result.reversed.toList();
+}
+
 enum _LiveUserProjectionProof { none, exactAnchorPrefix, openTurn }
 
 class _LiveUserProjectionPlan {
@@ -520,8 +898,7 @@ class DesktopSessionReconciler {
     final durableStructuredInflight =
         inflightUser != null &&
         chronological.any(
-          (message) =>
-              _matchesDurableStructuredInput(message, inflightUser),
+          (message) => _matchesDurableStructuredInput(message, inflightUser),
         );
     // The Gateway does not link inflight users to durable row IDs. Suppress an
     // ordinary user only from an exact prior anchor or one unambiguous durable
@@ -684,11 +1061,11 @@ class DesktopSessionReconciler {
     }
 
     final queuedUser = snapshot.queued?.user;
-    final newestFirst = chronological.reversed
-        .map<Map<String, dynamic>>(_copyMessage)
-        .toList(growable: false);
+    final newestFirst = coalesceAssistantTurnsNewestFirst(
+      chronological.reversed.map<Map<String, dynamic>>(_copyMessage),
+    );
     return DesktopSessionProjection(
-      messagesNewestFirst: List<Map<String, dynamic>>.unmodifiable(newestFirst),
+      messagesNewestFirst: newestFirst,
       queuedUser: queuedUser,
       queuedSyntheticId: queuedUser == null
           ? null
@@ -717,7 +1094,7 @@ class DesktopSessionReconciler {
     final displayMetadata = sanitizeDelegationDisplayMetadata(
       message.displayMetadata,
     );
-    if (role != 'user' && role != 'assistant' && !retainMediaEvidence) {
+    if (role != 'user' && role != 'assistant' && role != 'tool') {
       return const [];
     }
 
@@ -792,6 +1169,17 @@ class DesktopSessionReconciler {
             'codex_message_items': message.codexMessageItems,
           })
         : '';
+    final projectedToolCalls = message.toolCalls is List
+        ? message.toolCalls
+        : synthesizedToolCalls;
+    final toolActivity = role == 'assistant'
+        ? assistantActivityFromToolCalls(
+            projectedToolCalls,
+            timestamp: message.timestamp == null
+                ? null
+                : message.timestamp!.millisecondsSinceEpoch / 1000,
+          )
+        : const <Map<String, dynamic>>[];
     if (imageCount > 0) {
       // Aún no hay tarjeta para imágenes de bloques estructurados; el marcador
       // conserva al menos la señal de que el turno incluía una imagen.
@@ -799,27 +1187,23 @@ class DesktopSessionReconciler {
       content = content.isEmpty ? marker : '$content\n\n$marker';
     }
 
-    final toolResultMessages = !retainMediaEvidence
-        ? const <Map<String, dynamic>>[]
-        : <Map<String, dynamic>>[
-            for (var index = 0; index < toolResultBlocks.length; index++)
-              Map<String, dynamic>.unmodifiable({
-                'role': 'tool',
-                'content':
-                    desktopSessionDisplayText(
-                      toolResultBlocks[index]['content'],
-                    ) ??
-                    '',
-                if (toolResultBlocks[index]['name'] != null)
-                  'tool_name': toolResultBlocks[index]['name'].toString(),
-                if (toolResultBlocks[index]['tool_use_id'] != null)
-                  'tool_call_id': toolResultBlocks[index]['tool_use_id']
-                      .toString(),
-                '_desktopSnapshotKey':
-                    'message-$runtimeSessionId-$ordinal-toolresult-$index',
-                '_desktopSnapshotKind': 'persisted',
-              }),
-          ];
+    final toolResultMessages = <Map<String, dynamic>>[
+      for (var index = 0; index < toolResultBlocks.length; index++)
+        Map<String, dynamic>.unmodifiable({
+          'role': 'tool',
+          'content': retainMediaEvidence
+              ? desktopSessionDisplayText(toolResultBlocks[index]['content']) ??
+                    ''
+              : '',
+          if (toolResultBlocks[index]['name'] != null)
+            'tool_name': toolResultBlocks[index]['name'].toString(),
+          if (toolResultBlocks[index]['tool_use_id'] != null)
+            'tool_call_id': toolResultBlocks[index]['tool_use_id'].toString(),
+          '_desktopSnapshotKey':
+              'message-$runtimeSessionId-$ordinal-toolresult-$index',
+          '_desktopSnapshotKind': 'persisted',
+        }),
+    ];
 
     // Un mensaje user cuyo contenido eran SOLO bloques tool_result (formato
     // Anthropic) no es un prompt real: se proyecta como mensajes tool y no
@@ -827,12 +1211,15 @@ class DesktopSessionReconciler {
     if (role == 'assistant') content = finalizedPublicAssistantText(content);
     final dropMain =
         (role == 'user' && content.isEmpty && toolResultBlocks.isNotEmpty) ||
-        (!retainMediaEvidence && content.trim().isEmpty && reasoning.isEmpty) ||
-        (role == 'tool' && !retainMediaEvidence);
+        (role == 'assistant' &&
+            content.trim().isEmpty &&
+            reasoning.isEmpty &&
+            toolActivity.isEmpty);
     final main = Map<String, dynamic>.unmodifiable({
       'role': role,
-      'content': content,
+      'content': role == 'tool' && !retainMediaEvidence ? '' : content,
       if (reasoning.isNotEmpty) 'reasoning': reasoning,
+      if (toolActivity.isNotEmpty) assistantActivityTraceKey: toolActivity,
       '_desktopSnapshotKey': 'message-$runtimeSessionId-$ordinal',
       '_desktopSnapshotKind': 'persisted',
       '_desktopMessageOrdinal': ordinal,

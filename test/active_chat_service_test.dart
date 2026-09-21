@@ -26,6 +26,7 @@ import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/approval_policy.dart';
+import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/services/attachment_uploader.dart';
 import 'package:hermes_android/core/services/bridge_client.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
@@ -3096,6 +3097,66 @@ void main() {
   );
 
   test(
+    'control y tareas pendientes mantienen visible el trabajo de fondo',
+    () async {
+      final gateway = _AttachmentDesktopGateway();
+      final service = ActiveChatService(
+        compressionFenceStore: testCompressionFenceStore(),
+      );
+      addTearDown(service.dispose);
+      addTearDown(gateway.close);
+      final connection = _conn(id: 'conn-control-activity');
+      final chat = service.attach(
+        connection: connection,
+        sessionId: 'sess-control-activity',
+        sessionTitle: 'Control activo',
+        desktopGateway: gateway,
+        disableForegroundKeepAlive: true,
+      )..smoothStreaming = false;
+      expect(
+        await chat.send(
+          fullText: 'programa el seguimiento',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      final done = chat.changes.firstWhere(
+        (event) => event == ActiveChatEvent.done,
+      );
+      gateway.emit('message.complete', const {'text': 'seguimiento programado'});
+      await done.timeout(const Duration(seconds: 1));
+      expect(chat.sessionActivity.active, isFalse);
+
+      gateway.emit('session.control.update', const {
+        'control': {
+          'loop': {
+            'status': 'active',
+            'interval_seconds': 300,
+            'last_fired_at': 1720000000,
+            'next_due_at': 1720000300,
+            'ticks_fired': 2,
+          },
+        },
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.sessionActivity.active, isTrue);
+
+      gateway.emit('session.control.update', const {
+        'control': {'loop': null, 'heartbeat': null, 'goal': null},
+      });
+      gateway.emit('todo.updated', const {
+        'revision': 4,
+        'todos': [
+          {'id': 'task-1', 'content': 'Esperar el despliegue', 'status': 'pending'},
+        ],
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(chat.sessionActivity.active, isTrue);
+    },
+  );
+
+  test(
     'terminal espera process.list pendiente y conserva trabajo de fondo',
     () async {
       final gateway = _DelayedProcessGateway();
@@ -3464,6 +3525,93 @@ void main() {
 
   group('ActiveChat — ciclo run con streaming', () {
     test(
+      'reasoning, tools y respuesta final comparten un solo mensaje assistant',
+      () async {
+        final gateway = _AttachmentDesktopGateway();
+        final chat = ActiveChat(
+          compressionFenceStore: testCompressionFenceStore(),
+          connection: _conn(id: 'conn-desktop-one-bubble'),
+          sessionId: 'sess-desktop-one-bubble',
+          sessionTitle: 'Un solo turno',
+          notifications: null,
+          onTerminal: () {},
+          desktopGateway: gateway,
+          terminalReconcileBudget: Duration.zero,
+        )..smoothStreaming = false;
+        addTearDown(chat.dispose);
+        addTearDown(gateway.close);
+
+        expect(
+          await chat.send(
+            fullText: 'Resuelve el problema',
+            model: 'hermes-agent',
+            history: const [],
+          ),
+          isTrue,
+        );
+        final done = chat.changes.firstWhere(
+          (event) => event == ActiveChatEvent.done,
+        );
+
+        gateway.emit('reasoning.delta', const {'text': 'Primero '});
+        gateway.emit('thinking.delta', const {'text': 'inspecciono. '});
+        gateway.emit('reasoning.available', const {
+          'text': 'Primero inspecciono. ',
+        });
+        gateway.emit('reasoning.delta', const {'text': 'Luego verifico.'});
+        gateway.emit('tool.start', const {
+          'tool_id': 'call-1',
+          'name': 'read_file',
+        });
+        gateway.emit('tool.complete', const {
+          'tool_id': 'call-1',
+          'name': 'read_file',
+        });
+        gateway.emit('tool.start', const {
+          'tool_id': 'call-2',
+          'name': 'review_changes',
+          'type': 'skill',
+        });
+        gateway.emit('tool.complete', const {
+          'tool_id': 'call-2',
+          'name': 'review_changes',
+          'type': 'skill',
+        });
+        gateway.emit('message.delta', const {'text': 'Respuesta final.'});
+        gateway.emit('message.complete', const {
+          'text': 'Respuesta final.',
+          'response_previewed': true,
+        });
+        await done.timeout(const Duration(seconds: 1));
+
+        final assistants = chat.messages
+            .where((message) => message['role'] == 'assistant')
+            .toList(growable: false);
+        expect(assistants, hasLength(1));
+        expect(
+          assistants.single['reasoning'],
+          'Primero inspecciono. Luego verifico.',
+        );
+        expect(assistants.single['content'], 'Respuesta final.');
+        final activity =
+            assistants.single[assistantActivityTraceKey] as List<dynamic>;
+        expect(activity.map((step) => step['kind']), [
+          'reasoning',
+          'tool',
+          'skill',
+        ]);
+        expect(
+          activity.map((step) => step['status']),
+          everyElement('completed'),
+        );
+        expect(
+          activity.where((step) => step['kind'] == 'reasoning').single['text'],
+          'Primero inspecciono. Luego verifico.',
+        );
+      },
+    );
+
+    test(
       'colecciona intermedios y final una vez sin narrar tools ni logs',
       () async {
         final gateway = _AttachmentDesktopGateway();
@@ -3715,7 +3863,6 @@ void main() {
             .toList(growable: false);
         expect(transcript, const [
           (role: 'assistant', content: 'Resumen final del proyecto.'),
-          (role: 'assistant', content: 'Voy a revisar los archivos.'),
           (role: 'user', content: 'Revisa el proyecto'),
         ]);
       },
@@ -4721,9 +4868,14 @@ void main() {
 
       final changed = await chat.reconcileAfterResume();
 
-      expect(changed, isFalse);
-      expect(chat.internalMessagesForTesting, same(before));
-      expect(chat.internalMessagesForTesting.first['role'], 'tool');
+      expect(changed, isTrue);
+      expect(chat.internalMessagesForTesting, isNot(same(before)));
+      expect(chat.internalMessagesForTesting.first['role'], 'assistant');
+      final activity =
+          chat.internalMessagesForTesting.first[assistantActivityTraceKey]
+              as List<dynamic>;
+      expect(activity, hasLength(1));
+      expect(activity.single['status'], 'completed');
       chat.dispose();
     });
 
@@ -4752,8 +4904,12 @@ void main() {
         final changed = await chat.reconcileAfterResume();
 
         expect(changed, isTrue);
-        expect(chat.messages.first['role'], 'user');
-        expect(chat.messages.first['content'], 'consulta el estado');
+        expect(chat.messages.first['role'], 'assistant');
+        expect(chat.messages.first['content'], isEmpty);
+        final activity =
+            chat.messages.first[assistantActivityTraceKey] as List<dynamic>;
+        expect(activity, hasLength(1));
+        expect(activity.single['status'], 'completed');
         expect(chat.messages.toString(), isNot(contains('ok')));
         expect(
           chat.messages.any((message) => message['_pipeline'] == true),

@@ -92,6 +92,7 @@ import 'package:hermes_android/core/widgets/attachment_card.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
 import 'package:hermes_android/core/widgets/generated_image_card.dart';
+import 'package:hermes_android/core/widgets/reasoning_block.dart';
 import 'package:hermes_android/core/widgets/hermes_premium_ui.dart';
 import 'package:hermes_android/core/widgets/mission_profile_avatar.dart';
 import 'package:hermes_android/core/widgets/motion_entrance.dart';
@@ -661,7 +662,10 @@ class _UiRewindGateway
 }
 
 class _StableRefreshGateway extends _UiRewindGateway
-    implements HermesDesktopSubagentGateway, HermesDesktopControlGateway {
+    implements
+        HermesDesktopSubagentGateway,
+        HermesDesktopControlGateway,
+        HermesDesktopSessionControlGateway {
   _StableRefreshGateway({
     this.subagents = const [
       DesktopSubagentSnapshot(
@@ -680,6 +684,20 @@ class _StableRefreshGateway extends _UiRewindGateway
   );
   Object? processListError;
   int processListCalls = 0;
+  int controlReadCalls = 0;
+  int inFlightControlReadCalls = 0;
+  int maxActiveControlReadCalls = 0;
+  Completer<SessionControlSnapshot>? controlReadGate;
+  Object? controlReadError;
+  SessionControlSnapshot controlSnapshot = const SessionControlSnapshot(
+    goal: null,
+    loop: null,
+    heartbeat: null,
+    revision: '',
+    updatedAt: null,
+  );
+  final List<String> controlActions = [];
+  final List<String> killedProcesses = [];
   int listCalls = 0;
   int inFlightSubagentListCalls = 0;
   int maxActiveListCalls = 0;
@@ -716,6 +734,46 @@ class _StableRefreshGateway extends _UiRewindGateway
     final error = processListError;
     if (error != null) throw error;
     return processSnapshot;
+  }
+
+  @override
+  Future<SessionControlSnapshot> readSessionControl(
+    String runtimeSessionId,
+  ) async {
+    controlReadCalls += 1;
+    inFlightControlReadCalls += 1;
+    if (inFlightControlReadCalls > maxActiveControlReadCalls) {
+      maxActiveControlReadCalls = inFlightControlReadCalls;
+    }
+    try {
+      final error = controlReadError;
+      if (error != null) throw error;
+      final gate = controlReadGate;
+      if (gate != null) {
+        final result = await gate.future;
+        if (identical(controlReadGate, gate)) controlReadGate = null;
+        return result;
+      }
+      return controlSnapshot;
+    } finally {
+      inFlightControlReadCalls -= 1;
+    }
+  }
+
+  @override
+  Future<void> sendSessionControlAction(
+    String runtimeSessionId,
+    String action,
+  ) async {
+    controlActions.add(action);
+  }
+
+  @override
+  Future<void> killBackgroundProcess(
+    String runtimeSessionId,
+    String processId,
+  ) async {
+    killedProcesses.add(processId);
   }
 
   @override
@@ -1098,14 +1156,23 @@ DesktopSessionSnapshot _uiCompressedSnapshot() =>
 
 class _MentionSlashGateway extends _UiRewindGateway {
   @override
-  Future<DesktopCommandCatalog> commandsCatalog() async => DesktopCommandCatalog.fromJson(const {
-    'pairs': [['/handoff', 'Fixture command']],
-  });
+  Future<DesktopCommandCatalog> commandsCatalog() async =>
+      DesktopCommandCatalog.fromJson(const {
+        'pairs': [
+          ['/handoff', 'Fixture command'],
+        ],
+      });
   @override
-  Future<DesktopCommandRpcResult> slashExec(String runtimeSessionId, String command) async {
+  Future<DesktopCommandRpcResult> slashExec(
+    String runtimeSessionId,
+    String command,
+  ) async {
     slashCalls.add((runtimeId: runtimeSessionId, command: command));
-    return const DesktopCommandRpcResult(kind: DesktopCommandDispatchKind.send,
-      accepted: DesktopCommandAcceptance.accepted, message: 'directed @ops');
+    return const DesktopCommandRpcResult(
+      kind: DesktopCommandDispatchKind.send,
+      accepted: DesktopCommandAcceptance.accepted,
+      message: 'directed @ops',
+    );
   }
 }
 
@@ -2029,93 +2096,157 @@ void main() {
     ]);
   }
 
-  testWidgets('mentions: autocomplete floats above composer and keyboard; draft remains typed', (tester) async {
-    final connection = _remoteConn('mention-ui');
-    final chat = await pumpChat(tester, connection: connection);
-    mentionRoster(connection.id);
-    await tester.enterText(find.byType(TextField), '@res');
-    await tester.pump(const Duration(milliseconds: 600));
-    tester.view.viewInsets = const FakeViewPadding(bottom: 300);
-    addTearDown(tester.view.resetViewInsets);
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
-    final palette = find.byKey(const ValueKey('chat-mention-palette'));
-    expect(palette, findsOneWidget);
-    expect(tester.getBottomLeft(palette).dy,
-        lessThanOrEqualTo(tester.getTopLeft(find.byKey(const ValueKey('chat-composer-host'))).dy + 4));
-    await tester.tap(find.text('@ops · Research Buddy'));
-    await tester.pump(const Duration(milliseconds: 600));
-    final field = tester.widget<TextField>(find.byType(TextField));
-    expect(field.controller!.text, '@ops ');
-    expect(field.focusNode!.hasFocus, isTrue);
-    final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
-    expect((await screen.draftStoreOverride!.load(connection.id, screen.session.id, profile: 'default')).text, '@ops ');
-    expect(chat.messages, isEmpty);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'mentions: autocomplete floats above composer and keyboard; draft remains typed',
+    (tester) async {
+      final connection = _remoteConn('mention-ui');
+      final chat = await pumpChat(tester, connection: connection);
+      mentionRoster(connection.id);
+      await tester.enterText(find.byType(TextField), '@res');
+      await tester.pump(const Duration(milliseconds: 600));
+      tester.view.viewInsets = const FakeViewPadding(bottom: 300);
+      addTearDown(tester.view.resetViewInsets);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final palette = find.byKey(const ValueKey('chat-mention-palette'));
+      expect(palette, findsOneWidget);
+      expect(
+        tester.getBottomLeft(palette).dy,
+        lessThanOrEqualTo(
+          tester
+                  .getTopLeft(find.byKey(const ValueKey('chat-composer-host')))
+                  .dy +
+              4,
+        ),
+      );
+      await tester.tap(find.text('@ops · Research Buddy'));
+      await tester.pump(const Duration(milliseconds: 600));
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller!.text, '@ops ');
+      expect(field.focusNode!.hasFocus, isTrue);
+      final screen = tester.widget<ChatScreen>(find.byType(ChatScreen));
+      expect(
+        (await screen.draftStoreOverride!.load(
+          connection.id,
+          screen.session.id,
+          profile: 'default',
+        )).text,
+        '@ops ',
+      );
+      expect(chat.messages, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('mentions: immediate and queued payload freeze while bubbles stay typed', (tester) async {
-    final connection = _remoteConn('mention-queue');
-    final gateway = _UiRewindGateway();
-    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway, messagesLoaded: false);
-    mentionRoster(connection.id);
-    await tester.enterText(find.byType(TextField), 'ask @ops');
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.byKey(const ValueKey('send')));
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(gateway.submissions.single, startsWith('ask @ops\n\n[@mentions'));
-    expect(chat.messages.where((m) => m['role'] == 'user').single['content'], 'ask @ops');
-    expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
-    await tester.enterText(find.byType(TextField), 'next @ops');
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.byKey(const ValueKey('send')));
-    await tester.pump(const Duration(milliseconds: 400));
-    final queued = chat.queuedTurns.single.turn;
-    expect(queued.text, 'next @ops');
-    expect(queued.mentions.single.title, 'Research Buddy');
-    expect(queued.mentionAnnotation, isNotEmpty);
-    mentionRoster(connection.id, title: 'Renamed');
-    gateway.emit('message.complete', {'text': 'done'});
-    await tester.pump(const Duration(milliseconds: 1200));
-    expect(gateway.submissions.last, 'next @ops${queued.mentionAnnotation}');
-    expect('@mentions resolved'.allMatches(gateway.submissions.last).length, 1);
-    gateway.emit('message.complete', {'text': 'done'});
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'mentions: immediate and queued payload freeze while bubbles stay typed',
+    (tester) async {
+      final connection = _remoteConn('mention-queue');
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      mentionRoster(connection.id);
+      await tester.enterText(find.byType(TextField), 'ask @ops');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(gateway.submissions.single, startsWith('ask @ops\n\n[@mentions'));
+      expect(
+        chat.messages.where((m) => m['role'] == 'user').single['content'],
+        'ask @ops',
+      );
+      expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
+      await tester.enterText(find.byType(TextField), 'next @ops');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 400));
+      final queued = chat.queuedTurns.single.turn;
+      expect(queued.text, 'next @ops');
+      expect(queued.mentions.single.title, 'Research Buddy');
+      expect(queued.mentionAnnotation, isNotEmpty);
+      mentionRoster(connection.id, title: 'Renamed');
+      gateway.emit('message.complete', {'text': 'done'});
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(gateway.submissions.last, 'next @ops${queued.mentionAnnotation}');
+      expect(
+        '@mentions resolved'.allMatches(gateway.submissions.last).length,
+        1,
+      );
+      gateway.emit('message.complete', {'text': 'done'});
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('mentions: rejected retry preserves ID and annotation after roster rename', (tester) async {
-    final connection = _remoteConn('mention-retry');
-    final gateway = _SubmissionGateway()..submitError = const _ReasonedPromptRejection(reason: 'SESSION_NOT_OWNED');
-    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway);
-    mentionRoster(connection.id);
-    await tester.enterText(find.byType(TextField), 'ask @ops');
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.byKey(const ValueKey('send')));
-    await tester.pump(const Duration(milliseconds: 800));
-    final before = (await TurnOutboxStore().loadAllForChat(connection.id, 'sess-test', profile: 'default')).single;
-    expect(before.state, PreparedTurnState.failedBeforeAcceptance);
-    final payload = gateway.submissions.last;
-    mentionRoster(connection.id, title: 'Changed while offline');
-    gateway.submitError = null;
-    await tester.tap(find.byKey(const ValueKey('send')));
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(gateway.submissions.last, payload);
-    expect(chat.activeTurnDelivery!.current.clientTurnId, before.clientTurnId);
-    expect(chat.activeTurnDelivery!.current.mentionAnnotation, before.mentionAnnotation);
-    gateway.emitComplete();
-    await tester.pump(const Duration(milliseconds: 400));
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'mentions: rejected retry preserves ID and annotation after roster rename',
+    (tester) async {
+      final connection = _remoteConn('mention-retry');
+      final gateway = _SubmissionGateway()
+        ..submitError = const _ReasonedPromptRejection(
+          reason: 'SESSION_NOT_OWNED',
+        );
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        desktopGateway: gateway,
+      );
+      mentionRoster(connection.id);
+      await tester.enterText(find.byType(TextField), 'ask @ops');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 800));
+      final before = (await TurnOutboxStore().loadAllForChat(
+        connection.id,
+        'sess-test',
+        profile: 'default',
+      )).single;
+      expect(before.state, PreparedTurnState.failedBeforeAcceptance);
+      final payload = gateway.submissions.last;
+      mentionRoster(connection.id, title: 'Changed while offline');
+      gateway.submitError = null;
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(gateway.submissions.last, payload);
+      expect(
+        chat.activeTurnDelivery!.current.clientTurnId,
+        before.clientTurnId,
+      );
+      expect(
+        chat.activeTurnDelivery!.current.mentionAnnotation,
+        before.mentionAnnotation,
+      );
+      gateway.emitComplete();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
-  testWidgets('mentions: initial Share prompt takes the prepared route', (tester) async {
+  testWidgets('mentions: initial Share prompt takes the prepared route', (
+    tester,
+  ) async {
     final connection = _remoteConn('mention-initial');
     final gateway = _SubmissionGateway();
-    await pumpChat(tester, connection: connection, desktopGateway: gateway,
-      initialPrompt: 'initial @ops', beforeChatPush: () => mentionRoster(connection.id));
+    await pumpChat(
+      tester,
+      connection: connection,
+      desktopGateway: gateway,
+      initialPrompt: 'initial @ops',
+      beforeChatPush: () => mentionRoster(connection.id),
+    );
     await tester.pump(const Duration(milliseconds: 400));
-    expect(gateway.submissions.single, startsWith('initial @ops\n\n[@mentions'));
-    expect(tester.widget<TextField>(find.byType(TextField)).controller!.text, isEmpty);
+    expect(
+      gateway.submissions.single,
+      startsWith('initial @ops\n\n[@mentions'),
+    );
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      isEmpty,
+    );
     gateway.emitComplete();
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
@@ -2125,7 +2256,12 @@ void main() {
     final connection = _remoteConn('mention-dictation');
     final gateway = _SubmissionGateway();
     final stt = _PartialSttEngine(finalOnStop: 'ask @ops');
-    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway, stt: stt);
+    final chat = await pumpChat(
+      tester,
+      connection: connection,
+      desktopGateway: gateway,
+      stt: stt,
+    );
     mentionRoster(connection.id);
     await tester.tap(find.byKey(const ValueKey('mic')));
     await tester.pump();
@@ -2135,16 +2271,25 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
     expect(gateway.submissions.single, startsWith('ask @ops\n\n[@mentions'));
-    expect(chat.messages.where((m) => m['role'] == 'user').first['content'], 'ask @ops');
+    expect(
+      chat.messages.where((m) => m['role'] == 'user').first['content'],
+      'ask @ops',
+    );
     gateway.emitComplete();
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('mentions: slash directed prompt uses prepared handoff once', (tester) async {
+  testWidgets('mentions: slash directed prompt uses prepared handoff once', (
+    tester,
+  ) async {
     final connection = _remoteConn('mention-slash');
     final gateway = _MentionSlashGateway();
-    final chat = await pumpChat(tester, connection: connection, desktopGateway: gateway);
+    final chat = await pumpChat(
+      tester,
+      connection: connection,
+      desktopGateway: gateway,
+    );
     mentionRoster(connection.id);
     await tester.enterText(find.byType(TextField), '/hel');
     await tester.pump(const Duration(milliseconds: 300));
@@ -2155,24 +2300,37 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('send')));
     await tester.pump(const Duration(milliseconds: 600));
     expect(gateway.slashCalls.single.command, 'handoff @ops');
-    expect(gateway.submissions.single, startsWith('directed @ops\n\n[@mentions'));
+    expect(
+      gateway.submissions.single,
+      startsWith('directed @ops\n\n[@mentions'),
+    );
     expect(chat.activeTurnDelivery!.current.text, 'directed @ops');
     gateway.emit('message.complete', {'text': 'done'});
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('mentions: Desktop history bubble and copy hide annotation after reload', (tester) async {
-    const typed = 'ask @ops';
-    final note = buildBotMentionAnnotation(const [BotMention(connectionId: 'local', profile: 'ops', handle: 'ops')]);
-    await pumpChat(tester, messages: [{'role': 'user', 'content': '$typed$note'}]);
-    expect(find.text(typed), findsOneWidget);
-    expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
-    await tester.tap(find.byTooltip('Copiar mensaje').first);
-    await tester.pump();
-    expect(clipboardText, typed);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'mentions: Desktop history bubble and copy hide annotation after reload',
+    (tester) async {
+      const typed = 'ask @ops';
+      final note = buildBotMentionAnnotation(const [
+        BotMention(connectionId: 'local', profile: 'ops', handle: 'ops'),
+      ]);
+      await pumpChat(
+        tester,
+        messages: [
+          {'role': 'user', 'content': '$typed$note'},
+        ],
+      );
+      expect(find.text(typed), findsOneWidget);
+      expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
+      await tester.tap(find.byTooltip('Copiar mensaje').first);
+      await tester.pump();
+      expect(clipboardText, typed);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'la burbuja conserva texto humano y elimina el carrier background completo',
@@ -5647,10 +5805,21 @@ void main() {
         title: 'Historial local acotado',
         model: 'hermes-agent',
         source: 'mobile-local',
-        messageCount: 121,
+        messageCount: 1001,
         isActive: false,
         preview: '',
         startedAt: 0,
+      );
+      await LocalTranscriptStore.saveFromNewestFirst(
+        connection.id,
+        session.id,
+        [
+          for (var index = 1001; index >= 1; index--)
+            {
+              'role': index.isOdd ? 'user' : 'assistant',
+              'content': 'mensaje visible $index',
+            },
+        ],
       );
       await LocalTranscriptStore.saveFromNewestFirst(
         connection.id,
@@ -6871,7 +7040,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de documento solo pinta tarjeta y oculta la ruta del servidor',
+    'MEDIA de documento inicia la carga y oculta la ruta del servidor',
     (tester) async {
       const source = '/workspace/private/qa_documento.txt';
       await pumpChat(
@@ -6884,7 +7053,8 @@ void main() {
 
       expect(find.byType(AttachmentCard), findsOneWidget);
       expect(find.text('qa_documento.txt'), findsOneWidget);
-      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -6892,7 +7062,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de audio solo pinta tarjeta de audio sin filtrar la ruta',
+    'MEDIA de audio inicia carga sin filtrar la ruta ni reproducir',
     (tester) async {
       const source = '/workspace/private/resumen.mp3';
       await pumpChat(
@@ -6908,7 +7078,8 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('resumen.mp3'), findsOneWidget);
-      expect(find.text('Descargar'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.byIcon(Icons.play_arrow_rounded), findsNothing);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
@@ -6917,7 +7088,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de imagen solo en historial pinta la tarjeta de consentimiento',
+    'MEDIA de imagen en historial inicia la carga automáticamente',
     (tester) async {
       const source = '/workspace/generated/circle.png';
       await pumpChat(
@@ -6929,10 +7100,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-image-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -6940,7 +7112,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de imagen solo tras message.complete pinta el mismo consentimiento',
+    'MEDIA de imagen tras message.complete inicia la carga automáticamente',
     (tester) async {
       const source = '/workspace/generated/circle.png';
       final gateway = _UiRewindGateway();
@@ -6961,12 +7133,14 @@ void main() {
       );
       gateway.emit('message.complete', const {'text': 'MEDIA:$source'});
       await tester.pump(const Duration(milliseconds: 150));
+      await tester.pump();
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-image-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(find.textContaining('MEDIA:'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -6974,7 +7148,7 @@ void main() {
   );
 
   testWidgets(
-    'MEDIA de vídeo crea tarjeta privada y oculta la ruta del servidor',
+    'MEDIA de vídeo inicia carga privada y oculta la ruta del servidor',
     (tester) async {
       const source = '/home/hermes/workspace/private-generated-clip.mp4';
       await pumpChat(
@@ -6989,10 +7163,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-video-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       final renderedKeys = tester.allWidgets
           .map((widget) => widget.key?.toString() ?? '')
@@ -7015,7 +7190,7 @@ void main() {
   );
 
   testWidgets(
-    'video_generate estructurado pinta tarjeta aunque la respuesta no incluya ruta',
+    'video_generate estructurado inicia carga sin mostrar la ruta',
     (tester) async {
       const source = '/home/hermes/.hermes/cache/videos/tool-result.mp4';
       await pumpChat(
@@ -7039,10 +7214,11 @@ void main() {
       );
 
       expect(
-        find.byKey(const ValueKey<String>('generated-media-placeholder')),
+        find.byKey(const ValueKey<String>('generated-video-card')),
         findsOneWidget,
       );
-      expect(find.text('Cargar contenido generado'), findsOneWidget);
+      expect(find.text('Descargar'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(find.textContaining(source), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -13595,45 +13771,41 @@ void main() {
     expect(chat.isStreaming, isFalse);
   });
 
-  testWidgets(
-    'editar sin row id durable no reenvía ni duplica el turno',
-    (tester) async {
-      final gateway = _UiRewindGateway(resolvedRowId: null);
-      final chat = await pumpChat(
-        tester,
-        desktopGateway: gateway,
-        connection: _remoteConn('conn-rewrite-without-row-id'),
-        messages: const [
-          {'role': 'assistant', 'content': 'Respuesta original'},
-          {'role': 'user', 'content': 'pregunta original'},
-        ],
-      );
+  testWidgets('editar sin row id durable no reenvía ni duplica el turno', (
+    tester,
+  ) async {
+    final gateway = _UiRewindGateway(resolvedRowId: null);
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-rewrite-without-row-id'),
+      messages: const [
+        {'role': 'assistant', 'content': 'Respuesta original'},
+        {'role': 'user', 'content': 'pregunta original'},
+      ],
+    );
 
-      await tester.tap(find.byIcon(Icons.edit_outlined));
-      await tester.pumpAndSettle();
-      await tester.enterText(
-        find.byKey(const ValueKey('edit-message-composer')),
-        'pregunta corregida',
-      );
-      await tester.tap(find.text('Guardar y enviar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 700));
+    await tester.tap(find.byIcon(Icons.edit_outlined));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('edit-message-composer')),
+      'pregunta corregida',
+    );
+    await tester.tap(find.text('Guardar y enviar'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
 
-      expect(gateway.resolutionCalls, [
-        (text: 'pregunta original', ordinal: 0),
-      ]);
-      expect(gateway.submissions, isEmpty);
-      expect(gateway.rewinds, isEmpty);
-      expect(
-        chat.messages.where((message) => message['role'] == 'user'),
-        [containsPair('content', 'pregunta original')],
-      );
-      expect(find.textContaining('pregunta original'), findsOneWidget);
-      expect(find.textContaining('pregunta corregida'), findsNothing);
-      expect(find.byType(SnackBar), findsOneWidget);
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(gateway.resolutionCalls, [(text: 'pregunta original', ordinal: 0)]);
+    expect(gateway.submissions, isEmpty);
+    expect(gateway.rewinds, isEmpty);
+    expect(chat.messages.where((message) => message['role'] == 'user'), [
+      containsPair('content', 'pregunta original'),
+    ]);
+    expect(find.textContaining('pregunta original'), findsOneWidget);
+    expect(find.textContaining('pregunta corregida'), findsNothing);
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('prompt.submit de rewind reserva la sesión frente a otro envío', (
     tester,
@@ -14229,6 +14401,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('turno tool-only usa una sola tarjeta de actividad', (
+    tester,
+  ) async {
+    await pumpChat(
+      tester,
+      messages: const [
+        {
+          'role': 'assistant',
+          'content': '',
+          '_activity_trace': [
+            {
+              'kind': 'tool',
+              'label': 'read_file',
+              'status': 'completed',
+              'id': 'call-tool-only',
+            },
+          ],
+        },
+        {'role': 'user', 'content': 'Inspecciona'},
+      ],
+    );
+
+    expect(find.byType(ThinkingTraceCard), findsOneWidget);
+    final card = tester.widget<ThinkingTraceCard>(
+      find.byType(ThinkingTraceCard),
+    );
+    expect(card.events, hasLength(1));
+    expect(card.events.single.kind, ChatTraceEventKind.tool);
+    expect(card.events.single.label, 'read_file');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('copiar respuesta excluye el reasoning durable', (tester) async {
     await pumpChat(
       tester,
@@ -14288,7 +14492,8 @@ void main() {
     });
     await tester.pump(const Duration(milliseconds: 600));
 
-    expect(find.byType(ThinkingTraceCard), findsNothing);
+    expect(find.byType(ThinkingTraceCard), findsOneWidget);
+    expect(find.byType(ReasoningBlock), findsNothing);
     expect(find.text('Respuesta terminada.'), findsOneWidget);
     expect(find.text('Razonamiento'), findsOneWidget);
     expect(
@@ -14335,6 +14540,10 @@ void main() {
   testWidgets(
     'proceso en segundo plano sigue visible tras acabar el turno y se retira al salir',
     (tester) async {
+      tester.view
+        ..physicalSize = const Size(1080, 1920)
+        ..devicePixelRatio = 3;
+      addTearDown(tester.view.reset);
       final gateway = _StableRefreshGateway(subagents: const []);
       gateway.processSnapshot = const AgentCenterSnapshot(
         snapshots: [],
@@ -14345,6 +14554,8 @@ void main() {
             uptimeSeconds: 12,
             command: 'dart run worker.dart',
             notifyOnComplete: true,
+            watchPatterns: ['READY_SAFE'],
+            watchHit: true,
           ),
         ],
       );
@@ -14352,9 +14563,7 @@ void main() {
         tester,
         connection: _remoteConn('background-process-status'),
         desktopGateway: gateway,
-        messages: const [
-          {'role': 'user', 'content': 'PUBLIC_REQUEST'},
-        ],
+        messages: scrollableChatHistory('background process clearance'),
       );
       expect(
         await chat.send(
@@ -14381,6 +14590,62 @@ void main() {
       );
       expect(find.textContaining('dart run worker.dart'), findsOneWidget);
       expect(find.textContaining('Te avisaré al terminar'), findsOneWidget);
+      await tester.pump();
+      final finalAnswer = find.ancestor(
+        of: find.text('PUBLIC_PARENT_DONE'),
+        matching: find.byType(ChatAnswerAnchor),
+      );
+      final processPill = find.byKey(
+        const ValueKey('chat-background-process-status'),
+      );
+      expect(
+        tester.getRect(finalAnswer).bottom,
+        lessThanOrEqualTo(tester.getRect(processPill).top),
+      );
+      final activeBottomPadding =
+          (tester.widget<ListView>(chatListFinder()).padding! as EdgeInsets)
+              .bottom;
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        findsOneWidget,
+      );
+      expect(find.text('READY_SAFE'), findsOneWidget);
+      expect(find.text('Coincidencia detectada'), findsOneWidget);
+      Navigator.of(
+        tester.element(find.text('READY_SAFE')),
+      ).pop();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final list = chatListFinder();
+      final controller = tester.widget<ListView>(list).controller!;
+      controller.jumpTo(controller.position.maxScrollExtent * 0.55);
+      await tester.pump();
+      final viewport = tester.getRect(list);
+      RenderBox? readerAnchor;
+      for (final element in find
+          .descendant(of: list, matching: find.byType(ChatAnswerAnchor))
+          .evaluate()) {
+        final candidate = element.renderObject! as RenderBox;
+        final rect = candidate.localToGlobal(Offset.zero) & candidate.size;
+        if (rect.bottom > viewport.top && rect.top < viewport.bottom) {
+          readerAnchor = candidate;
+          break;
+        }
+      }
+      expect(readerAnchor, isNotNull);
+      final readerAnchorY = readerAnchor!.localToGlobal(Offset.zero).dy;
+      final readingBottomPadding =
+          (tester.widget<ListView>(list).padding! as EdgeInsets).bottom;
 
       gateway.processSnapshot = const AgentCenterSnapshot(
         snapshots: [],
@@ -14400,6 +14665,325 @@ void main() {
       await tester.pump();
 
       expect(gateway.processListCalls, callsBeforeProcessFinished + 1);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsNothing,
+      );
+      await tester.pump();
+      final idleBottomPadding =
+          (tester.widget<ListView>(chatListFinder()).padding! as EdgeInsets)
+              .bottom;
+      expect(idleBottomPadding, lessThan(readingBottomPadding));
+      expect(idleBottomPadding, lessThan(activeBottomPadding));
+      expect(
+        readerAnchor.localToGlobal(Offset.zero).dy,
+        closeTo(readerAnchorY, 1),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('la lista reserva todas las filas de actividad flotante', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(1080, 1920)
+      ..devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    final gateway = _StableRefreshGateway(subagents: const [])
+      ..processSnapshot = const AgentCenterSnapshot(
+        snapshots: [],
+        processes: [
+          BackgroundProcessEntry(
+            opaqueId: 'process-stacked',
+            status: AgentCenterStatus.running,
+            uptimeSeconds: 20,
+            command: 'sleep 300',
+          ),
+        ],
+      );
+    final chat = await pumpChat(
+      tester,
+      connection: _remoteConn('background-process-stacked'),
+      desktopGateway: gateway,
+      messages: const [
+        {'role': 'user', 'content': 'PUBLIC_STACK_REQUEST'},
+      ],
+    );
+    expect(
+      await chat.send(
+        fullText: 'PUBLIC_STACK_PARENT_REQUEST',
+        model: 'hermes-agent',
+        history: chat.messages,
+      ),
+      isTrue,
+    );
+    gateway.emit('message.start');
+    gateway.emit('subagent.start', const {
+      'subagent_id': 'stacked-child',
+      'status': 'running',
+    });
+    gateway.emit('message.complete', const {'text': 'PUBLIC_STACK_DONE'});
+    gateway.emit('status.update', const {
+      'kind': 'process',
+      'text': 'PUBLIC_STACK_PROCESS',
+    });
+    await tester.pump();
+    await tester.pump();
+
+    final finalAnswer = find.ancestor(
+      of: find.text('PUBLIC_STACK_DONE'),
+      matching: find.byType(ChatAnswerAnchor),
+    );
+    final processPill = find.byKey(
+      const ValueKey('chat-background-process-status'),
+    );
+    expect(processPill, findsOneWidget);
+    expect(find.byKey(const ValueKey('chat-subagent-status')), findsOneWidget);
+    expect(
+      tester.getRect(finalAnswer).bottom,
+      lessThanOrEqualTo(tester.getRect(processPill).top),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'status loop reúne control proceso y tareas en una sola actividad',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const [])
+        ..processSnapshot = const AgentCenterSnapshot(
+          snapshots: [],
+          processes: [
+            BackgroundProcessEntry(
+              opaqueId: 'process-mixed',
+              status: AgentCenterStatus.running,
+              uptimeSeconds: 8,
+              command: 'python worker.py',
+            ),
+          ],
+        );
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-mixed-status'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_MIXED_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_MIXED_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('message.complete', const {'text': 'PUBLIC_MIXED_DONE'});
+      await tester.pump();
+      gateway.controlSnapshot = SessionControlSnapshot(
+        goal: const SessionGoalSnapshot(
+          title: 'PUBLIC_STANDING_GOAL',
+          status: 'waiting',
+          turnsUsed: 2,
+          maxTurns: 8,
+        ),
+        loop: SessionLoopSnapshot(
+          status: 'paused',
+          interval: const Duration(minutes: 5),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 5),
+          ticksFired: 3,
+          awaitingResponse: true,
+          deferredByGoal: true,
+        ),
+        heartbeat: SessionHeartbeatSnapshot(
+          status: 'active',
+          interval: const Duration(minutes: 10),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 10),
+          fireCount: 4,
+        ),
+        revision: 'mixed-1',
+        updatedAt: DateTime.utc(2026, 9, 21, 10),
+      );
+      gateway.emit('todo.updated', const {
+        'revision': 1,
+        'todos': [
+          {
+            'id': 'task-mixed',
+            'content': 'PUBLIC_PENDING_TASK',
+            'status': 'in_progress',
+          },
+        ],
+      });
+      final readsBeforeLoopStatus = gateway.controlReadCalls;
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(gateway.controlReadCalls, readsBeforeLoopStatus + 1);
+      expect(chat.sessionActivity.backgroundItemCount, 5);
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('En segundo plano · 5'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        findsOneWidget,
+      );
+      expect(find.text('PUBLIC_STANDING_GOAL'), findsOneWidget);
+      expect(find.text('Bucle recurrente'), findsOneWidget);
+      expect(find.text('Estado · Pausado'), findsOneWidget);
+      expect(
+        find.text('Esperando a que termine la ejecución actual'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Aplazado mientras el goal permanente está activo'),
+        findsOneWidget,
+      );
+
+      await tester.tap(
+        find.byKey(const ValueKey('background-loop-resume')),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(gateway.controlActions, contains('loop.resume'));
+
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey('chat-background-process-status'),
+          ),
+          matching: find.byType(InkWell),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.drag(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        const Offset(0, -240),
+      );
+      await tester.pump();
+      expect(find.text('Heartbeat'), findsOneWidget);
+      await tester.drag(
+        find.byKey(const ValueKey('chat-background-activity-sheet')),
+        const Offset(0, -300),
+      );
+      await tester.pump();
+      expect(find.text('python worker.py'), findsOneWidget);
+      expect(find.text('PUBLIC_PENDING_TASK'), findsOneWidget);
+      await tester.tap(
+        find.byKey(const ValueKey('background-process-stop-process-mixed')),
+      );
+      await tester.pump();
+      expect(gateway.killedProcesses, ['process-mixed']);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'control fallido queda stale y dos lecturas vacías retiran la actividad',
+    (tester) async {
+      final gateway = _StableRefreshGateway(subagents: const []);
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('background-control-hysteresis'),
+        desktopGateway: gateway,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_CONTROL_REQUEST'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_CONTROL_PARENT_REQUEST',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.complete', const {'text': 'PUBLIC_CONTROL_DONE'});
+      await tester.pump();
+      final activeControl = SessionControlSnapshot(
+        goal: null,
+        loop: SessionLoopSnapshot(
+          status: 'active',
+          interval: const Duration(minutes: 2),
+          lastRunAt: DateTime.utc(2026, 9, 21, 10),
+          nextDueAt: DateTime.utc(2026, 9, 21, 10, 2),
+          ticksFired: 1,
+          awaitingResponse: false,
+        ),
+        heartbeat: null,
+        revision: 'control-active',
+        updatedAt: DateTime.utc(2026, 9, 21, 10),
+      );
+      final controlGate = Completer<SessionControlSnapshot>();
+      gateway
+        ..controlSnapshot = activeControl
+        ..controlReadGate = controlGate;
+      final readsBeforeBurst = gateway.controlReadCalls;
+      gateway.emit('status.update', const {'kind': 'loop'});
+      gateway.emit('status.update', const {'kind': 'heartbeat'});
+      await tester.pump();
+      expect(gateway.controlReadCalls, readsBeforeBurst + 1);
+      expect(gateway.maxActiveControlReadCalls, 1);
+      controlGate.complete(activeControl);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(gateway.controlReadCalls, readsBeforeBurst + 2);
+      expect(gateway.maxActiveControlReadCalls, 1);
+      final controlActivity = find.byKey(
+        const ValueKey('chat-background-process-status'),
+      );
+      expect(controlActivity, findsOneWidget);
+      expect(
+        find.descendant(
+          of: controlActivity,
+          matching: find.byKey(const ValueKey('turn-activity-elapsed')),
+        ),
+        findsNothing,
+      );
+
+      gateway.controlReadError = StateError('synthetic control read failure');
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.textContaining('Último estado conocido'), findsOneWidget);
+
+      gateway
+        ..controlReadError = null
+        ..controlSnapshot = const SessionControlSnapshot(
+          goal: null,
+          loop: null,
+          heartbeat: null,
+          revision: 'control-empty',
+          updatedAt: null,
+        );
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        find.byKey(const ValueKey('chat-background-process-status')),
+        findsOneWidget,
+      );
+
+      gateway.emit('status.update', const {'kind': 'loop'});
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
       expect(
         find.byKey(const ValueKey('chat-background-process-status')),
         findsNothing,
@@ -14454,6 +15038,7 @@ void main() {
         find.byKey(const ValueKey('chat-background-process-status')),
         findsOneWidget,
       );
+      expect(find.textContaining('Último estado conocido'), findsOneWidget);
 
       gateway
         ..processListError = null
@@ -14478,23 +15063,22 @@ void main() {
     },
   );
 
-  testWidgets(
-    'chat sin proceso activo no monta indicador de segundo plano',
-    (tester) async {
-      await pumpChat(
-        tester,
-        messages: const [
-          {'role': 'user', 'content': 'PUBLIC_IDLE_REQUEST'},
-        ],
-      );
+  testWidgets('chat sin proceso activo no monta indicador de segundo plano', (
+    tester,
+  ) async {
+    await pumpChat(
+      tester,
+      messages: const [
+        {'role': 'user', 'content': 'PUBLIC_IDLE_REQUEST'},
+      ],
+    );
 
-      expect(
-        find.byKey(const ValueKey('chat-background-process-status')),
-        findsNothing,
-      );
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(
+      find.byKey(const ValueKey('chat-background-process-status')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'subagente vivo tras terminal se muestra como trabajo en segundo plano',
@@ -15016,7 +15600,11 @@ void main() {
       expect(chat.messages.any((m) => m['content'] == 'PUBLIC_PREFIX'), isTrue);
       expect(
         chat.messages.any((m) => m['content'] == 'PUBLIC_EDITORIAL'),
-        isTrue,
+        isFalse,
+      );
+      expect(
+        chat.messages.where((m) => m['role'] == 'assistant'),
+        hasLength(2),
       );
       gateway.emit('subagent.complete', const {
         'subagent_id': 'auto-child',
@@ -15034,7 +15622,11 @@ void main() {
       expect(chat.messages.any((m) => m['content'] == 'PUBLIC_PREFIX'), isTrue);
       expect(
         chat.messages.any((m) => m['content'] == 'PUBLIC_EDITORIAL'),
-        isTrue,
+        isFalse,
+      );
+      expect(
+        chat.messages.where((m) => m['role'] == 'assistant'),
+        hasLength(2),
       );
       expect(find.textContaining('PUBLIC_LIVE_TWO'), findsOneWidget);
       expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
@@ -18902,6 +19494,45 @@ void main() {
   );
 
   testWidgets(
+    'server-resolved canonical Bot Chat resumes and submits without legacy pin verification',
+    (tester) async {
+      final gateway = _UiRewindGateway();
+      addTearDown(gateway.close);
+      await pumpChat(
+        tester,
+        connection: _remoteConn('conn-canonical-bot'),
+        session: const Session(
+          id: 'mob-bot-infra',
+          lineageRootId: 'canonical-tip',
+          title: 'Bot Chat',
+          model: 'hermes-agent',
+          source: 'bot-mode-canonical',
+          messageCount: 12,
+          isActive: true,
+          preview: '',
+          startedAt: 1,
+          profile: 'infra',
+        ),
+        initialStoredSessionId: 'canonical-tip',
+        desktopGateway: gateway,
+      );
+
+      final composer = find.byType(TextField).last;
+      await tester.enterText(composer, 'continúa la conversación canónica');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump();
+
+      expect(gateway.resumeExistingCalls, 1);
+      expect(gateway.createConfigs, isEmpty);
+      expect(gateway.submissions, ['continúa la conversación canónica']);
+      gateway.emit('message.complete', const {'text': 'continuación completa'});
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     'local Bot Chat durable pin missing fails closed without replacement',
     (tester) async {
       final gateway = _UiRewindGateway()
@@ -19112,55 +19743,54 @@ void main() {
     semantics.dispose();
   });
 
-  testWidgets(
-    'rechazo de redirección conserva la cola y explica el resultado',
-    (tester) async {
-      final gateway = _NoLiveMutationGateway()
-        ..redirectError = const TuiGatewayRpcError(
-          'session.redirect',
-          'Session is not accepting a redirect',
-          code: 4009,
-        );
-      final chat = await pumpChat(
-        tester,
-        desktopGateway: gateway,
-        connection: _remoteConn('conn-queue-steer-refused'),
-        initialStoredSessionId: 'sess-test',
-        acquireDesktopRuntimeBeforeMount: true,
+  testWidgets('rechazo de redirección conserva la cola y explica el resultado', (
+    tester,
+  ) async {
+    final gateway = _NoLiveMutationGateway()
+      ..redirectError = const TuiGatewayRpcError(
+        'session.redirect',
+        'Session is not accepting a redirect',
+        code: 4009,
       );
-      expect(
-        await chat.send(
-          fullText: 'turno vivo',
-          model: 'hermes-agent',
-          history: const [],
-        ),
-        isTrue,
-      );
-      expect(chat.enqueue('corrige el rumbo'), isTrue);
-      await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
-      await tester.pump();
-      final id = chat.queuedEntries.single.id;
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-queue-steer-refused'),
+      initialStoredSessionId: 'sess-test',
+      acquireDesktopRuntimeBeforeMount: true,
+    );
+    expect(
+      await chat.send(
+        fullText: 'turno vivo',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+    expect(chat.enqueue('corrige el rumbo'), isTrue);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('chat-queue-toggle')));
+    await tester.pump();
+    final id = chat.queuedEntries.single.id;
 
-      await tester.tap(find.byKey(ValueKey('chat-queue-steer-$id')));
-      await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(ValueKey('chat-queue-steer-$id')));
+    await tester.pump(const Duration(milliseconds: 300));
 
-      expect(gateway.redirects, ['corrige el rumbo']);
-      expect(chat.queuedMessages, ['corrige el rumbo']);
-      expect(
-        find.text(
-          'Hermes no aceptó la redirección. El mensaje sigue en cola y se enviará después.',
-        ),
-        findsOneWidget,
-      );
-      gateway.emit('message.complete', {'text': 'turno terminado'});
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(gateway.submissions, ['turno vivo', 'corrige el rumbo']);
-      gateway.emit('message.complete', {'text': 'seguimiento terminado'});
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(tester.takeException(), isNull);
-    },
-  );
+    expect(gateway.redirects, ['corrige el rumbo']);
+    expect(chat.queuedMessages, ['corrige el rumbo']);
+    expect(
+      find.text(
+        'Hermes no aceptó la redirección. El mensaje sigue en cola y se enviará después.',
+      ),
+      findsOneWidget,
+    );
+    gateway.emit('message.complete', {'text': 'turno terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(gateway.submissions, ['turno vivo', 'corrige el rumbo']);
+    gateway.emit('message.complete', {'text': 'seguimiento terminado'});
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('Steer se oculta para comandos slash en cola', (tester) async {
     final chat = await pumpChat(tester, chatState: ChatPipelineState.streaming);
@@ -19275,17 +19905,14 @@ void main() {
               },
             });
             await tester.pump();
-            expect(
-              find.byKey(const ValueKey('chat-goal-primary-label')),
-              findsOneWidget,
+            final goalActivity = find.byKey(
+              const ValueKey('chat-background-process-status'),
             );
+            expect(goalActivity, findsOneWidget);
             expectPillLabelsFit(
               tester,
               find
-                  .ancestor(
-                    of: find.byKey(const ValueKey('chat-goal-primary-label')),
-                    matching: find.byType(Row),
-                  )
+                  .descendant(of: goalActivity, matching: find.byType(Row))
                   .first,
             );
           } else if (surface == 'background') {
@@ -19481,7 +20108,10 @@ void main() {
     }
     expect(revealed, findsOneWidget);
 
-    expectArrowClearOf(tester, find.byKey(const ValueKey('chat-turn-activity')));
+    expectArrowClearOf(
+      tester,
+      find.byKey(const ValueKey('chat-turn-activity')),
+    );
     await expectArrowScrollsToBottom(tester, controller);
     expect(tester.takeException(), isNull);
   });
@@ -19734,11 +20364,18 @@ void main() {
       title: 'Historial local acotado',
       model: 'hermes-agent',
       source: 'mobile-local',
-      messageCount: 121,
+      messageCount: 1001,
       isActive: false,
       preview: '',
       startedAt: 0,
     );
+    await LocalTranscriptStore.saveFromNewestFirst(connection.id, session.id, [
+      for (var index = 1001; index >= 1; index--)
+        {
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'mensaje visible $index',
+        },
+    ]);
     await LocalTranscriptStore.saveFromNewestFirst(connection.id, session.id, [
       for (var index = 121; index >= 1; index--)
         {

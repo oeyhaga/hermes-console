@@ -12,6 +12,7 @@ import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
+import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/services/subagent_transcript_projection.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
@@ -479,7 +480,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
-    'native history waits for resume and loads a profile whose REST is 401',
+    'native history keeps a REST-401 profile visible with recovery open',
     () async {
       final rows = _rows(300);
       final gateway = _HistoryGateway()
@@ -527,10 +528,105 @@ void main() {
         chat.messages.map((row) => row['content']),
         rows.reversed.map((row) => row['content']),
       );
-      expect(chat.transcriptExtentForTesting, 'complete');
-      expect(chat.hasEarlierMessages, isFalse);
+      expect(chat.transcriptExtentForTesting, 'partial');
+      expect(chat.hasEarlierMessages, isTrue);
       expect(await chat.loadEarlierMessages(), isFalse);
+      expect(restCalls, 1);
       expect(gateway.historyRequests, hasLength(1));
+    },
+  );
+
+  test(
+    'short native history cannot replace a longer durable transcript on resumed reload',
+    () async {
+      final server = _TranscriptServer(paginate: false)
+        ..rows.addAll(_rows(300));
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-short-refresh',
+          storedSessionId: 'stored-chat',
+          created: false,
+        )
+        ..loader = () async => throw StateError('native history unavailable');
+      final chat = _chat(
+        'native-short-refresh',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+      expect(chat.messages, hasLength(300));
+
+      gateway.loader = () async =>
+          SessionMessagesPage(messages: _rows(40, from: 261), pagination: null);
+      await chat.loadMessages();
+
+      expect(chat.messages, hasLength(300));
+      expect(chat.messages.first['content'], 'msg 300');
+      expect(chat.messages.last['content'], 'msg 1');
+      expect(chat.hasEarlierMessages, isTrue);
+    },
+  );
+
+  test(
+    'native active history keeps compacted REST generations reachable',
+    () async {
+      final compacted = [
+        for (final row in _rows(260))
+          <String, dynamic>{...row, 'active': 0, 'compacted': 1},
+      ];
+      final active = _rows(40, from: 261);
+      final server = _CompactedTranscriptServer(
+        activeRows: active,
+        compactedRows: compacted,
+      );
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-compacted-native',
+          storedSessionId: 'stored-chat',
+          created: false,
+        )
+        ..loader = () async =>
+            SessionMessagesPage(messages: active, pagination: null);
+      final chat = _chat(
+        'native-compacted-recovery',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 40);
+      expect(chat.messages, hasLength(40));
+      expect(chat.hasEarlierMessages, isTrue);
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(120));
+      expect(chat.messages.first['content'], 'msg 300');
+      expect(chat.messages.last['content'], 'msg 181');
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(240));
+      expect(chat.messages.last['content'], 'msg 61');
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(300));
+      expect(chat.messages.last['content'], 'msg 1');
+      expect(chat.hasEarlierMessages, isFalse);
+
+      expect(
+        server.requests.map((request) => request.queryParameters['offset']),
+        ['0', '120', '240'],
+      );
+      expect(
+        server.requests.map(
+          (request) => request.queryParameters['include_compacted'],
+        ),
+        everyElement('true'),
+      );
+      expect(chat.messages, hasLength(300));
+      expect(chat.messages.first['content'], 'msg 300');
+      expect(chat.messages.last['content'], 'msg 1');
     },
   );
 
@@ -605,7 +701,7 @@ void main() {
   );
 
   test(
-    'native full history replaces a REST tail during earlier-page load',
+    'earlier-page load keeps using compacted REST after native failure',
     () async {
       final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(300));
       final gateway = _HistoryGateway()
@@ -621,15 +717,23 @@ void main() {
       expect(chat.hasEarlierMessages, isTrue);
       gateway.loader = () async =>
           SessionMessagesPage(messages: _rows(300), pagination: null);
-      await chat.loadEarlierMessages();
-      expect(chat.messages, hasLength(300));
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(120));
+      expect(server.requests, hasLength(2));
+      expect(server.requests.last.queryParameters['offset'], '0');
+
+      expect(await chat.loadEarlierMessages(), isTrue);
+      expect(chat.messages, hasLength(240));
       expect(
         chat.messages.map((row) => row['content']).toSet(),
-        hasLength(300),
+        hasLength(240),
       );
-      expect(chat.transcriptExtentForTesting, 'complete');
-      expect(chat.hasEarlierMessages, isFalse);
-      expect(server.requests, hasLength(1));
+      expect(chat.transcriptExtentForTesting, 'partial');
+      expect(chat.hasEarlierMessages, isTrue);
+      expect(server.requests, hasLength(3));
+      expect(server.requests.last.queryParameters['offset'], '120');
+      expect(gateway.historyRequests, hasLength(1));
     },
   );
 
@@ -1325,8 +1429,12 @@ void main() {
         '0',
         '120',
       ]);
+      final reasoningMessages = chat.messages
+          .where((row) => row['reasoning'] != null)
+          .toList(growable: false);
+      expect(reasoningMessages, hasLength(1));
       expect(
-        chat.messages.where((row) => row['reasoning'] != null),
+        reasoningMessages.single[assistantActivityTraceKey],
         hasLength(40),
       );
       expect(
@@ -1335,7 +1443,7 @@ void main() {
       );
       expect(
         ChatRenderProjection.build(chat.internalMessagesForTesting).units,
-        hasLength(160),
+        hasLength(121),
       );
       expect(chat.hasEarlierMessages, isTrue);
 

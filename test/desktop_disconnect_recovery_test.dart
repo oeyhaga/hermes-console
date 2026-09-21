@@ -20,6 +20,7 @@ import 'package:hermes_android/core/models/prepared_turn.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/recovery_proof.dart';
 import 'package:hermes_android/core/services/replay_coordinator.dart';
+import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/services/turn_outbox_store.dart';
 import 'package:hermes_android/core/utils/chat_turn.dart';
@@ -8822,7 +8823,15 @@ void main() {
         events.where((event) => event == ActiveChatEvent.done),
         hasLength(1),
       );
-      expect(chat.internalMessagesForTesting.first['message_id'], 'late-tool');
+      final assistant = chat.internalMessagesForTesting.first;
+      expect(assistant['role'], 'assistant');
+      final activity = normalizeAssistantActivityTrace(
+        assistant[assistantActivityTraceKey],
+      );
+      expect(activity, hasLength(1));
+      expect(activity.single, containsPair('kind', 'tool'));
+      expect(activity.single, containsPair('label', 'search'));
+      expect(activity.single, containsPair('status', 'completed'));
       api.requests.first.complete(const []);
     },
   );
@@ -9162,7 +9171,15 @@ void main() {
       await done.timeout(const Duration(seconds: 1));
 
       expect(api.requests, hasLength(1));
-      expect(chat.internalMessagesForTesting.first['role'], 'tool');
+      final assistant = chat.internalMessagesForTesting.first;
+      expect(assistant['role'], 'assistant');
+      final activity = normalizeAssistantActivityTrace(
+        assistant[assistantActivityTraceKey],
+      );
+      expect(activity, hasLength(1));
+      expect(activity.single, containsPair('kind', 'tool'));
+      expect(activity.single, containsPair('label', 'search'));
+      expect(activity.single, containsPair('status', 'completed'));
       expect(chat.state, ChatPipelineState.completed);
     },
   );

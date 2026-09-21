@@ -10,7 +10,7 @@ import 'bot_profile_client.dart';
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' show min;
+import 'dart:math' show Random, min;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -140,6 +140,33 @@ final class _SanitizedRpcFailure extends TuiGatewayRpcError {
     super.origin,
     super.failureKind,
   });
+}
+
+class GatewayReconnectBackoff {
+  static const stableInterval = Duration(seconds: 30);
+  static const _baseDelay = Duration(seconds: 1);
+  static const _maximumDelay = Duration(seconds: 60);
+
+  final double Function() _random;
+  int _attempt = 0;
+
+  GatewayReconnectBackoff({double Function()? random})
+    : _random = random ?? Random().nextDouble;
+
+  Duration nextDelay() {
+    final exponent = _attempt.clamp(0, 6);
+    _attempt += 1;
+    final ceilingMs = min(
+      _baseDelay.inMilliseconds * (1 << exponent),
+      _maximumDelay.inMilliseconds,
+    );
+    final floorMs = ceilingMs * 3 ~/ 4;
+    final spreadMs = ceilingMs - floorMs;
+    final jitter = (_random().clamp(0.0, 1.0) * spreadMs).floor();
+    return Duration(milliseconds: floorMs + jitter);
+  }
+
+  void markHealthy() => _attempt = 0;
 }
 
 class TuiGatewayEvent {
@@ -1226,6 +1253,7 @@ class TuiGatewayClient
         HermesDesktopApprovalResultGateway,
         HermesDesktopSubagentGateway,
         HermesDesktopControlGateway,
+        HermesDesktopSessionControlGateway,
         HermesExtensionManagementGateway,
         HermesMcpProvisioningGateway,
         HermesWebhookManagementGateway,
@@ -2641,9 +2669,9 @@ class TuiGatewayClient
     // count counts source history rows; projection can expand/filter them.
     // Keep text, row_id and display_metadata intact: the shared display
     // normalizer accepts both REST content and Desktop text.
-    // No requested REST limit/offset: this RPC returns the entire transcript,
-    // including ancestors. Absent pagination is the one-shot completeness
-    // evidence consumed by ActiveChat (even on a loadEarlier request).
+    // This RPC returns active model history, including active ancestors. It can
+    // omit display generations retained as compacted rows, so ActiveChat keeps
+    // compacted REST recovery available.
     return SessionMessagesPage.fromRaw(
       rawMessages: messages,
       pagination: null,
@@ -5317,33 +5345,58 @@ class TuiGatewayClient
     }
   }
 
-  static const Set<String> _validGoalActions = {
+  static const Set<String> _validSessionControlActions = {
     'goal.pause',
     'goal.resume',
     'goal.clear',
     'goal.unwait',
+    'loop.pause',
+    'loop.resume',
+    'loop.stop',
+    'heartbeat.pause',
+    'heartbeat.resume',
+    'heartbeat.clear',
   };
 
   @override
-  Future<SessionGoalSnapshot?> readSessionGoal(String runtimeSessionId) async {
+  Future<SessionControlSnapshot> readSessionControl(
+    String runtimeSessionId,
+  ) async {
     final result = await _controlRequest('session.control.read', {
       'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
     }, capability: DesktopGatewayCapability.sessionControl);
-    final control = result['control'];
-    if (control is! Map) return null;
-    return SessionGoalSnapshot.tryParse(control['goal']);
+    return SessionControlSnapshot.fromJson(result['control']);
   }
 
   @override
-  Future<void> sendGoalAction(String runtimeSessionId, String action) async {
-    if (!_validGoalActions.contains(action)) {
-      throw ArgumentError.value(action, 'action', 'not a supported goal action');
+  Future<SessionGoalSnapshot?> readSessionGoal(String runtimeSessionId) async =>
+      (await readSessionControl(runtimeSessionId)).goal;
+
+  @override
+  Future<void> sendSessionControlAction(
+    String runtimeSessionId,
+    String action,
+  ) async {
+    if (!_validSessionControlActions.contains(action)) {
+      throw ArgumentError.value(
+        action,
+        'action',
+        'not a supported session control action',
+      );
     }
     _requireWritableControlConnection();
     await _controlRequest('session.control', {
       'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
       'action': action,
     }, capability: DesktopGatewayCapability.sessionControl);
+  }
+
+  @override
+  Future<void> sendGoalAction(String runtimeSessionId, String action) async {
+    if (!action.startsWith('goal.')) {
+      throw ArgumentError.value(action, 'action', 'not a supported goal action');
+    }
+    await sendSessionControlAction(runtimeSessionId, action);
   }
 
   @override
