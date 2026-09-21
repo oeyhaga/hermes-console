@@ -7095,8 +7095,7 @@ class _ChatScreenState extends State<ChatScreen>
     if (!mounted) return;
     final strings = Strings.of(context);
     final message = switch (outcome) {
-      QueuedSteerOutcome.accepted => null,
-      QueuedSteerOutcome.rejected => strings.chaQueueSteerRejected,
+      QueuedSteerOutcome.accepted || QueuedSteerOutcome.rejected => null,
       QueuedSteerOutcome.unconfirmed => strings.chaQueueSteerUnconfirmed,
       QueuedSteerOutcome.queueRemovalFailed =>
         strings.chaQueueSteerCleanupFailed,
@@ -11936,6 +11935,7 @@ class _ChatScreenState extends State<ChatScreen>
                     .map((item) => item.name)
                     .toList(growable: false),
                 busy: _chat.isStreaming,
+                transportCanSteer: _chat.canSteerLiveTurn,
                 editingId: _editingQueuedEntryId,
                 onEdit: () => unawaited(_editQueuedEntry(queuedEntries[i])),
                 onSteer: () =>
@@ -17706,6 +17706,7 @@ class _QueuedRow extends StatelessWidget {
   final QueuedEntryView entry;
   final List<String> attachmentNames;
   final bool busy;
+  final bool transportCanSteer;
   final String? editingId;
   final VoidCallback onEdit;
   final VoidCallback onSteer;
@@ -17716,6 +17717,7 @@ class _QueuedRow extends StatelessWidget {
     required this.entry,
     this.attachmentNames = const [],
     required this.busy,
+    required this.transportCanSteer,
     required this.editingId,
     required this.onEdit,
     required this.onSteer,
@@ -17733,7 +17735,12 @@ class _QueuedRow extends StatelessWidget {
     final isEditing = editingId == entry.id;
     final accepted = entry.kind == QueuedEntryKind.desktopAccepted;
     final editEnabled = !accepted && (editingId == null || isEditing);
-    final canSteer = busy && entry.isSteerable && !isEditing && !accepted;
+    final canSteer =
+        busy &&
+        transportCanSteer &&
+        entry.isSteerable &&
+        !isEditing &&
+        !accepted;
     final sendLabel = busy ? strings.chaQueueSendNext : strings.chaQueueSend;
     Widget action({
       required String keyName,

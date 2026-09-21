@@ -22,16 +22,24 @@ class _RewriteGateway
         HermesDesktopRewindResolverGateway,
         HermesDesktopRewindGateway,
         HermesDesktopDurableRewindGateway {
-  _RewriteGateway({this.resolvedRowId, this.ack = const DesktopRewindAck()});
+  _RewriteGateway({
+    this.resolvedRowId,
+    this.ack = const DesktopRewindAck(),
+    this.requireRebindForAck = false,
+    this.durableError,
+  });
 
   /// Lo que `session.history` puede probar. `null` = fail-closed, que es lo que
   /// devuelve siempre el cliente real tras una compactación.
   final int? resolvedRowId;
   final DesktopRewindAck ack;
+  final bool requireRebindForAck;
+  final Object? durableError;
 
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> plainPrompts = [];
-  final List<({String text, int ordinal, int rowId})> durableRewinds = [];
+  final List<({String text, int ordinal, int rowId, List<int> rebind})>
+  durableRewinds = [];
   final List<({String text, int ordinal})> legacyRewinds = [];
   int resolverCalls = 0;
 
@@ -144,7 +152,13 @@ class _RewriteGateway
       text: text,
       ordinal: truncateBeforeUserOrdinal,
       rowId: truncateBeforeRowId,
+      rebind: List<int>.of(rebindSurvivorRowIds),
     ));
+    final error = durableError;
+    if (error != null) throw error;
+    if (requireRebindForAck && rebindSurvivorRowIds.isEmpty) {
+      return const DesktopRewindAck();
+    }
     return ack;
   }
 }
@@ -370,6 +384,90 @@ void main() {
       isFalse,
     );
   });
+
+  test('two consecutive edits use the survivor row id map', () async {
+    final gateway = _RewriteGateway(
+      resolvedRowId: 999,
+      requireRebindForAck: true,
+      ack: const DesktopRewindAck(
+        survivorRowIdMap: {11: 111, 22: 222, 33: null},
+      ),
+    );
+    final attached = _attach(gateway);
+    addTearDown(attached.service.dispose);
+    final chat = attached.chat;
+    chat.internalMessagesForTesting = [
+      {'role': 'assistant', 'content': 'respuesta C'},
+      {'role': 'user', 'content': 'pregunta C', '_desktopRowId': 33},
+      {'role': 'assistant', 'content': 'respuesta B'},
+      {'role': 'user', 'content': 'pregunta B', '_desktopRowId': 22},
+      {'role': 'assistant', 'content': 'respuesta A'},
+      {'role': 'user', 'content': 'pregunta A', '_desktopRowId': 11},
+    ];
+    chat.state = ChatPipelineState.completed;
+    expect(
+      await chat.ensureDesktopRuntime(acquireForExplicitAction: true),
+      isTrue,
+    );
+
+    await chat.rewrite(
+      userOrdinal: 2,
+      text: 'pregunta C corregida',
+      model: 'hermes-agent',
+    );
+    await chat.rewrite(
+      userOrdinal: 1,
+      text: 'pregunta B corregida',
+      model: 'hermes-agent',
+    );
+
+    expect(gateway.durableRewinds, hasLength(2));
+    expect(gateway.durableRewinds.first.rebind, [33, 22, 11]);
+    expect(gateway.durableRewinds.last.rowId, 222);
+  });
+
+  test(
+    'failed live edit rollback removes pipeline rows and stays cancelled',
+    () async {
+      final gateway = _RewriteGateway(
+        durableError: const TuiGatewayRpcError(
+          'prompt.submit',
+          'transport rejected rewind',
+          code: 4007,
+        ),
+      );
+      final attached = _attach(gateway);
+      addTearDown(attached.service.dispose);
+      final chat = attached.chat;
+      expect(
+        await chat.ensureDesktopRuntime(acquireForExplicitAction: true),
+        isTrue,
+      );
+      chat.internalMessagesForTesting = [
+        {
+          'role': 'assistant',
+          'content': 'respuesta parcial',
+          '_pipeline': true,
+        },
+        {'role': 'user', 'content': 'pregunta original', '_desktopRowId': 73},
+      ];
+      chat.state = ChatPipelineState.streaming;
+
+      await chat.rewrite(
+        userOrdinal: 0,
+        text: 'pregunta corregida',
+        model: 'hermes-agent',
+      );
+
+      expect(
+        chat.internalMessagesForTesting.any(
+          (message) => message['_pipeline'] == true,
+        ),
+        isFalse,
+      );
+      expect(chat.state, ChatPipelineState.cancelled);
+    },
+  );
 
   test('DesktopRewindAck parsea survivor_row_id_map', () {
     final ack = DesktopRewindAck.fromJson(const {

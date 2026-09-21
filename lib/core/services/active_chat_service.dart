@@ -195,7 +195,10 @@ bool activeChatSteerFailureIsSafeToQueue(Object error) {
   if (error is TuiGatewayRpcError) {
     // The transport proved steering is unsupported or the session cannot be
     // redirected, so a next-turn queue cannot duplicate an accepted steer.
-    return error.code == -32601 || error.code == 4007 || error.code == 4009;
+    return error.code == -32601 ||
+        error.code == 4007 ||
+        error.code == 4009 ||
+        error.code == 4010;
   }
   if (error is StateError) {
     // Only deterministic "there is no steering transport" failures are safe.
@@ -5440,6 +5443,11 @@ class ActiveChat {
         identical(current[activity.key], activity) &&
         _subagentControlAuthority.contains(activity.key);
   }
+
+  bool get canSteerLiveTurn =>
+      connection.kind != InstanceKind.localhost &&
+      _usingDesktopGateway &&
+      _desktopGateway != null;
 
   bool canSteerSubagent(SubagentActivity activity) =>
       !connection.readOnly &&
@@ -11034,6 +11042,7 @@ class ActiveChat {
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
+    bool queued = false,
     int? truncateBeforeUserOrdinal,
     ActiveTurnDelivery? delivery,
     DesktopSessionCreateConfig sessionConfig =
@@ -11092,6 +11101,7 @@ class ActiveChat {
           nativeAttachments: nativeAttachments,
           desktopText: desktopText,
           voicePlaybackInterrupted: voicePlaybackInterrupted,
+          queued: queued,
           truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
           delivery: delivery,
           sessionConfig: sessionConfig,
@@ -11145,6 +11155,7 @@ class ActiveChat {
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
+      queued: queued,
       truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
       delivery: delivery,
       sessionConfig: sessionConfig,
@@ -11175,6 +11186,7 @@ class ActiveChat {
     required List<AttachmentDraft> nativeAttachments,
     required String? desktopText,
     required bool voicePlaybackInterrupted,
+    required bool queued,
     required int? truncateBeforeUserOrdinal,
     required ActiveTurnDelivery? delivery,
     required DesktopSessionCreateConfig sessionConfig,
@@ -11196,6 +11208,7 @@ class ActiveChat {
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
+      queued: queued,
       truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
       delivery: delivery,
       sessionConfig: sessionConfig,
@@ -11246,6 +11259,7 @@ class ActiveChat {
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
+    bool queued = false,
     int? truncateBeforeUserOrdinal,
     int? truncateBeforeRowId,
     ActiveTurnDelivery? delivery,
@@ -11499,6 +11513,7 @@ class ActiveChat {
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
+      queued: queued,
       truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
       truncateBeforeRowId: truncateBeforeRowId,
       beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
@@ -11550,6 +11565,16 @@ class ActiveChat {
       _failRun('No se pudo conservar el turno antes de enviarlo.');
     }
     return ready;
+  }
+
+  List<int> _durableRowIdsForRebind() {
+    final source = _rewindRollbackMessages ?? _messages;
+    final rowIds = <int>[];
+    for (final message in source) {
+      final rowId = canonicalTranscriptRowId(message);
+      if (rowId != null && !rowIds.contains(rowId)) rowIds.add(rowId);
+    }
+    return rowIds;
   }
 
   /// Reasigna a cada superviviente su identidad durable posterior al rewind.
@@ -11779,6 +11804,10 @@ class ActiveChat {
       reservation.transcriptRevision = _transcriptRevision;
 
       final rollbackState = state;
+      final rollbackMessages = snapshot
+          .where((message) => message['_pipeline'] != true)
+          .map((message) => Map<String, dynamic>.from(message))
+          .toList(growable: false);
       if (truncatesDurably) {
         final prefix = chronological
             .take(targetIndex)
@@ -11790,7 +11819,7 @@ class ActiveChat {
             .map((m) => Map<String, dynamic>.from(m))
             .toList();
         _messages = prefix.reversed.toList();
-        _rewindRollbackMessages = snapshot;
+        _rewindRollbackMessages = rollbackMessages;
         _rewindRollbackState = rollbackState;
         _rewind4018FallbackOrdinal = fallbackOrdinal;
         _rewindRestoredOnError = false;
@@ -11818,7 +11847,7 @@ class ActiveChat {
         );
         if (!accepted) {
           if (truncatesDurably) {
-            _messages = snapshot;
+            _messages = rollbackMessages;
             state = rollbackState;
             _rewindRollbackMessages = null;
             _rewindRollbackState = null;
@@ -11837,7 +11866,7 @@ class ActiveChat {
         // Sólo el camino que recortó de forma optimista tiene algo que
         // restaurar; un reenvío plano no tocó el transcript visible.
         if (truncatesDurably) {
-          _messages = snapshot;
+          _messages = rollbackMessages;
           state = rollbackState;
           _rewindRollbackMessages = null;
           _rewindRollbackState = null;
@@ -14025,6 +14054,7 @@ class ActiveChat {
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
+    bool queued = false,
     int? truncateBeforeUserOrdinal,
     int? truncateBeforeRowId,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
@@ -14054,6 +14084,7 @@ class ActiveChat {
       nativeAttachments: nativeAttachments,
       desktopText: desktopText,
       voicePlaybackInterrupted: voicePlaybackInterrupted,
+      queued: queued,
       truncateBeforeUserOrdinal: truncateBeforeUserOrdinal,
       truncateBeforeRowId: truncateBeforeRowId,
       beforeDesktopPromptSubmit: beforeDesktopPromptSubmit,
@@ -14158,6 +14189,7 @@ class ActiveChat {
     List<AttachmentDraft> nativeAttachments = const [],
     String? desktopText,
     bool voicePlaybackInterrupted = false,
+    bool queued = false,
     int? truncateBeforeUserOrdinal,
     int? truncateBeforeRowId,
     Future<void> Function(String storedSessionId)? beforeDesktopPromptSubmit,
@@ -14481,6 +14513,7 @@ class ActiveChat {
               promptText,
               ordinal,
               truncateBeforeRowId: rowId,
+              rebindSurvivorRowIds: _durableRowIdsForRebind(),
             );
           }
           if (rewindGateway == null) {
@@ -14656,11 +14689,18 @@ class ActiveChat {
                 .submitInterruptedPrompt(targetRuntimeId, promptText);
           } else if (idempotentGateway != null) {
             idempotentSubmission = true;
-            final ack = await idempotentGateway.submitPromptIdempotent(
-              targetRuntimeId,
-              promptText,
-              delivery!.current.clientTurnId,
-            );
+            final ack = queued && gateway is HermesDesktopQueuedPromptGateway
+                ? await (gateway as HermesDesktopQueuedPromptGateway)
+                      .submitQueuedPromptIdempotent(
+                        targetRuntimeId,
+                        promptText,
+                        delivery!.current.clientTurnId,
+                      )
+                : await idempotentGateway.submitPromptIdempotent(
+                    targetRuntimeId,
+                    promptText,
+                    delivery!.current.clientTurnId,
+                  );
             if (!ack.accepted ||
                 ack.clientTurnId != delivery.current.clientTurnId ||
                 (ack.state != DesktopTurnState.accepted &&
@@ -14674,6 +14714,9 @@ class ActiveChat {
             if (ack.state == DesktopTurnState.terminal) {
               await _completeRun();
             }
+          } else if (queued && gateway is HermesDesktopQueuedPromptGateway) {
+            await (gateway as HermesDesktopQueuedPromptGateway)
+                .submitQueuedPrompt(targetRuntimeId, promptText);
           } else {
             await gateway.submitPrompt(targetRuntimeId, promptText);
           }
@@ -18890,7 +18933,10 @@ class ActiveChat {
           : legacy.isNotEmpty
           ? legacy.first.text
           : entry.text;
-      await steer(payload, mentionsFrozen: true);
+      final disposition = await steer(payload, mentionsFrozen: true);
+      if (disposition == DesktopRedirectDisposition.rejected) {
+        return QueuedSteerOutcome.rejected;
+      }
     } catch (error) {
       return activeChatSteerFailureIsSafeToQueue(error)
           ? QueuedSteerOutcome.rejected
@@ -19251,6 +19297,7 @@ class ActiveChat {
           history: _buildHistoryFromMessages(),
           profile: turn.profile,
           nativeAttachments: turn.activeAttachments,
+          queued: true,
           delivery: next.delivery,
           allowTransportFallbackOverride: next.allowTransportFallback,
         );
@@ -19292,6 +19339,7 @@ class ActiveChat {
         model: _lastModel,
         history: _buildHistoryFromMessages(),
         profile: _turnProfile,
+        queued: true,
         allowTransportFallbackOverride: next.allowTransportFallback,
       );
     } finally {
@@ -22399,7 +22447,10 @@ class ActiveChat {
   /// Desktop. No llama a `/stop`, no abre otro run y conserva herramientas,
   /// estado y trabajo ya completado. Gateways antiguos degradan a
   /// `session.steer` únicamente cuando no publican el RPC moderno.
-  Future<void> steer(String fullText, {bool mentionsFrozen = false}) async {
+  Future<DesktopRedirectDisposition> steer(
+    String fullText, {
+    bool mentionsFrozen = false,
+  }) async {
     if (!mentionsFrozen) {
       fullText = appendBotMentionNote(
         fullText,
@@ -22494,6 +22545,11 @@ class ActiveChat {
           usedLegacySteer = true;
         }
 
+        if (disposition == DesktopRedirectDisposition.rejected) {
+          rollbackOptimisticMessage();
+          return (disposition: disposition, usedLegacySteer: usedLegacySteer);
+        }
+
         if (disposition == DesktopRedirectDisposition.queued) {
           // El Gateway ya aceptó este texto como siguiente turno. Conservamos
           // la misma fila que se mostró antes del ACK; el terminal del reply
@@ -22545,7 +22601,11 @@ class ActiveChat {
 
     if (result.disposition == DesktopRedirectDisposition.queued) {
       debugPrint('[active-chat] live correction disposition=queued');
-      return;
+      return result.disposition;
+    }
+    if (result.disposition == DesktopRedirectDisposition.rejected) {
+      debugPrint('[active-chat] live correction disposition=rejected');
+      return result.disposition;
     }
 
     debugPrint(
@@ -22553,6 +22613,7 @@ class ActiveChat {
       '${result.usedLegacySteer ? 'legacy_steer' : 'redirected'}',
     );
     debugPrint('[active-chat] live correction accepted');
+    return result.disposition;
   }
 
   /// Reconciliación durable al volver de 2º plano o recibir una invalidación
