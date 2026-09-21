@@ -16,6 +16,7 @@ import '../../l10n/app_localizations.dart';
 import '../models/attachment_draft.dart';
 import '../services/generated_media_service.dart';
 import '../theme/app_theme.dart';
+import 'hermes_notice.dart';
 
 /// Tipo visual de adjunto, derivado del mime/extensión. Gobierna el badge de
 /// color y la etiqueta corta (estilo ChatGPT: "PDF", "DOC", "IMG"…).
@@ -991,8 +992,9 @@ class _GeneratedMediaAttachmentCardState
   }
 
   void _showActionError() {
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(content: Text(Strings.of(context).genMediaError)),
+      kind: HermesNoticeKind.error,
     );
   }
 
@@ -1210,8 +1212,9 @@ class GeneratedTextViewerScreen extends StatelessWidget {
             key: const ValueKey<String>('generated-text-copy'),
             onPressed: () {
               Clipboard.setData(ClipboardData(text: text));
-              ScaffoldMessenger.of(context).showSnackBar(
+              HermesNotice.of(context).showSnackBar(
                 SnackBar(content: Text(strings.chaCopied)),
+                kind: HermesNoticeKind.success,
               );
             },
             tooltip: strings.commonCopy,
@@ -1947,7 +1950,7 @@ Future<void> saveMediaToGallery(
   bool isVideo = false,
 }) async {
   final s = Strings.of(context);
-  final messenger = ScaffoldMessenger.of(context);
+  final messenger = HermesNotice.of(context);
   try {
     if (isVideo) {
       await Gal.putVideo(file.path);

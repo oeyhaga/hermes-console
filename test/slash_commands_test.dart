@@ -28,6 +28,7 @@ import 'package:hermes_android/core/services/ssh_session_service.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/services/voice/stt_engine.dart';
 import 'package:hermes_android/core/utils/slash_commands.dart';
+import 'package:hermes_android/core/widgets/hermes_notice.dart';
 import 'package:hermes_android/core/widgets/hermes_premium_ui.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:hermes_android/main.dart';
@@ -1176,7 +1177,7 @@ void main() {
       expect(find.byKey(const ValueKey('recording')), findsOneWidget);
       expect(stt.stopCalls, 0);
       expect(field.controller?.text, 'directed turn');
-      ScaffoldMessenger.of(
+      HermesNotice.of(
         tester.element(find.byType(ChatScreen).last),
       ).clearSnackBars();
       await _pumpSlashChat(tester, gateway, stt: stt);
@@ -1220,8 +1221,11 @@ void main() {
         recoveredId,
       );
 
-      final discard = find.byType(SnackBarAction, skipOffstage: false).last;
-      tester.widget<SnackBarAction>(discard).onPressed();
+      final discard = find.byKey(
+        const ValueKey('hermes-notice-action'),
+        skipOffstage: false,
+      );
+      await tester.tap(discard.last);
       await tester.pump(const Duration(milliseconds: 400));
       expect(restored.controller?.text, 'directed turn');
       expect(secureStore.containsKey('chat_turn_outbox_v1'), isFalse);

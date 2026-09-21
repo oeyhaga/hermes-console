@@ -14,6 +14,7 @@ import '../models/agent_profile.dart';
 import '../models/bot_mode_v13.dart';
 import '../models/bot_sections.dart';
 import '../models/room_mirror.dart';
+import '../widgets/hermes_notice.dart';
 import '../widgets/room_mirror_avatar.dart';
 import '../models/hosted_groups.dart';
 import '../models/room_member_status.dart';
@@ -1046,9 +1047,10 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         '${agent.profile.name}: $error',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(copy.botRosterUpdateFailed)));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(copy.botRosterUpdateFailed)),
+        kind: HermesNoticeKind.error,
+      );
     }
   }
 
@@ -1069,17 +1071,30 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     if (!mounted) return;
     final strings = Strings.of(context);
     if (result.failed.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(strings.botSectionPartial(result.failed.keys.join(', '))),
-        action: SnackBarAction(label: strings.botRetry,
-          onPressed: () => _applySections(result.failed, deletion: deletion, undo: undo)),
-      ));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            strings.botSectionPartial(result.failed.keys.join(', ')),
+          ),
+          action: SnackBarAction(
+            label: strings.botRetry,
+            onPressed: () =>
+                _applySections(result.failed, deletion: deletion, undo: undo),
+          ),
+        ),
+        kind: HermesNoticeKind.warning,
+      );
     } else if (deletion && undo != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(strings.botSectionDeleted),
-        action: SnackBarAction(label: strings.botUndo,
-          onPressed: () => _applySections(undo)),
-      ));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(
+          content: Text(strings.botSectionDeleted),
+          action: SnackBarAction(
+            label: strings.botUndo,
+            onPressed: () => _applySections(undo),
+          ),
+        ),
+        kind: HermesNoticeKind.success,
+      );
     }
   }
 
@@ -1138,8 +1153,9 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        HermesNotice.of(context).showSnackBar(
           SnackBar(content: Text(Strings.of(context).botProfileFailed)),
+          kind: HermesNoticeKind.error,
         );
       }
       return;
@@ -1207,19 +1223,30 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     try {
       final name = await gateway.duplicateBotProfile(agent.profile.name);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(Strings.of(context).botDuplicated(name))));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(content: Text(Strings.of(context).botDuplicated(name))),
+        kind: HermesNoticeKind.success,
+      );
     } on BotDuplicateIncomplete catch (error) {
       if (mounted) {
         final strings = Strings.of(context);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(strings.botDuplicateIncomplete(error.name)),
-          action: SnackBarAction(label: strings.botRetry, onPressed: () => _duplicateBot(agent))));
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(
+            content: Text(strings.botDuplicateIncomplete(error.name)),
+            action: SnackBarAction(
+              label: strings.botRetry,
+              onPressed: () => _duplicateBot(agent),
+            ),
+          ),
+          kind: HermesNoticeKind.warning,
+        );
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(Strings.of(context).botProfileFailed)));
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(content: Text(Strings.of(context).botProfileFailed)),
+          kind: HermesNoticeKind.error,
+        );
       }
     } finally {
       if (mounted) { setState(() => _sectionBusy = false); await _load(refresh: true); }
@@ -1403,10 +1430,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
 
   void _showBotChatPinUnavailable() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(
         content: Text(Strings.of(context).missionBotChatMetadataUnavailable),
       ),
+      kind: HermesNoticeKind.warning,
     );
   }
 
@@ -1603,7 +1631,12 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         if (matches.isEmpty) throw StateError('No reachable room peers');
         await _attachRoomPeers(room, matches);
       } catch (_) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(Strings.of(context).botRoomLinkUnavailable)));
+        if (mounted) {
+          HermesNotice.of(context).showSnackBar(
+            SnackBar(content: Text(Strings.of(context).botRoomLinkUnavailable)),
+            kind: HermesNoticeKind.warning,
+          );
+        }
       }
     }
     else if (_snapshot case final current?) {
@@ -1742,8 +1775,12 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       }
       await _load(refresh: true);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(MissionControlCopy.of(context).agentCreated(created))));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(
+          content: Text(MissionControlCopy.of(context).agentCreated(created)),
+        ),
+        kind: HermesNoticeKind.success,
+      );
       final freshSnapshot = _snapshot;
       if (freshSnapshot == null) return;
       for (final agent in _projection(freshSnapshot).agents) {
@@ -1751,8 +1788,10 @@ class _MissionControlScreenState extends State<MissionControlScreen>
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(Strings.of(context).botProfileFailed)));
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(content: Text(Strings.of(context).botProfileFailed)),
+          kind: HermesNoticeKind.error,
+        );
       }
     } finally { await remote?.close(); }
   }
@@ -1858,10 +1897,22 @@ class _MissionControlScreenState extends State<MissionControlScreen>
     }
     if (mounted && failed.isNotEmpty) {
       final s = Strings.of(context);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(s.botRoomLinkFailed(failed.map((p) => '${p.profile.name} · ${p.connection.label}').join(', '))),
-        action: SnackBarAction(label: s.botRetry, onPressed: () => _attachRoomPeers(room, failed)),
-      ));
+      HermesNotice.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            s.botRoomLinkFailed(
+              failed
+                  .map((p) => '${p.profile.name} · ${p.connection.label}')
+                  .join(', '),
+            ),
+          ),
+          action: SnackBarAction(
+            label: s.botRetry,
+            onPressed: () => _attachRoomPeers(room, failed),
+          ),
+        ),
+        kind: HermesNoticeKind.error,
+      );
     }
   }
 
@@ -1917,10 +1968,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         'Mission Control: hosted-room action failed (${error.runtimeType})',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(MissionControlCopy.of(context).hostedActionFailed),
         ),
+        kind: HermesNoticeKind.error,
       );
     }
   }
@@ -2009,10 +2061,11 @@ class _MissionControlScreenState extends State<MissionControlScreen>
         'Mission Control: hosted-room action failed (${error.runtimeType})',
       );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        HermesNotice.of(context).showSnackBar(
           SnackBar(
             content: Text(MissionControlCopy.of(context).hostedActionFailed),
           ),
+          kind: HermesNoticeKind.error,
         );
       }
       rethrow;

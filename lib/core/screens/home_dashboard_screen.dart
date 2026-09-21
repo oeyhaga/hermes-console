@@ -34,6 +34,7 @@ import '../widgets/dock.dart';
 import '../widgets/dock_shortcuts.dart';
 import '../widgets/dock_style.dart' show dockShowsBack;
 import '../widgets/hermes_drawer.dart';
+import '../widgets/hermes_notice.dart';
 import '../widgets/hermes_premium_ui.dart';
 import '../widgets/home_prompt_composer.dart';
 import '../../main.dart';
@@ -647,15 +648,17 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
           return;
         case LinkedSessionDeleteStatus.cronDeleteFailed:
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
+            HermesNotice.of(context).showSnackBar(
               SnackBar(content: Text(sessionDeletionFailureMessage(s, result))),
+              kind: HermesNoticeKind.error,
             );
           }
           return;
         case LinkedSessionDeleteStatus.sessionDeleteFailed:
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
+            HermesNotice.of(context).showSnackBar(
               SnackBar(content: Text(sessionDeletionFailureMessage(s, result))),
+              kind: HermesNoticeKind.error,
             );
           }
           return;
@@ -692,11 +695,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
           )
           .toList();
     });
-    ScaffoldMessenger.of(context).showSnackBar(
+    HermesNotice.of(context).showSnackBar(
       SnackBar(
         content: Text(s.homeChatDeleted, style: const TextStyle(fontSize: 13)),
         duration: const Duration(seconds: 2),
       ),
+      kind: HermesNoticeKind.success,
     );
   }
 
@@ -711,17 +715,19 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
     if (!mounted || newTitle == null) return;
     final trimmed = newTitle.trim();
     if (trimmed.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
+      HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).slRenameEmpty)),
+        kind: HermesNoticeKind.warning,
       );
       return;
     }
     await archive.setSessionTitle(session, trimmed);
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(Strings.of(context).slRenamed)));
+    HermesNotice.of(context).showSnackBar(
+      SnackBar(content: Text(Strings.of(context).slRenamed)),
+      kind: HermesNoticeKind.success,
+    );
   }
 
   Future<void> _showRecentActions(Session session) async {
@@ -790,7 +796,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
   }
 
   void _offerHideRecent(Session session, {String? message}) {
-    final messenger = ScaffoldMessenger.of(context);
+    final messenger = HermesNotice.of(context);
     final s = Strings.of(context);
     messenger.showSnackBar(
       SnackBar(

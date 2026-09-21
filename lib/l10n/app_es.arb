@@ -4942,6 +4942,18 @@
   "@inAppDismiss": {
     "description": "Accion del banner in-app para descartar el aviso"
   },
+  "noticeKindSuccess": "Correcto",
+  "@noticeKindSuccess": {
+    "description": "Prefijo solo para lectores de pantalla en un aviso flotante de exito"
+  },
+  "noticeKindWarning": "Aviso",
+  "@noticeKindWarning": {
+    "description": "Prefijo solo para lectores de pantalla en un aviso flotante de advertencia"
+  },
+  "noticeKindError": "Error",
+  "@noticeKindError": {
+    "description": "Prefijo solo para lectores de pantalla en un aviso flotante de error"
+  },
   "licStartTermuxRejected": "No se pudo lanzar Termux. Abrelo una vez y concede el permiso (allow-external-apps) para que la app pueda instalar y arrancar el agente local.",
   "@licStartTermuxRejected": {
     "description": "Aviso cuando Termux no acepta el comando RUN_COMMAND al arrancar/instalar el agente local"
