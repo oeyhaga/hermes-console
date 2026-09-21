@@ -5647,10 +5647,21 @@ void main() {
         title: 'Historial local acotado',
         model: 'hermes-agent',
         source: 'mobile-local',
-        messageCount: 121,
+        messageCount: 1001,
         isActive: false,
         preview: '',
         startedAt: 0,
+      );
+      await LocalTranscriptStore.saveFromNewestFirst(
+        connection.id,
+        session.id,
+        [
+          for (var index = 1001; index >= 1; index--)
+            {
+              'role': index.isOdd ? 'user' : 'assistant',
+              'content': 'mensaje visible $index',
+            },
+        ],
       );
       await LocalTranscriptStore.saveFromNewestFirst(
         connection.id,
@@ -19734,11 +19745,18 @@ void main() {
       title: 'Historial local acotado',
       model: 'hermes-agent',
       source: 'mobile-local',
-      messageCount: 121,
+      messageCount: 1001,
       isActive: false,
       preview: '',
       startedAt: 0,
     );
+    await LocalTranscriptStore.saveFromNewestFirst(connection.id, session.id, [
+      for (var index = 1001; index >= 1; index--)
+        {
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'mensaje visible $index',
+        },
+    ]);
     await LocalTranscriptStore.saveFromNewestFirst(connection.id, session.id, [
       for (var index = 121; index >= 1; index--)
         {

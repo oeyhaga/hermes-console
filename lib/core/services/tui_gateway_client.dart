@@ -2641,9 +2641,9 @@ class TuiGatewayClient
     // count counts source history rows; projection can expand/filter them.
     // Keep text, row_id and display_metadata intact: the shared display
     // normalizer accepts both REST content and Desktop text.
-    // No requested REST limit/offset: this RPC returns the entire transcript,
-    // including ancestors. Absent pagination is the one-shot completeness
-    // evidence consumed by ActiveChat (even on a loadEarlier request).
+    // This RPC returns active model history, including active ancestors. It can
+    // omit display generations retained as compacted rows, so ActiveChat keeps
+    // compacted REST recovery available.
     return SessionMessagesPage.fromRaw(
       rawMessages: messages,
       pagination: null,
