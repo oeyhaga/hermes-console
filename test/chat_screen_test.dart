@@ -3442,6 +3442,68 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('refresh durable completo retira el control anterior', (
+    tester,
+  ) async {
+    var paginate = true;
+    final requests = <Uri>[];
+    final rows = <Map<String, dynamic>>[
+      for (var index = 1; index <= 120; index++)
+        {
+          'id': index,
+          'message_id': 'complete-history-$index',
+          'role': index.isOdd ? 'user' : 'assistant',
+          'content': 'historial completo $index',
+        },
+    ];
+    final client = MockClient((request) async {
+      requests.add(request.url);
+      return http.Response(
+        jsonEncode({
+          'object': 'list',
+          'session_id': 'sess-test',
+          'messages': rows,
+          if (paginate)
+            'pagination': {
+              'limit': 120,
+              'offset': 0,
+              'order': 'latest',
+              'returned': 120,
+            },
+        }),
+        200,
+        headers: const {'content-type': 'application/json'},
+      );
+    });
+    final api = ApiClient(
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      httpClient: client,
+    );
+    addTearDown(api.close);
+    final chat = await pumpChat(
+      tester,
+      api: api,
+      connection: _remoteConn('conn-complete-refresh-control'),
+      messagesLoaded: false,
+      attachDesktopRuntimeOnLoad: false,
+      allowUnownedDesktopSnapshotForTesting: false,
+    );
+    await tester.pump();
+
+    const control = ValueKey('chat-load-earlier');
+    expect(find.byKey(control), findsOneWidget);
+
+    paginate = false;
+    expect(await chat.reconcileAfterResume(), isFalse);
+    await tester.pump();
+
+    expect(requests, hasLength(2));
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(find.byKey(control), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('control anterior cabe con safe area teclado y texto 1.3', (
     tester,
   ) async {

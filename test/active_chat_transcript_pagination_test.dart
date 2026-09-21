@@ -7,6 +7,7 @@ import 'package:hermes_android/core/models/core_read.dart';
 import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
+import 'package:hermes_android/core/screens/chat_render_projection.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
@@ -1183,6 +1184,26 @@ void main() {
     );
   });
 
+  test(
+    'refresh durable completo retira cursor aunque la proyeccion no cambie',
+    () async {
+      final server = _TranscriptServer(paginate: true)..rows.addAll(_rows(120));
+      final chat = _chat('unchanged-complete-refresh', server.client());
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 120);
+      expect(chat.hasEarlierMessages, isTrue);
+
+      server.paginate = false;
+      expect(await chat.reconcileAfterResume(), isFalse);
+
+      expect(chat.messages, hasLength(120));
+      expect(chat.hasEarlierMessages, isFalse);
+      expect(await chat.loadEarlierMessages(), isFalse);
+      expect(server.requests, hasLength(2));
+    },
+  );
+
   test('un gesto atraviesa paginas anteriores editorialmente vacias', () async {
     final server = _TranscriptServer(paginate: true)
       ..rows.addAll([
@@ -1256,9 +1277,9 @@ void main() {
   });
 
   test(
-    'un gesto atraviesa delegacion privada y editorial con cursor raw',
+    'un gesto se detiene en razonamiento visible y conserva cursor raw',
     () async {
-      final omitted = <Map<String, dynamic>>[
+      final mixedRows = <Map<String, dynamic>>[
         for (var index = 0; index < 40; index++)
           {
             'id': 'hidden-$index',
@@ -1269,11 +1290,11 @@ void main() {
           },
         for (var index = 0; index < 40; index++)
           {
-            'id': 'private-$index',
-            'message_id': 'private-$index',
+            'id': 'reasoning-$index',
+            'message_id': 'reasoning-$index',
             'role': 'assistant',
             'content': '',
-            'reasoning': 'razonamiento privado $index',
+            'reasoning': 'razonamiento visible $index',
           },
         for (var index = 0; index < 40; index++)
           {
@@ -1290,8 +1311,8 @@ void main() {
           },
       ];
       final server = _TranscriptServer(paginate: true)
-        ..rows.addAll([..._rows(2), ...omitted, ..._rows(120, from: 1000)]);
-      final chat = _chat('mixed-omitted-page', server.client());
+        ..rows.addAll([..._rows(2), ...mixedRows, ..._rows(120, from: 1000)]);
+      final chat = _chat('mixed-reasoning-page', server.client());
       addTearDown(chat.dispose);
 
       await chat.loadMessages(expectedMessageCount: 242);
@@ -1303,9 +1324,35 @@ void main() {
       expect(server.requests.map((uri) => uri.queryParameters['offset']), [
         '0',
         '120',
+      ]);
+      expect(
+        chat.messages.where((row) => row['reasoning'] != null),
+        hasLength(40),
+      );
+      expect(
+        chat.messages.any((row) => row['display_kind'] == 'hidden'),
+        isFalse,
+      );
+      expect(
+        ChatRenderProjection.build(chat.internalMessagesForTesting).units,
+        hasLength(160),
+      );
+      expect(chat.hasEarlierMessages, isTrue);
+
+      expect(
+        await chat.loadEarlierMessages(continuePastInvisible: true),
+        isTrue,
+      );
+      expect(server.requests.map((uri) => uri.queryParameters['offset']), [
+        '0',
+        '120',
         '240',
       ]);
       expect(chat.messages.any((row) => row['content'] == 'msg 1'), isTrue);
+      expect(
+        chat.messages.map((row) => row['message_id']).toSet(),
+        hasLength(chat.messages.length),
+      );
       expect(chat.hasEarlierMessages, isFalse);
     },
   );

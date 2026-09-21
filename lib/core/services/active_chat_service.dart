@@ -22004,7 +22004,16 @@ class ActiveChat {
       );
       final changed = !_sameTranscriptProjection(_messages, nextMessages);
       if (!changed) {
+        // La igualdad visual no conserva un cursor parcial: esta lectura durable
+        // también acredita la cobertura final y debe retirar el control anterior.
+        _commitRefreshedTailEvidence(normalized, graft);
+        if (localSnapshot != null) {
+          _recordLocalTranscriptCoverage(localSnapshot);
+        } else {
+          _markTranscriptComplete(visibleCount: nextMessages.length);
+        }
         messagesLoaded = true;
+        _emit(ActiveChatEvent.messagesHydrated);
         return false;
       }
       _captureArtifactMaps(m, logicalSessionId: logicalSessionId);
