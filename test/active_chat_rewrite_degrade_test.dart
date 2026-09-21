@@ -27,7 +27,10 @@ class _RewriteGateway
     this.ack = const DesktopRewindAck(),
     this.requireRebindForAck = false,
     this.durableError,
-  });
+    List<Object?> durableOutcomes = const [],
+    List<DesktopSessionSnapshot> resumeSnapshots = const [],
+  }) : durableOutcomes = List<Object?>.of(durableOutcomes),
+       resumeSnapshots = List<DesktopSessionSnapshot>.of(resumeSnapshots);
 
   /// Lo que `session.history` puede probar. `null` = fail-closed, que es lo que
   /// devuelve siempre el cliente real tras una compactación.
@@ -35,6 +38,8 @@ class _RewriteGateway
   final DesktopRewindAck ack;
   final bool requireRebindForAck;
   final Object? durableError;
+  final List<Object?> durableOutcomes;
+  final List<DesktopSessionSnapshot> resumeSnapshots;
 
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> plainPrompts = [];
@@ -42,6 +47,7 @@ class _RewriteGateway
   durableRewinds = [];
   final List<({String text, int ordinal})> legacyRewinds = [];
   int resolverCalls = 0;
+  int resumeExistingCalls = 0;
 
   void emit(String type, [Map<String, dynamic>? payload]) {
     _events.add(
@@ -80,11 +86,15 @@ class _RewriteGateway
     String profile = '',
     bool omitMessages = false,
     bool deferHistory = false,
-  }) async => DesktopSessionSnapshot(
-    runtimeSessionId: 'runtime-1',
-    storedSessionId: storedSessionId,
-    created: false,
-  );
+  }) async {
+    resumeExistingCalls++;
+    if (resumeSnapshots.isNotEmpty) return resumeSnapshots.removeAt(0);
+    return DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: storedSessionId,
+      created: false,
+    );
+  }
 
   @override
   Future<DesktopSessionSnapshot> createForFirstSubmit({
@@ -154,6 +164,10 @@ class _RewriteGateway
       rowId: truncateBeforeRowId,
       rebind: List<int>.of(rebindSurvivorRowIds),
     ));
+    if (durableOutcomes.isNotEmpty) {
+      final outcome = durableOutcomes.removeAt(0);
+      if (outcome != null) throw outcome;
+    }
     final error = durableError;
     if (error != null) throw error;
     if (requireRebindForAck && rebindSurvivorRowIds.isEmpty) {
@@ -424,6 +438,70 @@ void main() {
     expect(gateway.durableRewinds, hasLength(2));
     expect(gateway.durableRewinds.first.rebind, [33, 22, 11]);
     expect(gateway.durableRewinds.last.rowId, 222);
+  });
+
+  test('stale durable target resumes history and retries the real edit', () async {
+    final initialResume = DesktopSessionSnapshot(
+      runtimeSessionId: 'runtime-1',
+      storedSessionId: 'sess-rewrite',
+      created: false,
+    );
+    final refreshedResume = DesktopSessionSnapshot.fromJson(
+      const {
+        'session_id': 'runtime-2',
+        'stored_session_id': 'sess-rewrite',
+        'messages': [
+          {'role': 'user', 'content': 'pregunta anterior', 'row_id': 41},
+          {'role': 'assistant', 'content': 'respuesta anterior', 'row_id': 42},
+          {'role': 'user', 'content': 'turno insertado', 'row_id': 99},
+          {'role': 'assistant', 'content': 'respuesta insertada', 'row_id': 100},
+          {'role': 'user', 'content': 'pregunta original', 'row_id': 173},
+          {'role': 'assistant', 'content': 'respuesta original', 'row_id': 174},
+        ],
+        'message_count': 6,
+      },
+      requestedStoredSessionId: 'sess-rewrite',
+      created: false,
+      method: 'session.resume',
+    );
+    final gateway = _RewriteGateway(
+      resumeSnapshots: [initialResume, refreshedResume],
+      durableOutcomes: const [
+        TuiGatewayRpcError(
+          'prompt.submit',
+          'target user message is no longer in session history',
+          code: 4018,
+        ),
+        null,
+      ],
+    );
+    final attached = _attach(gateway);
+    addTearDown(attached.service.dispose);
+    final chat = attached.chat;
+    chat.internalMessagesForTesting = [
+      {'role': 'assistant', 'content': 'respuesta original', '_desktopRowId': 74},
+      {'role': 'user', 'content': 'pregunta original', '_desktopRowId': 73},
+      {'role': 'assistant', 'content': 'respuesta anterior', '_desktopRowId': 42},
+      {'role': 'user', 'content': 'pregunta anterior', '_desktopRowId': 41},
+    ];
+    chat.state = ChatPipelineState.completed;
+    expect(
+      await chat.ensureDesktopRuntime(acquireForExplicitAction: true),
+      isTrue,
+    );
+
+    await chat.rewrite(
+      userOrdinal: 1,
+      text: 'pregunta corregida',
+      model: 'hermes-agent',
+    );
+
+    expect(gateway.resumeExistingCalls, 2);
+    expect(gateway.durableRewinds, hasLength(2));
+    expect(gateway.durableRewinds.first.rowId, 73);
+    expect(gateway.durableRewinds.last.rowId, 173);
+    expect(gateway.durableRewinds.last.ordinal, 2);
+    expect(gateway.plainPrompts, isEmpty);
   });
 
   test(

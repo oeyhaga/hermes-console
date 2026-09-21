@@ -91,7 +91,7 @@ import '../services/session_config_reducer.dart';
 import '../services/session_deletion.dart';
 import '../services/subagent_transcript_projection.dart';
 import '../services/tui_gateway_client.dart'
-    show TuiGatewayClient, TuiGatewayRpcError;
+    show DesktopRedirectDisposition, TuiGatewayClient, TuiGatewayRpcError;
 import '../widgets/chat_connection_recovery_row.dart';
 import '../widgets/hermes_notice.dart';
 import '../widgets/stale_running_session_banner.dart';
@@ -6258,7 +6258,10 @@ class _ChatScreenState extends State<ChatScreen>
   ///
   /// When [_pendingAttachments] are staged, text files are embedded and binary
   /// files are uploaded through the Dashboard file API before chat streaming.
-  Future<bool> _sendMessage({String? initialText}) async {
+  Future<bool> _sendMessage({
+    String? initialText,
+    bool queueOnly = false,
+  }) async {
     if (_composerSubmissionInFlight ||
         _attachmentSubmitting ||
         _attachmentMutationInFlight ||
@@ -6289,7 +6292,10 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() => _attachmentSubmitting = true);
     }
     try {
-      return await _sendMessageOnce(textOverride: initialText);
+      return await _sendMessageOnce(
+        textOverride: initialText,
+        queueOnly: queueOnly,
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -6308,6 +6314,7 @@ class _ChatScreenState extends State<ChatScreen>
     bool skipSlashRouting = false,
     String? textOverride,
     bool includeComposerAttachments = true,
+    bool queueOnly = false,
   }) async {
     await _profileReady;
     final outboxRecoveryAvailable = await _initialOutboxRead.future;
@@ -6578,6 +6585,35 @@ class _ChatScreenState extends State<ChatScreen>
     // composer is cleared. This preserves FIFO across process death and keeps a
     // rejected head visible for explicit retry instead of dropping it.
     if (_sending || waitsForExternalOwner) {
+      if (_sending &&
+          !queueOnly &&
+          !skipSlashRouting &&
+          attachments.isEmpty &&
+          _chat.pendingApproval == null &&
+          text.isNotEmpty) {
+        var accepted = false;
+        try {
+          final disposition = await _chat.steer(text);
+          accepted = disposition != DesktopRedirectDisposition.rejected;
+        } catch (_) {}
+        if (accepted) {
+          if (usesComposerState &&
+              _textController.text == composerTextAtSubmit &&
+              _sameAttachmentDrafts(_pendingAttachments, attachments)) {
+            _draftTimer?.cancel();
+            _restoringDraft = true;
+            setState(() {
+              _textController.clear();
+              _pendingAttachments.clear();
+            });
+            _restoringDraft = false;
+            await _clearDraft();
+          } else {
+            _scheduleDraftSave();
+          }
+          return true;
+        }
+      }
       final now = DateTime.now().millisecondsSinceEpoch;
       final prepared = PreparedTurn(
         connectionId: widget.connection.id,
@@ -12140,6 +12176,10 @@ class _ChatScreenState extends State<ChatScreen>
                           !_attachmentMutationInFlight &&
                           !_nothingToSend,
                 onSend: _sendMessage,
+                onQueue:
+                    _sending || _chat.hasAuthoritativePassiveRemoteActivity
+                    ? () => _sendMessage(queueOnly: true)
+                    : null,
                 onStop: _cancelStream,
               ),
             ),
@@ -14741,12 +14781,14 @@ class _SendButton extends StatefulWidget {
   final bool enabled;
   final bool busy;
   final VoidCallback onSend;
+  final VoidCallback? onQueue;
   final VoidCallback onStop;
 
   const _SendButton({
     required this.mode,
     required this.onSend,
     required this.onStop,
+    this.onQueue,
     this.enabled = true,
     this.busy = false,
   });
@@ -14800,11 +14842,18 @@ class _SendButtonState extends State<_SendButton> {
       );
     }
 
+    final onQueue = widget.onQueue;
     return HermesTactileAction(
       icon: icon,
       iconSize: isStop ? 21 : 19,
       semanticLabel: tooltip,
       onPressed: widget.enabled ? _handleTap : null,
+      onLongPress: isStop || !widget.enabled || onQueue == null
+          ? null
+          : () {
+              HapticFeedback.lightImpact();
+              onQueue();
+            },
       backgroundColor: bg,
       foregroundColor: fg,
       enabled: widget.enabled,

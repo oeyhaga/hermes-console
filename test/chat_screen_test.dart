@@ -2389,7 +2389,7 @@ void main() {
   );
 
   testWidgets(
-    'mentions: immediate and queued payload freeze while bubbles stay typed',
+    'mentions: immediate and explicitly queued payload freeze while bubbles stay typed',
     (tester) async {
       final connection = _remoteConn('mention-queue');
       final gateway = _UiRewindGateway();
@@ -2412,7 +2412,7 @@ void main() {
       expect(find.textContaining('resolved from the Bot Mode'), findsNothing);
       await tester.enterText(find.byType(TextField), 'next @ops');
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.longPress(find.byKey(const ValueKey('send')));
       await tester.pump(const Duration(milliseconds: 400));
       final queued = chat.queuedTurns.single.turn;
       expect(queued.text, 'next @ops');
@@ -2559,6 +2559,41 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'busy slash directed prompt stays in the encrypted queue',
+    (tester) async {
+      final connection = _remoteConn('busy-directed-slash');
+      final gateway = _MentionSlashGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: connection,
+        desktopGateway: gateway,
+        messagesLoaded: false,
+      );
+      mentionRoster(connection.id);
+
+      await tester.enterText(find.byType(TextField), 'active turn');
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.enterText(find.byType(TextField), '/handoff @ops');
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.byKey(const ValueKey('send')));
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(gateway.slashCalls.single.command, 'handoff @ops');
+      expect(gateway.steers, isEmpty);
+      expect(chat.queuedMessages, ['directed @ops']);
+      gateway.emit('message.complete', {'text': 'done'});
+      await tester.pump(const Duration(milliseconds: 1200));
+      expect(gateway.submissions.last, startsWith('directed @ops\n\n[@mentions'));
+      gateway.emit('message.complete', {'text': 'queued done'});
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'mentions: Desktop history bubble and copy hide annotation after reload',
@@ -18728,11 +18763,10 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('turno activo encola texto FIFO sin alcanzar steering', (
+  testWidgets('pulsación larga en Enviar encola explícitamente el turno', (
     tester,
   ) async {
-    final gateway = _UiRewindGateway()
-      ..steerError = StateError('steering must remain unreachable');
+    final gateway = _UiRewindGateway();
     final chat = await pumpChat(
       tester,
       desktopGateway: gateway,
@@ -18749,7 +18783,7 @@ void main() {
 
     await tester.enterText(find.byType(TextField), 'siguiente turno FIFO');
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.longPress(find.byKey(const ValueKey('send')));
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(gateway.steers, isEmpty);
@@ -18775,7 +18809,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('turno propio activo encola texto plano sin steer ni redirect', (
+  testWidgets('Enter durante turno activo redirige texto plano primero', (
     tester,
   ) async {
     final gateway = _NoLiveMutationGateway();
@@ -18798,17 +18832,17 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('send')));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(gateway.redirects, isEmpty);
+    expect(gateway.redirects, ['Siguiente turno']);
     expect(gateway.steerCalls, 0);
     expect(gateway.submissions, ['Primera petición']);
-    expect(chat.queuedMessages, ['Siguiente turno']);
+    expect(chat.queuedMessages, isEmpty);
     expect(
       chat.messages.where(
         (message) =>
             message['role'] == 'user' &&
             message['content'] == 'Siguiente turno',
       ),
-      isEmpty,
+      hasLength(1),
     );
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
@@ -18824,9 +18858,115 @@ void main() {
 
     gateway.emit('message.complete', {'text': 'terminado'});
     await tester.pump(const Duration(milliseconds: 1200));
-    expect(gateway.submissions, ['Primera petición', 'Siguiente turno']);
-    expect(gateway.redirects, isEmpty);
+    expect(gateway.submissions, ['Primera petición']);
+    expect(gateway.redirects, ['Siguiente turno']);
     expect(gateway.steerCalls, 0);
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('redirect rechazado cae a la cola exactamente una vez', (
+    tester,
+  ) async {
+    final gateway = _NoLiveMutationGateway()
+      ..redirectDisposition = DesktopRedirectDisposition.rejected;
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-live-redirect-rejected'),
+      messagesLoaded: false,
+    );
+
+    await tester.enterText(find.byType(TextField), 'Primera petición');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.enterText(find.byType(TextField), 'Siguiente turno');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gateway.redirects, ['Siguiente turno']);
+    expect(chat.queuedMessages, ['Siguiente turno']);
+    expect(
+      chat.messages.where(
+        (message) =>
+            message['role'] == 'user' &&
+            message['content'] == 'Siguiente turno',
+      ),
+      isEmpty,
+    );
+    gateway.emit('message.complete', {'text': 'terminado'});
+    await tester.pump(const Duration(milliseconds: 1200));
+    gateway.emit('message.complete', {'text': 'segundo terminado'});
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('error de redirect cae a la cola exactamente una vez', (
+    tester,
+  ) async {
+    final gateway = _NoLiveMutationGateway()
+      ..redirectError = StateError('redirect unavailable');
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-live-redirect-error'),
+      messagesLoaded: false,
+    );
+
+    await tester.enterText(find.byType(TextField), 'Primera petición');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.enterText(find.byType(TextField), 'Siguiente turno');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gateway.redirects, ['Siguiente turno']);
+    expect(chat.queuedMessages, ['Siguiente turno']);
+    expect(
+      chat.messages.where(
+        (message) =>
+            message['role'] == 'user' &&
+            message['content'] == 'Siguiente turno',
+      ),
+      isEmpty,
+    );
+    gateway.emit('message.complete', {'text': 'terminado'});
+    await tester.pump(const Duration(milliseconds: 1200));
+    gateway.emit('message.complete', {'text': 'segundo terminado'});
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('aprobación pendiente mantiene Enter en la cola', (tester) async {
+    final gateway = _NoLiveMutationGateway();
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      connection: _remoteConn('conn-live-redirect-approval'),
+      messagesLoaded: false,
+    );
+
+    await tester.enterText(find.byType(TextField), 'Primera petición');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+    chat.pendingApproval = const {'request_id': 'approval-1'};
+
+    await tester.enterText(find.byType(TextField), 'Siguiente turno');
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byKey(const ValueKey('send')));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gateway.redirects, isEmpty);
+    expect(chat.queuedMessages, ['Siguiente turno']);
+    gateway.emit('message.complete', {'text': 'terminado'});
+    await tester.pump(const Duration(milliseconds: 1200));
     gateway.emit('message.complete', {'text': 'segundo terminado'});
     await tester.pump(const Duration(milliseconds: 350));
     expect(tester.takeException(), isNull);
