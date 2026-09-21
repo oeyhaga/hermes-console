@@ -4952,7 +4952,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
       _liveAssistantMaterialized = canRetainTerminalHost;
       if (canRetainTerminalHost) {
-        _showScrollToBottom = true;
+        _showScrollToBottom = !_isNearBottom;
       } else {
         _liveAssistantFrame.value = null;
       }
@@ -5595,9 +5595,7 @@ class _ChatScreenState extends State<ChatScreen>
     // minScrollExtent; medir contra maxScrollExtent detectaría lo contrario
     // (cerca de lo más viejo) → el botón "ir abajo" salía invertido en chats
     // largos y el auto-seguimiento del streaming no enganchaba.
-    final atBottom =
-        _scrollController.position.pixels <=
-        _scrollController.position.minScrollExtent + 100;
+    final atBottom = _isNearBottom;
     // El historial anterior es una acción explícita. Llegar al borde solo hace
     // visible el control flotante; nunca dispara red ni encadena páginas por un
     // rebote de física/semántica de "scroll to top".
@@ -5764,13 +5762,11 @@ class _ChatScreenState extends State<ChatScreen>
     // Un arrastre real expresa intención de lectura incluso si termina dentro
     // del margen de 100 px usado por la flecha. Reengancharlo aquí hacía que el
     // siguiente token devolviera la lista al fondo y peleara con el dedo.
-    if (gestureMoved) {
+    if (gestureMoved && _transcriptOverflows) {
       _onScroll();
       return;
     }
-    final pos = _scrollController.position;
-    final atBottom = pos.pixels <= pos.minScrollExtent + 100;
-    if (!atBottom) return;
+    if (!_isNearBottom) return;
     final target = _chat.assistantContent.length;
     _streamingViewportLock.disable();
     // Reenganche sin setState: la estructura de la lista no cambia; el host
@@ -5813,9 +5809,16 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
+  bool get _transcriptOverflows {
+    if (!_scrollController.hasClients) return false;
+    final pos = _scrollController.position;
+    return pos.hasContentDimensions &&
+        pos.maxScrollExtent > pos.minScrollExtent + 1;
+  }
+
   /// ¿El usuario está pegado al fondo (siguiendo el mensaje nuevo)?
   bool get _isNearBottom {
-    if (!_scrollController.hasClients) return true;
+    if (!_transcriptOverflows) return true;
     final pos = _scrollController.position;
     return pos.pixels <= pos.minScrollExtent + 100;
   }
@@ -9527,6 +9530,7 @@ class _ChatScreenState extends State<ChatScreen>
                                     hasEarlierMessages:
                                         _chat.hasEarlierMessages,
                                     loading: _loadingEarlierMessages,
+                                    contentChanges: _liveAssistantFrame,
                                     transcriptOverlayExtent: () =>
                                         _activityPillExtent.value +
                                         (_scrollToBottomVisibility.value
@@ -18210,6 +18214,7 @@ class _ChatTopButton extends StatefulWidget {
     required this.controller,
     required this.hasEarlierMessages,
     required this.loading,
+    required this.contentChanges,
     required this.transcriptOverlayExtent,
     required this.onLoadEarlier,
   });
@@ -18217,6 +18222,7 @@ class _ChatTopButton extends StatefulWidget {
   final ScrollController controller;
   final bool hasEarlierMessages;
   final bool loading;
+  final Listenable contentChanges;
   final ValueGetter<double> transcriptOverlayExtent;
   final VoidCallback onLoadEarlier;
 
@@ -18232,7 +18238,8 @@ class _ChatTopButtonState extends State<_ChatTopButton> {
     super.initState();
     _visible = widget.hasEarlierMessages;
     widget.controller.addListener(_syncVisibility);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncVisibility());
+    widget.contentChanges.addListener(_scheduleVisibilitySync);
+    _scheduleVisibilitySync();
   }
 
   @override
@@ -18242,7 +18249,15 @@ class _ChatTopButtonState extends State<_ChatTopButton> {
       oldWidget.controller.removeListener(_syncVisibility);
       widget.controller.addListener(_syncVisibility);
     }
+    if (oldWidget.contentChanges != widget.contentChanges) {
+      oldWidget.contentChanges.removeListener(_scheduleVisibilitySync);
+      widget.contentChanges.addListener(_scheduleVisibilitySync);
+    }
     if (widget.hasEarlierMessages) _visible = true;
+    _scheduleVisibilitySync();
+  }
+
+  void _scheduleVisibilitySync() {
     WidgetsBinding.instance.addPostFrameCallback((_) => _syncVisibility());
   }
 
@@ -18290,6 +18305,7 @@ class _ChatTopButtonState extends State<_ChatTopButton> {
   @override
   void dispose() {
     widget.controller.removeListener(_syncVisibility);
+    widget.contentChanges.removeListener(_scheduleVisibilitySync);
     super.dispose();
   }
 
