@@ -15692,9 +15692,11 @@ class ActiveChat {
     var attempt = 0;
     var transcriptAttempted = false;
     Object lastError = originalError;
+    debugPrint('[active-chat] snapshot recovery start');
     while (_canRecoverTurn(turnEpoch)) {
       final delay = _desktopRecoveryDelayForAttempt(attempt);
       attempt++;
+      debugPrint('[active-chat] snapshot recovery attempt $attempt');
       if (delay > Duration.zero) {
         final elapsed = await _waitForDesktopRecoveryDelay(
           delay,
@@ -15705,6 +15707,9 @@ class ActiveChat {
       if (!transcriptAttempted) {
         transcriptAttempted = true;
         if (await _tryAdoptDurableTranscriptForRecoveringTurn(turnEpoch)) {
+          debugPrint(
+            '[active-chat] snapshot recovery converged kind=durable_transcript',
+          );
           return;
         }
         if (!_canRecoverTurn(turnEpoch)) return;
@@ -15715,10 +15720,30 @@ class ActiveChat {
           epochInvalidated,
         );
         if (connected == null || !_canRecoverTurn(turnEpoch)) return;
-        final snapshot = await _desktopRecoveryOperationBeforeDeadline(
+        final storedSessionId = _desktopStoredSessionId ?? serverSessionId;
+        DesktopRosterBoundRecovery? rosterRecovery;
+        DesktopSessionSnapshot? snapshot;
+        if (gateway is HermesDesktopRosterBoundRecoveryGateway) {
+          try {
+            rosterRecovery = await _desktopRecoveryOperationBeforeDeadline(
+              _resumeAdvertisedDesktopSessionForRecovery(
+                gateway,
+                storedSessionId,
+                profile: _turnProfile,
+              ),
+              epochInvalidated,
+            );
+            if (rosterRecovery == null || !_canRecoverTurn(turnEpoch)) return;
+            snapshot = rosterRecovery.snapshot;
+          } catch (error) {
+            if (!_canRecoverTurn(turnEpoch)) return;
+            if (_isDashboardAuthRequired(error)) rethrow;
+          }
+        }
+        snapshot ??= await _desktopRecoveryOperationBeforeDeadline(
           _resumeDesktopSessionForRecovery(
             gateway,
-            _desktopStoredSessionId ?? serverSessionId,
+            storedSessionId,
             profile: _turnProfile,
             legacyModel: _lastModel,
             deferRuntimeCommit: true,
@@ -15727,11 +15752,47 @@ class ActiveChat {
         );
         if (snapshot == null || !_canRecoverTurn(turnEpoch)) return;
         if (snapshot is DesktopSessionBinding) {
+          debugPrint(
+            '[active-chat] snapshot recovery result kind=legacy_binding',
+          );
+          debugPrint(
+            '[active-chat] snapshot recovery gave up kind=legacy_binding attempts=$attempt',
+          );
           _degradeLegacyTurnRecovery(turnEpoch, originalError);
           return;
         }
-        if (!_commitDesktopRecoverySnapshot(gateway, snapshot)) return;
+        final resultKind = _desktopSnapshotRecoveryResultKind(snapshot);
+        debugPrint('[active-chat] snapshot recovery result kind=$resultKind');
+        if (!snapshot.running && snapshot.inflight == null) {
+          if (await _tryAdoptDurableTranscriptForRecoveringTurn(turnEpoch)) {
+            debugPrint(
+              '[active-chat] snapshot recovery converged kind=durable_transcript',
+            );
+            return;
+          }
+          if (!_canRecoverTurn(turnEpoch)) return;
+          if (!snapshot.messagesProvided ||
+              !_desktopSnapshotTranscriptIsComplete(snapshot)) {
+            debugPrint(
+              '[active-chat] snapshot recovery result kind=durable_pending',
+            );
+            continue;
+          }
+        }
+        final committed = rosterRecovery != null
+            ? (gateway as HermesDesktopRosterBoundRecoveryGateway)
+                  .consumeRosterBoundRecovery(rosterRecovery)
+            : _commitDesktopRecoverySnapshot(gateway, snapshot);
+        if (!committed) {
+          debugPrint(
+            '[active-chat] snapshot recovery result kind=authority_pending',
+          );
+          continue;
+        }
         _publishDashboardAuthRequired(false);
+        debugPrint(
+          '[active-chat] snapshot recovery converged kind=$resultKind',
+        );
         _applyDesktopRecoverySnapshot(snapshot, turnEpoch);
         return;
       } catch (error) {
@@ -15740,13 +15801,33 @@ class ActiveChat {
         if (_isDashboardAuthRequired(error)) {
           _publishDashboardAuthRequired(true);
         }
-        if (_isTerminalDesktopRecoveryError(error)) break;
+        final terminal = _isTerminalDesktopRecoveryError(error);
+        debugPrint(
+          '[active-chat] snapshot recovery result kind=${terminal ? 'terminal_error' : 'transient_error'}',
+        );
+        if (terminal) break;
       }
     }
     if (_canRecoverTurn(turnEpoch)) {
+      debugPrint(
+        '[active-chat] snapshot recovery gave up kind=terminal_error attempts=$attempt',
+      );
       debugPrint(activeChatDesktopRecoveryDiagnostic(lastError));
       _failRun(activeChatDesktopRecoveryUiMessage(lastError));
     }
+  }
+
+  String _desktopSnapshotRecoveryResultKind(DesktopSessionSnapshot snapshot) {
+    if (snapshot.running) {
+      return snapshot.inflight == null ? 'running' : 'inflight';
+    }
+    final status = snapshot.status?.trim().toLowerCase();
+    return switch (status) {
+      'completed' || 'complete' || 'done' => 'completed',
+      'failed' || 'error' => 'failed',
+      'cancelled' || 'canceled' => 'cancelled',
+      _ => 'idle',
+    };
   }
 
   void _applyDesktopRecoverySnapshot(
