@@ -460,6 +460,7 @@ class _UiRewindGateway
         HermesDesktopGateway,
         HermesDesktopRewindResolverGateway,
         HermesDesktopDurableRewindGateway,
+        HermesDesktopAttachmentGateway,
         HermesDesktopSessionLifecycleGateway,
         HermesDesktopSessionCloseGateway,
         HermesDesktopConfiguredSessionLifecycleGateway,
@@ -489,6 +490,8 @@ class _UiRewindGateway
   final List<({String text, int ordinal})> resolutionCalls = [];
   final List<String> submissions = [];
   final List<String> steers = [];
+  final List<String> attachedFiles = [];
+  final List<String> attachedImages = [];
   final List<({String runtimeId, String command})> slashCalls = [];
   final List<({String runtimeId, String name, String arg})> dispatchCalls = [];
   final List<({String runtimeId, String storedId})> activationCalls = [];
@@ -768,6 +771,30 @@ class _UiRewindGateway
     final error = steerError;
     if (error != null) throw error;
   }
+
+  @override
+  Future<DesktopAttachmentResult> attachImageBytes(
+    String runtimeSessionId, {
+    required String filename,
+    required String contentBase64,
+  }) async {
+    attachedImages.add(filename);
+    return DesktopAttachmentResult(path: '/managed/$filename');
+  }
+
+  @override
+  Future<DesktopAttachmentResult> attachFileBytes(
+    String runtimeSessionId, {
+    required String filename,
+    required String mimeType,
+    required String contentBase64,
+  }) async {
+    attachedFiles.add(filename);
+    return DesktopAttachmentResult(refText: '@file:managed/$filename');
+  }
+
+  @override
+  Future<void> detachImage(String runtimeSessionId, String path) async {}
 
   @override
   Future<void> interrupt(String runtimeSessionId) async {
@@ -14449,7 +14476,8 @@ void main() {
     expect(gateway.resolutionCalls, [(text: 'pregunta original', ordinal: 0)]);
     expect(gateway.rewinds, [(text: 'pregunta corregida', ordinal: 0)]);
     expect(gateway.rewindRowIds, [73]);
-    expect(find.textContaining('pregunta original'), findsOneWidget);
+    expect(find.textContaining('pregunta original'), findsNothing);
+    expect(find.textContaining('pregunta corregida'), findsOneWidget);
     expect(tester.takeException(), isNull);
     gateway.emit('message.complete', {'text': 'Respuesta corregida'});
     for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
@@ -14458,6 +14486,100 @@ void main() {
     expect(find.textContaining('pregunta corregida'), findsOneWidget);
     expect(chat.isStreaming, isFalse);
   });
+
+  testWidgets(
+    'editar con adjunto conserva la fila y vuelve a adjuntar la referencia segura',
+    (tester) async {
+      late final Directory temp;
+      late final AttachmentHistoryReference reference;
+      await tester.runAsync(() async {
+        temp = await Directory.systemTemp.createTemp('chat-edit-attachment-');
+        final file = File('${temp.path}/brief.txt');
+        await file.writeAsString('contenido privado');
+        reference = (await AttachmentUploader.persistForHistory(
+          AttachmentDraft(
+            type: AttachmentType.document,
+            name: 'brief.txt',
+            mimeType: 'text/plain',
+            sizeBytes: await file.length(),
+            localPath: file.path,
+          ),
+          index: 0,
+          baseDir: temp,
+        ))!;
+      });
+      addTearDown(() {
+        if (temp.existsSync()) temp.deleteSync(recursive: true);
+      });
+      const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
+      TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(pathProvider, (_) async => temp.path);
+      addTearDown(
+        () => TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(pathProvider, null),
+      );
+      final gateway = _UiRewindGateway();
+      final original = <String, dynamic>{
+        'role': 'user',
+        'content':
+            '[📎 brief.txt · 17 B]\n'
+            'pregunta original\n'
+            '⟦adjunto⟧\ncontenido privado\n'
+            '${reference.toMarker()}',
+        'id': 'attached-turn',
+        'timestamp': 1712345678,
+        '_desktopRowId': 73,
+      };
+      final chat = await pumpChat(
+        tester,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-attachment-rewrite'),
+        messages: [
+          {'role': 'assistant', 'content': 'Respuesta original'},
+          original,
+        ],
+      );
+
+      final edit = find.byIcon(Icons.edit_outlined).hitTestable();
+      expect(edit, findsOneWidget);
+      await tester.tap(edit);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('edit-message-composer')),
+        'pregunta corregida',
+      );
+      await tester.tap(find.text('Guardar y enviar'));
+      for (var frame = 0; frame < 60 && gateway.rewinds.isEmpty; frame++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 5)),
+        );
+        await tester.pump(const Duration(milliseconds: 10));
+      }
+
+      expect(gateway.attachedFiles, ['brief.txt']);
+      expect(gateway.rewinds, hasLength(1));
+      expect(gateway.rewinds.single.text, contains('pregunta corregida'));
+      expect(gateway.rewinds.single.text, contains('@file:managed/brief.txt'));
+      expect(gateway.rewinds.single.text, isNot(contains('contenido privado')));
+      final editedRows = chat.internalMessagesForTesting
+          .where((message) => message['id'] == 'attached-turn')
+          .toList(growable: false);
+      expect(editedRows, hasLength(1));
+      expect(identical(editedRows.single, original), isTrue);
+      expect(editedRows.single['content'], contains('[📎 brief.txt · 17 B]'));
+      expect(editedRows.single['content'], contains('pregunta corregida'));
+      expect(editedRows.single['content'], contains('contenido privado'));
+      expect(editedRows.single['content'], contains(reference.toMarker()));
+      expect(editedRows.single, containsPair('timestamp', 1712345678));
+      expect(editedRows.single, containsPair('_desktopRowId', 73));
+      gateway.emit('message.complete', {'text': 'Respuesta corregida'});
+      for (var frame = 0; frame < 60 && chat.isStreaming; frame++) {
+        await tester.pump(const Duration(milliseconds: 33));
+      }
+      expect(chat.isStreaming, isFalse);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('editar sin row id durable no reenvía ni duplica el turno', (
     tester,
@@ -14926,8 +15048,8 @@ void main() {
     await submitEdit(tester, 'pregunta hidratada');
     await tester.pump(const Duration(milliseconds: 700));
     expect(gateway.rewinds, [(text: 'pregunta hidratada', ordinal: 0)]);
-    expect(transcript('pregunta original'), findsOneWidget);
-    expect(transcript('pregunta hidratada'), findsNothing);
+    expect(transcript('pregunta original'), findsNothing);
+    expect(transcript('pregunta hidratada'), findsOneWidget);
     gateway.emit('message.complete', {'text': 'Respuesta hidratada'});
     await tester.pump();
     expect(chat.isStreaming, isFalse);
