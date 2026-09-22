@@ -221,6 +221,99 @@ void main() {
         );
       }
     });
+
+    test('rejects credential, key, history, and sensitive-directory paths', () {
+      const blocked = <String>[
+        '/home/user/.netrc',
+        '/home/user/.NPMRC',
+        '/home/user/.pgpass',
+        '/home/user/.git-credentials',
+        '/home/user/.ssh/id_rsa',
+        '/home/user/.ssh/id_dsa',
+        '/home/user/.ssh/id_ecdsa',
+        '/home/user/.ssh/id_ed25519',
+        '/home/user/.ssh/id_custom',
+        '/home/user/.ssh/authorized_keys',
+        '/home/user/.ssh/config',
+        '/home/user/.ssh/.private-note',
+        '/home/user/.ssh/.public.pub',
+        '/home/user/.gnupg/private-keys-v1.d/key',
+        '/home/user/.aws/credentials',
+        '/home/user/.aws/config',
+        '/home/user/.docker/config.json',
+        '/home/user/.kube/config',
+        '/home/user/.azure/accessTokens.json',
+        '/home/user/.gcloud/credentials.db',
+        '/home/user/.config/gcloud/credentials.db',
+        '/home/user/.bash_history',
+        '/home/user/.zsh_history',
+        '/home/user/.python_history',
+        '/home/user/.psql_history',
+        '/workspace/client.pem',
+        '/workspace/client.key',
+        '/workspace/client.p12',
+        '/workspace/client.pfx',
+        '/workspace/client.jks',
+        '/workspace/client.keystore',
+        '/workspace/tunnel.ovpn',
+        '/proc/self/environ',
+        '/sys/kernel/security/lsm',
+        '/dev/mapper/control',
+      ];
+
+      for (final source in blocked) {
+        expect(
+          GeneratedMediaService.referenceFromSource(source),
+          isNull,
+          reason: source,
+        );
+      }
+    });
+
+    test('allows public SSH metadata and ordinary generated media', () {
+      const allowed = <String>[
+        '/home/user/.ssh/known_hosts',
+        '/home/user/.ssh/id_ed25519.pub',
+        '/workspace/proc/report.txt',
+        '/workspace/render.png',
+        '/workspace/photo.jpg',
+        '/workspace/audio.wav',
+        '/workspace/video.mp4',
+        '/workspace/report.pdf',
+        '/workspace/notes.txt',
+        '/workspace/data.json',
+      ];
+
+      for (final source in allowed) {
+        final reference = GeneratedMediaService.referenceFromSource(source);
+        expect(reference, isNotNull, reason: source);
+        expect(
+          GeneratedMediaService.allowsAutoLoad(reference!),
+          isTrue,
+          reason: source,
+        );
+      }
+    });
+
+    test('executable and installer files require explicit download', () {
+      for (final extension in const ['.apk', '.exe', '.msi', '.dmg', '.sh']) {
+        final reference = GeneratedMediaService.referenceFromSource(
+          '/workspace/payload$extension',
+        );
+        expect(reference, isNotNull, reason: extension);
+        final safeReference = reference!;
+        expect(
+          GeneratedMediaService.allowsAutoLoad(safeReference),
+          isFalse,
+          reason: extension,
+        );
+        expect(
+          GeneratedMediaService.isTextLike(safeReference),
+          isFalse,
+          reason: extension,
+        );
+      }
+    });
   });
 
   group('GeneratedMediaService.validateBytes', () {

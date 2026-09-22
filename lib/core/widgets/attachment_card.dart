@@ -595,6 +595,9 @@ Future<void> openGeneratedMediaExternally(
   required String mimeType,
   required int expectedSize,
 }) async {
+  if (!GeneratedMediaService.allowsExternalOpen(file, mimeType: mimeType)) {
+    throw const FormatException('executable generated media cannot be opened');
+  }
   final locator = GeneratedMediaService.cacheLocator(file);
   if (locator == null) throw const FormatException('invalid generated cache');
   final digest = (await sha256.bind(file.openRead()).first).toString();
@@ -662,7 +665,8 @@ class _GeneratedMediaAttachmentCardState
 
   bool get _mayAutoLoad =>
       widget.autoLoad &&
-      widget.reference.sourceKind == GeneratedMediaSourceKind.serverPath;
+      widget.reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
+      GeneratedMediaService.allowsAutoLoad(widget.reference);
 
   @override
   void initState() {
@@ -865,6 +869,18 @@ class _GeneratedMediaAttachmentCardState
         });
         return;
       }
+      if (widget.reference.kind == GeneratedMediaKind.file &&
+          !await GeneratedMediaService.isSafeForInlinePreview(
+            widget.reference,
+            file,
+          )) {
+        if (!mounted || generation != _generation || _cancelled) return;
+        setState(() {
+          _errorLabel = Strings.of(context).genMediaDenied;
+          _status = GeneratedFileStatus.error;
+        });
+        return;
+      }
       final text = _readTextPreview(file, length);
       if (!mounted || generation != _generation || _cancelled) return;
       setState(() {
@@ -899,6 +915,7 @@ class _GeneratedMediaAttachmentCardState
     final declaredPdf = widget.reference.mimeType == 'application/pdf' ||
         widget.reference.displayName.toLowerCase().endsWith('.pdf');
     if (widget.reference.kind != GeneratedMediaKind.file ||
+        !GeneratedMediaService.allowsAutoLoad(widget.reference) ||
         declaredPdf ||
         length > GeneratedMediaService.maxAutoTextBytes) {
       return null;
@@ -939,7 +956,10 @@ class _GeneratedMediaAttachmentCardState
 
   Future<void> _openExternal() async {
     final file = _file;
-    if (file == null) return;
+    if (file == null ||
+        !GeneratedMediaService.allowsAutoLoad(widget.reference)) {
+      return;
+    }
     try {
       await openGeneratedMediaExternally(
         file,
@@ -1044,6 +1064,12 @@ class _GeneratedMediaAttachmentCardState
   @override
   Widget build(BuildContext context) {
     final file = _file;
+    final mayOpen = file != null &&
+        GeneratedMediaService.allowsAutoLoad(widget.reference) &&
+        GeneratedMediaService.allowsExternalOpen(
+          file,
+          mimeType: widget.reference.mimeType,
+        );
     if (_status == GeneratedFileStatus.ready && file != null) {
       if (_text != null) {
         return GeneratedTextPreviewCard(
@@ -1090,7 +1116,7 @@ class _GeneratedMediaAttachmentCardState
       errorLabel: _errorLabel,
       onDownload: () => _start(automatic: false),
       onCancel: _cancel,
-      onOpen: file == null ? null : _open,
+      onOpen: mayOpen ? _open : null,
       onShare: file == null ? null : _share,
       onSave: file == null ? null : _save,
     );

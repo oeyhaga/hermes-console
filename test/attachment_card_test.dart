@@ -543,6 +543,74 @@ void main() {
     expect(copiedText, 'first line\nsecond line\nfull final line');
   });
 
+  testWidgets('sensitive text returned by a loader is never rendered inline', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync(
+      'generated-sensitive-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/.netrc')
+      ..writeAsStringSync('machine example.test password exposed');
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/report.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'report.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 37,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async => file,
+        ),
+        locale: const Locale('en'),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 100)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('password exposed'), findsNothing);
+    expect(
+      find.textContaining('Access to this file was denied'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('APK waits for consent instead of auto-loading', (tester) async {
+    var loads = 0;
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/payload.apk',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'payload.apk',
+            mimeType: 'application/vnd.android.package-archive',
+            sizeBytes: 4,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            throw StateError('must wait for consent');
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 0);
+    expect(find.text('Descargar'), findsOneWidget);
+  });
+
   testWidgets('MEDIA image auto-loads directly into its ready preview', (
     tester,
   ) async {
@@ -1000,6 +1068,40 @@ void main() {
     expect(arguments['mimeType'], 'application/octet-stream');
     expect(arguments.containsKey('path'), isFalse);
     expect(arguments['storageKey'], arguments['expectedSha256']);
+  });
+
+  test('APK cannot invoke the external package installer channel', () async {
+    final directory = Directory.systemTemp.createTempSync(
+      'generated-apk-open-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final connectionKey = 'a' * 64;
+    final fileKey = 'b' * 64;
+    final cacheDirectory = Directory(
+      '${directory.path}/generated_media/$connectionKey',
+    )..createSync(recursive: true);
+    final file = File('${cacheDirectory.path}/$fileKey.apk')
+      ..writeAsBytesSync(<int>[0x50, 0x4b, 0x03, 0x04]);
+    MethodCall? openCall;
+    const channel = MethodChannel('hermes/document_preview');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      openCall = call;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    await expectLater(
+      openGeneratedMediaExternally(
+        file,
+        mimeType: 'application/vnd.android.package-archive',
+        expectedSize: file.lengthSync(),
+      ),
+      throwsA(isA<FormatException>()),
+    );
+
+    expect(openCall, isNull);
   });
 
   testWidgets('generic file opens an in-app viewer with distinct actions', (
