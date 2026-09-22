@@ -12852,6 +12852,9 @@ class _ChatScreenState extends State<ChatScreen>
           modeLabel: flag?.$1,
           modeColor: flag?.$2,
           modeSectionBuilder: _buildApprovalModeSection,
+          compressionCount: _chatBound
+              ? _chat.desktopSessionCompressionCount
+              : 0,
         ),
       ),
     );

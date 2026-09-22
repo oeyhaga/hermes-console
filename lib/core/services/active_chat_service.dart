@@ -4688,6 +4688,15 @@ class ActiveChat {
       _desktopCompressionInFlight || _desktopAutoCompacting;
   bool get desktopAutoCompacting => _desktopAutoCompacting;
 
+  /// Cuántas veces se ha compactado esta sesión en total, según el propio
+  /// contador durable del backend (`usage.compressions`). A diferencia de
+  /// [desktopCompressionInFlight] o del `CompactionTracker` de la pantalla,
+  /// esto no es transitorio: sobrevive a reconexiones y a reabrir la app, así
+  /// que es la fuente correcta para una señal persistente de "esta sesión se
+  /// compactó alguna vez", no solo mientras dura o justo termina una.
+  int get desktopSessionCompressionCount =>
+      _compressionCountFromInfo(_desktopRuntimeInfo) ?? 0;
+
   /// Inicio (reloj local) de la compactación en curso, automática o manual;
   /// `null` si no hay ninguna. Hermes no publica progreso: la pastilla mide el
   /// tiempo desde aquí y estima el resto del historial local.

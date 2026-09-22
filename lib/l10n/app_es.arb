@@ -4138,6 +4138,8 @@
   "chaCompressionLockHeld": "Ya hay otra compresión en curso para esta conversación. Inténtalo de nuevo dentro de un momento.",
   "chaCompressionReconciling": "Se está reconciliando el estado de la compresión. No la reintentes todavía.",
   "chaCompressionProgress": "Optimizando la conversación…",
+  "chaSessionCompactedTooltip": "{count, plural, =1{Esta conversación se compactó una vez} other{Esta conversación se compactó {count} veces}}",
+  "@chaSessionCompactedTooltip": {"placeholders": {"count": {"type": "int"}}},
   "chaCompressionSuccess": "Contexto comprimido: {beforeMessages} → {afterMessages} mensajes · ~{beforeTokens} → ~{afterTokens} tokens",
   "@chaCompressionSuccess": {
     "placeholders": {

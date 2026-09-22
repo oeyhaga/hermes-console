@@ -373,6 +373,7 @@ class SessionContextPopoverButton extends StatefulWidget {
     this.modeLabel,
     this.modeColor,
     this.modeSectionBuilder,
+    this.compressionCount = 0,
     super.key,
   });
 
@@ -386,6 +387,12 @@ class SessionContextPopoverButton extends StatefulWidget {
   final String? modeLabel;
   final Color? modeColor;
   final SessionContextModeSectionBuilder? modeSectionBuilder;
+
+  /// How many times this session has ever been compacted (0 hides the
+  /// segment). A durable fact of the session, unlike the transient
+  /// in-progress/just-finished compaction dock — this is the only place that
+  /// says so once the dock itself is long gone.
+  final int compressionCount;
 
   @override
   State<SessionContextPopoverButton> createState() =>
@@ -429,14 +436,17 @@ class _SessionContextPopoverButtonState
         valueListenable: widget.metrics,
         builder: (context, value, _) {
           final percent = value.percent;
-          final semanticsLabel = _contextTriggerSemanticsLabel(strings, value);
+          final semanticsLabel = [
+            _contextTriggerSemanticsLabel(strings, value),
+            ?widget.modeLabel,
+            if (widget.compressionCount > 0)
+              strings.chaSessionCompactedTooltip(widget.compressionCount),
+          ].join(' · ');
           final modeLabel = widget.modeLabel;
           return Semantics(
             button: true,
             onTap: _open,
-            label: modeLabel == null
-                ? semanticsLabel
-                : '$semanticsLabel · $modeLabel',
+            label: semanticsLabel,
             excludeSemantics: true,
             child: Tooltip(
               message: strings.chaContextUsageOpen,
@@ -504,6 +514,25 @@ class _SessionContextPopoverButtonState
                               color: widget.modeColor ?? colors.error,
                               fontSize: 9.5,
                               fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                        if (widget.compressionCount > 0) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            height: 12,
+                            width: 1,
+                            color: colors.divider,
+                          ),
+                          const SizedBox(width: 6),
+                          Tooltip(
+                            message: strings.chaSessionCompactedTooltip(
+                              widget.compressionCount,
+                            ),
+                            child: Icon(
+                              Icons.compress_rounded,
+                              size: 13,
+                              color: colors.textSecondary,
                             ),
                           ),
                         ],

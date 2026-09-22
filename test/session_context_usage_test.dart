@@ -431,6 +431,72 @@ void main() {
     );
   });
 
+  testWidgets(
+    'la marca de compactación persiste y solo aparece cuando ya se compactó',
+    (tester) async {
+      final metrics = ValueNotifier(
+        const SessionContextMetrics(
+          contextUsed: 800,
+          contextMax: 10000,
+          percent: 8,
+        ),
+      );
+      addTearDown(metrics.dispose);
+
+      await tester.pumpWidget(
+        _TestApp(
+          child: SessionContextPopoverButton(
+            metrics: metrics,
+            loadBreakdown: () async => null,
+            onMetricsSnapshot: (value) => metrics.value = value,
+          ),
+        ),
+      );
+
+      final trigger = find.byKey(
+        const ValueKey('desktop-context-usage-status'),
+      );
+      // Sin compactar nunca: nada de esto se muestra.
+      expect(find.byIcon(Icons.compress_rounded), findsNothing);
+      expect(
+        tester.getSemantics(trigger).getSemanticsData().label,
+        'Open context usage, 8% used',
+      );
+
+      await tester.pumpWidget(
+        _TestApp(
+          child: SessionContextPopoverButton(
+            metrics: metrics,
+            loadBreakdown: () async => null,
+            onMetricsSnapshot: (value) => metrics.value = value,
+            compressionCount: 1,
+          ),
+        ),
+      );
+      expect(find.byIcon(Icons.compress_rounded), findsOneWidget);
+      expect(
+        tester.getSemantics(trigger).getSemanticsData().label,
+        'Open context usage, 8% used · This conversation has been compacted once',
+      );
+
+      await tester.pumpWidget(
+        _TestApp(
+          child: SessionContextPopoverButton(
+            metrics: metrics,
+            loadBreakdown: () async => null,
+            onMetricsSnapshot: (value) => metrics.value = value,
+            compressionCount: 3,
+          ),
+        ),
+      );
+      expect(find.byIcon(Icons.compress_rounded), findsOneWidget);
+      expect(
+        tester.getSemantics(trigger).getSemanticsData().label,
+        'Open context usage, 8% used · This conversation has been compacted 3 times',
+      );
+    },
+  );
+
   testWidgets('el trigger abre una tarjeta anclada y el cierre la retira', (
     tester,
   ) async {
