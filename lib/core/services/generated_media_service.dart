@@ -136,6 +136,50 @@ class GeneratedMediaService {
     '.m4a',
     '.flac',
   };
+  static const Set<String> _executableExtensions = {
+    '.apk',
+    '.exe',
+    '.msi',
+    '.dmg',
+    '.sh',
+  };
+  static const Set<String> _sensitiveDirectoryNames = {
+    '.ssh',
+    '.gnupg',
+    '.aws',
+    '.kube',
+    '.docker',
+    '.azure',
+    '.gcloud',
+  };
+  static const Set<String> _sensitiveBasenames = {
+    '.netrc',
+    '.npmrc',
+    '.pgpass',
+    '.git-credentials',
+    '.bash_history',
+    '.zsh_history',
+    '.python_history',
+    '.psql_history',
+    'authorized_keys',
+    'key.properties',
+    'credentials.json',
+    'secrets.json',
+    'id_rsa',
+    'id_dsa',
+    'id_ecdsa',
+    'id_ed25519',
+  };
+  static const Set<String> _sensitiveExtensions = {
+    '.jks',
+    '.keystore',
+    '.p12',
+    '.pfx',
+    '.pem',
+    '.key',
+    '.keytab',
+    '.ovpn',
+  };
   static const Set<String> _knownFileExtensions = {
     '.svg',
     '.pdf',
@@ -171,7 +215,6 @@ class GeneratedMediaService {
     '.xz',
     '.7z',
     '.rar',
-    '.apk',
     '.ipa',
     '.html',
     '.htm',
@@ -182,6 +225,12 @@ class GeneratedMediaService {
   static int _activeAutoLoads = 0;
 
   static bool isTextLike(GeneratedMediaReference reference) {
+    if (_isExecutableOrInstaller(
+      reference.displayName,
+      mimeType: reference.mimeType,
+    )) {
+      return false;
+    }
     final lower = reference.displayName.toLowerCase();
     final dot = lower.lastIndexOf('.');
     final extension = dot < 0 ? '' : lower.substring(dot);
@@ -204,6 +253,34 @@ class GeneratedMediaService {
           '.toml',
           '.ini',
         }.contains(extension);
+  }
+
+  static bool allowsAutoLoad(GeneratedMediaReference reference) =>
+      !_isExecutableOrInstaller(
+        reference.displayName,
+        mimeType: reference.mimeType,
+      );
+
+  static bool allowsExternalOpen(File file, {required String mimeType}) =>
+      !_isExecutableOrInstaller(file.path, mimeType: mimeType);
+
+  static Future<bool> isSafeForInlinePreview(
+    GeneratedMediaReference reference,
+    File file,
+  ) async {
+    final sourcePath = reference.sourceKind == GeneratedMediaSourceKind.https
+        ? Uri.tryParse(reference.source)?.path ?? reference.source
+        : reference.source;
+    if (_isSensitivePath(sourcePath) ||
+        _isSensitiveName(reference.displayName)) {
+      return false;
+    }
+    try {
+      final resolvedPath = await file.resolveSymbolicLinks();
+      return !_isSensitivePath(resolvedPath);
+    } on FileSystemException {
+      return false;
+    }
   }
 
   static ({String connectionKey, String fileKey})? cacheLocator(File file) {
@@ -439,6 +516,7 @@ class GeneratedMediaService {
     final path = sourceKind == GeneratedMediaSourceKind.https
         ? uri!.path
         : source;
+    if (_isSensitivePath(path)) return null;
     final rawName = _decodedBasename(path);
     if (_isSensitiveName(rawName)) return null;
     final displayName = _displayName(rawName);
@@ -496,21 +574,67 @@ class GeneratedMediaService {
     if (lower == '.env' ||
         lower.endsWith('.env') ||
         lower.startsWith('.env.') ||
-        lower == 'key.properties' ||
-        lower == 'credentials.json' ||
-        lower == 'secrets.json' ||
-        lower == 'id_rsa' ||
-        lower == 'id_ed25519') {
+        _sensitiveBasenames.contains(lower)) {
       return true;
     }
-    return const {
-      '.jks',
-      '.keystore',
-      '.p12',
-      '.pfx',
-      '.pem',
-      '.keytab',
-    }.any(lower.endsWith);
+    return _sensitiveExtensions.any(lower.endsWith);
+  }
+
+  static bool _isSensitivePath(String path) {
+    final components = _decodedPathComponents(path);
+    if (components == null || components.isEmpty) return true;
+    final lower = components
+        .map((component) => component.toLowerCase())
+        .toList();
+    if (path.startsWith('/') &&
+        const {'proc', 'sys', 'dev'}.contains(lower.first)) {
+      return true;
+    }
+    if (_isSensitiveName(lower.last)) return true;
+
+    for (var index = 0; index < lower.length; index++) {
+      final component = lower[index];
+      if (component == '.config' &&
+          index + 1 < lower.length &&
+          lower[index + 1] == 'gcloud') {
+        return true;
+      }
+      if (!_sensitiveDirectoryNames.contains(component)) continue;
+      final isAllowedSshPublicFile = component == '.ssh' &&
+          index == lower.length - 2 &&
+          !lower.last.startsWith('.') &&
+          (lower.last == 'known_hosts' || lower.last.endsWith('.pub'));
+      if (!isAllowedSshPublicFile) return true;
+    }
+    return false;
+  }
+
+  static List<String>? _decodedPathComponents(String path) {
+    final components = <String>[];
+    for (final raw in path.replaceAll('\\', '/').split('/')) {
+      if (raw.isEmpty) continue;
+      try {
+        final decoded = Uri.decodeComponent(raw);
+        if (decoded.isEmpty ||
+            decoded.contains('/') ||
+            decoded.contains('\\')) {
+          return null;
+        }
+        components.add(decoded);
+      } on FormatException {
+        return null;
+      }
+    }
+    return components;
+  }
+
+  static bool _isExecutableOrInstaller(String name, {String? mimeType}) {
+    if (mimeType?.toLowerCase() ==
+        'application/vnd.android.package-archive') {
+      return true;
+    }
+    final lower = _decodedBasename(name).toLowerCase();
+    return _executableExtensions.any(lower.endsWith);
   }
 
   static String _mimeType(String name, GeneratedMediaKind kind) {
@@ -552,7 +676,6 @@ class GeneratedMediaService {
       '.svg' => 'image/svg+xml',
       '.html' || '.htm' => 'text/html',
       '.zip' => 'application/zip',
-      '.apk' => 'application/vnd.android.package-archive',
       _ => 'application/octet-stream',
     };
   }
@@ -584,7 +707,7 @@ class GeneratedMediaService {
         return false;
       }
     }
-    return true;
+    return !_isSensitivePath(source);
   }
 
   /// Text suitable for copy, read-aloud and notification previews: prose is
