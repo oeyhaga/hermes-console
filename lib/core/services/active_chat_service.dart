@@ -1283,6 +1283,7 @@ bool _tailPageProvesTranscriptComplete(SessionMessagesPage page) {
       !_transcriptRowsHaveUnambiguousIdentityEvidence(page.messages)) {
     return false;
   }
+  if (page.hasEarlier case final hasEarlier?) return !hasEarlier;
   final limit = page.limit;
   return limit == null || limit <= 0 || page.returned < limit;
 }
@@ -3177,7 +3178,7 @@ enum _SessionMessagesPageAction {
 enum _SessionMessagesPageProjectionDisposition { publish, preserve, reject }
 
 final class _NativeSessionHistoryPage extends SessionMessagesPage {
-  _NativeSessionHistoryPage(SessionMessagesPage page)
+  _NativeSessionHistoryPage(SessionMessagesPage page, {bool? hasEarlier})
     : super(
         messages: page.messages,
         pagination: null,
@@ -3186,6 +3187,7 @@ final class _NativeSessionHistoryPage extends SessionMessagesPage {
         messagesFullyParsed: page.messagesFullyParsed,
         resolvedTipId: page.resolvedTipId,
         coverage: page.coverage,
+        hasEarlier: hasEarlier ?? page.hasEarlier,
       );
 }
 
@@ -8744,15 +8746,50 @@ class ActiveChat {
   Future<SessionMessagesPage> _fetchStoredMessagesPage(
     _SessionMessagesPageReadContext context, {
     String? runtimeSessionId,
-  }) => _requestStoredMessagesPage(
-    storedSessionId: context.requestedStoredSessionId,
-    profile: context.profile,
-    limit: context.requestedLimit,
-    offset: context.requestedOffset,
-    runtimeSessionId: runtimeSessionId,
-    allowNativeHistory:
-        context.consumer != _SessionMessagesPageConsumer.loadEarlier,
-  );
+  }) async {
+    final page = await _requestStoredMessagesPage(
+      storedSessionId: context.requestedStoredSessionId,
+      profile: context.profile,
+      limit: context.requestedLimit,
+      offset: context.requestedOffset,
+      runtimeSessionId: runtimeSessionId,
+      allowNativeHistory:
+          context.consumer != _SessionMessagesPageConsumer.loadEarlier,
+    );
+    final expectedCount = context.hardExpectedMessageCount;
+    final needsExactBoundaryProbe =
+        page is _NativeSessionHistoryPage &&
+        page.hasEarlier == true &&
+        context.requestedOffset == 0 &&
+        expectedCount != null &&
+        expectedCount == page.rawMessageCount &&
+        page.rawMessageCount == context.requestedLimit &&
+        page.messagesFullyParsed;
+    if (!needsExactBoundaryProbe) return page;
+
+    try {
+      final lookahead = await _requestStoredMessagesPage(
+        storedSessionId: context.requestedStoredSessionId,
+        profile: context.profile,
+        limit: 1,
+        offset: context.requestedLimit,
+        allowNativeHistory: false,
+      );
+      final lookaheadProvesEnd =
+          lookahead.rawMessageCount == 0 &&
+          lookahead.messagesFullyParsed &&
+          lookahead.paginationFullyParsed &&
+          (lookahead.resolvedTipId == null ||
+              page.resolvedTipId == null ||
+              lookahead.resolvedTipId == page.resolvedTipId);
+      if (lookaheadProvesEnd) {
+        return _NativeSessionHistoryPage(page, hasEarlier: false);
+      }
+    } on Object {
+      // The full page remains honest partial evidence when lookahead is unavailable.
+    }
+    return page;
+  }
 
   Future<SessionMessagesPage> _requestStoredMessagesPage({
     required String storedSessionId,
@@ -8785,8 +8822,9 @@ class ActiveChat {
         gateway.isConnected &&
         gateway is HermesDesktopSessionHistoryGateway &&
         runtime != null) {
+      _NativeSessionHistoryPage? nativePage;
       try {
-        return _NativeSessionHistoryPage(
+        nativePage = _NativeSessionHistoryPage(
           await (gateway as HermesDesktopSessionHistoryGateway).sessionHistory(
             sessionId: runtime,
             profile: profile,
@@ -8795,6 +8833,44 @@ class ActiveChat {
       } catch (_) {
         // Older gateways and transient RPC failures retain the REST path.
         // Do not log remote payloads or profile credentials.
+      }
+      if (nativePage != null) {
+        final requestedLimit = limit ?? _transcriptPageSize;
+        if (nativePage.rawMessageCount > requestedLimit ||
+            (_transcriptIsComplete && _messages.isNotEmpty)) {
+          return nativePage;
+        }
+        try {
+          final canonicalPage = await _api.getMessagesPage(
+            storedSessionId,
+            profile: profile,
+            limit: requestedLimit,
+            offset: offset,
+          );
+          final canonicalPageIsUsable =
+              canonicalPage.messagesFullyParsed &&
+              canonicalPage.paginationFullyParsed &&
+              (canonicalPage.messages.isNotEmpty ||
+                  nativePage.messages.isEmpty) &&
+              (!canonicalPage.paginationProvided ||
+                  _transcriptRowsHaveUnambiguousIdentityEvidence(
+                    canonicalPage.messages,
+                  ));
+          if (canonicalPageIsUsable) {
+            final canonicalLimit = canonicalPage.limit;
+            final canonicalHasEarlier = canonicalPage.hasEarlier ??
+                (canonicalPage.paginationProvided &&
+                    canonicalLimit != null &&
+                    canonicalPage.returned >= canonicalLimit);
+            return _NativeSessionHistoryPage(
+              nativePage,
+              hasEarlier: canonicalHasEarlier,
+            );
+          }
+        } on Object {
+          // Native history remains usable while canonical REST is unavailable.
+        }
+        return nativePage;
       }
     }
     return _api.getMessagesPage(
@@ -8826,9 +8902,13 @@ class ActiveChat {
     final nativeSessionHistory = page is _NativeSessionHistoryPage;
     final legacyPage = !page.paginationProvided;
     final limit = page.limit;
-    final terminalPage =
-        legacyPage ||
-        (page.paginationFullyParsed && limit != null && page.returned < limit);
+    final advertisedHasEarlier = page.hasEarlier;
+    final terminalPage = advertisedHasEarlier != null
+        ? !advertisedHasEarlier
+        : legacyPage ||
+              (page.paginationFullyParsed &&
+                  limit != null &&
+                  page.returned < limit);
     final rowsHaveSafePaginationIdentity =
         legacyPage ||
         _transcriptRowsHaveUnambiguousIdentityEvidence(page.messages);
@@ -8837,10 +8917,10 @@ class ActiveChat {
         page.paginationFullyParsed &&
         rowsHaveSafePaginationIdentity;
     final pageProvesWholeTranscript =
-        !nativeSessionHistory &&
         page.offset == 0 &&
         terminalPage &&
-        pageFullyValid;
+        pageFullyValid &&
+        (!nativeSessionHistory || page.hasEarlier == false);
     final incomingTip = page.resolvedTipId;
     final currentTip = _coreReadIdentity.resolvedTipId;
     final emptyIdentityIsCompatible =
@@ -9059,10 +9139,19 @@ class ActiveChat {
     } else if (nativeSessionHistory) {
       applyCoreEvidence(replaceCoverage: false);
       nextLineageComplete = false;
-      nextExtent = _TranscriptExtent.partial;
-      nextEarlierAvailable = true;
-      nextOffset = 0;
-      nextTailHydration = true;
+      if (page.hasEarlier == false) {
+        nextExtent = _TranscriptExtent.complete;
+        nextEarlierAvailable = false;
+        nextOffset = page.rawMessageCount;
+        nextTailHydration = false;
+        nextDesktopHydration = false;
+        nextHydrationExpectation = null;
+      } else {
+        nextExtent = _TranscriptExtent.partial;
+        nextEarlierAvailable = true;
+        nextOffset = 0;
+        nextTailHydration = true;
+      }
       if (projection.disposition ==
           _SessionMessagesPageProjectionDisposition.publish) {
         acceptProjectionEvidence();

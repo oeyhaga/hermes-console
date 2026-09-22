@@ -1150,6 +1150,73 @@ DesktopCompressionResult _uiNativeCompressionResult(
   }),
 };
 
+class _CompleteShortHistoryGateway extends _UiRewindGateway
+    implements HermesDesktopSessionHistoryGateway {
+  static const rows = <Map<String, Object>>[
+    {
+      'id': 'short-user',
+      'message_id': 'short-user',
+      'role': 'user',
+      'content': 'Pregunta corta reabierta',
+    },
+    {
+      'id': 'short-call',
+      'message_id': 'short-call',
+      'role': 'assistant',
+      'content': '',
+      'tool_calls': [
+        {
+          'id': 'short-tool-call',
+          'type': 'function',
+          'function': {'name': 'execute_code', 'arguments': '{}'},
+        },
+      ],
+    },
+    {
+      'id': 'short-tool',
+      'message_id': 'short-tool',
+      'role': 'tool',
+      'tool_call_id': 'short-tool-call',
+      'content': 'resultado interno',
+    },
+    {
+      'id': 'short-answer',
+      'message_id': 'short-answer',
+      'role': 'assistant',
+      'content': 'Respuesta corta reabierta',
+    },
+  ];
+
+  int historyCalls = 0;
+
+  @override
+  Future<DesktopSessionSnapshot> resumeExisting(
+    String storedSessionId, {
+    String profile = '',
+    bool omitMessages = false,
+    bool deferHistory = false,
+  }) async => DesktopSessionSnapshot(
+    runtimeSessionId: 'runtime-ui-test',
+    storedSessionId: storedSessionId,
+    created: false,
+    messagesProvided: false,
+    messageCount: 4,
+  );
+
+  @override
+  Future<SessionMessagesPage> sessionHistory({
+    required String sessionId,
+    String? profile,
+  }) async {
+    historyCalls += 1;
+    return SessionMessagesPage.fromRaw(
+      rawMessages: rows,
+      pagination: null,
+      paginationProvided: false,
+    );
+  }
+}
+
 class _ColdHistoryGateway extends _UiRewindGateway {
   @override
   Future<DesktopSessionSnapshot> resumeExisting(
@@ -3944,6 +4011,68 @@ void main() {
     );
     final position = tester.widget<ListView>(list).controller!.position;
     expect(position.maxScrollExtent, position.minScrollExtent);
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('reapertura corta con filas internas no muestra flecha superior', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(960, 2142)
+      ..devicePixelRatio = 2.5;
+    addTearDown(tester.view.reset);
+    final gateway = _CompleteShortHistoryGateway();
+    var restCalls = 0;
+    final api = ApiClient(
+      baseUrl: 'https://example.test',
+      apiKey: 'test-key',
+      httpClient: MockClient((request) async {
+        restCalls += 1;
+        final limit = int.parse(request.url.queryParameters['limit'] ?? '120');
+        final offset = int.parse(request.url.queryParameters['offset'] ?? '0');
+        return http.Response(
+          jsonEncode({
+            'object': 'list',
+            'session_id': 'sess-test',
+            'data': offset == 0 ? _CompleteShortHistoryGateway.rows : const [],
+            'pagination': {
+              'limit': limit,
+              'offset': offset,
+              'order': 'latest',
+              'returned': offset == 0
+                  ? _CompleteShortHistoryGateway.rows.length
+                  : 0,
+            },
+          }),
+          200,
+          headers: const {'content-type': 'application/json'},
+        );
+      }),
+    );
+    addTearDown(api.close);
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      api: api,
+      session: _session().copyWith(messageCount: 4),
+      messagesLoaded: false,
+    );
+    for (var frame = 0; frame < 20 && !chat.messagesLoaded; frame++) {
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    await tester.pump();
+
+    expect(gateway.historyCalls, 1);
+    expect(restCalls, 1);
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(find.text('Pregunta corta reabierta'), findsOneWidget);
+    expect(find.text('Respuesta corta reabierta'), findsOneWidget);
+    expect(find.text('resultado interno'), findsNothing);
     expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
     expect(
       find.byKey(const ValueKey('scroll-to-bottom-hidden')),

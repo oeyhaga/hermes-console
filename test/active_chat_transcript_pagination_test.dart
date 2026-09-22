@@ -437,6 +437,41 @@ List<Map<String, dynamic>> _rowOnlyRows(int count, {int from = 1}) => [
     },
 ];
 
+List<Map<String, dynamic>> _shortToolTranscript({required bool edited}) => [
+  {
+    'id': edited ? 'edited-user' : 'short-user',
+    'message_id': edited ? 'edited-user' : 'short-user',
+    'role': 'user',
+    'content': edited ? 'Pregunta editada' : 'Pregunta corta',
+  },
+  {
+    'id': edited ? 'edited-call' : 'short-call',
+    'message_id': edited ? 'edited-call' : 'short-call',
+    'role': 'assistant',
+    'content': '',
+    'tool_calls': [
+      {
+        'id': edited ? 'edited-tool-call' : 'short-tool-call',
+        'type': 'function',
+        'function': {'name': 'execute_code', 'arguments': '{}'},
+      },
+    ],
+  },
+  {
+    'id': edited ? 'edited-tool' : 'short-tool',
+    'message_id': edited ? 'edited-tool' : 'short-tool',
+    'role': 'tool',
+    'tool_call_id': edited ? 'edited-tool-call' : 'short-tool-call',
+    'content': 'resultado interno',
+  },
+  {
+    'id': edited ? 'edited-answer' : 'short-answer',
+    'message_id': edited ? 'edited-answer' : 'short-answer',
+    'role': 'assistant',
+    'content': edited ? 'Respuesta a la edición' : 'Respuesta corta',
+  },
+];
+
 ActiveChat _chat(
   String id,
   http.Client client, {
@@ -539,6 +574,81 @@ void main() {
     },
   );
 
+  for (final edited in <bool>[false, true]) {
+    test(
+      'complete native ${edited ? 'edited' : 'short'} transcript does not invent earlier history',
+      () async {
+        final rows = _shortToolTranscript(edited: edited);
+        final gateway = _HistoryGateway()
+          ..snapshot = const DesktopSessionSnapshot(
+            runtimeSessionId: 'runtime-short-complete',
+            storedSessionId: 'stored-chat',
+            created: false,
+            messagesProvided: false,
+            messageCount: 4,
+          )
+          ..loader = () async => SessionMessagesPage.fromRaw(
+            rawMessages: rows,
+            pagination: null,
+            paginationProvided: false,
+          );
+        final server = _TranscriptServer(paginate: true)..rows.addAll(rows);
+        final chat = _chat(
+          'native-short-complete-$edited',
+          server.client(),
+          gateway: gateway,
+        );
+        addTearDown(chat.dispose);
+
+        await chat.loadMessages(expectedMessageCount: 4);
+
+        expect(gateway.historyRequests, hasLength(1));
+        expect(server.requests, hasLength(1));
+        expect(
+          ChatRenderProjection.build(chat.internalMessagesForTesting).units,
+          hasLength(2),
+        );
+        expect(chat.hasEarlierMessages, isFalse);
+      },
+    );
+  }
+
+  test(
+    'complete native transcript can end on an exactly full page',
+    () async {
+      final rows = _rows(120);
+      final gateway = _HistoryGateway()
+        ..snapshot = const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-exact-page',
+          storedSessionId: 'stored-chat',
+          created: false,
+          messagesProvided: false,
+          messageCount: 120,
+        )
+        ..loader = () async => SessionMessagesPage.fromRaw(
+          rawMessages: rows,
+          pagination: null,
+          paginationProvided: false,
+        );
+      final server = _TranscriptServer(paginate: true)..rows.addAll(rows);
+      final chat = _chat(
+        'native-exact-page',
+        server.client(),
+        gateway: gateway,
+      );
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages(expectedMessageCount: 120);
+
+      expect(chat.messages, hasLength(120));
+      expect(chat.hasEarlierMessages, isFalse);
+      expect(
+        server.requests.map((request) => request.queryParameters['offset']),
+        ['0', '120'],
+      );
+    },
+  );
+
   test(
     'short native history cannot replace a longer durable transcript on resumed reload',
     () async {
@@ -619,7 +729,7 @@ void main() {
 
       expect(
         server.requests.map((request) => request.queryParameters['offset']),
-        ['0', '120', '240'],
+        ['0', '0', '120', '240'],
       );
       expect(
         server.requests.map(
