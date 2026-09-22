@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -2296,8 +2297,13 @@ enum DashboardAuthFailureCode {
 class DashboardAuthException implements Exception {
   final DashboardAuthFailureCode code;
   final int? statusCode;
+  final Duration? retryAfter;
 
-  const DashboardAuthException(this.code, {this.statusCode});
+  const DashboardAuthException(
+    this.code, {
+    this.statusCode,
+    this.retryAfter,
+  });
 
   @override
   String toString() => statusCode == null
@@ -2394,15 +2400,27 @@ class DashboardBinaryResponse {
   String? get contentType => headers['content-type'];
 }
 
+class _DashboardSharedPasswordSession {
+  final Map<String, String> cookies = {};
+  Future<Map<String, String>>? loginFlight;
+  DateTime? retryNotBefore;
+  DashboardAuthFailureCode? cooldownCode;
+  int? cooldownStatusCode;
+  int loginFailures = 0;
+}
+
 class DashboardClient {
-  /// Coordina únicamente logins simultáneos entre instancias de cliente. Cada
-  /// pantalla conserva su propio `http.Client`, pero una ráfaga de aperturas no
-  /// dispara varios POST con la misma contraseña ni activa el rate-limit.
-  static final Map<(String, String, String), Future<Map<String, String>>>
-  _sharedPasswordLoginFlights = {};
+  static final Map<String, _DashboardSharedPasswordSession>
+  _sharedPasswordSessions = {};
+
+  @visibleForTesting
+  static void resetSharedPasswordSessionsForTesting() {
+    _sharedPasswordSessions.clear();
+  }
 
   final http.Client _http;
   final String _baseUrl;
+  final DateTime Function() _now;
   String? _manualToken;
   String? _basicUser;
   String? _basicPass;
@@ -2459,13 +2477,15 @@ class DashboardClient {
     String? basicUser,
     String? basicPass,
     http.Client? httpClientOverride,
+    @visibleForTesting DateTime Function()? nowOverride,
   }) : _baseUrl = TransportPrivacy.requireAllowed(
          '${useHttps ? 'https' : 'http'}://$host:$port',
        ),
        _manualToken = manualToken,
        _basicUser = basicUser,
        _basicPass = basicPass,
-       _http = httpClientOverride ?? http.Client();
+       _http = httpClientOverride ?? http.Client(),
+       _now = nowOverride ?? DateTime.now;
 
   /// Cliente que respeta el modo de auth de la instancia, leyendo los
   /// secretos del Keystore en el primer uso. Para pantallas que solo tienen
@@ -2554,8 +2574,12 @@ class DashboardClient {
   /// Actualiza únicamente la sesión en memoria tras una reparación automática
   /// vía Mobile Bridge. Los secretos se persisten por separado en Keystore.
   void usePasswordCredentials(String username, String password) {
+    if (_hasPasswordCreds) {
+      _sharedPasswordSessions.remove(_passwordSessionKey);
+    }
     _basicUser = username;
     _basicPass = password;
+    _sharedPasswordSessions.remove(_passwordSessionKey);
     _token = null;
     _cookies.clear();
     _secretsLoaded = true;
@@ -2628,31 +2652,94 @@ class DashboardClient {
   bool get _hasPasswordCreds =>
       (_basicUser?.isNotEmpty ?? false) && (_basicPass?.isNotEmpty ?? false);
 
-  /// Lee las cookies de sesión de un `Set-Cookie` y las guarda. El paquete
-  /// `http` une varias cabeceras Set-Cookie con coma, por eso extraemos por
-  /// NOMBRE (los valores de token no llevan `;`, `,` ni espacios). Tolera el
-  /// prefijo `__Host-`/`__Secure-` por si el Dashboard va por HTTPS, y respeta
-  /// los borrados (`Max-Age=0` con valor vacío o `deleted`).
-  void _ingestSetCookie(http.Response res) {
+  String get _passwordSessionKey => sha256
+      .convert(
+        utf8.encode(
+          '$_baseUrl\u0000${_basicUser ?? ''}\u0000${_basicPass ?? ''}',
+        ),
+      )
+      .toString();
+
+  _DashboardSharedPasswordSession get _sharedPasswordSession =>
+      _sharedPasswordSessions.putIfAbsent(
+        _passwordSessionKey,
+        _DashboardSharedPasswordSession.new,
+      );
+
+  static String? _cookieHeaderFor(Map<String, String> cookies) =>
+      cookies.isEmpty
+      ? null
+      : cookies.entries
+            .map((entry) => '${entry.key}=${entry.value}')
+            .join('; ');
+
+  static bool _hasSessionCredential(Map<String, String> cookies) =>
+      cookies.keys.any(
+        (name) =>
+            name.endsWith('hermes_session_at') ||
+            name.endsWith('hermes_session_rt'),
+      );
+
+  /// Lee cookies rotadas sin dejar que una respuesta tardía de una sesión vieja
+  /// pise la sesión nueva que otro cliente ya obtuvo.
+  void _ingestSetCookie(http.Response res, {String? sentCookie}) {
     final raw = res.headers['set-cookie'];
     if (raw == null || raw.isEmpty) return;
+    final updated = Map<String, String>.from(_cookies);
     final re = RegExp(
       r'((?:__Host-|__Secure-)?hermes_session_(?:at|rt|pkce|provider))=([^;,\s]*)',
     );
-    for (final m in re.allMatches(raw)) {
-      final name = m.group(1)!;
-      final val = m.group(2)!;
-      if (val.isEmpty || val == 'deleted') {
-        _cookies.remove(name);
+    var changed = false;
+    for (final match in re.allMatches(raw)) {
+      changed = true;
+      final name = match.group(1)!;
+      final value = match.group(2)!;
+      if (value.isEmpty || value == 'deleted') {
+        updated.remove(name);
       } else {
-        _cookies[name] = val;
+        updated[name] = value;
       }
+    }
+    if (!changed) return;
+    if (!_hasPasswordCreds) {
+      _cookies
+        ..clear()
+        ..addAll(updated);
+      return;
+    }
+
+    final shared = _sharedPasswordSession;
+    final mayApply = sentCookie == null
+        ? !_hasSessionCredential(shared.cookies)
+        : _cookieHeaderFor(shared.cookies) == sentCookie;
+    if (mayApply) {
+      shared.cookies
+        ..clear()
+        ..addAll(updated);
+    }
+    _cookies
+      ..clear()
+      ..addAll(shared.cookies);
+  }
+
+  String? get _cookieHeader => _cookieHeaderFor(_cookies);
+
+  Duration? _parseRetryAfter(String? raw) {
+    if (raw == null || raw.trim().isEmpty) return null;
+    final seconds = int.tryParse(raw.trim());
+    if (seconds != null) return Duration(seconds: seconds.clamp(0, 3600));
+    try {
+      final delay = HttpDate.parse(raw).difference(_now());
+      return delay.isNegative ? Duration.zero : delay;
+    } on FormatException {
+      return null;
     }
   }
 
-  String? get _cookieHeader => _cookies.isEmpty
-      ? null
-      : _cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  Duration _loginBackoff(int failureCount) {
+    final exponent = (failureCount - 1).clamp(0, 4);
+    return Duration(seconds: 5 * (1 << exponent));
+  }
 
   /// Establece una sesión vía `POST /auth/password-login` (cuerpo JSON
   /// `{provider, username, password}`) y guarda las cookies devueltas. El
@@ -2682,6 +2769,7 @@ class DashboardClient {
       throw DashboardAuthException(
         DashboardAuthFailureCode.rateLimited,
         statusCode: res.statusCode,
+        retryAfter: _parseRetryAfter(res.headers['retry-after']),
       );
     }
     if (res.statusCode == 401 || res.statusCode == 403) {
@@ -2705,21 +2793,29 @@ class DashboardClient {
     }
   }
 
-  /// Comparte un solo login entre todas las pantallas que arrancan a la vez.
-  /// El Future se elimina al terminar para permitir un nuevo intento tras un
-  /// 401 o un fallo de red, pero mientras está activo ningún consumidor puede
-  /// pisar las cookies emitidas para otro.
+  /// Comparte tanto el login como las cookies resultantes entre clientes de la
+  /// misma conexión y credenciales.
   Future<void> _ensurePasswordLogin() async {
-    if (_cookies.isNotEmpty) return;
-    final inFlight = _passwordLoginFuture;
-    if (inFlight != null) return inFlight;
-    // Incluye la credencial exacta: dos perfiles contra la misma URL/usuario
-    // no deben prestarse una sesión si uno conserva una contraseña antigua.
-    // La clave solo vive durante el POST y se elimina en el `finally` inferior.
-    final sharedKey = (_baseUrl, _basicUser ?? '', _basicPass ?? '');
-    final shared = _sharedPasswordLoginFlights[sharedKey];
-    if (shared != null) {
-      final future = shared.then((cookies) {
+    final shared = _sharedPasswordSession;
+    _cookies
+      ..clear()
+      ..addAll(shared.cookies);
+    if (_hasSessionCredential(_cookies)) return;
+
+    final retryNotBefore = shared.retryNotBefore;
+    if (retryNotBefore != null && _now().isBefore(retryNotBefore)) {
+      throw DashboardAuthException(
+        shared.cooldownCode ?? DashboardAuthFailureCode.loginFailed,
+        statusCode: shared.cooldownStatusCode,
+        retryAfter: retryNotBefore.difference(_now()),
+      );
+    }
+
+    final instanceFlight = _passwordLoginFuture;
+    if (instanceFlight != null) return instanceFlight;
+    final existingFlight = shared.loginFlight;
+    if (existingFlight != null) {
+      final future = existingFlight.then((cookies) {
         _cookies
           ..clear()
           ..addAll(cookies);
@@ -2734,18 +2830,43 @@ class DashboardClient {
       }
       return;
     }
+
     final loginFuture = () async {
-      await _passwordLogin();
-      return Map<String, String>.from(_cookies);
+      try {
+        await _passwordLogin();
+        shared
+          ..loginFailures = 0
+          ..retryNotBefore = null
+          ..cooldownCode = null
+          ..cooldownStatusCode = null;
+        return Map<String, String>.from(shared.cookies);
+      } catch (error) {
+        shared.loginFailures++;
+        final authError = error is DashboardAuthException ? error : null;
+        if (!_passwordLoginUnsupported) {
+          final delay =
+              authError?.retryAfter ?? _loginBackoff(shared.loginFailures);
+          shared
+            ..retryNotBefore = _now().add(delay)
+            ..cooldownCode =
+                authError?.code ?? DashboardAuthFailureCode.loginFailed
+            ..cooldownStatusCode = authError?.statusCode;
+        }
+        rethrow;
+      }
     }();
-    _sharedPasswordLoginFlights[sharedKey] = loginFuture;
-    final future = loginFuture.then<void>((_) {});
+    shared.loginFlight = loginFuture;
+    final future = loginFuture.then<void>((cookies) {
+      _cookies
+        ..clear()
+        ..addAll(cookies);
+    });
     _passwordLoginFuture = future;
     try {
       await future;
     } finally {
-      if (identical(_sharedPasswordLoginFlights[sharedKey], loginFuture)) {
-        _sharedPasswordLoginFlights.remove(sharedKey);
+      if (identical(shared.loginFlight, loginFuture)) {
+        shared.loginFlight = null;
       }
       if (identical(_passwordLoginFuture, future)) {
         _passwordLoginFuture = null;
@@ -2785,11 +2906,22 @@ class DashboardClient {
     return headers;
   }
 
-  /// Olvida la sesión por cookie para forzar un nuevo login en la próxima
-  /// petición (tras un 401: el `at` caducó y el `rt` no pudo rotarlo).
-  void _resetSession() {
+  /// Invalida solo la sesión que produjo el 401. Una respuesta tardía no puede
+  /// borrar cookies que otro request ya renovó o volvió a autenticar.
+  void _resetSession({String? sentCookie}) {
     _token = null;
-    _cookies.clear();
+    if (!_hasPasswordCreds) {
+      _cookies.clear();
+      _passwordLoginFuture = null;
+      return;
+    }
+    final shared = _sharedPasswordSession;
+    if (_cookieHeaderFor(shared.cookies) == sentCookie) {
+      shared.cookies.clear();
+    }
+    _cookies
+      ..clear()
+      ..addAll(shared.cookies);
     _passwordLoginFuture = null;
   }
 
@@ -2909,9 +3041,9 @@ class DashboardClient {
     final res = await _http
         .get(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiGet(endpoint, retried: true);
     }
     if (res.statusCode != 200) {
@@ -2928,9 +3060,9 @@ class DashboardClient {
     final res = await _http
         .get(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiGetList(endpoint, retried: true);
     }
     if (res.statusCode != 200) {
@@ -2958,9 +3090,9 @@ class DashboardClient {
           body: body != null ? jsonEncode(body) : null,
         )
         .timeout(timeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiPost(endpoint, body: body, retried: true, timeout: timeout);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3004,10 +3136,13 @@ class DashboardClient {
       streamed.statusCode,
       headers: streamed.headers,
     );
-    _ingestSetCookie(responseMetadata);
+    _ingestSetCookie(
+      responseMetadata,
+      sentCookie: request.headers['Cookie'],
+    );
     if (streamed.statusCode == 401 && !retried) {
       await _cancelResponseStream(streamed.stream);
-      _resetSession();
+      _resetSession(sentCookie: request.headers['Cookie']);
       return apiPostMultipartFile(
         endpoint,
         fieldName: fieldName,
@@ -3064,10 +3199,13 @@ class DashboardClient {
       streamed.statusCode,
       headers: streamed.headers,
     );
-    _ingestSetCookie(responseMetadata);
+    _ingestSetCookie(
+      responseMetadata,
+      sentCookie: request.headers['Cookie'],
+    );
     if (streamed.statusCode == 401 && !retried) {
       await _cancelResponseStream(streamed.stream);
-      _resetSession();
+      _resetSession(sentCookie: request.headers['Cookie']);
       return apiDownload(
         endpoint,
         maxBytes: maxBytes,
@@ -3132,10 +3270,13 @@ class DashboardClient {
       streamed.statusCode,
       headers: streamed.headers,
     );
-    _ingestSetCookie(responseMetadata);
+    _ingestSetCookie(
+      responseMetadata,
+      sentCookie: request.headers['Cookie'],
+    );
     if (streamed.statusCode == 401 && !retried) {
       await _cancelResponseStream(streamed.stream);
-      _resetSession();
+      _resetSession(sentCookie: request.headers['Cookie']);
       return apiDownloadToFile(
         endpoint,
         target,
@@ -3260,9 +3401,9 @@ class DashboardClient {
           body: body != null ? jsonEncode(body) : null,
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiDelete(endpoint, body: body, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3283,9 +3424,9 @@ class DashboardClient {
           body: body != null ? jsonEncode(body) : null,
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiPut(endpoint, body: body, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3307,9 +3448,9 @@ class DashboardClient {
           body: body != null ? jsonEncode(body) : null,
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return apiPatch(endpoint, body: body, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3329,9 +3470,9 @@ class DashboardClient {
           headers: headers,
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return getMemoryInfo(profile: profile, retried: true);
     }
     if (res.statusCode != 200) {
@@ -3354,15 +3495,16 @@ class DashboardClient {
     String? profile,
     bool retried = false,
   }) async {
+    final headers = await _authHeaders();
     final res = await _http
         .get(
           Uri.parse('$_baseUrl/api/model/info${_profileQuery(profile)}'),
-          headers: await _authHeaders(),
+          headers: headers,
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return getModelInfo(profile: profile, retried: true);
     }
     if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
@@ -3584,9 +3726,9 @@ class DashboardClient {
     } on http.ClientException {
       return const DashboardUpdateApplyResult.transportUncertain();
     }
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return applyUpdate(timeout: timeout, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3706,9 +3848,9 @@ class DashboardClient {
           body: jsonEncode({'config': config}),
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return _putServerConfig(config, profile: profile, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -3928,9 +4070,9 @@ class DashboardClient {
     final res = await _http
         .delete(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return _deleteCronEndpoint(endpoint, retried: true);
     }
     if (res.statusCode == 404) return true;
@@ -3983,9 +4125,9 @@ class DashboardClient {
           body: jsonEncode(buildCronUpdateBody(updates)),
         )
         .timeout(_kTimeout);
-    _ingestSetCookie(res);
+    _ingestSetCookie(res, sentCookie: headers['Cookie']);
     if (res.statusCode == 401 && !retried) {
-      _resetSession();
+      _resetSession(sentCookie: headers['Cookie']);
       return updateJob(jobId, updates, profile: profile, retried: true);
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {

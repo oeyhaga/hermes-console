@@ -17436,6 +17436,10 @@ class _GeneratedMediaSlot extends StatefulWidget {
 class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
   String _downloadErrorLabel(BuildContext context, Object error) {
     final strings = Strings.of(context);
+    if (error is DashboardAuthException &&
+        error.code == DashboardAuthFailureCode.rateLimited) {
+      return strings.dashboardAuthRateLimited;
+    }
     if (error is DashboardHttpException) {
       if (error.statusCode == 401 || error.statusCode == 403) {
         return strings.genMediaDenied;
