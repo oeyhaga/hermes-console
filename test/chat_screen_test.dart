@@ -23386,6 +23386,39 @@ void main() {
     }
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('schedule-only Stop uses the background confirmation strip', (
+    tester,
+  ) async {
+    final gateway = _StableRefreshGateway(subagents: const []);
+    addTearDown(gateway.close);
+    final chat = await pumpChat(
+      tester,
+      desktopGateway: gateway,
+      acquireDesktopRuntimeBeforeMount: true,
+    );
+    gateway.emit('session.control.update', const {
+      'control': {
+        'loop': {
+          'status': 'active',
+          'interval_seconds': 300,
+          'ticks_fired': 0,
+          'awaiting_response': false,
+        },
+        'revision': 'loop-active',
+      },
+    });
+    await tester.pump();
+    expect(chat.canStopSessionWork, isTrue);
+
+    await chat.stopSessionWork();
+    await tester.pump();
+
+    expect(chat.stopConfirmationOnlyBackground, isTrue);
+    expect(find.text('Trabajo en segundo plano detenido'), findsOneWidget);
+    expect(find.text('Detenido'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 

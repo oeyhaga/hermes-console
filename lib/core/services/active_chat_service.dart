@@ -3812,7 +3812,8 @@ class ActiveChat {
   bool get stopConfirmationOnlyBackground =>
       _stopConfirmationState == StopConfirmationState.confirmed &&
       !_backgroundStopVerificationInFlight &&
-      _backgroundStopRemainingTasks == 0 &&
+      // Null means no background inventory existed, so nothing remains.
+      (_backgroundStopRemainingTasks ?? 0) == 0 &&
       !_lastStopAffectedLiveTurn;
   final int Function() _monotonicMicros;
   int? _responseStartedAtMicros;
@@ -8767,28 +8768,41 @@ class ActiveChat {
         page.messagesFullyParsed;
     if (!needsExactBoundaryProbe) return page;
 
-    try {
-      final lookahead = await _requestStoredMessagesPage(
-        storedSessionId: context.requestedStoredSessionId,
-        profile: context.profile,
-        limit: 1,
-        offset: context.requestedLimit,
-        allowNativeHistory: false,
-      );
-      final lookaheadProvesEnd =
-          lookahead.rawMessageCount == 0 &&
-          lookahead.messagesFullyParsed &&
-          lookahead.paginationFullyParsed &&
-          (lookahead.resolvedTipId == null ||
-              page.resolvedTipId == null ||
-              lookahead.resolvedTipId == page.resolvedTipId);
-      if (lookaheadProvesEnd) {
-        return _NativeSessionHistoryPage(page, hasEarlier: false);
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        final lookahead = await _requestStoredMessagesPage(
+          storedSessionId: context.requestedStoredSessionId,
+          profile: context.profile,
+          limit: 1,
+          offset: context.requestedLimit,
+          allowNativeHistory: false,
+        );
+        final lookaheadProvesEnd =
+            lookahead.rawMessageCount == 0 &&
+            lookahead.messagesFullyParsed &&
+            lookahead.paginationFullyParsed &&
+            (lookahead.resolvedTipId == null ||
+                page.resolvedTipId == null ||
+                lookahead.resolvedTipId == page.resolvedTipId);
+        return lookaheadProvesEnd
+            ? _NativeSessionHistoryPage(page, hasEarlier: false)
+            : page;
+      } on TimeoutException {
+        if (attempt == 1) rethrow;
+      } on SocketException {
+        if (attempt == 1) rethrow;
+      } on HttpException {
+        if (attempt == 1) rethrow;
+      } on http.ClientException {
+        if (attempt == 1) rethrow;
+      } on CoreReadException catch (error) {
+        if (error.kind != CoreReadErrorKind.temporarilyUnavailable ||
+            attempt == 1) {
+          rethrow;
+        }
       }
-    } on Object {
-      // The full page remains honest partial evidence when lookahead is unavailable.
     }
-    return page;
+    throw StateError('Stored message lookahead retry exhausted');
   }
 
   Future<SessionMessagesPage> _requestStoredMessagesPage({

@@ -216,6 +216,16 @@ class _StopGateway
     exposeProcess = false;
   }
 
+  void emitControlUpdate(Map<String, dynamic> control) {
+    _events.add(
+      TuiGatewayEvent(
+        type: 'session.control.update',
+        sessionId: 'runtime-stop-session',
+        payload: {'control': control},
+      ),
+    );
+  }
+
   @override
   Future<void> submitPrompt(String runtimeSessionId, String text) async {}
 
@@ -366,6 +376,31 @@ void main() {
     expect(chat.state, ChatPipelineState.cancelled);
     expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
     expect(chat.stopConfirmationOnlyBackground, isFalse);
+  });
+
+  test('schedule-only Stop confirms zero remaining background work', () async {
+    final gateway = _StopGateway()..running = false;
+    final chat = await _hydrateBackgroundChat(gateway);
+    addTearDown(chat.dispose);
+    addTearDown(gateway.close);
+    gateway.emitControlUpdate(const {
+      'loop': {
+        'status': 'active',
+        'interval_seconds': 300,
+        'ticks_fired': 0,
+        'awaiting_response': false,
+      },
+      'revision': 'loop-active',
+    });
+    await Future<void>.delayed(Duration.zero);
+
+    expect(chat.canStopSessionWork, isTrue);
+    final result = await chat.stopSessionWork();
+
+    expect(result.remainingBackgroundTasks, 0);
+    expect(chat.backgroundStopRemainingTasks, isNull);
+    expect(chat.stopConfirmationState, StopConfirmationState.confirmed);
+    expect(chat.stopConfirmationOnlyBackground, isTrue);
   });
 
   test('background Stop confirms only after the second authoritative recheck', () async {
