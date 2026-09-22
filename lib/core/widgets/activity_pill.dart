@@ -36,6 +36,7 @@ enum ActivityGlyph {
   tool,
   skill,
   waiting,
+  tasks,
   background,
   subagents,
 }
@@ -46,6 +47,7 @@ IconData _glyphIcon(ActivityGlyph glyph) => switch (glyph) {
   ActivityGlyph.tool => Icons.terminal_rounded,
   ActivityGlyph.skill => Icons.auto_awesome_rounded,
   ActivityGlyph.waiting => Icons.help_outline_rounded,
+  ActivityGlyph.tasks => Icons.check_circle_outline_rounded,
   ActivityGlyph.background => Icons.layers_outlined,
   ActivityGlyph.subagents => Icons.account_tree_outlined,
 };
@@ -154,6 +156,11 @@ ActivityPillModel? buildActivityPillModel(
           : ActivityGlyph.thinking;
       action = snapshot.headline ?? strings.chaPipelineThinking;
     }
+  } else if (snapshot.showTasks && snapshot.tasks!.isFinished) {
+    primary = 'tasks';
+    glyph = ActivityGlyph.tasks;
+    action = strings.agentTasksAllDone;
+    live = false;
   } else if (snapshot.subagentsRunning) {
     primary = 'subagents';
     glyph = ActivityGlyph.subagents;
@@ -301,6 +308,7 @@ double activityTextScale(BuildContext context) =>
 Color _glyphColor(HermesThemeColors colors, ActivityGlyph glyph) =>
     switch (glyph) {
       ActivityGlyph.waiting => colors.warning,
+      ActivityGlyph.tasks => colors.success,
       _ => colors.accent,
     };
 

@@ -8,6 +8,7 @@ import 'package:hermes_android/core/models/subagent_activity.dart';
 import 'package:hermes_android/core/services/session_reconciler.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/activity_panel.dart';
+import 'package:hermes_android/core/widgets/activity_task_linger.dart';
 import 'package:hermes_android/core/widgets/agent_task_widgets.dart'
     show latestAgentTaskStepId;
 import 'package:hermes_android/core/widgets/activity_pill.dart';
@@ -171,7 +172,7 @@ class _HarnessState extends State<_Harness> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    ActivityPillHost(
+                    ActivityTaskLingerHost(
                       snapshot: snapshot,
                       clock: () => widget.clock.now,
                       actions: widget.actions ?? ActivityPanelActions.none,
@@ -288,6 +289,77 @@ void main() {
       expect(
         tester.getSize(find.byKey(const ValueKey('activity-pill-idle'))),
         Size.zero,
+      );
+    });
+
+    testWidgets(
+      'la última tarea completada permanece cuatro segundos y luego se oculta',
+      (tester) async {
+        final harness = await _pump(
+          tester,
+          ActivitySnapshot(
+            turnActive: true,
+            turnStartedAt: _t0,
+            tasks: _tasks([('Terminar', AgentTaskStatus.inProgress)]),
+          ),
+        );
+        await _openPanel(tester);
+
+        harness.currentState!.set(
+          ActivitySnapshot(
+            tasks: _tasks([('Terminar', AgentTaskStatus.completed)]),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+        expect(
+          find.byKey(const ValueKey('activity-task-check-pop')),
+          findsOneWidget,
+        );
+        expect(find.text('1/1'), findsWidgets);
+
+        await tester.pump(const Duration(seconds: 3));
+        expect(
+          find.byKey(const ValueKey('activity-task-check-pop')),
+          findsOneWidget,
+        );
+
+        await tester.pump(const Duration(seconds: 2));
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(_pill, findsNothing);
+        expect(_panel, findsNothing);
+      },
+    );
+
+    testWidgets('una lista nueva sustituye el linger sin retrasar su progreso', (
+      tester,
+    ) async {
+      final harness = await _pump(
+        tester,
+        ActivitySnapshot(
+          turnActive: true,
+          tasks: _tasks([('Anterior', AgentTaskStatus.inProgress)]),
+        ),
+      );
+      harness.currentState!.set(
+        ActivitySnapshot(
+          tasks: _tasks([('Anterior', AgentTaskStatus.completed)]),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('1/1'), findsOneWidget);
+
+      harness.currentState!.set(
+        ActivitySnapshot(
+          turnActive: true,
+          tasks: _tasks([('Nueva', AgentTaskStatus.inProgress)]),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('0/1'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('activity-task-check-pop')),
+        findsNothing,
       );
     });
 
