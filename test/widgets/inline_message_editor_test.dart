@@ -101,6 +101,10 @@ void main() {
           await tester.enterText(field, 'Texto corregido');
           await tester.pump();
           expect(tester.widget<IconButton>(saveButton).onPressed, isNotNull);
+          // El campo ya es de una línea (alto = contenido): el asa de
+          // selección del caret cae sobre el pie; se suelta el foco para pulsar.
+          FocusManager.instance.primaryFocus?.unfocus();
+          await tester.pump();
           await tester.tap(saveButton);
           expect(saved, 'Texto corregido');
           expect(cancelled, isFalse);
@@ -109,4 +113,93 @@ void main() {
       );
     }
   }
+
+  Widget host({required String text, ThemeData? theme, double width = 360}) =>
+      MaterialApp(
+        locale: const Locale('es'),
+        localizationsDelegates: Strings.localizationsDelegates,
+        supportedLocales: Strings.supportedLocales,
+        theme: theme ?? AppTheme.hermesRedDark,
+        home: MediaQuery(
+          data: MediaQueryData(size: Size(width, 800), disableAnimations: true),
+          child: Scaffold(
+            body: Align(
+              alignment: Alignment.topRight,
+              child: SizedBox(
+                width: width - 60,
+                child: DecoratedBox(
+                  key: const ValueKey('bubble'),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade800,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 11,
+                    ),
+                    child: InlineMessageEditor(
+                      initialText: text,
+                      onCancel: () {},
+                      onSave: (_) {},
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  testWidgets('sin relleno ni borde y con el alto del contenido', (
+    tester,
+  ) async {
+    for (final theme in [AppTheme.hermesRedDark, AppTheme.hermesRedLight]) {
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(host(text: 'dos palabras', theme: theme));
+      await tester.pump();
+      final field = find.byKey(const ValueKey('inline-message-editor-field'));
+      final decoration = tester.widget<TextField>(field).decoration!;
+      expect(decoration.filled, isFalse);
+      expect(decoration.contentPadding, EdgeInsets.zero);
+      expect(decoration.border, InputBorder.none);
+      expect(decoration.focusedBorder, InputBorder.none);
+      // Una línea: alto de UNA línea, no de tres.
+      final oneLine = tester.getSize(field).height;
+      expect(oneLine, lessThan(30));
+      // Más texto crece con el contenido…
+      await tester.enterText(field, List.filled(4, 'línea').join('\n'));
+      await tester.pump();
+      final four = tester.getSize(field).height;
+      expect(four, closeTo(oneLine * 4, oneLine));
+      // …hasta ~8 líneas, a partir de ahí desplaza.
+      await tester.enterText(field, List.filled(20, 'línea').join('\n'));
+      await tester.pump();
+      final capped = tester.getSize(field).height;
+      expect(capped, lessThanOrEqualTo(oneLine * 8 + 2));
+      expect(capped, greaterThan(oneLine * 6));
+      expect(tester.takeException(), isNull);
+    }
+  });
+
+  testWidgets('pie compacto pegado abajo a la derecha, sin banda vacía', (
+    tester,
+  ) async {
+    await tester.pumpWidget(host(text: 'dos palabras'));
+    await tester.pump();
+    final bubble = tester.getRect(find.byKey(const ValueKey('bubble')));
+    final save = tester.getRect(
+      find.byKey(const ValueKey('inline-message-editor-save')),
+    );
+    final cancel = tester.getRect(
+      find.byKey(const ValueKey('inline-message-editor-cancel')),
+    );
+    expect(save.size.width, lessThanOrEqualTo(40));
+    expect(cancel.size.height, lessThanOrEqualTo(40));
+    // A la derecha del contenido y con la burbuja acabando justo debajo
+    // (padding inferior de la burbuja, sin más).
+    expect(bubble.right - 16, closeTo(save.right, 1));
+    expect(bubble.bottom - save.bottom, lessThanOrEqualTo(12));
+    expect(cancel.right, lessThan(save.left));
+  });
 }

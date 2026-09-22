@@ -14695,6 +14695,61 @@ void main() {
     },
   );
 
+  testWidgets(
+    'editar: la burbuja corta se ensancha al máximo, alineada a la derecha, sin relleno y sin pencil/copiar',
+    (tester) async {
+      tester.view
+        ..devicePixelRatio = 1
+        ..physicalSize = const Size(400, 800);
+      addTearDown(tester.view.reset);
+      await pumpChat(
+        tester,
+        desktopGateway: _UiRewindGateway(),
+        connection: _remoteConn('conn-inline-edit-width'),
+        messages: const [
+          {'role': 'assistant', 'content': 'respuesta uno'},
+          {'role': 'user', 'content': 'dos palabras', '_desktopRowId': 11},
+        ],
+      );
+      final bubble = find.byKey(const ValueKey('user-message-bubble'));
+      final before = tester.getRect(bubble);
+      expect(
+        before.width,
+        lessThan(260),
+        reason: 'la burbuja corta es estrecha',
+      );
+      expect(find.byIcon(Icons.edit_outlined), findsOneWidget);
+      final copiesBefore = find.byIcon(Icons.copy_rounded).evaluate().length;
+
+      await tester.tap(find.byIcon(Icons.edit_outlined));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final editing = tester.getRect(bubble);
+      // Ancho máximo de una burbuja normal (400 - 56 - 12), pegada a la derecha.
+      expect(editing.width, closeTo(400 - 56 - 12, 0.5));
+      expect(editing.right, closeTo(before.right, 0.5));
+      // El campo va sobre la burbuja: sin relleno, sin borde y de una línea.
+      final field = find.byKey(const ValueKey('inline-message-editor-field'));
+      final decoration = tester.widget<TextField>(field).decoration!;
+      expect(decoration.filled, isFalse);
+      expect(decoration.border, InputBorder.none);
+      expect(tester.getSize(field).height, lessThan(40));
+      // Pencil y copiar ocultos mientras se edita.
+      expect(find.byIcon(Icons.edit_outlined), findsNothing);
+      expect(
+        find.byIcon(Icons.copy_rounded).evaluate().length,
+        copiesBefore - 1,
+      );
+      // ✕ y ↑ compactos, dentro de la burbuja y sin banda vacía debajo.
+      final save = tester.getRect(
+        find.byKey(const ValueKey('inline-message-editor-save')),
+      );
+      expect(editing.bottom - save.bottom, lessThanOrEqualTo(14));
+      expect(save.right, lessThanOrEqualTo(editing.right - 12));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   testWidgets('cerrar selección antes de rewind no retiene el Overlay', (
     tester,
   ) async {
@@ -14894,9 +14949,14 @@ void main() {
     final editor = find.byKey(const ValueKey('inline-message-editor-field'));
     expect(editor, findsOneWidget);
     final editorBubbleRect = tester.getRect(bubble);
-    expect(editorBubbleRect.left, closeTo(bubbleRect.left, 1));
+    // Al editar la burbuja se ensancha al máximo; el borde derecho no se mueve.
+    expect(editorBubbleRect.width, greaterThan(bubbleRect.width));
     expect(editorBubbleRect.right, closeTo(bubbleRect.right, 1));
     await tester.enterText(editor, 'pregunta corregida');
+    await tester.pump();
+    // El campo es de una línea: el asa del caret cae sobre el pie; se suelta el
+    // foco para comprobar que ↑ es pulsable.
+    FocusManager.instance.primaryFocus?.unfocus();
     await tester.pump();
     final save = find.byKey(const ValueKey('inline-message-editor-save'));
     expect(tester.widget<IconButton>(save).onPressed, isNotNull);
@@ -15311,6 +15371,10 @@ void main() {
         find.byKey(const ValueKey('inline-message-editor-field')),
         'pregunta corregida desde Android',
       );
+      await tester.pump();
+      // El campo es de una línea: el asa del caret cae sobre el pie; se suelta
+      // el foco para comprobar que ↑ es pulsable.
+      FocusManager.instance.primaryFocus?.unfocus();
       await tester.pump();
 
       final apply = find.byKey(const ValueKey('inline-message-editor-save'));
@@ -16681,6 +16745,200 @@ void main() {
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
     },
   );
+
+  group('filas solo-traza del asistente', () {
+    const traceRow = {
+      'role': 'assistant',
+      'content': '',
+      '_activity_duration_seconds': 40,
+      '_activity_trace': [
+        {
+          'kind': 'tool',
+          'label': 'terminal',
+          'status': 'completed',
+          'id': 'merge-1',
+          'detail': 'sleep',
+          'timestamp': 1700000000000,
+          'completed_at': 1700000005000,
+        },
+      ],
+    };
+    const textRow = {
+      'role': 'assistant',
+      'content': 'PUBLIC_MERGED_ANSWER',
+      '_activity_duration_seconds': 32,
+      '_activity_trace': [
+        {
+          'kind': 'tool',
+          'label': 'read_file',
+          'status': 'completed',
+          'id': 'merge-2',
+          'detail': 'notas.md',
+        },
+      ],
+    };
+
+    testWidgets(
+      'traza + respuesta del mismo turno: una cabecera y un solo «Completado · 1:12»',
+      (tester) async {
+        await pumpChat(
+          tester,
+          messages: const [
+            textRow, // más nuevo primero
+            traceRow,
+            {'role': 'user', 'content': 'PUBLIC_MERGE_REQUEST'},
+          ],
+        );
+        expect(find.text('PUBLIC_MERGED_ANSWER'), findsOneWidget);
+        // Ni cabecera pelada ni dos desplegables.
+        expect(
+          find.byKey(const ValueKey('assistant-header-name')),
+          findsOneWidget,
+        );
+        expect(find.byIcon(Icons.expand_more), findsOneWidget);
+        expect(find.text('Completado · 1:12'), findsOneWidget);
+        // El desplegable trae los pasos de las DOS filas.
+        await tester.tap(find.byIcon(Icons.expand_more));
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(
+          find.text('terminal · sleep', findRichText: true),
+          findsOneWidget,
+        );
+        expect(
+          find.text('read_file · notas.md', findRichText: true),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets('varias filas solo-traza seguidas se funden con la respuesta', (
+      tester,
+    ) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          textRow,
+          {
+            'role': 'assistant',
+            'content': '',
+            '_activity_trace': [
+              {
+                'kind': 'tool',
+                'label': 'web_search',
+                'status': 'completed',
+                'id': 'merge-0',
+                'detail': 'hermes',
+              },
+            ],
+          },
+          traceRow,
+          {'role': 'user', 'content': 'PUBLIC_MERGE_CHAIN'},
+        ],
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-header-name')),
+        findsOneWidget,
+      );
+      await tester.tap(find.byIcon(Icons.expand_more));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('terminal · sleep', findRichText: true), findsOneWidget);
+      expect(
+        find.text('web_search · hermes', findRichText: true),
+        findsOneWidget,
+      );
+      expect(
+        find.text('read_file · notas.md', findRichText: true),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('no se funde a través de un mensaje de usuario', (
+      tester,
+    ) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          {'role': 'user', 'content': 'PUBLIC_SECOND_QUESTION'},
+          traceRow,
+          {'role': 'user', 'content': 'PUBLIC_FIRST_QUESTION'},
+        ],
+      );
+      // La fila de traza con herramienta real sigue viéndose sola.
+      expect(
+        find.byKey(const ValueKey('assistant-header-name')),
+        findsOneWidget,
+      );
+      expect(find.text('Completado · 0:40'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      await pumpChat(
+        tester,
+        messages: const [
+          traceRow,
+          {'role': 'user', 'content': 'PUBLIC_ONLY_USER'},
+        ],
+      );
+      expect(
+        find.byKey(const ValueKey('assistant-header-name')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('una respuesta parada no absorbe la traza anterior', (
+      tester,
+    ) async {
+      await pumpChat(
+        tester,
+        messages: const [
+          {
+            'role': 'assistant',
+            'content': 'RESPUESTA_PARADA',
+            '_cancelled': true,
+            '_stopped': true,
+          },
+          traceRow,
+          {'role': 'user', 'content': 'PUBLIC_STOPPED_TURN'},
+        ],
+      );
+      // La traza queda como bloque propio (dos cabeceras: traza + parada).
+      expect(find.text('terminal · sleep', findRichText: true), findsNothing);
+      expect(find.text('Completado · 0:40'), findsOneWidget);
+      expect(find.textContaining('RESPUESTA_PARADA'), findsOneWidget);
+    });
+
+    testWidgets('el turno en vivo no se funde con el turno anterior', (
+      tester,
+    ) async {
+      final gateway = _UiRewindGateway();
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-trace-merge-live'),
+        desktopGateway: gateway,
+        messages: const [
+          traceRow,
+          {'role': 'user', 'content': 'PUBLIC_LIVE_MERGE'},
+        ],
+      );
+      expect(
+        await chat.send(
+          fullText: 'PUBLIC_LIVE_NEXT',
+          model: 'hermes-agent',
+          history: chat.messages,
+        ),
+        isTrue,
+      );
+      gateway.emit('message.start');
+      gateway.emit('message.delta', const {'text': 'PUBLIC_STREAMING_TEXT'});
+      await tester.pump(const Duration(milliseconds: 300));
+      // El turno anterior conserva su bloque propio; el vivo no absorbe nada.
+      expect(find.text('Completado · 0:40'), findsOneWidget);
+      expect(find.textContaining('PUBLIC_STREAMING_TEXT'), findsOneWidget);
+      gateway.emit('message.complete', const {'text': 'PUBLIC_STREAMING_TEXT'});
+      await tester.pump();
+      await tester.pump(const Duration(minutes: 2));
+    });
+  });
 
   testWidgets(
     'una respuesta sin texto y sin nada que desplegar no pinta ni la cabecera',

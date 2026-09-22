@@ -274,6 +274,9 @@ final class ChatRenderProjection {
     return null;
   }
 
+  /// Posición de [message] en la lista de origen (más nuevo primero), o `null`.
+  int? messageIndexOf(Map<String, dynamic> message) => _messageIndexes[message];
+
   int? userOrdinalFor(Map<String, dynamic> message) {
     final index = _messageIndexes[message];
     return index == null ? null : _userOrdinals[index];

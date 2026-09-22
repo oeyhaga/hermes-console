@@ -118,17 +118,31 @@ class _InlineMessageEditorState extends State<InlineMessageEditor>
             controller: _controller,
             focusNode: _focusNode,
             autofocus: true,
+            // Alto = contenido: 1 línea como mínimo y ~8 como máximo; a partir
+            // de ahí el campo desplaza.
             minLines: 1,
-            maxLines: null,
+            maxLines: 8,
             textCapitalization: TextCapitalization.sentences,
             keyboardType: TextInputType.multiline,
             textInputAction: TextInputAction.newline,
+            // Sin relleno, sin borde y sin el relleno vertical del tema: el
+            // texto se edita directamente sobre la burbuja.
             decoration: InputDecoration(
               isCollapsed: true,
+              isDense: true,
+              filled: false,
+              fillColor: Colors.transparent,
+              contentPadding: EdgeInsets.zero,
               border: InputBorder.none,
               enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              errorBorder: InputBorder.none,
+              focusedErrorBorder: InputBorder.none,
               hintText: strings.chaEditHint,
+              // Una burbuja estrecha partía el aviso en 3 líneas y dejaba un
+              // hueco vacío: el alto sale del contenido, no del aviso.
+              hintMaxLines: 1,
             ),
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: colors.textPrimary,
