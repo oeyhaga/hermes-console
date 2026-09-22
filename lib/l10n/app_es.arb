@@ -612,7 +612,7 @@
   "chaContextCalls": "llamadas",
   "chaContextInput": "entrada",
   "chaContextOutput": "salida",
-  "chaContextTotal": "tokens totales",
+  "chaContextTotal": "Tokens acumulados de la sesión",
   "chaContextCost": "coste",
   "chaContextCategorySystem": "Prompt del sistema",
   "chaContextCategoryTools": "Herramientas",
