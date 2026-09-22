@@ -27,7 +27,8 @@ class _StopGateway
   final interruptedSubagents = <String>[];
   final killed = <({String runtimeId, String processId})>[];
   final failingSubagentIds = <String>{};
-  int processStopCalls = 0;
+  final processStopRuntimeIds = <String>[];
+  int get processStopCalls => processStopRuntimeIds.length;
   int subagentListCalls = 0;
   int processListCalls = 0;
   int? clearSubagentsOnListCall;
@@ -211,8 +212,8 @@ class _StopGateway
   }
 
   @override
-  Future<void> stopBackgroundProcesses() async {
-    processStopCalls += 1;
+  Future<void> stopBackgroundProcesses(String runtimeSessionId) async {
+    processStopRuntimeIds.add(runtimeSessionId);
     exposeProcess = false;
   }
 
@@ -361,7 +362,7 @@ void main() {
 
     expect(gateway.interrupted, ['runtime-stop-session']);
     expect(gateway.interruptedSubagents, ['child-a', 'child-b']);
-    expect(gateway.processStopCalls, 1);
+    expect(gateway.processStopRuntimeIds, ['runtime-stop-session']);
     expect(gateway.killed, isEmpty);
     expect(chat.state, ChatPipelineState.cancelled);
     expect(chat.stopConfirmationState, StopConfirmationState.confirmed);

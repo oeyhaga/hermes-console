@@ -50,7 +50,7 @@ class _AdaptiveGateway
   final List<AgentCenterSnapshot> processSnapshots = [];
   final List<String> killedProcesses = [];
   final List<String> interruptedSubagents = [];
-  int processStopCalls = 0;
+  final processStopRuntimeIds = <String>[];
   int listCalls = 0;
   int processCalls = 0;
   int controlCalls = 0;
@@ -157,8 +157,8 @@ class _AdaptiveGateway
   }
 
   @override
-  Future<void> stopBackgroundProcesses() async {
-    processStopCalls += 1;
+  Future<void> stopBackgroundProcesses(String runtimeSessionId) async {
+    processStopRuntimeIds.add(runtimeSessionId);
   }
 
   @override
@@ -528,7 +528,7 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(fixture.gateway.processStopCalls, 1);
+      expect(fixture.gateway.processStopRuntimeIds, ['runtime-adaptive']);
       expect(fixture.gateway.killedProcesses, isEmpty);
       expect(fixture.gateway.processCalls - processCallsBeforeStop, 1);
       expect(
@@ -635,7 +635,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 2500));
       await tester.pump();
 
-      expect(fixture.gateway.processStopCalls, 1);
+      expect(fixture.gateway.processStopRuntimeIds, ['runtime-adaptive']);
       expect(
         find.text('Could not stop everything: 1 background task remains'),
         findsWidgets,

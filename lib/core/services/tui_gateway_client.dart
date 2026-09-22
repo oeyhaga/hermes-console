@@ -5341,9 +5341,11 @@ class TuiGatewayClient
   }
 
   @override
-  Future<void> stopBackgroundProcesses() async {
+  Future<void> stopBackgroundProcesses(String runtimeSessionId) async {
     _requireWritableControlConnection();
-    await _controlRequest('process.stop', const {});
+    await _controlRequest('process.stop', {
+      'session_id': _validatedControlValue(runtimeSessionId, maxLength: 512),
+    });
   }
 
   @override

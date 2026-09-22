@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/desktop_control_gateway.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 final class _ControlTicketDashboard extends DashboardClient {
   _ControlTicketDashboard()
@@ -30,7 +32,94 @@ TuiGatewayClient _clientFor(HttpServer server) => TuiGatewayClient(
   dashboard: _ControlTicketDashboard(),
 );
 
+final class _InMemoryControlChannel implements WebSocketChannel {
+  _InMemoryControlChannel(this.onRequest) {
+    _incoming.add(
+      jsonEncode({
+        'jsonrpc': '2.0',
+        'method': 'event',
+        'params': {'type': 'gateway.ready', 'payload': <String, dynamic>{}},
+      }),
+    );
+  }
+
+  final void Function(Map<String, dynamic>) onRequest;
+  final StreamController<dynamic> _incoming = StreamController<dynamic>();
+
+  @override
+  Future<void> get ready async {}
+
+  @override
+  Stream<dynamic> get stream => _incoming.stream;
+
+  @override
+  late final WebSocketSink sink = _InMemoryControlSink((data) {
+    final frame = Map<String, dynamic>.from(
+      jsonDecode(data as String) as Map,
+    );
+    onRequest(frame);
+    _incoming.add(
+      jsonEncode({
+        'jsonrpc': '2.0',
+        'id': frame['id'],
+        'result': <String, dynamic>{},
+      }),
+    );
+  });
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+final class _InMemoryControlSink implements WebSocketSink {
+  _InMemoryControlSink(this.onAdd);
+
+  final void Function(dynamic) onAdd;
+  final Completer<void> _done = Completer<void>();
+
+  @override
+  void add(dynamic data) => onAdd(data);
+
+  @override
+  Future<void> get done => _done.future;
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) async {
+    if (!_done.isCompleted) _done.complete();
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
+  test('process.stop stays scoped on a shared client', () async {
+    final requests = <Map<String, dynamic>>[];
+    final client = TuiGatewayClient(
+      SavedConnection(
+        id: 'process-stop-scope',
+        label: 'Process stop scope',
+        host: 'hermes.local',
+        port: 8642,
+        apiKey: 'test-only',
+      ),
+      dashboard: _ControlTicketDashboard(),
+      channelFactory: (_, _) => _InMemoryControlChannel(requests.add),
+    );
+    addTearDown(client.close);
+
+    await client.stopBackgroundProcesses('runtime-session-a');
+    await client.stopBackgroundProcesses('runtime-session-b');
+
+    final stopRequests = requests
+        .where((request) => request['method'] == 'process.stop')
+        .toList(growable: false);
+    expect(stopRequests.map((request) => request['params']), [
+      {'session_id': 'runtime-session-a'},
+      {'session_id': 'runtime-session-b'},
+    ]);
+  });
+
   test(
     'usa los RPC nativos de Recovery, Extensions, Agents y Projects',
     () async {

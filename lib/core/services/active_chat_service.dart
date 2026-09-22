@@ -5091,7 +5091,7 @@ class ActiveChat {
             ),
         if (processStopGateway != null)
           _bestEffortBackgroundStopRpc(
-            processStopGateway.stopBackgroundProcesses,
+            () => processStopGateway.stopBackgroundProcesses(runtimeId),
           ),
       ];
       await Future.wait(requests);
