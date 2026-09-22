@@ -448,7 +448,7 @@ ActiveChat _chat(
   StoredSessionMessageLoader? storedMessageLoader,
   bool allowUnownedDesktopSnapshotForTesting = true,
   Duration desktopCompressionReconciliationDelay = const Duration(seconds: 20),
-  Duration desktopCompressionReconciliationWindow = const Duration(minutes: 2),
+  Duration desktopCompressionReconciliationWindow = const Duration(minutes: 12),
   List<SteerProjection> initialSteerProjections = const [],
   List<CancelledTurnTombstone> initialCancelledTurnTombstones = const [],
   Future<void> Function(CancelledTurnTombstone)? onCancelledTurn,
@@ -4921,6 +4921,108 @@ void main() {
   );
 
   test(
+    'pending refreshes the same durable attempt beyond the native RPC budget',
+    () async {
+      var nowMs = 1000;
+      final storage = _MemoryCompressionFenceStorage();
+      final store = DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'long-native-attempt',
+      );
+      final gate = Completer<DesktopCompressionResult>();
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-native-long',
+          'session_key': 'stored-chat',
+          'messages': [
+            {'role': 'user', 'content': 'uno'},
+            {'role': 'assistant', 'content': 'dos'},
+          ],
+        })
+        ..compressionResult = _nativePendingCompressionResult()
+        ..nativeCompressionGate = gate;
+      final chat = _chat(
+        'native-compression-long',
+        gateway,
+        compressionFenceStore: store,
+        wallClockMs: () => nowMs,
+      );
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+
+      final dispatch = chat.compressDesktopSession();
+      await gateway.compressionEntered.future;
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'native-compression-long',
+        profile: 'default',
+        logicalSessionId: 'stored-chat',
+      );
+      final armed = (await store.lookup(scope)).record!;
+      expect(armed.attemptId, 'long-native-attempt');
+      expect(armed.reconcileUntilMs - armed.createdAtMs, 720000);
+
+      nowMs += 700000;
+      gate.complete(_nativePendingCompressionResult());
+      expect(
+        (await dispatch).compressionStatus,
+        DesktopCompressionStatus.pending,
+      );
+      final pending = (await store.lookup(scope)).record!;
+      expect(pending.attemptId, armed.attemptId);
+      expect(pending.phase, DesktopCompressionFencePhase.serverPending);
+      expect(pending.reconcileUntilMs, nowMs + 720000);
+    },
+  );
+
+  test(
+    'transport unknown refreshes the same durable attempt beyond the RPC budget',
+    () async {
+      var nowMs = 1000;
+      final storage = _MemoryCompressionFenceStorage();
+      final store = DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'long-transport-attempt',
+      );
+      final gate = Completer<DesktopCompressionResult>();
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-transport-long',
+          'session_key': 'stored-chat',
+          'messages': [
+            {'role': 'user', 'content': 'uno'},
+            {'role': 'assistant', 'content': 'dos'},
+          ],
+        })
+        ..nativeCompressionGate = gate;
+      final chat = _chat(
+        'native-compression-transport-long',
+        gateway,
+        compressionFenceStore: store,
+        wallClockMs: () => nowMs,
+      );
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+
+      final dispatch = chat.compressDesktopSession();
+      await gateway.compressionEntered.future;
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'native-compression-transport-long',
+        profile: 'default',
+        logicalSessionId: 'stored-chat',
+      );
+      final armed = (await store.lookup(scope)).record!;
+
+      nowMs += 700000;
+      gate.completeError(TimeoutException('lost transport reply'));
+      await expectLater(dispatch, throwsA(isA<TimeoutException>()));
+      final pending = (await store.lookup(scope)).record!;
+      expect(pending.attemptId, armed.attemptId);
+      expect(pending.phase, DesktopCompressionFencePhase.transportUnknown);
+      expect(pending.reconcileUntilMs, nowMs + 720000);
+    },
+  );
+
+  test(
     'pending nativo suprime duplicados hasta un evento terminal del runtime',
     () async {
       final gateway = _NativeCompressionGateway()
@@ -5034,6 +5136,74 @@ void main() {
       expect(chat.desktopCompressionAwaitingReconciliation, isFalse);
       expect(gateway.resumeExistingCalls, baselineResumes);
       expect(gateway.compressSessionCalls, 1);
+    },
+  );
+
+  test(
+    'restored settled fence hydrates archived rows from stored display history',
+    () async {
+      final storage = _MemoryCompressionFenceStorage();
+      final store = DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'restored-hydration-attempt',
+      );
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'restored-hydration',
+        profile: 'default',
+        logicalSessionId: 'root-restored-hydration',
+      );
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await store.arm(
+        scope,
+        tipAtStart: 'tip-before-hydration',
+        compressionsAtStart: 1,
+        createdAtMs: now,
+        reconcileUntilMs: now + 120000,
+      );
+      final storedRead = Completer<void>();
+      final chat = _chat(
+        'restored-hydration',
+        _SnapshotGateway(),
+        logicalSessionId: 'root-restored-hydration',
+        sessionId: 'tip-before-hydration',
+        compressionFenceStore: store,
+        client: MockClient(
+          (_) async => http.Response(
+            '{"session":{"id":"tip-after-hydration","_lineage_root_id":"root-restored-hydration"}}',
+            200,
+          ),
+        ),
+        storedMessageLoader: (_, _) async {
+          if (!storedRead.isCompleted) storedRead.complete();
+          return const [
+            {
+              'id': 'archived-compacted-row',
+              'role': 'user',
+              'content': 'Archived compacted row',
+              'compacted': 1,
+            },
+            {
+              'id': 'current-row',
+              'role': 'assistant',
+              'content': 'Current row',
+            },
+          ];
+        },
+      );
+      addTearDown(chat.dispose);
+
+      await storedRead.future;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(chat.storedSessionId, 'tip-after-hydration');
+      expect(chat.messages.map((message) => message['content']), [
+        'Current row',
+        'Archived compacted row',
+      ]);
+      expect(
+        (await store.lookup(scope)).status,
+        DesktopCompressionFenceLookupStatus.absent,
+      );
     },
   );
 

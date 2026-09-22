@@ -98,16 +98,18 @@ final class DesktopCompressionFenceRecord {
     'reconcile_until_ms': reconcileUntilMs,
   };
 
-  DesktopCompressionFenceRecord withPhase(DesktopCompressionFencePhase value) =>
-      DesktopCompressionFenceRecord(
-        scope: scope,
-        attemptId: attemptId,
-        phase: value,
-        tipAtStart: tipAtStart,
-        compressionsAtStart: compressionsAtStart,
-        createdAtMs: createdAtMs,
-        reconcileUntilMs: reconcileUntilMs,
-      );
+  DesktopCompressionFenceRecord transition({
+    required DesktopCompressionFencePhase phase,
+    required int reconcileUntilMs,
+  }) => DesktopCompressionFenceRecord(
+    scope: scope,
+    attemptId: attemptId,
+    phase: phase,
+    tipAtStart: tipAtStart,
+    compressionsAtStart: compressionsAtStart,
+    createdAtMs: createdAtMs,
+    reconcileUntilMs: reconcileUntilMs,
+  );
 
   static DesktopCompressionFenceRecord fromJson(Map<String, Object?> json) {
     if (json.keys.toSet().length != _jsonKeys.length ||
@@ -380,11 +382,37 @@ final class DesktopCompressionFenceStore {
       final records = await _readRecords();
       final current = records[scope.key];
       if (current == null || current.attemptId != attemptId) return false;
-      records[scope.key] = current.withPhase(phase);
+      records[scope.key] = current.transition(
+        phase: phase,
+        reconcileUntilMs: current.reconcileUntilMs,
+      );
       await _writeRecords(records);
       return true;
     } catch (_) {
       return false;
+    }
+  });
+
+  Future<DesktopCompressionFenceRecord?> transitionAttempt(
+    DesktopCompressionFenceScope scope, {
+    required String attemptId,
+    required DesktopCompressionFencePhase phase,
+    required int reconcileUntilMs,
+  }) => _serialized(() async {
+    try {
+      final records = await _readRecords();
+      final current = records[scope.key];
+      if (current == null || current.attemptId != attemptId) return null;
+      final transitioned = DesktopCompressionFenceRecord.fromJson(
+        current
+            .transition(phase: phase, reconcileUntilMs: reconcileUntilMs)
+            .toJson(),
+      );
+      records[scope.key] = transitioned;
+      await _writeRecords(records);
+      return transitioned;
+    } catch (_) {
+      return null;
     }
   });
 

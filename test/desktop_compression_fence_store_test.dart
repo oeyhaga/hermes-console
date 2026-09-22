@@ -225,7 +225,7 @@ void main() {
     },
   );
 
-  test('phase updates and deletes require the current attempt id', () async {
+  test('phase and deadline transitions require the current attempt id', () async {
     final storage = _MemoryFenceStorage();
     final scope = DesktopCompressionFenceScope(
       connectionId: 'connection-a',
@@ -245,25 +245,27 @@ void main() {
     );
 
     expect(
-      await store.updatePhase(
+      await store.transitionAttempt(
         scope,
         attemptId: 'attempt-stale',
         phase: DesktopCompressionFencePhase.serverPending,
+        reconcileUntilMs: 900,
       ),
-      isFalse,
+      isNull,
     );
-    expect(
-      (await store.lookup(scope)).record?.phase,
-      DesktopCompressionFencePhase.armed,
+    final unchanged = (await store.lookup(scope)).record!;
+    expect(unchanged.phase, DesktopCompressionFencePhase.armed);
+    expect(unchanged.reconcileUntilMs, 200);
+
+    final transitioned = await store.transitionAttempt(
+      scope,
+      attemptId: 'attempt-current',
+      phase: DesktopCompressionFencePhase.serverPending,
+      reconcileUntilMs: 900,
     );
-    expect(
-      await store.updatePhase(
-        scope,
-        attemptId: 'attempt-current',
-        phase: DesktopCompressionFencePhase.serverPending,
-      ),
-      isTrue,
-    );
+    expect(transitioned?.attemptId, 'attempt-current');
+    expect(transitioned?.phase, DesktopCompressionFencePhase.serverPending);
+    expect(transitioned?.reconcileUntilMs, 900);
     expect(
       await store.deleteAttempt(scope, attemptId: 'attempt-stale'),
       isFalse,

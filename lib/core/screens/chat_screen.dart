@@ -4536,10 +4536,12 @@ class _ChatScreenState extends State<ChatScreen>
 
   void _syncCompaction() {
     if (!_chatBound) return;
+    final needsConfirmation = _chat.desktopCompressionNeedsConfirmation;
     final serviceActive =
         _chat.desktopCompressionInFlight || _compressionCommandInFlight;
     if (!serviceActive) _compactionSettledEarly = false;
-    final active = serviceActive && !_compactionSettledEarly;
+    final active =
+        serviceActive && !needsConfirmation && !_compactionSettledEarly;
     final manual =
         _chat.desktopManualCompressionInFlight || _compressionCommandInFlight;
     Map<String, dynamic>? head;
@@ -4549,7 +4551,11 @@ class _ChatScreenState extends State<ChatScreen>
         break;
       }
     }
-    if (!active && !_compaction.running) _consumedCompressionResult = head;
+    if (!active &&
+        !_compaction.running &&
+        _compressionInvocation == null) {
+      _consumedCompressionResult = head;
+    }
     // Solo hechos: lo que la línea de estado de Hermes dice y el tiempo local.
     _compaction.sync(
       active: active,
@@ -4560,7 +4566,7 @@ class _ChatScreenState extends State<ChatScreen>
       chunkIndex: _chat.desktopCompactionChunkIndex,
       chunkCount: _chat.desktopCompactionChunkCount,
     );
-    var succeeded = false;
+    var settled = false;
     if (head != null && !identical(head, _consumedCompressionResult)) {
       _consumedCompressionResult = head;
       final meta = head['display_metadata'];
@@ -4576,8 +4582,8 @@ class _ChatScreenState extends State<ChatScreen>
         );
         if (after != null) _applyPostCompactionContext(after);
         _compactionSettledEarly = serviceActive;
-        succeeded = true;
       }
+      settled = true;
     }
     // Una compactación manual cuyo resultado llegó tarde (`pending` y luego
     // `status.update(compacted)`) termina por ese borde, sin cifras.
@@ -4587,10 +4593,15 @@ class _ChatScreenState extends State<ChatScreen>
       if (_compaction.running) {
         _compaction.reportResult();
         _compactionSettledEarly = serviceActive;
-        succeeded = true;
       }
+      settled = true;
     }
-    if (succeeded) _consumeCompressionInvocation();
+    if (needsConfirmation && _compaction.running) {
+      _compaction.reportUnconfirmed();
+      _compactionSettledEarly = true;
+      settled = true;
+    }
+    if (settled) _consumeCompressionInvocation();
   }
 
   /// El resultado del RPC `session.compress` cierra la barra al instante: con
@@ -12584,7 +12595,9 @@ class _ChatScreenState extends State<ChatScreen>
                         ),
                       // Barra de compactación pegada sobre el input: la misma
                       // para la automática y la manual, haya o no turno vivo.
-                      if (_compaction.current != null || _compressingSession)
+                      if (_compaction.current != null ||
+                          (_compressingSession &&
+                              !_chat.desktopCompressionNeedsConfirmation))
                         CompactionDock(
                           compaction:
                               _compaction.current ??

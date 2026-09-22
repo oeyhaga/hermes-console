@@ -191,6 +191,24 @@ void main() {
       },
     );
 
+    testWidgets(
+      'manual vencida termina como no confirmada sin afirmar éxito',
+      (tester) async {
+        final clock = _Clock(_t0);
+        final tracker = CompactionTracker(clock: () => clock.now);
+        addTearDown(tracker.dispose);
+        tracker.sync(active: true, manual: true);
+        clock.advance(const Duration(minutes: 12));
+        tracker.reportUnconfirmed();
+
+        expect(tracker.running, isFalse);
+        expect(tracker.current?.isUnconfirmed, isTrue);
+        expect(tracker.current?.duration, const Duration(minutes: 12));
+        await tester.pump(const Duration(seconds: 7));
+        expect(tracker.current, isNull);
+      },
+    );
+
     test('los hechos nuevos actualizan la medición sin reiniciarla', () {
       final tracker = CompactionTracker(clock: () => _t0);
       addTearDown(tracker.dispose);
@@ -498,7 +516,37 @@ void main() {
       );
     });
 
-    testWidgets('aviso de estado que exige atención bajo la barra', (
+    testWidgets('resultado no confirmado es terminal y conserva el aviso', (
+      tester,
+    ) async {
+      const warning = 'No se pudo confirmar la compresión.';
+      await tester.pumpWidget(
+        app(
+          CompactionProgress(
+            startedAt: _t0,
+            manual: true,
+            finishedAt: _t0.add(const Duration(minutes: 12)),
+            resultConfirmed: false,
+          ),
+          _Clock(_t0.add(const Duration(minutes: 12))),
+          note: warning,
+        ),
+      );
+
+      expect(find.text(warning), findsOneWidget);
+      expect(find.byKey(const ValueKey('compaction-result')), findsOneWidget);
+      expect(find.byKey(const ValueKey('compaction-elapsed')), findsNothing);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byKey(const ValueKey('compaction-line-fill')),
+            )
+            .color,
+        Theme.of(tester.element(find.byType(CompactionDock))).hermes.warning,
+      );
+    });
+
+    testWidgets('aviso de estado que exige atención ocupa una sola fila', (
       tester,
     ) async {
       await tester.pumpWidget(
