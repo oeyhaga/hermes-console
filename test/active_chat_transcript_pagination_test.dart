@@ -649,6 +649,50 @@ void main() {
     },
   );
 
+  test('exact-page lookahead retries a transient transport failure', () async {
+    final rows = _rows(120);
+    final gateway = _HistoryGateway()
+      ..snapshot = const DesktopSessionSnapshot(
+        runtimeSessionId: 'runtime-exact-page-retry',
+        storedSessionId: 'stored-chat',
+        created: false,
+        messagesProvided: false,
+        messageCount: 120,
+      )
+      ..loader = () async => SessionMessagesPage.fromRaw(
+        rawMessages: rows,
+        pagination: null,
+        paginationProvided: false,
+      );
+    final server = _TranscriptServer(paginate: true)..rows.addAll(rows);
+    var failedLookahead = false;
+    final delegate = server.client();
+    final chat = _chat(
+      'native-exact-page-retry',
+      MockClient((request) {
+        if (request.url.queryParameters['offset'] == '120' &&
+            !failedLookahead) {
+          failedLookahead = true;
+          throw http.ClientException('transient lookahead failure');
+        }
+        return delegate.get(request.url, headers: request.headers);
+      }),
+      gateway: gateway,
+    );
+    addTearDown(chat.dispose);
+    addTearDown(delegate.close);
+
+    await chat.loadMessages(expectedMessageCount: 120);
+
+    expect(failedLookahead, isTrue);
+    expect(chat.messages, hasLength(120));
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(
+      server.requests.map((request) => request.queryParameters['offset']),
+      ['0', '120'],
+    );
+  });
+
   test(
     'short native history cannot replace a longer durable transcript on resumed reload',
     () async {
