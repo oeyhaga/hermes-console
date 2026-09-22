@@ -18529,82 +18529,16 @@ class _ChatTopButton extends StatefulWidget {
 }
 
 class _ChatTopButtonState extends State<_ChatTopButton> {
-  late bool _visible;
-
-  @override
-  void initState() {
-    super.initState();
-    _visible = widget.hasEarlierMessages;
-    widget.controller.addListener(_syncVisibility);
-    widget.contentChanges.addListener(_scheduleVisibilitySync);
-    _scheduleVisibilitySync();
-  }
-
-  @override
-  void didUpdateWidget(covariant _ChatTopButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_syncVisibility);
-      widget.controller.addListener(_syncVisibility);
-    }
-    if (oldWidget.contentChanges != widget.contentChanges) {
-      oldWidget.contentChanges.removeListener(_scheduleVisibilitySync);
-      widget.contentChanges.addListener(_scheduleVisibilitySync);
-    }
-    if (widget.hasEarlierMessages) _visible = true;
-    _scheduleVisibilitySync();
-  }
-
-  void _scheduleVisibilitySync() {
-    WidgetsBinding.instance.addPostFrameCallback((_) => _syncVisibility());
-  }
-
-  void _syncVisibility() {
-    if (!mounted) return;
-    final position = widget.controller.hasClients
-        ? widget.controller.position
-        : null;
-    final contentTop = position == null
-        ? 0.0
-        : position.maxScrollExtent - widget.transcriptOverlayExtent();
-    final canReachTop =
-        position != null &&
-        position.hasContentDimensions &&
-        contentTop > position.minScrollExtent + 1 &&
-        position.pixels < contentTop - 1;
-    final visible = widget.hasEarlierMessages || canReachTop;
-    if (_visible != visible) setState(() => _visible = visible);
-  }
+  // La flecha de subir es solo para cargar historial real, no un atajo
+  // genérico de "ir arriba" dentro de lo ya cargado: su visibilidad refleja
+  // únicamente hasEarlierMessages (la señal real del backend de que hay más
+  // que pedir), nunca la posición del scroll dentro de lo ya visible — ni
+  // controller ni contentChanges intervienen en si se muestra o no.
+  bool get _visible => widget.hasEarlierMessages;
 
   void _activate() {
-    if (widget.hasEarlierMessages) {
-      widget.onLoadEarlier();
-      return;
-    }
-    unawaited(_scrollToTop());
-  }
-
-  Future<void> _scrollToTop() async {
-    if (!widget.controller.hasClients) return;
-    final position = widget.controller.position;
-    final target = position.maxScrollExtent - widget.transcriptOverlayExtent();
-    final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    if (reduceMotion) {
-      widget.controller.jumpTo(target);
-    } else {
-      await widget.controller.animateTo(
-        target,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(_syncVisibility);
-    widget.contentChanges.removeListener(_scheduleVisibilitySync);
-    super.dispose();
+    if (!widget.hasEarlierMessages) return;
+    widget.onLoadEarlier();
   }
 
   @override
@@ -18634,9 +18568,7 @@ class _ChatTopButtonState extends State<_ChatTopButton> {
           ? _ChatScrollButton(
               key: const ValueKey('chat-load-earlier'),
               onTap: widget.loading ? null : _activate,
-              label: widget.hasEarlierMessages
-                  ? Strings.of(context).chaLoadEarlierMessages
-                  : Strings.of(context).chaScrollToTop,
+              label: Strings.of(context).chaLoadEarlierMessages,
               icon: Icons.keyboard_arrow_up_rounded,
               iconSize: 20,
               loading: widget.loading,

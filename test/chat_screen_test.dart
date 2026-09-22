@@ -4200,7 +4200,9 @@ void main() {
     expect(controller.position.maxScrollExtent, greaterThan(0));
     expect(controller.position.pixels, controller.position.minScrollExtent);
     await tester.pump();
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
+    // Desbordar la pantalla no basta para mostrar la flecha de subir: sin
+    // señal real de que hay más historial que cargar, se queda oculta.
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
     expect(
       find.byKey(const ValueKey('scroll-to-bottom-hidden')),
       findsOneWidget,
@@ -4213,61 +4215,51 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('flecha superior alcanza contenido anterior y se oculta arriba', (
-    tester,
-  ) async {
-    await pumpChat(
-      tester,
-      messages: List.generate(20, (index) {
-        return {
-          'id': 'top-arrow-$index',
-          'role': index.isEven ? 'assistant' : 'user',
-          'content': 'Mensaje alto $index ${List.filled(8, 'contenido').join(' ')}',
-        };
-      }),
-    );
-    await tester.pump();
+  testWidgets(
+    'sin más historial real la flecha superior no aparece aunque se pueda '
+    'seguir subiendo dentro de lo ya cargado',
+    (tester) async {
+      // El dueño pidió explícitamente que la flecha de subir deje de ser un
+      // atajo genérico de "ir arriba dentro de lo cargado": solo debe salir
+      // cuando hay una señal real de que queda historial por pedir. Esta
+      // conversación no tiene paginación (hasEarlierMessages queda false), así
+      // que la flecha no debe aparecer nunca, ni siquiera desbordando la
+      // pantalla ni tras moverse por el scroll.
+      final chat = await pumpChat(
+        tester,
+        messages: List.generate(20, (index) {
+          return {
+            'id': 'top-arrow-$index',
+            'role': index.isEven ? 'assistant' : 'user',
+            'content': 'Mensaje alto $index ${List.filled(8, 'contenido').join(' ')}',
+          };
+        }),
+      );
+      await tester.pump();
+      expect(chat.hasEarlierMessages, isFalse);
 
-    final list = find.descendant(
-      of: find.byType(ChatScrollInteractionGuard),
-      matching: find.byType(ListView),
-    );
-    final controller = tester.widget<ListView>(list).controller!;
-    expect(controller.position.maxScrollExtent, greaterThan(200));
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
-      findsOneWidget,
-    );
+      final list = find.descendant(
+        of: find.byType(ChatScrollInteractionGuard),
+        matching: find.byType(ListView),
+      );
+      final controller = tester.widget<ListView>(list).controller!;
+      expect(controller.position.maxScrollExtent, greaterThan(200));
+      expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
 
-    controller.jumpTo(controller.position.minScrollExtent + 160);
-    await tester.pump();
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('scroll-to-bottom-visible')),
-      findsOneWidget,
-    );
+      controller.jumpTo(controller.position.minScrollExtent + 160);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('scroll-to-bottom-visible')),
+        findsOneWidget,
+      );
 
-    controller.jumpTo(controller.position.minScrollExtent);
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('scroll-to-bottom-hidden')),
-      findsOneWidget,
-    );
-    final expectedTop = controller.position.maxScrollExtent;
-    await tester.tap(find.byKey(const ValueKey('chat-load-earlier')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 240));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 200));
-
-    expect(
-      controller.position.pixels,
-      closeTo(expectedTop, 1),
-    );
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
-    expect(tester.takeException(), isNull);
-  });
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('refresh completo conserva salto si hay contenido anterior', (
     tester,
@@ -4327,8 +4319,9 @@ void main() {
 
     expect(requests, hasLength(2));
     expect(chat.hasEarlierMessages, isFalse);
-    expect(find.byKey(control), findsOneWidget);
-    expect(find.byTooltip('Ir al inicio de la conversación'), findsOneWidget);
+    // Sin más historial real que cargar, la flecha desaparece del todo: ya
+    // no queda un modo "ir arriba" genérico como atajo de scroll.
+    expect(find.byKey(control), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -4615,8 +4608,10 @@ void main() {
       chat.messages.any((message) => message['content'] == 'RETRY_ANTERIOR_OK'),
       isTrue,
     );
-    expect(find.byKey(const ValueKey('chat-load-earlier')), findsOneWidget);
-    expect(find.byTooltip('Ir al inicio de la conversación'), findsOneWidget);
+    // La segunda página fue la última (sin más historial real que pedir): la
+    // flecha desaparece del todo, sin quedar como atajo de scroll.
+    expect(chat.hasEarlierMessages, isFalse);
+    expect(find.byKey(const ValueKey('chat-load-earlier')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
