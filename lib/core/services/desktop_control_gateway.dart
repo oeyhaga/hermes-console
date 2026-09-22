@@ -28,7 +28,7 @@ final class DesktopControlFailure implements Exception {
 /// Hermes servers continue to work. Screens must treat method-not-found as an
 /// unsupported capability, never as an empty successful inventory.
 abstract class HermesDesktopProcessStopGateway {
-  Future<void> stopBackgroundProcesses();
+  Future<void> stopBackgroundProcesses(String runtimeSessionId);
 }
 
 abstract class HermesDesktopControlGateway {
