@@ -50,27 +50,33 @@ class _InlineMessageEditorState extends State<InlineMessageEditor>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _focusNode.requestFocus();
-      _ensureVisible();
+      // Salta sin animar: pedir el foco abre el teclado un frame después, así
+      // que animar ya aquí apunta a un objetivo con el viewport todavía sin
+      // encoger. didChangeMetrics hace la corrección real (animada) en cuanto
+      // el teclado cambia los insets; animar los dos deja un doble salto.
+      _ensureVisible(animate: false);
     });
   }
 
   @override
   void didChangeMetrics() {
-    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureVisible());
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _ensureVisible(animate: true),
+    );
   }
 
   void _onTextChanged() {
     if (mounted) setState(() {});
   }
 
-  void _ensureVisible() {
+  void _ensureVisible({required bool animate}) {
     if (!mounted || !_focusNode.hasFocus) return;
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     unawaited(
       Scrollable.ensureVisible(
         context,
         alignment: 0.35,
-        duration: reduceMotion
+        duration: !animate || reduceMotion
             ? Duration.zero
             : const Duration(milliseconds: 160),
         curve: Curves.easeOutCubic,
