@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
+import '../models/compaction_progress.dart';
 import '../models/desktop_context_breakdown.dart';
 import '../models/desktop_session_snapshot.dart';
 import '../models/session.dart';
@@ -321,6 +322,36 @@ int _boundedContextPercent({
   return raw.round().clamp(0, 100).toInt();
 }
 
+String? _cumulativeTokenLabel(SessionContextMetrics metrics) {
+  final cumulative = metrics.cumulativeTotal;
+  return cumulative == null
+      ? null
+      : '${compactSessionContextTokens(cumulative)} tok';
+}
+
+String _contextTriggerText(SessionContextMetrics metrics) {
+  final percent = metrics.percent;
+  if (percent != null) return '$percent%';
+  return _cumulativeTokenLabel(metrics) ?? '—';
+}
+
+String _contextTriggerSemanticValue(
+  Strings strings,
+  SessionContextMetrics metrics,
+) {
+  final percent = metrics.percent;
+  if (percent != null) return strings.chaContextUsagePercent(percent);
+  return _cumulativeTokenLabel(metrics) ?? strings.chaContextWindowUnavailable;
+}
+
+String _contextTriggerSemanticsLabel(
+  Strings strings,
+  SessionContextMetrics metrics,
+) {
+  final value = _contextTriggerSemanticValue(strings, metrics);
+  return '${strings.chaContextUsageOpen}, $value';
+}
+
 /// Anchored context+mode control. Was two separate app-bar widgets (a
 /// context-usage ring trigger plus a colored approval-mode pill); the
 /// 1.2.11 redesign merges both into one compact floating pill — ring,
@@ -395,16 +426,14 @@ class _SessionContextPopoverButtonState
         valueListenable: widget.metrics,
         builder: (context, value, _) {
           final percent = value.percent;
-          final semanticValue = percent == null
-              ? strings.chaContextWindowUnavailable
-              : strings.chaContextUsagePercent(percent);
+          final semanticsLabel = _contextTriggerSemanticsLabel(strings, value);
           final modeLabel = widget.modeLabel;
           return Semantics(
             button: true,
             onTap: _open,
             label: modeLabel == null
-                ? semanticValue
-                : '$semanticValue · $modeLabel',
+                ? semanticsLabel
+                : '$semanticsLabel · $modeLabel',
             excludeSemantics: true,
             child: Tooltip(
               message: strings.chaContextUsageOpen,
@@ -441,7 +470,7 @@ class _SessionContextPopoverButtonState
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          percent == null ? '—' : '$percent%',
+                          _contextTriggerText(value),
                           style: TextStyle(
                             color: colors.textPrimary,
                             fontSize: 10.5,
@@ -507,13 +536,10 @@ class SessionContextTrigger extends StatelessWidget {
       builder: (context, value, _) {
         final strings = Strings.of(context);
         final percent = value.percent;
-        final semanticValue = percent == null
-            ? strings.chaContextWindowUnavailable
-            : strings.chaContextUsagePercent(percent);
         return Semantics(
           button: true,
           onTap: onPressed,
-          label: semanticValue,
+          label: _contextTriggerSemanticsLabel(strings, value),
           excludeSemantics: true,
           child: Tooltip(
             message: strings.chaContextUsageOpen,
@@ -554,7 +580,7 @@ class SessionContextTrigger extends StatelessWidget {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            percent == null ? '—' : '$percent%',
+                            _contextTriggerText(value),
                             style: TextStyle(
                               color: Theme.of(context).hermes.textPrimary,
                               fontSize: 11.5,
@@ -1193,13 +1219,4 @@ Color _categoryColor(BuildContext context, String id, int index) {
 
 /// Matches Hermes Desktop's shared compact-number formatter.
 @visibleForTesting
-String compactSessionContextTokens(int value) {
-  if (value <= 0) return '0';
-  if (value >= 999950) {
-    return '${(value / 1000000).toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '')}M';
-  }
-  if (value >= 999.5) {
-    return '${(value / 1000).toStringAsFixed(1).replaceFirst(RegExp(r'\.0$'), '')}k';
-  }
-  return '$value';
-}
+String compactSessionContextTokens(int value) => formatCompactTokens(value);

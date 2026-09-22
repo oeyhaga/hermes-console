@@ -5,6 +5,7 @@ import 'package:hermes_android/core/models/compaction_progress.dart';
 import 'package:hermes_android/core/services/compaction_tracker.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/compaction_dock.dart';
+import 'package:hermes_android/core/widgets/session_context_usage.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'support/inter_font.dart';
 
@@ -81,6 +82,29 @@ void main() {
       expect(formatCompactTokens(21500), '21.5k');
       expect(formatCompactTokens(842), '842');
       expect(formatCompactTokens(1200000), '1.2M');
+    });
+
+    test('dock y contexto comparten formato en los límites k/M', () {
+      const expected = {
+        999500: '999.5k',
+        999999: '1M',
+        1000000: '1M',
+        1500000: '1.5M',
+      };
+
+      for (final MapEntry(key: tokens, value: label) in expected.entries) {
+        expect(formatCompactTokens(tokens), label, reason: '$tokens dock');
+        expect(
+          compactSessionContextTokens(tokens),
+          label,
+          reason: '$tokens contexto',
+        );
+        expect(
+          label,
+          isNot(contains('1000k')),
+          reason: '$tokens fuera de rango',
+        );
+      }
     });
   });
 

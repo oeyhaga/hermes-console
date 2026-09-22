@@ -97,12 +97,14 @@ final class CompactionProgress {
 
 /// Formatea tokens de forma compacta: `842`, `12.4k`, `180k`, `1.2M`.
 String formatCompactTokens(int tokens) {
-  if (tokens < 1000) return '$tokens';
-  String trim(double v) {
-    final text = v.toStringAsFixed(v >= 100 ? 0 : 1);
-    return text.endsWith('.0') ? text.substring(0, text.length - 2) : text;
+  if (tokens <= 0) return '0';
+  if (tokens >= 999950) {
+    final compact = (tokens / 1000000).toStringAsFixed(1);
+    return '${compact.replaceFirst(RegExp(r'\.0$'), '')}M';
   }
-
-  if (tokens < 1000000) return '${trim(tokens / 1000)}k';
-  return '${trim(tokens / 1000000)}M';
+  if (tokens >= 1000) {
+    final compact = (tokens / 1000).toStringAsFixed(1);
+    return '${compact.replaceFirst(RegExp(r'\.0$'), '')}k';
+  }
+  return '$tokens';
 }
