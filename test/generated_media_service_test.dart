@@ -497,6 +497,68 @@ void main() {
       expect(temporary.listSync(recursive: true).whereType<File>(), isEmpty);
     });
 
+    test(
+      'parallel identical-content files keep distinct cache entries',
+      () async {
+        const bytes = <int>[
+          0x52,
+          0x49,
+          0x46,
+          0x46,
+          0,
+          0,
+          0,
+          0,
+          0x57,
+          0x41,
+          0x56,
+          0x45,
+        ];
+        var fetches = 0;
+        final bothStarted = Completer<void>();
+
+        Future<Uint8List> fetch(String _) async {
+          fetches++;
+          if (fetches == 2) bothStarted.complete();
+          await bothStarted.future;
+          return Uint8List.fromList(bytes);
+        }
+
+        const references = [
+          GeneratedMediaReference(
+            source: '/workspace/qa_tono2.wav',
+            kind: GeneratedMediaKind.audio,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'qa_tono2.wav',
+            mimeType: 'audio/wav',
+            sizeBytes: 12,
+          ),
+          GeneratedMediaReference(
+            source: '/workspace/qa_tono3.wav',
+            kind: GeneratedMediaKind.audio,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'qa_tono3.wav',
+            mimeType: 'audio/wav',
+            sizeBytes: 12,
+          ),
+        ];
+        final files = await Future.wait([
+          for (final reference in references)
+            GeneratedMediaService.ensureDownloaded(
+              'connection-identical-content',
+              reference,
+              fetchServerPath: fetch,
+              baseDir: temporary,
+            ),
+        ]);
+
+        expect(fetches, 2);
+        expect(files[0].path, isNot(files[1].path));
+        expect(await files[0].readAsBytes(), bytes);
+        expect(await files[1].readAsBytes(), bytes);
+      },
+    );
+
     test('cache identity includes known size and modification time', () async {
       const source = '/workspace/report.txt';
       var fetches = 0;

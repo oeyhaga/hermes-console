@@ -2565,6 +2565,103 @@ void main() {
     );
 
     test(
+      'parallel downloads survive access-cookie rotation without re-login',
+      () async {
+        var loginCalls = 0;
+        var currentAccess = 'AT0';
+        var initialRequests = 0;
+        var retryRequests = 0;
+        final allInitialStarted = Completer<void>();
+        final allRetriesStarted = Completer<void>();
+        final firstRotated = Completer<void>();
+        final secondRotated = Completer<void>();
+
+        final client = DashboardClient(
+          host: 'media-cookie-rotation.local',
+          basicUser: 'admin',
+          basicPass: 'secret',
+          httpClientOverride: MockClient((request) async {
+            if (request.url.path == '/auth/password-login') {
+              loginCalls++;
+              currentAccess = 'AT1';
+              return http.Response(
+                '{"ok":true}',
+                200,
+                headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
+              );
+            }
+            expect(request.url.path, '/api/files/download');
+            final source = request.url.queryParameters['path']!;
+            final sentAccess = RegExp(
+              r'hermes_session_at=([^;]+)',
+            ).firstMatch(request.headers['cookie'] ?? '')?.group(1);
+
+            if (sentAccess == 'AT1') {
+              initialRequests++;
+              if (initialRequests == 3) allInitialStarted.complete();
+              await allInitialStarted.future;
+              if (source.endsWith('one.wav')) {
+                currentAccess = 'AT2';
+                firstRotated.complete();
+                return http.Response.bytes(
+                  utf8.encode('media:$source'),
+                  200,
+                  headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
+                );
+              }
+              await firstRotated.future;
+              return http.Response('{"error":"stale_cookie"}', 401);
+            }
+
+            if (sentAccess == 'AT2') {
+              retryRequests++;
+              if (retryRequests == 2) allRetriesStarted.complete();
+              await allRetriesStarted.future;
+              if (source.endsWith('two.wav')) {
+                currentAccess = 'AT3';
+                secondRotated.complete();
+                return http.Response.bytes(
+                  utf8.encode('media:$source'),
+                  200,
+                  headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
+                );
+              }
+              await secondRotated.future;
+              return http.Response('{"error":"stale_cookie"}', 401);
+            }
+
+            if (sentAccess == currentAccess) {
+              currentAccess = 'AT4';
+              return http.Response.bytes(
+                utf8.encode('media:$source'),
+                200,
+                headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
+              );
+            }
+            return http.Response('{"error":"stale_cookie"}', 401);
+          }),
+        );
+        addTearDown(client.close);
+
+        const paths = [
+          '/workspace/one.wav',
+          '/workspace/two.wav',
+          '/workspace/three.wav',
+        ];
+        final responses = await Future.wait([
+          for (final path in paths)
+            client.apiDownload(
+              'files/download?path=${Uri.encodeQueryComponent(path)}',
+              maxBytes: 1024,
+            ),
+        ]);
+
+        expect(responses, hasLength(3));
+        expect(loginCalls, 1, reason: 'cookie rotation must not password-login');
+      },
+    );
+
+    test(
       'shares one re-login across staggered parallel media requests and retries',
       () async {
         var loginCalls = 0;
