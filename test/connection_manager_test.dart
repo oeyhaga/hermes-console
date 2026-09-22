@@ -2565,6 +2565,87 @@ void main() {
     );
 
     test(
+      'bounds retries when concurrent clients keep rotating rejected cookies',
+      () async {
+        var loginCalls = 0;
+        var rotation = 0;
+        var firstWaveCalls = 0;
+        final allFirstWaveStarted = Completer<void>();
+        final callsByPath = <String, int>{};
+
+        MockClient backend() => MockClient((request) async {
+          if (request.url.path == '/auth/password-login') {
+            loginCalls++;
+            return http.Response(
+              '{"ok":true}',
+              200,
+              headers: {'set-cookie': 'hermes_session_at=AT0'},
+            );
+          }
+
+          final path = request.url.path;
+          final calls = callsByPath.update(
+            path,
+            (value) => value + 1,
+            ifAbsent: () => 1,
+          );
+          if (calls > 2) {
+            throw StateError('request exceeded its one-retry budget: $path');
+          }
+          if (calls == 1) {
+            firstWaveCalls++;
+            if (firstWaveCalls == 3) allFirstWaveStarted.complete();
+            await allFirstWaveStarted.future;
+          }
+          rotation++;
+          return http.Response(
+            '{"error":"stale_cookie"}',
+            401,
+            headers: {'set-cookie': 'hermes_session_at=AT$rotation'},
+          );
+        });
+
+        final clients = List<DashboardClient>.generate(
+          3,
+          (_) => DashboardClient(
+            host: 'adversarial-cookie-rotation.local',
+            basicUser: 'admin',
+            basicPass: 'secret',
+            httpClientOverride: backend(),
+          ),
+        );
+        addTearDown(() {
+          for (final client in clients) {
+            client.close();
+          }
+        });
+
+        final outcomes = await Future.wait([
+          for (var index = 0; index < clients.length; index++)
+            () async {
+              try {
+                await clients[index].apiGet('retry-budget/$index');
+                return null;
+              } catch (error) {
+                return error;
+              }
+            }(),
+        ]);
+
+        expect(loginCalls, 1, reason: 'the initial login remains single-flight');
+        expect(
+          outcomes,
+          everyElement(
+            isA<DashboardHttpException>()
+                .having((error) => error.statusCode, 'statusCode', 401)
+                .having((error) => error.toString(), 'message', 'HTTP 401'),
+          ),
+        );
+        expect(callsByPath.values, everyElement(2));
+      },
+    );
+
+    test(
       'parallel downloads survive access-cookie rotation without re-login',
       () async {
         var loginCalls = 0;
@@ -2572,9 +2653,7 @@ void main() {
         var initialRequests = 0;
         var retryRequests = 0;
         final allInitialStarted = Completer<void>();
-        final allRetriesStarted = Completer<void>();
         final firstRotated = Completer<void>();
-        final secondRotated = Completer<void>();
 
         final client = DashboardClient(
           host: 'media-cookie-rotation.local',
@@ -2615,28 +2694,7 @@ void main() {
 
             if (sentAccess == 'AT2') {
               retryRequests++;
-              if (retryRequests == 2) allRetriesStarted.complete();
-              await allRetriesStarted.future;
-              if (source.endsWith('two.wav')) {
-                currentAccess = 'AT3';
-                secondRotated.complete();
-                return http.Response.bytes(
-                  utf8.encode('media:$source'),
-                  200,
-                  headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
-                );
-              }
-              await secondRotated.future;
-              return http.Response('{"error":"stale_cookie"}', 401);
-            }
-
-            if (sentAccess == currentAccess) {
-              currentAccess = 'AT4';
-              return http.Response.bytes(
-                utf8.encode('media:$source'),
-                200,
-                headers: {'set-cookie': 'hermes_session_at=$currentAccess'},
-              );
+              return http.Response.bytes(utf8.encode('media:$source'), 200);
             }
             return http.Response('{"error":"stale_cookie"}', 401);
           }),
@@ -2657,6 +2715,7 @@ void main() {
         ]);
 
         expect(responses, hasLength(3));
+        expect(retryRequests, 2, reason: 'stale siblings each retry once');
         expect(loginCalls, 1, reason: 'cookie rotation must not password-login');
       },
     );
