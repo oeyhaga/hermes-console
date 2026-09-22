@@ -2934,6 +2934,7 @@ class DashboardClient {
     required String? sentCookie,
     required bool retried,
   }) {
+    if (retried) return null;
     if (_hasPasswordCreds) {
       final shared = _sharedPasswordSession;
       final currentCookie = _cookieHeaderFor(shared.cookies);
@@ -2941,10 +2942,9 @@ class DashboardClient {
         _cookies
           ..clear()
           ..addAll(shared.cookies);
-        return retried;
+        return true;
       }
     }
-    if (retried) return null;
     _resetSession(sentCookie: sentCookie);
     return true;
   }
