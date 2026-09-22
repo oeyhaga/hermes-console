@@ -1290,18 +1290,25 @@ class GeneratedTextViewerScreen extends StatelessWidget {
           ),
         ],
       ),
+      // SelectionArea (no SelectableText) es lo que permite seleccionar texto
+      // SIN robarle el gesto de arrastre vertical al scroll: con
+      // SelectableText suelto dentro de un SingleChildScrollView el propio
+      // recognizer de selección ganaba el arrastre y la pantalla no
+      // desplazaba nunca (reportado en el Pixel real).
       body: SafeArea(
-        child: SingleChildScrollView(
-          key: const ValueKey<String>('generated-text-viewer-safe-area'),
-          padding: const EdgeInsets.all(16),
-          child: SelectableText(
-            text,
-            key: const ValueKey<String>('generated-text-viewer-body'),
-            style: TextStyle(
-              color: colors.textPrimary,
-              fontFamily: 'monospace',
-              fontSize: 13,
-              height: 1.5,
+        child: SelectionArea(
+          child: SingleChildScrollView(
+            key: const ValueKey<String>('generated-text-viewer-safe-area'),
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              text,
+              key: const ValueKey<String>('generated-text-viewer-body'),
+              style: TextStyle(
+                color: colors.textPrimary,
+                fontFamily: 'monospace',
+                fontSize: 13,
+                height: 1.5,
+              ),
             ),
           ),
         ),

@@ -543,6 +543,68 @@ void main() {
     expect(copiedText, 'first line\nsecond line\nfull final line');
   });
 
+  testWidgets(
+    'el visor de texto completo desplaza al arrastrar sobre el contenido',
+    (tester) async {
+      // Reproduce el bug real del Pixel: SelectableText suelto dentro de un
+      // SingleChildScrollView le ganaba el gesto de arrastre vertical al
+      // scroll, así que arrastrar sobre el texto no desplazaba nunca. La
+      // pantalla debe usar SelectionArea (que sí cede el arrastre al
+      // ancestro Scrollable) en vez de SelectableText.
+      final longText = List.generate(60, (i) => 'Linea ${i + 1}').join('\n');
+      await tester.pumpWidget(
+        host(
+          GeneratedTextViewerScreen(
+            name: 'largo.txt',
+            text: longText,
+            sizeBytes: longText.length,
+            onShare: () {},
+            onSave: () {},
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final scrollable = tester.state<ScrollableState>(
+        find.byType(Scrollable),
+      );
+      expect(scrollable.position.pixels, 0);
+      expect(
+        scrollable.position.maxScrollExtent,
+        greaterThan(0),
+        reason: 'el texto largo debe desbordar la pantalla',
+      );
+
+      // Comprobación estructural: la corrección real (probada a mano en un
+      // Pixel real y en el emulador, arrastrando físicamente sobre el texto y
+      // viendo cómo desplaza) es sustituir SelectableText por SelectionArea
+      // envolviendo un Text plano. SelectableText suelto dentro de un
+      // SingleChildScrollView se quedaba con cualquier arrastre vertical como
+      // gesto de selección y el scroll nunca se movía; el simulador de
+      // gestos synthetic de flutter_test no reproduce de forma fiable esa
+      // resolución de árbitro de gestos aquí (movimiento en un solo salto vs.
+      // multi-frame), así que esta prueba fija la forma del widget en vez de
+      // fingir el arrastre: si alguien vuelve a poner un SelectableText
+      // suelto aquí, esto falla.
+      expect(
+        find.ancestor(
+          of: find.byKey(const ValueKey('generated-text-viewer-body')),
+          matching: find.byType(SelectionArea),
+        ),
+        findsOneWidget,
+        reason:
+            'el texto completo debe ir dentro de SelectionArea (no '
+            'SelectableText suelto) para no robarle el arrastre al scroll',
+      );
+      // tester.widget<Text>() ya lanza si el widget en esa key no es
+      // exactamente Text (por ejemplo, si alguien lo revierte a
+      // SelectableText, que no es subtipo de Text).
+      tester.widget<Text>(
+        find.byKey(const ValueKey('generated-text-viewer-body')),
+      );
+    },
+  );
+
   testWidgets('sensitive text returned by a loader is never rendered inline', (
     tester,
   ) async {
