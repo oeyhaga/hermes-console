@@ -3907,6 +3907,13 @@ class ActiveChat {
   DesktopCompressionFenceRecord? _durableCompressionFence;
   _PendingDesktopCompression? _pendingDesktopCompression;
   Timer? _desktopCompressionReconciliationTimer;
+  // Set only by an actual abandoned reconciliation (a tracked pending
+  // attempt whose deadline ran out); cleared on a fresh dispatch or a clean
+  // settle. Deliberately NOT derived from `_pendingDesktopCompression == null`
+  // alone: that is also true for an attempt whose fence went stale before it
+  // was ever tracked as pending (e.g. superseded by a concurrent refresh),
+  // which must stay silent rather than surface a false "can't confirm".
+  bool _desktopCompressionUnconfirmable = false;
   bool _desktopAutoCompacting = false;
 
   /// Hermes repite `compacting` cada ~60 s mientras dura; si dejan de llegar
@@ -4670,7 +4677,8 @@ class ActiveChat {
   bool get desktopCompressionNeedsConfirmation =>
       _desktopCompressionInFlight &&
       !_desktopCompressionRpcInFlight &&
-      _pendingDesktopCompression == null;
+      _pendingDesktopCompression == null &&
+      _desktopCompressionUnconfirmable;
   bool get desktopCompressionAwaitingReconciliation =>
       _pendingDesktopCompression != null;
   bool get desktopCompressionTransportUncertain =>
@@ -13494,6 +13502,9 @@ class ActiveChat {
         _pendingDesktopCompression == null) {
       _desktopCompressionReconciliationTimer?.cancel();
       _desktopCompressionReconciliationTimer = null;
+      // A clean delete with nothing else outstanding is a real settle: any
+      // earlier "couldn't confirm" from a previous attempt no longer applies.
+      _desktopCompressionUnconfirmable = false;
     }
     _desktopCompressionInFlight =
         _durableCompressionFence != null || _pendingDesktopCompression != null;
@@ -13795,6 +13806,7 @@ class ActiveChat {
       _desktopCompactionMessagesBefore = null;
       _desktopCompactionChunkIndex = null;
       _desktopCompactionChunkCount = null;
+      _desktopCompressionUnconfirmable = false;
     }
     _desktopCompressionInFlight = true;
     _emit(ActiveChatEvent.sessionInfo);
@@ -14155,6 +14167,12 @@ class ActiveChat {
   /// exact-root tip/counter evidence in [_settlePendingDesktopCompression].
   void _abandonPendingDesktopCompression([
     _PendingDesktopCompression? expected,
+    // Only a genuine deadline expiry while actively reconciling counts as
+    // "we tried and couldn't confirm". A runtime retirement/replacement
+    // (e.g. `_retireDesktopRuntime`) abandons the local guard too, but that
+    // is a bookkeeping reset, not a confirmed-unconfirmable result — it must
+    // not surface the warning UI.
+    bool unconfirmable = false,
   ]) {
     if (expected != null && !identical(_pendingDesktopCompression, expected)) {
       return;
@@ -14164,6 +14182,7 @@ class ActiveChat {
     if (_pendingDesktopCompression == null) return;
     _pendingDesktopCompression = null;
     _desktopCompressionInFlight = _durableCompressionFence != null;
+    if (unconfirmable) _desktopCompressionUnconfirmable = true;
     if (!_disposed) _emit(ActiveChatEvent.sessionInfo);
   }
 
@@ -14175,7 +14194,7 @@ class ActiveChat {
       DateTime.fromMillisecondsSinceEpoch(_wallClockMs()),
     );
     if (remainingAtReadStart <= Duration.zero) {
-      _abandonPendingDesktopCompression(record);
+      _abandonPendingDesktopCompression(record, true);
       return;
     }
     final readBudget =
@@ -14214,13 +14233,13 @@ class ActiveChat {
       DateTime.fromMillisecondsSinceEpoch(_wallClockMs()),
     );
     if (remaining <= Duration.zero) {
-      _abandonPendingDesktopCompression(record);
+      _abandonPendingDesktopCompression(record, true);
       return;
     }
     _desktopCompressionReconciliationTimer?.cancel();
     _desktopCompressionReconciliationTimer = Timer(
       remaining,
-      () => _abandonPendingDesktopCompression(record),
+      () => _abandonPendingDesktopCompression(record, true),
     );
   }
 
