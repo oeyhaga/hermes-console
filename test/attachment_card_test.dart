@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/attachment_draft.dart';
 import 'package:hermes_android/core/services/attachment_uploader.dart';
+import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/generated_media_service.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
@@ -749,6 +750,87 @@ void main() {
 
     expect(loads, 0);
     expect(find.text('Descargar'), findsOneWidget);
+  });
+
+  testWidgets('transient MEDIA failure retries before showing an error', (
+    tester,
+  ) async {
+    final directory = Directory.systemTemp.createTempSync(
+      'generated-transient-',
+    );
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File('${directory.path}/ready.txt')
+      ..writeAsStringSync('loaded on first visible attempt');
+    var loads = 0;
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/ready.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'ready.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 31,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            if (loads == 1) throw const DashboardHttpException(503);
+            return file;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 2);
+    expect(find.text('Reintentar'), findsNothing);
+    expect(
+      find.textContaining('loaded on first visible attempt'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('rate-limited MEDIA keeps its calm error state', (tester) async {
+    var loads = 0;
+
+    await tester.pumpWidget(
+      host(
+        GeneratedMediaAttachmentCard(
+          reference: const GeneratedMediaReference(
+            source: '/workspace/rate-limited.txt',
+            kind: GeneratedMediaKind.file,
+            sourceKind: GeneratedMediaSourceKind.serverPath,
+            displayName: 'rate-limited.txt',
+            mimeType: 'text/plain',
+            sizeBytes: 12,
+          ),
+          autoLoad: true,
+          load: (onProgress, isCancelled) async {
+            loads++;
+            throw const DashboardAuthException(
+              DashboardAuthFailureCode.rateLimited,
+              statusCode: 429,
+            );
+          },
+          errorLabelBuilder: (_, _) => 'Please wait before trying again',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(loads, 1);
+    expect(find.text('Reintentar'), findsOneWidget);
   });
 
   testWidgets('failed MEDIA auto-load retries and becomes ready', (tester) async {

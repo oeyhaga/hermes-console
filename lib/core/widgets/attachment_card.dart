@@ -10,10 +10,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
+import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../models/attachment_draft.dart';
+import '../services/connection_manager.dart';
 import '../services/generated_media_service.dart';
 import '../theme/app_theme.dart';
 import 'hermes_notice.dart';
@@ -573,6 +575,21 @@ typedef GeneratedMediaOpenCallback =
       VoidCallback onSave,
     );
 
+bool _isTransientGeneratedMediaError(Object error) {
+  if (error is SocketException ||
+      error is TimeoutException ||
+      error is HttpException ||
+      error is http.ClientException) {
+    return true;
+  }
+  if (error is DashboardHttpException) {
+    return error.statusCode == 401 || error.statusCode >= 500;
+  }
+  return error is DashboardAuthException &&
+      error.code != DashboardAuthFailureCode.rateLimited &&
+      (error.statusCode ?? 0) >= 500;
+}
+
 Future<void> openGeneratedMediaExternally(
   File file, {
   required String mimeType,
@@ -811,9 +828,24 @@ class _GeneratedMediaAttachmentCardState
             (automatic &&
                 (!_visible || !_inForeground || _autoLimitExceeded));
       });
+      Future<File> performLoadWithRetry() async {
+        try {
+          return await performLoad();
+        } catch (error) {
+          if (!_isTransientGeneratedMediaError(error) ||
+              _cancelled ||
+              cancellation?.isCancelled == true ||
+              !mounted ||
+              generation != _generation) {
+            rethrow;
+          }
+          return performLoad();
+        }
+      }
+
       final file = automatic
           ? await GeneratedMediaService.runAutoLoad(
-              performLoad,
+              performLoadWithRetry,
               cancellation: cancellation,
               isCancelled: () =>
                   _cancelled ||
@@ -821,7 +853,7 @@ class _GeneratedMediaAttachmentCardState
                   !_visible ||
                   generation != _generation,
             )
-          : await performLoad();
+          : await performLoadWithRetry();
       if (!mounted || generation != _generation || _cancelled) return;
       final length = file.lengthSync();
       if (!mounted || generation != _generation || _cancelled) return;

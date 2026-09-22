@@ -2930,6 +2930,25 @@ class DashboardClient {
     _passwordLoginFuture = null;
   }
 
+  bool? _unauthorizedRetry({
+    required String? sentCookie,
+    required bool retried,
+  }) {
+    if (_hasPasswordCreds) {
+      final shared = _sharedPasswordSession;
+      final currentCookie = _cookieHeaderFor(shared.cookies);
+      if (_hasSessionCredential(shared.cookies) && currentCookie != sentCookie) {
+        _cookies
+          ..clear()
+          ..addAll(shared.cookies);
+        return retried;
+      }
+    }
+    if (retried) return null;
+    _resetSession(sentCookie: sentCookie);
+    return true;
+  }
+
   /// Resuelve los headers de auth sin hacer ninguna llamada de datos.
   /// Usado por ConnectionDiagnostics para clasificar fallos de auth.
   Future<Map<String, String>> authHeadersForDiagnostics() => _authHeaders();
@@ -3047,9 +3066,14 @@ class DashboardClient {
         .get(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiGet(endpoint, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiGet(endpoint, retried: nextRetried);
+      }
     }
     if (res.statusCode != 200) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3066,9 +3090,14 @@ class DashboardClient {
         .get(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiGetList(endpoint, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiGetList(endpoint, retried: nextRetried);
+      }
     }
     if (res.statusCode != 200) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3096,9 +3125,19 @@ class DashboardClient {
         )
         .timeout(timeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiPost(endpoint, body: body, retried: true, timeout: timeout);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiPost(
+          endpoint,
+          body: body,
+          retried: nextRetried,
+          timeout: timeout,
+        );
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3145,18 +3184,23 @@ class DashboardClient {
       responseMetadata,
       sentCookie: request.headers['Cookie'],
     );
-    if (streamed.statusCode == 401 && !retried) {
-      await _cancelResponseStream(streamed.stream);
-      _resetSession(sentCookie: request.headers['Cookie']);
-      return apiPostMultipartFile(
-        endpoint,
-        fieldName: fieldName,
-        filePath: filePath,
-        filename: filename,
-        fields: fields,
-        retried: true,
-        timeout: timeout,
+    if (streamed.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: request.headers['Cookie'],
+        retried: retried,
       );
+      if (nextRetried != null) {
+        await _cancelResponseStream(streamed.stream);
+        return apiPostMultipartFile(
+          endpoint,
+          fieldName: fieldName,
+          filePath: filePath,
+          filename: filename,
+          fields: fields,
+          retried: nextRetried,
+          timeout: timeout,
+        );
+      }
     }
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       final errorBytes = await _readResponseStream(
@@ -3208,15 +3252,20 @@ class DashboardClient {
       responseMetadata,
       sentCookie: request.headers['Cookie'],
     );
-    if (streamed.statusCode == 401 && !retried) {
-      await _cancelResponseStream(streamed.stream);
-      _resetSession(sentCookie: request.headers['Cookie']);
-      return apiDownload(
-        endpoint,
-        maxBytes: maxBytes,
-        retried: true,
-        timeout: timeout,
+    if (streamed.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: request.headers['Cookie'],
+        retried: retried,
       );
+      if (nextRetried != null) {
+        await _cancelResponseStream(streamed.stream);
+        return apiDownload(
+          endpoint,
+          maxBytes: maxBytes,
+          retried: nextRetried,
+          timeout: timeout,
+        );
+      }
     }
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       final errorBytes = await _readResponseStream(
@@ -3279,19 +3328,24 @@ class DashboardClient {
       responseMetadata,
       sentCookie: request.headers['Cookie'],
     );
-    if (streamed.statusCode == 401 && !retried) {
-      await _cancelResponseStream(streamed.stream);
-      _resetSession(sentCookie: request.headers['Cookie']);
-      return apiDownloadToFile(
-        endpoint,
-        target,
-        maxBytes: maxBytes,
-        profile: profile,
-        retried: true,
-        timeout: timeout,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
+    if (streamed.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: request.headers['Cookie'],
+        retried: retried,
       );
+      if (nextRetried != null) {
+        await _cancelResponseStream(streamed.stream);
+        return apiDownloadToFile(
+          endpoint,
+          target,
+          maxBytes: maxBytes,
+          profile: profile,
+          retried: nextRetried,
+          timeout: timeout,
+          onProgress: onProgress,
+          isCancelled: isCancelled,
+        );
+      }
     }
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       final errorBytes = await _readResponseStream(
@@ -3407,9 +3461,14 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiDelete(endpoint, body: body, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiDelete(endpoint, body: body, retried: nextRetried);
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3430,9 +3489,14 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiPut(endpoint, body: body, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiPut(endpoint, body: body, retried: nextRetried);
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3454,9 +3518,14 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return apiPatch(endpoint, body: body, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return apiPatch(endpoint, body: body, retried: nextRetried);
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3476,9 +3545,14 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return getMemoryInfo(profile: profile, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return getMemoryInfo(profile: profile, retried: nextRetried);
+      }
     }
     if (res.statusCode != 200) {
       throw DashboardHttpException(res.statusCode, body: res.body);
@@ -3508,9 +3582,14 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return getModelInfo(profile: profile, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return getModelInfo(profile: profile, retried: nextRetried);
+      }
     }
     if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
     return ModelActiveInfo.fromJson(
@@ -3732,9 +3811,14 @@ class DashboardClient {
       return const DashboardUpdateApplyResult.transportUncertain();
     }
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return applyUpdate(timeout: timeout, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return applyUpdate(timeout: timeout, retried: nextRetried);
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('HTTP ${res.statusCode}: ${res.body}');
@@ -3854,9 +3938,18 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return _putServerConfig(config, profile: profile, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return _putServerConfig(
+          config,
+          profile: profile,
+          retried: nextRetried,
+        );
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw DashboardHttpException(res.statusCode);
@@ -4076,9 +4169,14 @@ class DashboardClient {
         .delete(Uri.parse('$_baseUrl/api/$endpoint'), headers: headers)
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return _deleteCronEndpoint(endpoint, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return _deleteCronEndpoint(endpoint, retried: nextRetried);
+      }
     }
     if (res.statusCode == 404) return true;
     if (res.statusCode < 200 || res.statusCode >= 300) {
@@ -4131,9 +4229,19 @@ class DashboardClient {
         )
         .timeout(_kTimeout);
     _ingestSetCookie(res, sentCookie: headers['Cookie']);
-    if (res.statusCode == 401 && !retried) {
-      _resetSession(sentCookie: headers['Cookie']);
-      return updateJob(jobId, updates, profile: profile, retried: true);
+    if (res.statusCode == 401) {
+      final nextRetried = _unauthorizedRetry(
+        sentCookie: headers['Cookie'],
+        retried: retried,
+      );
+      if (nextRetried != null) {
+        return updateJob(
+          jobId,
+          updates,
+          profile: profile,
+          retried: nextRetried,
+        );
+      }
     }
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw Exception('HTTP ${res.statusCode}');
