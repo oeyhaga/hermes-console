@@ -1194,6 +1194,10 @@ class SessionMessagesPage {
   /// display_metadata even when every returned row parsed successfully.
   final Set<CoreReadCoverage> coverage;
 
+  /// Authoritative lookahead evidence supplied by the transcript loader.
+  /// Null means the page shape alone decides whether an older page may exist.
+  final bool? hasEarlier;
+
   SessionMessagesPage({
     required this.messages,
     required Object? pagination,
@@ -1202,6 +1206,7 @@ class SessionMessagesPage {
     bool? messagesFullyParsed,
     this.resolvedTipId,
     this.coverage = const <CoreReadCoverage>{},
+    this.hasEarlier,
   }) : rawMessageCount = rawMessageCount ?? messages.length,
        returned =
            _pageInt(pagination, 'returned') ??
