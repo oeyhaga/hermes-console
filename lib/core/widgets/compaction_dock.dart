@@ -67,12 +67,21 @@ String compactionResultText(
 class CompactionDock extends StatelessWidget {
   const CompactionDock({
     required this.compaction,
+    this.unconfirmed = false,
     this.note,
     this.clock,
     super.key,
   });
 
   final CompactionProgress compaction;
+
+  /// Señal persistente a nivel de servicio
+  /// (`ActiveChatService.desktopCompressionNeedsConfirmation`): el resultado
+  /// no se pudo confirmar. Es independiente del estado propio, transitorio,
+  /// de [compaction] (que termina y se retira tras unos segundos): mientras
+  /// el servicio siga sin poder confirmar, el aviso no debe desaparecer solo
+  /// porque ese `linger` expiró.
+  final bool unconfirmed;
 
   /// Estado que exige atención (resultado pendiente de confirmar…).
   final String? note;
@@ -82,11 +91,20 @@ class CompactionDock extends StatelessWidget {
   Widget build(BuildContext context) {
     final strings = Strings.of(context);
     final lang = Localizations.localeOf(context).languageCode;
-    final label = compaction.isUnconfirmed
+    // El resultado puede quedar sin confirmar por su propio estado transitorio
+    // (`compaction.isUnconfirmed`, un `CompactionProgress` recién terminado
+    // así) o por la señal persistente del servicio, que sigue en pie después
+    // de que ese `linger` expire.
+    final effectiveUnconfirmed = unconfirmed || compaction.isUnconfirmed;
+    final label = effectiveUnconfirmed
         ? note ?? strings.chaCompressionUnknown
         : compaction.isFinished
         ? compactionResultText(strings, compaction, lang)
-        : note ?? strings.liveCompacting;
+        : strings.liveCompacting;
+    // El estado sin confirmar ya usa `note` como título (con aviso); en
+    // cualquier otro caso en curso se muestra como línea secundaria, sin
+    // desplazar el «Compactando» + cronómetro que es la señal principal.
+    final secondaryNote = effectiveUnconfirmed ? null : note;
     return ActivityTicker(
       active: !compaction.isFinished,
       clock: clock,
@@ -94,7 +112,13 @@ class CompactionDock extends StatelessWidget {
         compaction: compaction,
         now: now,
         label: label,
-        facts: compaction.isFinished || note != null
+        note: secondaryNote,
+        unconfirmed: effectiveUnconfirmed,
+        // Los recuentos reales del backend siguen siendo útiles aunque haya
+        // un aviso secundario (p. ej. «sigue en curso en segundo plano»);
+        // solo se ocultan cuando ya terminó, momento en el que el resultado
+        // (`compactionResultText`) los sustituye.
+        facts: compaction.isFinished
             ? const []
             : compactionFacts(strings, compaction),
       ),
@@ -108,12 +132,19 @@ class _DockBody extends StatelessWidget {
     required this.now,
     required this.label,
     required this.facts,
+    required this.unconfirmed,
+    this.note,
   });
 
   final CompactionProgress compaction;
   final DateTime now;
   final String label;
   final List<String> facts;
+  final bool unconfirmed;
+
+  /// Línea secundaria opcional (p. ej. avisando que sigue en curso en
+  /// segundo plano). El título («Compactando» + cronómetro) no cambia.
+  final String? note;
 
   @override
   Widget build(BuildContext context) {
@@ -128,7 +159,7 @@ class _DockBody extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
       style: textStyle.copyWith(
         fontWeight: FontWeight.w700,
-        color: compaction.isUnconfirmed
+        color: unconfirmed
             ? colors.warning
             : finished
             ? colors.textSecondary
@@ -140,7 +171,7 @@ class _DockBody extends StatelessWidget {
         text: label,
         style: TextStyle(
           fontWeight: FontWeight.w700,
-          color: compaction.isUnconfirmed
+          color: unconfirmed
               ? colors.warning
               : finished
               ? colors.textSecondary
@@ -230,8 +261,16 @@ class _DockBody extends StatelessWidget {
                   key: const ValueKey('compaction-line'),
                   fraction: compaction.fraction,
                   finished: finished,
-                  unconfirmed: compaction.isUnconfirmed,
+                  unconfirmed: unconfirmed,
                 ),
+                if (note case final note?) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    note,
+                    key: const ValueKey('compaction-note'),
+                    style: TextStyle(fontSize: 12, color: colors.textSecondary),
+                  ),
+                ],
               ],
             ),
           ),

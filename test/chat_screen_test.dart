@@ -98,6 +98,7 @@ import 'package:hermes_android/core/services/voice/voice_phase.dart';
 import 'package:hermes_android/core/widgets/attachment_card.dart';
 import 'package:hermes_android/core/widgets/attachment_history_preview.dart';
 import 'package:hermes_android/core/widgets/chat_event_cards.dart';
+import 'package:hermes_android/core/widgets/compaction_dock.dart';
 import 'package:hermes_android/core/widgets/generated_image_card.dart';
 import 'package:hermes_android/core/widgets/activity_panel.dart';
 import 'package:hermes_android/core/widgets/hermes_notice.dart';
@@ -11821,7 +11822,11 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(seconds: 20));
       await tester.pump(const Duration(seconds: 11));
-      await tester.pump(const Duration(minutes: 3));
+      // Un transporte ambiguo comparte la misma ventana larga que una
+      // compactación que el servidor sí aceptó (hasta 12 min, ver
+      // `_desktopCompressionReconciliationFallback`): un intento perdido no
+      // se declara sin confirmar antes de agotarla.
+      await tester.pump(const Duration(minutes: 13));
       for (var frame = 0; frame < 12; frame++) {
         await tester.pump();
       }
@@ -12495,7 +12500,7 @@ void main() {
         findsNothing,
       );
       await tester.pump(const Duration(seconds: 7));
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -12504,6 +12509,10 @@ void main() {
   testWidgets(
     '/compress terminado: paleta cerrada durante la espera, composer limpio y contexto medido',
     (tester) async {
+      tester.view
+        ..physicalSize = const Size(960, 2142)
+        ..devicePixelRatio = 2.5;
+      addTearDown(tester.view.reset);
       final wireGate = Completer<Map<String, dynamic>>();
       final gateway = _UiNativeCompressionGateway(
         _uiNativeCompressionResult(DesktopCompressionStatus.compressed),
@@ -12541,15 +12550,43 @@ void main() {
         findsNothing,
       );
       expect(find.byIcon(Icons.arrow_upward), findsOneWidget);
-      // La barra va pegada sobre el input, dentro del compositor.
-      final dockRect = tester.getRect(
-        find.byKey(const ValueKey('compaction-dock')),
+      final dock = find.byType(CompactionDock);
+      final composer = find.byType(HermesComposerSurface);
+      expect(dock, findsOneWidget);
+      expect(
+        find.ancestor(of: dock, matching: composer),
+        findsNothing,
+        reason: 'el dock flotante no pertenece a la superficie del composer',
       );
-      final inputRow = tester.getRect(
-        find.byKey(const ValueKey('composer-input-row')),
+      expect(
+        find.ancestor(
+          of: dock,
+          matching: find.byKey(const ValueKey('chat-composer-host')),
+        ),
+        findsOneWidget,
       );
-      expect(dockRect.bottom, lessThanOrEqualTo(inputRow.top));
-      expect(dockRect.top, greaterThan(inputRow.top - 120));
+
+      void expectDockClearsComposer() {
+        final dockRect = tester.getRect(dock);
+        final fieldRect = tester.getRect(find.byType(TextField));
+        final sendRect = tester.getRect(find.byKey(const ValueKey('send')));
+        final composerRect = tester.getRect(composer);
+        expect(dockRect.bottom, lessThanOrEqualTo(composerRect.top));
+        expect(dockRect.overlaps(fieldRect), isFalse);
+        expect(dockRect.overlaps(sendRect), isFalse);
+      }
+
+      expectDockClearsComposer();
+
+      tester.view
+        ..physicalSize = const Size(2142, 960)
+        ..devicePixelRatio = 2
+        ..viewInsets = const FakeViewPadding(bottom: 545);
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expectDockClearsComposer();
+      expect(tester.takeException(), isNull);
 
       wireGate.complete(projectedCompressionReply());
       for (var frame = 0; frame < 12; frame++) {
@@ -12568,7 +12605,7 @@ void main() {
       expect(_dockText('Compactado · '), findsOneWidget);
       expect(_dockText('96k → 4.8k tokens'), findsOneWidget);
       await tester.pump(const Duration(seconds: 7));
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -16772,7 +16809,7 @@ void main() {
       expect(find.textContaining('tokens', findRichText: true), findsNothing);
       // Unos segundos después se retira sola: nunca queda colgada.
       await tester.pump(const Duration(seconds: 7));
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -16833,7 +16870,7 @@ void main() {
       expect(_dockText('Compactado · '), findsOneWidget);
       expect(chat.isStreaming, isTrue);
       await tester.pump(const Duration(seconds: 7));
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
       expect(find.byKey(const ValueKey('activity-pill')), findsOneWidget);
 
@@ -16960,6 +16997,7 @@ void main() {
       await tester.pump();
       expect(_dockText('Compactado · '), findsOneWidget);
       await tester.pump(const Duration(seconds: 7));
+      await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('compaction-dock')), findsNothing);
     },
   );

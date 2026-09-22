@@ -12564,6 +12564,12 @@ class _ChatScreenState extends State<ChatScreen>
         final compactIme =
             MediaQuery.viewInsetsOf(imeContext).bottom > 0 &&
             MediaQuery.orientationOf(imeContext) == Orientation.landscape;
+        // Sigue mostrándose aunque el resultado no se pueda confirmar: ese
+        // estado puede durar indefinidamente (hasta reabrir Hermes Desktop),
+        // y el aviso no debe desaparecer solo porque el `linger` normal del
+        // tracker expiró.
+        final showCompactionDock =
+            _compaction.current != null || _compressingSession;
         return Container(
           key: const ValueKey('chat-composer-host'),
           padding: compactIme
@@ -12592,27 +12598,6 @@ class _ChatScreenState extends State<ChatScreen>
                               unawaited(_removePendingAttachment(localId)),
                           onRetry: (localId) =>
                               unawaited(_retryPendingAttachment(localId)),
-                        ),
-                      // Barra de compactación pegada sobre el input: la misma
-                      // para la automática y la manual, haya o no turno vivo.
-                      if (_compaction.current != null ||
-                          (_compressingSession &&
-                              !_chat.desktopCompressionNeedsConfirmation))
-                        CompactionDock(
-                          compaction:
-                              _compaction.current ??
-                              CompactionProgress(
-                                startedAt:
-                                    _chat.desktopCompactionStartedAt ??
-                                    DateTime.now(),
-                                manual: true,
-                              ),
-                          note:
-                              _chat.desktopCompressionNeedsConfirmation ||
-                                  _chat.desktopCompressionTransportUncertain ||
-                                  _chat.desktopCompressionAwaitingReconciliation
-                              ? compressionProgressLabel
-                              : null,
                         ),
                       Row(
                         key: const ValueKey('composer-input-row'),
@@ -12776,6 +12761,29 @@ class _ChatScreenState extends State<ChatScreen>
                 )._withComposerPalette(floatingPalette),
                 _buildFloatingStatusPill(colors),
               ],
+            )._withFloatingCompactionDock(
+              showCompactionDock
+                  ? CompactionDock(
+                      compaction:
+                          _compaction.current ??
+                          CompactionProgress(
+                            startedAt:
+                                _chat.desktopCompactionStartedAt ??
+                                DateTime.now(),
+                            manual: true,
+                          ),
+                      // Señal persistente del servicio, no del tracker: no
+                      // expira con el `linger` de una compactación normal.
+                      unconfirmed: _chat.desktopCompressionNeedsConfirmation,
+                      note:
+                          _chat.desktopCompressionNeedsConfirmation ||
+                              _chat.desktopCompressionTransportUncertain ||
+                              _chat.desktopCompressionAwaitingReconciliation
+                          ? compressionProgressLabel
+                          : null,
+                    )
+                  : null,
+              _activityPillExtent,
             ),
           ),
         );
@@ -14158,6 +14166,39 @@ class _BotChatAppBarTitle extends StatelessWidget {
 extension _ComposerPalettePlacement on Widget {
   Widget _withComposerPalette(Widget? palette) =>
       _ComposerPaletteOverlay(palette: palette, child: this);
+
+  Widget _withFloatingCompactionDock(
+    Widget? dock,
+    ValueListenable<double> activityPillExtent,
+  ) => Stack(
+    clipBehavior: Clip.none,
+    children: [
+      this,
+      if (dock != null)
+        // La pastilla de actividad del turno (`chat-activity-pill`) vive en
+        // el flujo normal del transcript y descansa justo en este mismo
+        // borde cuando hay algo vivo; sin este desplazamiento extra, la
+        // barra flotante caería encima de ella en vez de apilarse arriba.
+        ValueListenableBuilder<double>(
+          valueListenable: activityPillExtent,
+          builder: (context, pillExtent, child) => Positioned(
+            top: -(pillExtent + 12),
+            left: 0,
+            right: 0,
+            child: child!,
+          ),
+          child: FractionalTranslation(
+            key: const ValueKey('compaction-dock-floating'),
+            // Its own height sets the offset without enlarging the IME layout.
+            translation: const Offset(0, -1),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 5),
+              child: dock,
+            ),
+          ),
+        ),
+    ],
+  );
 }
 
 class _ComposerPaletteOverlay extends StatefulWidget {
