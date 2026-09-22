@@ -3241,6 +3241,7 @@ class DashboardClient {
       throw RangeError.range(maxBytes, 1, null, 'maxBytes');
     }
     final request = http.Request('GET', Uri.parse('$_baseUrl/api/$endpoint'));
+    request.followRedirects = false;
     request.headers.addAll(await _authHeaders());
     final streamed = await _http.send(request).timeout(timeout);
     final responseMetadata = http.Response(
@@ -3317,6 +3318,7 @@ class DashboardClient {
       profile: profile,
     );
     final request = http.Request('GET', Uri.parse('$_baseUrl/$scopedEndpoint'));
+    request.followRedirects = false;
     request.headers.addAll(await _authHeaders());
     final streamed = await _http.send(request).timeout(timeout);
     final responseMetadata = http.Response(

@@ -619,7 +619,7 @@ class MainActivity : FlutterFragmentActivity() {
         fallbackMime: String?,
         remainingBatchBytes: Long,
     ): Map<String, Any>? {
-        if (remainingBatchBytes <= 0L) return null
+        if (uri.scheme != "content" || remainingBatchBytes <= 0L) return null
         val mime = contentResolver.getType(uri)
             ?.takeIf { it.length <= 160 }
             ?: fallbackMime?.takeIf { it.length <= 160 }
