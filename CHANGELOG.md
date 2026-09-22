@@ -85,9 +85,14 @@ Hermes backend.
   stopped it says so instead of claiming otherwise. Stopping one session can
   no longer affect another session's background processes on a shared
   connection.
-- The "scroll up" and "scroll to bottom" floating arrows only appear when the
-  conversation actually overflows the screen, live or after reopening a
-  chat — a short conversation that fits no longer shows a spurious arrow.
+- The "scroll up" arrow only appears when there is a real signal that more
+  history remains to load, never as a generic "scroll to the top of what's
+  already loaded" shortcut based on scroll position; the "scroll to bottom"
+  arrow only appears when the conversation actually overflows the screen,
+  live or after reopening a chat — a short conversation that fits no longer
+  shows a spurious arrow either way.
+- The text file viewer can actually be scrolled: a text-selection widget was
+  claiming every vertical drag before it reached the scroll view.
 - The compact context-usage chip never shows cumulative session tokens where
   the occupancy percentage belongs; when the context window size isn't known
   yet it shows a neutral placeholder, and the same rounding is used everywhere
