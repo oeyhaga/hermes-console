@@ -3,7 +3,7 @@
 All notable public changes are documented here. Internal QA/profile artifacts
 are not releases.
 
-## 1.2.12 (9010) — 2026-09-21
+## 1.2.12 (9200) — 2026-09-22
 
 Reliability and long-session release. Hermes kept working when Console was
 closed, stopped or lost its connection; what failed was what Console showed
@@ -50,14 +50,50 @@ Hermes backend.
   now tells the gateway it can answer server requests (#42).
 
 ### Chat
-- One assistant bubble per turn. Its header always carries the companion
-  sprite, larger and reacting to the turn's state, and a single activity block
-  holds the reasoning and tool/skill steps with a small state icon (thinking,
-  tool, skill, waiting, done, stopped, failed, offline). It collapses into one
-  entry when the turn ends, and a reopened conversation rebuilds the same
-  bubble.
-- The agent's task list shows as a "Tasks n/m" pill with a live checklist card
-  and a checklist inside the turn's activity block, rebuilt after a reconnect.
+- One assistant bubble per turn, with a single floating activity pill above
+  the composer for whatever is live (current action, task progress, a timer)
+  that expands in place into a compact, scrollable live panel: tasks with
+  animated checks (a finished task keeps its check on screen for a moment
+  instead of vanishing instantly), the current step, a "Done" list with
+  durations, and background work, subagents and loops each keeping their own
+  controls. The bubble itself keeps only a muted "Completado ⌄" / "Razonó
+  durante Ns ⌄" line under the assistant name, expandable to the same detail;
+  internal bridge-only steps (tool routing plumbing) are never shown, and a
+  reply that only reasoned or only ran bridge steps no longer leaves an empty
+  second bubble.
+- The assistant header shows the companion avatar plain, without a loading
+  ring, next to its name in the theme's accent colour; the line under the name
+  is that turn's collapsed status, not the model name (already shown at the
+  top of the chat).
+- Editing your own message happens in the bubble itself — tap the pencil and
+  the text becomes an editable field in place, no modal sheet — and the field
+  now opens with room for several lines from the start instead of a single
+  cramped line.
+- Compacting a conversation, automatic or manual, shows a slim, honest
+  indicator docked above the composer: an indeterminate moving line with the
+  real facts the backend reports (message/token counts, elapsed time) and the
+  real result once it finishes — never an invented percentage, since the
+  backend does not report compaction progress. The composer never shows a
+  spinner while this runs.
+- Stop's confirmation is a small, discreet single line above the composer that
+  clears itself a few seconds after a clean stop and disappears the moment a
+  new turn starts; it only stays on screen while something still needs your
+  attention (a retry, background work that would not confirm as stopped).
+- Stop now also reaches active subagents, not only the foreground turn and
+  background processes, and it only reports success once the roster actually
+  confirms nothing is left running; if something could not be confirmed
+  stopped it says so instead of claiming otherwise. Stopping one session can
+  no longer affect another session's background processes on a shared
+  connection.
+- The "scroll up" and "scroll to bottom" floating arrows only appear when the
+  conversation actually overflows the screen, live or after reopening a
+  chat — a short conversation that fits no longer shows a spurious arrow.
+- The compact context-usage chip never shows cumulative session tokens where
+  the occupancy percentage belongs; when the context window size isn't known
+  yet it shows a neutral placeholder, and the same rounding is used everywhere
+  a token count is shown so it can't disagree with itself near a
+  thousand/million boundary. Its accessible label is restored for screen
+  readers.
 - Files and media Hermes delivers (`MEDIA:`) load by themselves and open in
   in-app viewers: images (zoom), video, PDF (first-page preview and page
   viewer rendered natively on Android), text files (inline preview and a
@@ -81,6 +117,27 @@ Hermes backend.
 - Silence no longer fails a turn: a long foreground tool no longer produces a
   false "Modelo sin respuesta" (a hint appears after five minutes).
 
+### Security
+- The generated-file/`MEDIA:` denylist that keeps Console from ever fetching
+  or rendering a sensitive path is substantially wider (SSH keys and
+  `.ssh`/`.gnupg`/`.aws`/`.kube`/`.docker`/`.azure`/`.gcloud` directories,
+  `.netrc`, shell history files, more certificate/key extensions, `/proc`,
+  `/sys`, `/dev`), with a second check right before a text file is ever shown
+  inline. Installer/executable files (`.apk`, `.exe`, `.msi`, `.dmg`, `.sh`)
+  can no longer auto-load, preview, or be opened through the external-open
+  path. This is defense in depth on the client for gateway configurations that
+  do not confine file access to a workspace folder.
+- Downloading an attachment can no longer be redirected to another host with
+  Console's session credentials attached; an incoming share from another app
+  is only accepted from a `content://` source, never a raw file path.
+- A concurrent download of two attachments failing to authenticate could,
+  under a burst, retry without bound; a single failed authentication now
+  always resolves within one retry.
+- The public release-evidence package no longer includes the maintainer-only
+  build manifest, which carried this machine's local toolchain paths; the
+  packaging gate now also scans every shipped file for a personal path or
+  private IP before release.
+
 ### Fixes from GitHub issues
 - #42 approval and prompt requests were withdrawn by the gateway (see above).
 - #39 voice transcription became unreliable from the second recording: the
@@ -88,6 +145,20 @@ Hermes backend.
 - #37 the composer draft: covered by regression tests for normal, new, Bot
   Chat and room conversations, restarts and quick exits; drafts are shown on
   the list row.
+
+### Correctness and performance
+- An edit that got interrupted mid-flight by a Stop or by another turn
+  starting could truncate the visible transcript while quietly reporting the
+  edit as sent; it now rolls back and shows the failure like any other failed
+  edit.
+- A short local network failure while checking for older history no longer
+  permanently pins "more history available"; it now retries transparently.
+- The activity panel no longer recomputes on every keystroke, scroll frame or
+  unrelated screen update — the guard that was meant to skip that work now
+  actually does.
+- Four new interface strings that shipped in English by mistake are now in
+  Spanish; a few other small text and one-off state inconsistencies around
+  Stop and the compaction indicator are fixed.
 
 ### Other
 - Long history stays reachable after a compaction and the local transcript
