@@ -18,6 +18,7 @@ final class CompactionProgress {
     this.finishedAt,
     this.tokensAfter,
     this.messagesAfter,
+    this.resultConfirmed = true,
   });
 
   final DateTime startedAt;
@@ -35,8 +36,10 @@ final class CompactionProgress {
   final DateTime? finishedAt;
   final int? tokensAfter;
   final int? messagesAfter;
+  final bool resultConfirmed;
 
   bool get isFinished => finishedAt != null;
+  bool get isUnconfirmed => isFinished && !resultConfirmed;
 
   Duration elapsed(DateTime now) {
     final end = finishedAt ?? now;
@@ -63,6 +66,7 @@ final class CompactionProgress {
     int? messagesAfter,
     int? chunkIndex,
     int? chunkCount,
+    bool? resultConfirmed,
   }) => CompactionProgress(
     startedAt: startedAt,
     manual: manual,
@@ -73,6 +77,7 @@ final class CompactionProgress {
     finishedAt: finishedAt ?? this.finishedAt,
     tokensAfter: tokensAfter ?? this.tokensAfter,
     messagesAfter: messagesAfter ?? this.messagesAfter,
+    resultConfirmed: resultConfirmed ?? this.resultConfirmed,
   );
 }
 

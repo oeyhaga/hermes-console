@@ -12341,6 +12341,82 @@ void main() {
   );
 
   testWidgets(
+    '/compress real pending observes session.info then compacted after a long wait',
+    (tester) async {
+      final gateway = _UiNativeCompressionGateway(
+        _uiNativeCompressionResult(DesktopCompressionStatus.pending),
+      );
+      var storedRows = <Map<String, dynamic>>[
+        {'id': 'current', 'role': 'assistant', 'content': 'Current answer'},
+      ];
+      final chat = await pumpChat(
+        tester,
+        messages: storedRows,
+        desktopGateway: gateway,
+        connection: _remoteConn('conn-native-compress-real-order'),
+        messagesLoaded: true,
+        acquireDesktopRuntimeBeforeMount: true,
+        storedMessageLoader: (_, _) async => storedRows,
+      );
+
+      await tester.enterText(find.byType(TextField), '/compress real backend');
+      await submitComposerFromKeyboard(tester);
+      await tester.pump(const Duration(milliseconds: 350));
+      expect(chat.desktopCompressionAwaitingReconciliation, isTrue);
+
+      gateway.emit('status.update', const {
+        'kind': 'compressing',
+        'text': 'compressing 22 messages (~21,542 tok)',
+      });
+      await tester.pump(const Duration(seconds: 90));
+      gateway.emit('status.update', const {'kind': 'process'});
+      await tester.pump();
+
+      storedRows = <Map<String, dynamic>>[
+        {
+          'id': 'archived-user',
+          'role': 'user',
+          'content': 'Archived compacted question',
+          'compacted': 1,
+        },
+        {
+          'id': 'archived-assistant',
+          'role': 'assistant',
+          'content': 'Archived compacted answer',
+          'compacted': 1,
+        },
+        {'id': 'current', 'role': 'assistant', 'content': 'Current answer'},
+      ];
+      gateway.emit('session.info', const {
+        'info': {
+          '_lineage_root_id': 'sess-test',
+          'stored_session_id': 'stored-ui-real-pending-tip',
+          'usage': {'compressions': 1},
+        },
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(chat.desktopCompressionInFlight, isFalse);
+
+      gateway.emit('status.update', const {
+        'kind': 'compacted',
+        'text': 'Context compaction complete',
+      });
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        isEmpty,
+      );
+      expect(find.text('Archived compacted question'), findsOneWidget);
+      expect(_dockText('Compactado · '), findsOneWidget);
+      expect(gateway.nativeCompressionCalls, 1);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
     '/compress pendiente: pastilla con tiempo, sin paleta, composer limpio al terminar y contexto sano',
     (tester) async {
       final gateway = _UiNativeCompressionGateway(

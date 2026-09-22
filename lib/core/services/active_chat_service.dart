@@ -3691,6 +3691,9 @@ class ActiveChat {
   static const Duration _desktopCompressionReconcileRpcBudget = Duration(
     seconds: 10,
   );
+  static const Duration _desktopCompressionReconciliationFallback = Duration(
+    minutes: 12,
+  );
 
   static Duration _normalizedDesktopCompressionReconciliationDelay(
     Duration configured,
@@ -3699,7 +3702,9 @@ class ActiveChat {
   static Duration _normalizedDesktopCompressionReconciliationWindow(
     Duration configured,
     Duration delay,
-  ) => configured > delay ? configured : const Duration(minutes: 2);
+  ) => configured > delay
+      ? configured
+      : _desktopCompressionReconciliationFallback;
 
   static List<Duration> _normalizeDesktopRecoveryBackoff(
     List<Duration> configured,
@@ -6698,9 +6703,8 @@ class ActiveChat {
     Duration desktopCompressionReconciliationDelay = const Duration(
       seconds: 20,
     ),
-    Duration desktopCompressionReconciliationWindow = const Duration(
-      minutes: 2,
-    ),
+    Duration desktopCompressionReconciliationWindow =
+        _desktopCompressionReconciliationFallback,
     @visibleForTesting
     List<Duration> backgroundStopRecheckDelays = const [
       Duration.zero,
@@ -7666,6 +7670,7 @@ class ActiveChat {
     int loadEpoch, {
     int? expectedMessageCount,
     VoidCallback? onMessagesPublished,
+    bool forceStoredDisplay = false,
     required bool Function() stillAuthorized,
   }) async {
     try {
@@ -7676,7 +7681,10 @@ class ActiveChat {
         profile: _storedSessionProfile,
         hardExpectedMessageCount: expectedMessageCount,
       );
-      final page = await _fetchStoredMessagesPage(context);
+      final page = await _fetchStoredMessagesPage(
+        context,
+        allowNativeHistory: !forceStoredDisplay,
+      );
       if (!stillAuthorized()) return;
       var projected = const <Map<String, dynamic>>[];
       _RefreshedTranscriptGraft? graft;
@@ -8747,6 +8755,7 @@ class ActiveChat {
   Future<SessionMessagesPage> _fetchStoredMessagesPage(
     _SessionMessagesPageReadContext context, {
     String? runtimeSessionId,
+    bool allowNativeHistory = true,
   }) async {
     final page = await _requestStoredMessagesPage(
       storedSessionId: context.requestedStoredSessionId,
@@ -8755,6 +8764,7 @@ class ActiveChat {
       offset: context.requestedOffset,
       runtimeSessionId: runtimeSessionId,
       allowNativeHistory:
+          allowNativeHistory &&
           context.consumer != _SessionMessagesPageConsumer.loadEarlier,
     );
     final expectedCount = context.hardExpectedMessageCount;
@@ -13432,8 +13442,19 @@ class ActiveChat {
       if (!evidence.provesSettlement) return false;
       final tip = evidence.authoritativeTip;
       final deleted = await _deleteDurableCompressionFence(record);
-      if (deleted && tip != null) _desktopStoredSessionId = tip;
-      return deleted;
+      if (!deleted || _disposed) return deleted;
+      if (tip != null) _desktopStoredSessionId = tip;
+      final hydrationStoredId = serverSessionId;
+      final loadEpoch = ++_messageLoadEpoch;
+      final authority = _compressionProjectionAuthority;
+      await _loadMessagesWhileCompressionFenced(
+        loadEpoch,
+        forceStoredDisplay: true,
+        stillAuthorized: () =>
+            authority == _compressionProjectionAuthority &&
+            serverSessionId == hydrationStoredId,
+      );
+      return true;
     } catch (_) {
       return false;
     }
@@ -13823,7 +13844,7 @@ class ActiveChat {
         }
       } else if (compressionFenceStillValid() &&
           outcome != DesktopCompressionOutcome.ownershipLost) {
-        _beginPendingDesktopCompression(
+        await _beginPendingDesktopCompression(
           durableRecord: durableRecord,
           runtimeId: runtimeId,
           connectionEpoch: connectionEpoch,
@@ -14047,37 +14068,48 @@ class ActiveChat {
     Map<String, dynamic> payload,
   ) => DesktopCompressionFenceEvidence.evaluate(record.durableRecord, payload);
 
-  void _beginPendingDesktopCompression({
+  Future<void> _beginPendingDesktopCompression({
     required DesktopCompressionFenceRecord durableRecord,
     required String runtimeId,
     required int connectionEpoch,
     required int sessionEpoch,
     required _DesktopCompressionPendingCause cause,
-  }) {
+  }) async {
     _desktopCompressionReconciliationTimer?.cancel();
+    final reconcileUntilMs =
+        _wallClockMs() + _desktopCompressionReconciliationWindow.inMilliseconds;
+    final transitioned = await _compressionFenceStore.transitionAttempt(
+      durableRecord.scope,
+      attemptId: durableRecord.attemptId,
+      phase: cause == _DesktopCompressionPendingCause.serverPending
+          ? DesktopCompressionFencePhase.serverPending
+          : DesktopCompressionFencePhase.transportUnknown,
+      reconcileUntilMs: reconcileUntilMs,
+    );
+    if (transitioned == null) {
+      final authority = await _compressionFenceStore.lookup(durableRecord.scope);
+      final current = authority.record;
+      _durableCompressionFence = current;
+      _pendingDesktopCompression = null;
+      _desktopCompressionInFlight = authority.isFenced;
+      if (current != null) _scheduleDurableCompressionReconciliation(current);
+      if (!_disposed) _emit(ActiveChatEvent.sessionInfo);
+      return;
+    }
     final record = _PendingDesktopCompression(
-      durableRecord: durableRecord,
+      durableRecord: transitioned,
       runtimeSessionId: runtimeId,
-      rootDurableId: durableRecord.scope.logicalSessionId,
+      rootDurableId: transitioned.scope.logicalSessionId,
       bindEpoch: connectionEpoch,
       sessionEpoch: sessionEpoch,
       deadline: DateTime.fromMillisecondsSinceEpoch(
-        durableRecord.reconcileUntilMs,
+        transitioned.reconcileUntilMs,
       ),
       cause: cause,
     );
-    _durableCompressionFence = durableRecord;
+    _durableCompressionFence = transitioned;
     _pendingDesktopCompression = record;
     _desktopCompressionInFlight = true;
-    unawaited(
-      _compressionFenceStore.updatePhase(
-        durableRecord.scope,
-        attemptId: durableRecord.attemptId,
-        phase: cause == _DesktopCompressionPendingCause.serverPending
-            ? DesktopCompressionFencePhase.serverPending
-            : DesktopCompressionFencePhase.transportUnknown,
-      ),
-    );
     _desktopCompressionReconciliationTimer = Timer(
       _desktopCompressionReconciliationDelay,
       () => unawaited(_reconcilePendingDesktopCompression(record)),
@@ -14099,7 +14131,23 @@ class ActiveChat {
     if (!identical(_pendingDesktopCompression, record)) return;
     final tip = evidence.authoritativeTip;
     final deleted = await _deleteDurableCompressionFence(record.durableRecord);
-    if (deleted && tip != null) _desktopStoredSessionId = tip;
+    if (!deleted || _disposed) return;
+    if (tip != null) _desktopStoredSessionId = tip;
+    if (_desktopRuntimeSessionId != record.runtimeSessionId ||
+        _desktopBindEpoch != record.bindEpoch ||
+        _desktopSessionEpoch != record.sessionEpoch) {
+      return;
+    }
+    final hydrationStoredId = serverSessionId;
+    final loadEpoch = ++_messageLoadEpoch;
+    final authority = _compressionProjectionAuthority;
+    await _loadMessagesWhileCompressionFenced(
+      loadEpoch,
+      forceStoredDisplay: true,
+      stillAuthorized: () =>
+          authority == _compressionProjectionAuthority &&
+          serverSessionId == hydrationStoredId,
+    );
   }
 
   /// Releases an expired or retired suppression gate without treating the
@@ -14123,7 +14171,9 @@ class ActiveChat {
     _PendingDesktopCompression record,
   ) async {
     if (!_isPendingDesktopCompressionCurrent(record)) return;
-    final remainingAtReadStart = record.deadline.difference(DateTime.now());
+    final remainingAtReadStart = record.deadline.difference(
+      DateTime.fromMillisecondsSinceEpoch(_wallClockMs()),
+    );
     if (remainingAtReadStart <= Duration.zero) {
       _abandonPendingDesktopCompression(record);
       return;
@@ -14160,7 +14210,9 @@ class ActiveChat {
       // intentionally non-success and merely prevents a stale UI gate.
     }
     if (!_isPendingDesktopCompressionCurrent(record)) return;
-    final remaining = record.deadline.difference(DateTime.now());
+    final remaining = record.deadline.difference(
+      DateTime.fromMillisecondsSinceEpoch(_wallClockMs()),
+    );
     if (remaining <= Duration.zero) {
       _abandonPendingDesktopCompression(record);
       return;
@@ -17673,6 +17725,7 @@ class ActiveChat {
         unawaited(_settlePendingDesktopCompression(pending, evidence));
       }
       _clearDesktopCompactingIndicator();
+      _emit(ActiveChatEvent.sessionInfo);
       return;
     }
     if (kind == 'ready') {

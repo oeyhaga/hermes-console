@@ -129,12 +129,23 @@ class CompactionTracker extends ChangeNotifier {
     );
   }
 
+  void reportUnconfirmed() {
+    if (_disposed) return;
+    final current = _current;
+    if (current == null || current.isFinished) return;
+    _settleTimer?.cancel();
+    _settleTimer = null;
+    _awaitingResult = false;
+    _finish(_clock(), resultConfirmed: false);
+  }
+
   void _finish(
     DateTime now, {
     int? tokensBefore,
     int? tokensAfter,
     int? messagesBefore,
     int? messagesAfter,
+    bool resultConfirmed = true,
   }) {
     final current = _current;
     if (current == null) return;
@@ -144,6 +155,7 @@ class CompactionTracker extends ChangeNotifier {
       tokensAfter: tokensAfter,
       messagesBefore: messagesBefore,
       messagesAfter: messagesAfter,
+      resultConfirmed: resultConfirmed,
     );
     _lingerTimer?.cancel();
     _lingerTimer = Timer(linger, () {

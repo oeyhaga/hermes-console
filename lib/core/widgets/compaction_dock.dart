@@ -82,9 +82,11 @@ class CompactionDock extends StatelessWidget {
   Widget build(BuildContext context) {
     final strings = Strings.of(context);
     final lang = Localizations.localeOf(context).languageCode;
-    final label = compaction.isFinished
+    final label = compaction.isUnconfirmed
+        ? note ?? strings.chaCompressionUnknown
+        : compaction.isFinished
         ? compactionResultText(strings, compaction, lang)
-        : strings.liveCompacting;
+        : note ?? strings.liveCompacting;
     return ActivityTicker(
       active: !compaction.isFinished,
       clock: clock,
@@ -92,8 +94,7 @@ class CompactionDock extends StatelessWidget {
         compaction: compaction,
         now: now,
         label: label,
-        note: compaction.isFinished ? null : note,
-        facts: compaction.isFinished
+        facts: compaction.isFinished || note != null
             ? const []
             : compactionFacts(strings, compaction),
       ),
@@ -107,14 +108,12 @@ class _DockBody extends StatelessWidget {
     required this.now,
     required this.label,
     required this.facts,
-    this.note,
   });
 
   final CompactionProgress compaction;
   final DateTime now;
   final String label;
   final List<String> facts;
-  final String? note;
 
   @override
   Widget build(BuildContext context) {
@@ -129,7 +128,11 @@ class _DockBody extends StatelessWidget {
       overflow: TextOverflow.ellipsis,
       style: textStyle.copyWith(
         fontWeight: FontWeight.w700,
-        color: finished ? colors.textSecondary : colors.textPrimary,
+        color: compaction.isUnconfirmed
+            ? colors.warning
+            : finished
+            ? colors.textSecondary
+            : colors.textPrimary,
       ),
     );
     final spans = <InlineSpan>[
@@ -137,7 +140,11 @@ class _DockBody extends StatelessWidget {
         text: label,
         style: TextStyle(
           fontWeight: FontWeight.w700,
-          color: finished ? colors.textSecondary : colors.textPrimary,
+          color: compaction.isUnconfirmed
+              ? colors.warning
+              : finished
+              ? colors.textSecondary
+              : colors.textPrimary,
         ),
       ),
       if (facts.isNotEmpty)
@@ -152,79 +159,82 @@ class _DockBody extends StatelessWidget {
       ),
       liveRegion: true,
       container: true,
-      label: [label, ...facts, ?note].join(', '),
+      label: [label, ...facts].join(', '),
       excludeSemantics: true,
       child: Padding(
         key: const ValueKey('compaction-dock'),
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CompactionLine(
-              key: const ValueKey('compaction-line'),
-              fraction: compaction.fraction,
-              finished: finished,
-            ),
-            const SizedBox(height: 6),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        padding: const EdgeInsets.fromLTRB(10, 5, 10, 3),
+        child: Material(
+          color: colors.surface,
+          elevation: 8,
+          shadowColor: Colors.black.withValues(alpha: 0.35),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: colors.divider, width: 0.8),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 9, 12, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: bigText
-                      // Con texto grande se permite partir la línea.
-                      ? Text.rich(TextSpan(children: spans), style: textStyle)
-                      // A ancho de móvil: una línea; se recortan antes los
-                      // recuentos que el título.
-                      : Row(
-                          children: [
-                            // El título no se recorta mientras haya recuentos
-                            // que recortar; el resultado final (sin recuentos)
-                            // es el que cede con elipsis.
-                            if (facts.isEmpty)
-                              Flexible(child: titleText)
-                            else
-                              titleText,
-                            if (facts.isNotEmpty)
-                              Flexible(
-                                child: Text(
-                                  ' · ${facts.join(' · ')}',
-                                  key: const ValueKey('compaction-facts'),
-                                  maxLines: 1,
-                                  softWrap: false,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: textStyle.copyWith(
-                                    color: colors.textSecondary,
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: bigText
+                          ? Text.rich(
+                              TextSpan(children: spans),
+                              style: textStyle,
+                            )
+                          : Row(
+                              children: [
+                                if (facts.isEmpty)
+                                  Flexible(child: titleText)
+                                else
+                                  titleText,
+                                if (facts.isNotEmpty)
+                                  Flexible(
+                                    child: Text(
+                                      ' · ${facts.join(' · ')}',
+                                      key: const ValueKey('compaction-facts'),
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: textStyle.copyWith(
+                                        color: colors.textSecondary,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                          ],
-                        ),
-                ),
-                if (!finished) ...[
-                  const SizedBox(width: 10),
-                  Text(
-                    formatTurnElapsed(compaction.elapsed(now)),
-                    key: const ValueKey('compaction-elapsed'),
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: colors.textSecondary,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                              ],
+                            ),
                     ),
-                  ),
-                ],
+                    if (!finished) ...[
+                      const SizedBox(width: 10),
+                      Text(
+                        formatTurnElapsed(compaction.elapsed(now)),
+                        key: const ValueKey('compaction-elapsed'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: colors.textSecondary,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 7),
+                CompactionLine(
+                  key: const ValueKey('compaction-line'),
+                  fraction: compaction.fraction,
+                  finished: finished,
+                  unconfirmed: compaction.isUnconfirmed,
+                ),
               ],
             ),
-            if (note != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(
-                  note!,
-                  style: TextStyle(fontSize: 12, color: colors.textSecondary),
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -237,12 +247,14 @@ class CompactionLine extends StatefulWidget {
   const CompactionLine({
     required this.fraction,
     required this.finished,
+    required this.unconfirmed,
     super.key,
   });
 
   /// Solo un progreso publicado por el backend (ver [parseCompactionChunks]).
   final double? fraction;
   final bool finished;
+  final bool unconfirmed;
 
   @override
   State<CompactionLine> createState() => _CompactionLineState();
@@ -299,7 +311,11 @@ class _CompactionLineState extends State<CompactionLine>
                 value: fraction,
                 minHeight: 3,
                 backgroundColor: colors.divider,
-                color: widget.finished ? colors.success : colors.accent,
+                color: widget.unconfirmed
+                    ? colors.warning
+                    : widget.finished
+                    ? colors.success
+                    : colors.accent,
               )
             : AnimatedBuilder(
                 animation: _controller,
