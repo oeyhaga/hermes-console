@@ -2406,6 +2406,8 @@ void main() {
   });
 
   group('DashboardClient password-login (cookie session)', () {
+    setUp(DashboardClient.resetSharedPasswordSessionsForTesting);
+
     test(
       'logs in via /auth/password-login and uses the session cookie',
       () async {
@@ -2561,6 +2563,289 @@ void main() {
         second.close();
       },
     );
+
+    test(
+      'shares one re-login across staggered parallel media requests and retries',
+      () async {
+        var loginCalls = 0;
+        var accessCookie = '';
+        var expired = false;
+
+        MockClient backend() => MockClient((request) async {
+          if (request.url.path == '/auth/password-login') {
+            loginCalls++;
+            if (loginCalls > 2) {
+              return http.Response(
+                '{"detail":"rate limited"}',
+                429,
+                headers: {'retry-after': '30'},
+              );
+            }
+            accessCookie = 'AT$loginCalls';
+            return http.Response(
+              '{"ok":true}',
+              200,
+              headers: {
+                'set-cookie':
+                    'hermes_session_at=$accessCookie; Path=/; HttpOnly, '
+                    'hermes_session_rt=RT$loginCalls; Path=/; HttpOnly, '
+                    'hermes_session_provider=basic; Path=/; HttpOnly',
+              },
+            );
+          }
+          if (request.url.path != '/api/files/download') {
+            return http.Response('not found', 404);
+          }
+
+          final source = request.url.queryParameters['path'] ?? '';
+          final cookie = request.headers['cookie'] ?? '';
+          if (expired && cookie.contains('hermes_session_at=AT1')) {
+            final delay = source.endsWith('.txt')
+                ? Duration.zero
+                : source.endsWith('.png')
+                ? const Duration(milliseconds: 20)
+                : const Duration(milliseconds: 40);
+            await Future<void>.delayed(delay);
+            return http.Response(
+              '{"error":"session_expired"}',
+              401,
+              headers: {
+                'set-cookie':
+                    'hermes_session_at=deleted; Max-Age=0, '
+                    'hermes_session_rt=deleted; Max-Age=0',
+              },
+            );
+          }
+          if (!cookie.contains('hermes_session_at=$accessCookie')) {
+            return http.Response('{"error":"unauthenticated"}', 401);
+          }
+          return http.Response.bytes(utf8.encode('media:$source'), 200);
+        });
+
+        DashboardClient mediaClient() => DashboardClient(
+          host: 'media-login-storm.local',
+          basicUser: 'admin',
+          basicPass: 'secret',
+          httpClientOverride: backend(),
+        );
+
+        final clients = List<DashboardClient>.generate(3, (_) => mediaClient());
+        addTearDown(() {
+          for (final client in clients) {
+            client.close();
+          }
+        });
+        const paths = [
+          '/workspace/qa_nota.txt',
+          '/workspace/qa_cuadrado.png',
+          '/workspace/qa_tono.wav',
+        ];
+
+        await Future.wait([
+          for (var index = 0; index < clients.length; index++)
+            clients[index].apiDownload(
+              'files/download?path=${Uri.encodeQueryComponent(paths[index])}',
+              maxBytes: 1024,
+            ),
+        ]);
+        expect(loginCalls, 1, reason: 'the valid session is shared');
+
+        expired = true;
+        final outcomes = await Future.wait([
+          for (var index = 0; index < clients.length; index++)
+            () async {
+              try {
+                await clients[index].apiDownload(
+                  'files/download?path=${Uri.encodeQueryComponent(paths[index])}',
+                  maxBytes: 1024,
+                );
+                return null;
+              } catch (error) {
+                return error;
+              }
+            }(),
+        ]);
+
+        expect(
+          loginCalls,
+          2,
+          reason: 'one expiry episode must perform only one shared re-login',
+        );
+        expect(outcomes.whereType<Object>(), isEmpty);
+
+        final retry = mediaClient();
+        addTearDown(retry.close);
+        await retry.apiDownload(
+          'files/download?path=${Uri.encodeQueryComponent(paths[1])}',
+          maxBytes: 1024,
+        );
+        expect(
+          loginCalls,
+          2,
+          reason: 'a recreated media client reuses cookies',
+        );
+      },
+    );
+
+    test('rate-limit cooldown blocks retries and succeeds after Retry-After', () async {
+      var now = DateTime.utc(2026, 9, 22);
+      var loginCalls = 0;
+      var allowLogin = false;
+
+      MockClient backend() => MockClient((request) async {
+        expect(request.url.path, '/auth/password-login');
+        loginCalls++;
+        if (!allowLogin) {
+          return http.Response(
+            '{"detail":"rate limited"}',
+            429,
+            headers: {'retry-after': '10'},
+          );
+        }
+        return http.Response(
+          '{"ok":true}',
+          200,
+          headers: {'set-cookie': 'hermes_session_at=AT_AFTER_COOLDOWN'},
+        );
+      });
+
+      DashboardClient client() => DashboardClient(
+        host: 'media-rate-limit.local',
+        basicUser: 'admin',
+        basicPass: 'secret',
+        httpClientOverride: backend(),
+        nowOverride: () => now,
+      );
+
+      final first = client();
+      addTearDown(first.close);
+      await expectLater(
+        first.authHeadersForDiagnostics(),
+        throwsA(
+          isA<DashboardAuthException>().having(
+            (error) => error.code,
+            'code',
+            DashboardAuthFailureCode.rateLimited,
+          ),
+        ),
+      );
+
+      final immediateRetry = client();
+      addTearDown(immediateRetry.close);
+      await expectLater(
+        immediateRetry.authHeadersForDiagnostics(),
+        throwsA(isA<DashboardAuthException>()),
+      );
+      expect(
+        loginCalls,
+        1,
+        reason: 'cooldown retries do not hit the login API',
+      );
+
+      now = now.add(const Duration(seconds: 10));
+      allowLogin = true;
+      final afterCooldown = client();
+      addTearDown(afterCooldown.close);
+      final headers = await afterCooldown.authHeadersForDiagnostics();
+      expect(headers['Cookie'], contains('AT_AFTER_COOLDOWN'));
+      expect(loginCalls, 2);
+    });
+
+    test('repeated login failures enter exponential cooldown', () async {
+      var now = DateTime.utc(2026, 9, 22);
+      var loginCalls = 0;
+      MockClient backend() => MockClient((request) async {
+        loginCalls++;
+        return http.Response('{"detail":"unavailable"}', 503);
+      });
+      DashboardClient client() => DashboardClient(
+        host: 'media-login-failure.local',
+        basicUser: 'admin',
+        basicPass: 'secret',
+        httpClientOverride: backend(),
+        nowOverride: () => now,
+      );
+
+      final first = client();
+      final blocked = client();
+      final second = client();
+      addTearDown(first.close);
+      addTearDown(blocked.close);
+      addTearDown(second.close);
+      await expectLater(
+        first.authHeadersForDiagnostics(),
+        throwsA(isA<DashboardAuthException>()),
+      );
+      await expectLater(
+        blocked.authHeadersForDiagnostics(),
+        throwsA(isA<DashboardAuthException>()),
+      );
+      expect(loginCalls, 1, reason: 'the first cooldown blocks retries locally');
+
+      now = now.add(const Duration(seconds: 5));
+      await expectLater(
+        second.authHeadersForDiagnostics(),
+        throwsA(isA<DashboardAuthException>()),
+      );
+      expect(loginCalls, 2);
+
+      now = now.add(const Duration(seconds: 9));
+      final stillBlocked = client();
+      addTearDown(stillBlocked.close);
+      await expectLater(
+        stillBlocked.authHeadersForDiagnostics(),
+        throwsA(isA<DashboardAuthException>()),
+      );
+      expect(loginCalls, 2, reason: 'the second cooldown doubles to ten seconds');
+    });
+
+    test('reuses refresh-token rotation without password re-login', () async {
+      var loginCalls = 0;
+      var apiCalls = 0;
+      final client = DashboardClient(
+        host: 'media-refresh.local',
+        basicUser: 'admin',
+        basicPass: 'secret',
+        httpClientOverride: MockClient((request) async {
+          if (request.url.path == '/auth/password-login') {
+            loginCalls++;
+            return http.Response(
+              '{"ok":true}',
+              200,
+              headers: {
+                'set-cookie':
+                    'hermes_session_at=AT_EXPIRED, '
+                    'hermes_session_rt=RT_LIVE, '
+                    'hermes_session_provider=basic',
+              },
+            );
+          }
+          apiCalls++;
+          final cookie = request.headers['cookie'] ?? '';
+          if (apiCalls == 1) {
+            expect(cookie, contains('hermes_session_rt=RT_LIVE'));
+            return http.Response(
+              '{"model":"gpt","provider":"test"}',
+              200,
+              headers: {
+                'set-cookie':
+                    'hermes_session_at=AT_REFRESHED, '
+                    'hermes_session_rt=RT_ROTATED',
+              },
+            );
+          }
+          expect(cookie, contains('hermes_session_at=AT_REFRESHED'));
+          expect(cookie, contains('hermes_session_rt=RT_ROTATED'));
+          return http.Response('{"model":"gpt","provider":"test"}', 200);
+        }),
+      );
+      addTearDown(client.close);
+
+      await client.getModelInfo();
+      await client.getModelInfo();
+      expect(loginCalls, 1);
+      expect(apiCalls, 2);
+    });
 
     test('reauthenticates on 401 and ingests rotated cookies', () async {
       var loginCalls = 0;

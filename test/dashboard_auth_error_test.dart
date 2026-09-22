@@ -13,6 +13,7 @@ import 'package:http/testing.dart';
 Future<DashboardAuthException> passwordLoginFailure(
   http.Response response,
 ) async {
+  DashboardClient.resetSharedPasswordSessionsForTesting();
   final client = DashboardClient(
     host: 'hermes.local',
     port: 9119,
