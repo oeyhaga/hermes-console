@@ -1360,6 +1360,8 @@ class _ChatScreenState extends State<ChatScreen>
   // sustituye `_sending`: después del ACK el composer vuelve a aceptar texto y
   // Hermes puede tratarlo como steering durante el run actual.
   bool _composerSubmissionInFlight = false;
+  Timer? _stopConfirmationDismissTimer;
+  bool _confirmedStopStatusDismissed = false;
   final RecentInterruptGuard _recentInterrupt = RecentInterruptGuard();
   bool _imagePickerOpen = false;
   bool _documentPickerOpen = false;
@@ -3742,6 +3744,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
       _chat.stageFirstSubmitConfig(_firstSubmitConfig);
       _chatSub = _chat.changes.listen(_onChatEvent);
+      _syncStopConfirmationVisibility();
       // Al entrar sobre un turno que ya venía corriendo (volver a la pantalla,
       // resume en frío) no llega ningún evento nuevo hasta el siguiente frame
       // del agente, así que sin esto el cronómetro del turno nunca arrancaba.
@@ -4650,8 +4653,32 @@ class _ChatScreenState extends State<ChatScreen>
     _turnActivityStartedAt = null;
   }
 
+  bool get _confirmedStopStatusVisible =>
+      _chat.stopConfirmationState == StopConfirmationState.confirmed &&
+      !_chat.backgroundStopVerificationInFlight &&
+      (_chat.backgroundStopRemainingTasks ?? 0) == 0;
+
+  void _syncStopConfirmationVisibility() {
+    if (!_confirmedStopStatusVisible) {
+      _stopConfirmationDismissTimer?.cancel();
+      _stopConfirmationDismissTimer = null;
+      _confirmedStopStatusDismissed = false;
+      return;
+    }
+    if (_confirmedStopStatusDismissed ||
+        _stopConfirmationDismissTimer != null) {
+      return;
+    }
+    _stopConfirmationDismissTimer = Timer(const Duration(seconds: 4), () {
+      _stopConfirmationDismissTimer = null;
+      if (_disposed || !mounted || !_confirmedStopStatusVisible) return;
+      setState(() => _confirmedStopStatusDismissed = true);
+    });
+  }
+
   void _onChatEvent(ActiveChatEvent event) {
     if (_disposed || !mounted) return;
+    _syncStopConfirmationVisibility();
     if (event == ActiveChatEvent.started) {
       _lastNonEmptySubagentActivities = const <SubagentActivity>[];
       _subagentPillDismissed = false;
@@ -5371,6 +5398,7 @@ class _ChatScreenState extends State<ChatScreen>
     _vcUnavailableSub?.cancel();
     _slashCompletionDebounce?.cancel();
     _stopFallback?.cancel();
+    _stopConfirmationDismissTimer?.cancel();
     // Detén SOLO el dictado del composer (el de esta pantalla), no el TTS del
     // modo voz: ese debe seguir si está hablando en segundo plano.
     if (_isRecording) {
@@ -11611,7 +11639,10 @@ class _ChatScreenState extends State<ChatScreen>
   /// Estado de Stop respaldado por el ACK exacto del runtime.
   Widget _buildStopStatusStrip(HermesThemeColors colors) {
     final stop = _chat.stopConfirmationState;
-    if (stop == StopConfirmationState.idle) return const SizedBox.shrink();
+    if (stop == StopConfirmationState.idle ||
+        (_confirmedStopStatusVisible && _confirmedStopStatusDismissed)) {
+      return const SizedBox.shrink();
+    }
     final strings = Strings.of(context);
     final remainingBackgroundTasks = _chat.backgroundStopRemainingTasks;
     final backgroundStopWarning =
@@ -11630,47 +11661,66 @@ class _ChatScreenState extends State<ChatScreen>
             StopConfirmationState.failed => strings.chaStopFailed,
             StopConfirmationState.idle => '',
           };
+    final waiting =
+        _chat.backgroundStopVerificationInFlight ||
+        stop == StopConfirmationState.stopping ||
+        stop == StopConfirmationState.retrying;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 2, 18, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
       child: Semantics(
         liveRegion: true,
         label: label,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 48),
-          child: Row(
-            children: [
-              if (_chat.backgroundStopVerificationInFlight ||
-                  stop == StopConfirmationState.stopping ||
-                  stop == StopConfirmationState.retrying)
-                const SizedBox.square(
-                  dimension: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                Icon(
-                  backgroundStopWarning
-                      ? Icons.warning_amber_rounded
-                      : stop == StopConfirmationState.failed
-                      ? Icons.error_outline_rounded
-                      : Icons.stop_circle_outlined,
-                  size: 20,
-                  color: backgroundStopWarning
-                      ? colors.warning
-                      : stop == StopConfirmationState.failed
-                      ? colors.error
-                      : colors.textSecondary,
+        child: Row(
+          key: const ValueKey('chat-stop-status-strip'),
+          children: [
+            if (waiting)
+              const SizedBox.square(
+                key: ValueKey('chat-stop-status-icon'),
+                dimension: 14,
+                child: CircularProgressIndicator(strokeWidth: 1.5),
+              )
+            else
+              Icon(
+                backgroundStopWarning
+                    ? Icons.warning_amber_rounded
+                    : stop == StopConfirmationState.failed
+                    ? Icons.error_outline_rounded
+                    : Icons.stop_circle_outlined,
+                key: const ValueKey('chat-stop-status-icon'),
+                size: 14,
+                color: backgroundStopWarning
+                    ? colors.warning
+                    : stop == StopConfirmationState.failed
+                    ? colors.error
+                    : colors.textSecondary,
+              ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, color: colors.textSecondary),
+              ),
+            ),
+            if (stop == StopConfirmationState.failed &&
+                !backgroundStopWarning)
+              TextButton(
+                key: const ValueKey('chat-stop-retry'),
+                onPressed: _cancelStream,
+                style: TextButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: const TextStyle(fontSize: 12),
                 ),
-              const SizedBox(width: 10),
-              Expanded(child: Text(label)),
-              if (stop == StopConfirmationState.failed &&
-                  !backgroundStopWarning)
-                TextButton(
-                  key: const ValueKey('chat-stop-retry'),
-                  onPressed: _cancelStream,
-                  child: Text(strings.chaStopRetry),
-                ),
-            ],
-          ),
+                child: Text(strings.chaStopRetry),
+              ),
+          ],
         ),
       ),
     );

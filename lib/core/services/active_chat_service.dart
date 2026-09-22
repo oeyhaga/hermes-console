@@ -3998,6 +3998,15 @@ class ActiveChat {
     _emit(ActiveChatEvent.sessionInfo);
   }
 
+  bool _clearFailedStopConfirmation() {
+    if (_stopConfirmationState != StopConfirmationState.failed) return false;
+    _stopConfirmationState = StopConfirmationState.idle;
+    _lastStopAffectedLiveTurn = true;
+    _backgroundStopVerificationInFlight = false;
+    _backgroundStopRemainingTasks = null;
+    return true;
+  }
+
   bool get conflictReadOnly =>
       _ownershipMutationAdmission != _OwnershipMutationAdmission.open;
   bool get ownershipRecheckInFlight =>
@@ -4549,7 +4558,12 @@ class ActiveChat {
         _captureActiveTurnTranscriptBoundary(_turnEpoch);
         _passiveTurnBoundaryFresh = true;
       }
-      if (_applyPassiveActivityState(activityState)) {
+      final activityChanged = _applyPassiveActivityState(activityState);
+      final staleStopCleared =
+          activityState == DesktopPassiveActivityState.idle &&
+          !canStopSessionWork &&
+          _clearFailedStopConfirmation();
+      if (activityChanged || staleStopCleared) {
         _emit(ActiveChatEvent.sessionInfo);
       }
       if (activityState == DesktopPassiveActivityState.idle &&
@@ -21343,7 +21357,12 @@ class ActiveChat {
       _pendingAuthoritativeTerminalEpoch = invocationEpoch;
       _pendingAuthoritativeTerminalOutput = invocationPublicOutput;
     }
-    if (_runTerminal) return;
+    if (_runTerminal) {
+      if (_clearFailedStopConfirmation()) {
+        _emit(ActiveChatEvent.queueChanged);
+      }
+      return;
+    }
     final pendingMetadataTurnEpoch = invocationEpoch;
     if (_hasPendingActiveTurnCancellation) {
       try {
@@ -22006,10 +22025,13 @@ class ActiveChat {
     bool authoritativeTerminalOverride = false,
     Map<String, dynamic> failureMetadata = const {},
   }) {
-    if ((_runTerminal && !authoritativeTerminalOverride) ||
-        _hasPendingActiveTurnCancellation) {
+    if (_runTerminal && !authoritativeTerminalOverride) {
+      if (_clearFailedStopConfirmation()) {
+        _emit(ActiveChatEvent.queueChanged);
+      }
       return;
     }
+    if (_hasPendingActiveTurnCancellation) return;
     if (_hasPendingTombstoneMetadataUpdate) {
       final expectedTurnEpoch = _turnEpoch;
       unawaited(
@@ -22622,7 +22644,13 @@ class ActiveChat {
 
   /// El run fue cancelado por el servidor (no por el usuario).
   void _cancelRunState() {
-    if (_runTerminal || _hasPendingActiveTurnCancellation) return;
+    if (_runTerminal) {
+      if (_clearFailedStopConfirmation()) {
+        _emit(ActiveChatEvent.queueChanged);
+      }
+      return;
+    }
+    if (_hasPendingActiveTurnCancellation) return;
     if (_hasPendingTombstoneMetadataUpdate) {
       final expectedTurnEpoch = _turnEpoch;
       unawaited(

@@ -562,7 +562,30 @@ void main() {
         isFalse,
       );
       expect(find.text('Background work stopped'), findsOneWidget);
-      await tester.pump(const Duration(milliseconds: 1200));
+      final strip = find.byKey(const ValueKey('chat-stop-status-strip'));
+      expect(strip, findsOneWidget);
+      expect(tester.getTopLeft(strip).dx, 14);
+      expect(tester.getSize(strip).height, lessThanOrEqualTo(32));
+      final label = tester.widget<Text>(
+        find.text('Background work stopped'),
+      );
+      expect(label.style?.fontSize, 12);
+      expect(label.maxLines, 1);
+      expect(label.overflow, TextOverflow.ellipsis);
+      final icon = tester.widget<Icon>(
+        find.byKey(const ValueKey('chat-stop-status-icon')),
+      );
+      expect(icon.size, 14);
+      final composer = find.byKey(const ValueKey('chat-composer-host'));
+      expect(
+        tester.getBottomLeft(strip).dy,
+        lessThanOrEqualTo(tester.getTopLeft(composer).dy),
+      );
+
+      await tester.pump(const Duration(seconds: 3));
+      expect(find.text('Background work stopped'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('Background work stopped'), findsNothing);
 
       await _disposeFixture(tester, fixture);
     },
@@ -614,14 +637,18 @@ void main() {
 
       expect(fixture.gateway.processStopCalls, 1);
       expect(
-        find.text('Could not stop everything: 1 background tasks remain'),
+        find.text('Could not stop everything: 1 background task remains'),
         findsWidgets,
       );
       expect(find.text('Background work stopped'), findsNothing);
       expect(find.byKey(const ValueKey('stop')), findsOneWidget);
       expect(fixture.chat.backgroundProcesses, hasLength(1));
       expect(fixture.chat.canStopSessionWork, isTrue);
-      await tester.pump(const Duration(milliseconds: 1200));
+      await tester.pump(const Duration(seconds: 5));
+      expect(
+        find.text('Could not stop everything: 1 background task remains'),
+        findsWidgets,
+      );
 
       await _disposeFixture(tester, fixture);
     },

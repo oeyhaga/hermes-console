@@ -4,9 +4,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 
 import 'support/in_memory_compression_fence_storage.dart';
@@ -19,7 +21,8 @@ class _StopGateway
         HermesDesktopSessionLifecycleGateway,
         HermesDesktopRedirectGateway,
         HermesDesktopRewindResolverGateway,
-        HermesDesktopDurableRewindGateway {
+        HermesDesktopDurableRewindGateway,
+        HermesDesktopSessionActivityGateway {
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> submittedTexts = [];
   final List<({String text, int ordinal, int rowId})> durableRewinds = [];
@@ -114,6 +117,22 @@ class _StopGateway
 
   @override
   Future<void> steer(String runtimeSessionId, String text) async {}
+
+  @override
+  DesktopGatewayCapabilityState capabilityState(
+    DesktopGatewayCapability capability,
+  ) => DesktopGatewayCapabilityState.supported;
+
+  @override
+  Future<DesktopActiveSessionList> listActiveSessions({
+    String currentRuntimeSessionId = '',
+  }) async => const DesktopActiveSessionList(sessions: []);
+
+  @override
+  Future<DesktopSessionSnapshot> activateSession(
+    String runtimeSessionId, {
+    required String storedSessionId,
+  }) => throw UnimplementedError();
 
   @override
   Future<DesktopRedirectDisposition> redirect(
@@ -314,6 +333,29 @@ void main() {
     expect(chat.queuedMessages, ['uno', 'dos']);
   });
 
+  test('terminal autoritativo limpia un Stop fallido obsoleto', () async {
+    final gateway = _StopGateway()
+      ..interruptError = StateError('interrupt rejected');
+    final chat = _chat(gateway, id: 'conn-stop-failed-terminal');
+    addTearDown(chat.dispose);
+
+    expect(
+      await chat.send(
+        fullText: 'turno que termina por sí solo',
+        model: 'hermes-agent',
+        history: const [],
+      ),
+      isTrue,
+    );
+
+    await expectLater(chat.cancel(), throwsA(isA<StateError>()));
+    expect(chat.stopConfirmationState, StopConfirmationState.failed);
+
+    await chat.refreshPassiveRemoteActivity();
+
+    expect(chat.stopConfirmationState, StopConfirmationState.idle);
+  });
+
   test('stop sobre cola vacía no parkea', () async {
     final gateway = _StopGateway();
     final chat = _chat(gateway, id: 'conn-stop-empty-queue');
@@ -369,6 +411,7 @@ void main() {
         isTrue,
       );
       expect(gateway.submittedTexts, ['segundo', 'tercero']);
+      expect(chat.stopConfirmationState, StopConfirmationState.idle);
     });
 
     test('la cola retenida drena al reanudarla tras el Stop', () async {
