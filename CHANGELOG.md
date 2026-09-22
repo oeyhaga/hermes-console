@@ -171,6 +171,9 @@ Hermes backend.
   Stop and the compaction indicator are fixed.
 
 ### Other
+- The GitHub-release (`full`) app icon now has the same cream launcher
+  background as the QA/Play builds; it previously inherited an unrelated dark
+  background because that flavor never had its own icon override.
 - Long history stays reachable after a compaction and the local transcript
   cache keeps the newest 1,000 messages (2 MiB), telling you when it is
   truncated.
