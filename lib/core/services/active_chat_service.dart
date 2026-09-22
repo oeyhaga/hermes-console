@@ -12363,6 +12363,13 @@ class ActiveChat {
       await _admitThroughParkedQueue();
       if (!identical(_activeRewrite, reservation) ||
           _turnEpoch != reservation.turnEpoch) {
+        _messages = rollbackMessages;
+        state = rollbackState;
+        _rewindRollbackMessages = null;
+        _rewindRollbackState = null;
+        _rewind4018FallbackOrdinal = null;
+        _rewindRestoredOnError = true;
+        _emit(ActiveChatEvent.error);
         return;
       }
       final history = _buildHistoryFromMessages(excluding: target);
