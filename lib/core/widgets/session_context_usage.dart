@@ -59,7 +59,7 @@ Future<void> showSessionContextPopover({
       return FadeTransition(
         opacity: curved,
         child: ScaleTransition(
-          alignment: Alignment.topRight,
+          alignment: Alignment.topCenter,
           scale: Tween<double>(begin: 0.97, end: 1).animate(curved),
           child: child,
         ),
@@ -92,7 +92,10 @@ class _SessionContextPopoverFrame extends StatelessWidget {
     const margin = 12.0;
     const gap = 6.0;
     final width = (media.size.width - margin * 2).clamp(288.0, 360.0);
-    final left = (anchorRect.right - width)
+    // Centrado sobre la píldora que lo abre, no anclado por su borde derecho
+    // (eso lo hacía abrir sesgado hacia la izquierda en vez de crecer desde
+    // el centro de la píldora).
+    final left = (anchorRect.center.dx - width / 2)
         .clamp(margin, math.max(margin, media.size.width - width - margin))
         .toDouble();
     final belowTop = anchorRect.bottom + gap;
