@@ -263,7 +263,27 @@ final class ActivitySnapshot {
   /// Algo distinto del turno mantiene la pastilla viva por sí solo.
   bool get hasNonTurnActivity => backgroundCount > 0 || hasSubagents;
 
-  bool get isLive => turnActive || hasNonTurnActivity;
+  bool get isLive => turnActive || showTasks || hasNonTurnActivity;
+
+  ActivitySnapshot withTasksActive(bool value) => ActivitySnapshot(
+    turnActive: turnActive,
+    tasksActive: value,
+    turnStartedAt: turnStartedAt,
+    headline: headline,
+    waitingForUser: waitingForUser,
+    noActivityHint: noActivityHint,
+    current: current,
+    done: done,
+    tasks: tasks,
+    processes: processes,
+    schedules: schedules,
+    goal: goal,
+    processesStale: processesStale,
+    backgroundStartedAt: backgroundStartedAt,
+    subagents: subagents,
+    subagentGenericCount: subagentGenericCount,
+    passiveRemote: passiveRemote,
+  );
 
   ActivitySnapshot copyWith({
     bool? turnActive,

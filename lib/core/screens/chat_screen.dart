@@ -164,6 +164,7 @@ import '../widgets/mission_profile_avatar.dart';
 import '../widgets/motion_entrance.dart';
 import '../widgets/subagent_activity_card.dart';
 import '../widgets/activity_panel.dart';
+import '../widgets/activity_task_linger.dart';
 import '../widgets/compaction_dock.dart';
 import '../widgets/platform_setup_commands.dart';
 import '../widgets/read_only.dart';
@@ -9709,7 +9710,7 @@ class _ChatScreenState extends State<ChatScreen>
                                         child: Column(
                                           mainAxisSize: MainAxisSize.min,
                                           children: [
-                                            ActivityPillHost(
+                                            ActivityTaskLingerHost(
                                               key: const ValueKey(
                                                 'chat-activity-pill',
                                               ),
