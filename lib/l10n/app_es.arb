@@ -5397,7 +5397,7 @@
   "chaStopRetrying": "Reintentando Stop…",
   "chaStopConfirmed": "Detenido",
   "chaBackgroundWorkStopped": "Trabajo en segundo plano detenido",
-  "chaBackgroundWorkRemaining": "No se pudo detener todo: quedan {count} tareas en segundo plano",
+  "chaBackgroundWorkRemaining": "{count, plural, one {No se pudo detener todo: queda 1 tarea en segundo plano} other {No se pudo detener todo: quedan {count} tareas en segundo plano}}",
   "@chaBackgroundWorkRemaining": {"placeholders": {"count": {"type": "int"}}},
   "chaStopFailed": "Stop no se confirmó",
   "chaStopRetry": "Reintentar Stop",
