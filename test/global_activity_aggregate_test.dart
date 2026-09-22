@@ -623,6 +623,48 @@ void main() {
   });
 
   test(
+    'REGRESSION_ACTIVITY_STUCK_FOREVER a session whose backend went quiet '
+    'without ever disconnecting or reporting terminal stops claiming '
+    'liveness past the silent ceiling',
+    () {
+      // Real case: last turn completed cleanly, the sandbox was cleaned up
+      // after inactivity, and nothing else ever arrived — no transport
+      // disconnect (so `markTransportStale` is never called) and no terminal
+      // event either. Without an independent age check, `stale` stays false
+      // forever and the session claims to still be working indefinitely.
+      var now = DateTime.utc(2026);
+      final aggregate = GlobalActivityAggregate.inMemory(now: () => now);
+      aggregate.observeEvent(
+        scope: scope,
+        event: const TuiGatewayEvent(
+          type: 'subagent.start',
+          sessionId: 'runtime-a',
+          payload: {},
+        ),
+      );
+      expect(
+        aggregate.isActive('connection-a', 'default', 'durable-a'),
+        isTrue,
+      );
+      // Well within a normal long-running subagent's silence window: still
+      // counts as active.
+      now = now.add(const Duration(minutes: 10));
+      expect(
+        aggregate.isActive('connection-a', 'default', 'durable-a'),
+        isTrue,
+      );
+      // Past the silent-liveness ceiling with no update of any kind: no
+      // longer claims to be working, even though nothing ever marked it
+      // stale explicitly.
+      now = now.add(const Duration(minutes: 10));
+      expect(
+        aggregate.isActive('connection-a', 'default', 'durable-a'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'terminal exact incarnation is absorbing but a proven successor may work',
     () {
       final aggregate = GlobalActivityAggregate.inMemory(

@@ -145,6 +145,15 @@ final class GlobalActivityAggregate extends ChangeNotifier {
   final Map<String, int> _rosterGeneration = {};
   final Map<String, int> _nonBusyRosterStreak = {};
   static const staleLivenessCeiling = Duration(minutes: 1);
+  // Only `markTransportStale` (a transport-level disconnect) or a terminal
+  // event ever set `stale`. A session whose backend went quiet without
+  // either — its sandbox cleaned up after inactivity, no more roster/process
+  // updates, but the socket itself never dropped — would otherwise claim
+  // liveness forever from its last observation. This is the same fallback
+  // idea as the durable compression fence: no signal ever arriving is not
+  // proof of "still running", so an activity nobody has updated in this long
+  // stops claiming it, same as an explicit stale mark past its own ceiling.
+  static const silentLivenessCeiling = Duration(minutes: 15);
   bool _disposed = false;
 
   Future<void> initialize({String? connectionId, String? profile}) async {
@@ -189,8 +198,9 @@ final class GlobalActivityAggregate extends ChangeNotifier {
   bool isActive(String connectionId, String profile, String durableSessionId) {
     final activity = activityFor(connectionId, profile, durableSessionId);
     if (activity == null || !activity.active) return false;
-    return !activity.stale ||
-        _now().toUtc().difference(activity.observedAt) <= staleLivenessCeiling;
+    final age = _now().toUtc().difference(activity.observedAt);
+    if (activity.stale) return age <= staleLivenessCeiling;
+    return age <= silentLivenessCeiling;
   }
 
   void applyRoster({
