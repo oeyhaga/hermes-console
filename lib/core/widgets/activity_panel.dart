@@ -433,7 +433,7 @@ class _ActivityPillHostState extends State<ActivityPillHost> {
   @override
   void didUpdateWidget(ActivityPillHost oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.snapshot, widget.snapshot) ||
+    if (oldWidget.snapshot != widget.snapshot ||
         !identical(oldWidget.actions, widget.actions)) {
       // Los oyentes del panel viven en otro subárbol: se les avisa tras el frame.
       WidgetsBinding.instance.addPostFrameCallback((_) {

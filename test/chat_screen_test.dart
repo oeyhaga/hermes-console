@@ -9523,7 +9523,10 @@ void main() {
       // umbral/formato/tic quedan en `activity_pill_test.dart`, que inyecta un
       // reloj falso. Hay UNA pastilla de actividad para todo lo vivo.
       final host = tester.widget<ActivityPillHost>(
-        find.byKey(const ValueKey('chat-activity-pill')),
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-activity-pill')),
+          matching: find.byType(ActivityPillHost),
+        ),
       );
       final snapshot = host.snapshot;
 
@@ -9573,17 +9576,28 @@ void main() {
       );
 
       var host = tester.widget<ActivityPillHost>(
-        find.byKey(const ValueKey('chat-activity-pill')),
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-activity-pill')),
+          matching: find.byType(ActivityPillHost),
+        ),
       );
+      final initialSnapshot = host.snapshot;
+      final initialActions = host.actions;
       expect(host.snapshot.headline, isNotNull);
 
       await dragChatAwayFromBottom(tester);
 
       host = tester.widget<ActivityPillHost>(
-        find.byKey(const ValueKey('chat-activity-pill')),
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-activity-pill')),
+          matching: find.byType(ActivityPillHost),
+        ),
       );
       expect(host.snapshot.headline, isNotNull);
       expect(host.snapshot.turnActive, isTrue);
+      expect(identical(host.snapshot, initialSnapshot), isFalse);
+      expect(host.snapshot, initialSnapshot);
+      expect(identical(host.actions, initialActions), isTrue);
     },
   );
 
@@ -9601,7 +9615,10 @@ void main() {
       );
 
       final host = tester.widget<ActivityPillHost>(
-        find.byKey(const ValueKey('chat-activity-pill')),
+        find.descendant(
+          of: find.byKey(const ValueKey('chat-activity-pill')),
+          matching: find.byType(ActivityPillHost),
+        ),
       );
 
       expect(host.snapshot.turnActive, isTrue);
@@ -16609,9 +16626,9 @@ void main() {
 
       // El panel sigue abierto tras la acción (ya no se cierra como la hoja):
       // sus secciones se desplazan con su propio scroll.
-      await tester.ensureVisible(find.text('Heartbeat'));
+      await tester.ensureVisible(find.text('Latido'));
       await tester.pump();
-      expect(find.text('Heartbeat'), findsOneWidget);
+      expect(find.text('Latido'), findsOneWidget);
       await tester.ensureVisible(find.text('python worker.py'));
       await tester.pump();
       expect(find.text('python worker.py'), findsOneWidget);
@@ -17461,10 +17478,14 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(card, findsNothing);
 
-      // finished: the pill leaves with the turn
+      // Finished tasks linger briefly so the completion remains visible.
       gateway.emit('message.complete', const {'text': 'PUBLIC_TASKS_DONE'});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
+      expect(pill, findsOneWidget);
+      expect(find.text('3/3'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 400));
       expect(pill, findsNothing);
       expect(tester.takeException(), isNull);
     },
