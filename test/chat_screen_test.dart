@@ -11664,9 +11664,12 @@ void main() {
     ).removeCurrentSnackBar();
     await tester.pump();
     expect(find.text('La compresión de contexto terminó.'), findsNothing);
+    // El composer se limpió al enviar, como un mensaje normal; que el
+    // resultado llegue tarde y ya obsoleto no lo restaura (no fue un
+    // rechazo, solo quedó superado por el refresh).
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
-      '/compress decisiones de A',
+      '',
     );
     expect(hapticCalls, hapticsBeforeAck);
     expect(chat.desktopCompressionInFlight, isFalse);
@@ -11895,9 +11898,11 @@ void main() {
       findsNothing,
     );
     expect(find.byType(HermesNoticeCard), findsNothing);
+    // El composer se limpió al enviar; el error de un intento ya superado
+    // por el refresh no lo restaura (no es un rechazo del intento vigente).
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
-      '/compress nativo A',
+      '',
     );
     expect(chat.desktopCompressionInFlight, isTrue);
     expect(gateway.nativeCompressionCalls, 1);
@@ -11949,9 +11954,11 @@ void main() {
       findsNothing,
     );
     expect(find.byType(HermesNoticeCard), findsNothing);
+    // El composer se limpió al enviar; el error de un intento ya superado
+    // por el refresh no lo restaura (no es un rechazo del intento vigente).
     expect(
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
-      '/compress legacy A',
+      '',
     );
     expect(chat.desktopCompressionInFlight, isTrue);
     expect(gateway.slashCalls, hasLength(1));

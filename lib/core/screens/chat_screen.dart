@@ -7498,6 +7498,19 @@ class _ChatScreenState extends State<ChatScreen>
     setState(() => _slashSuggestions = const []);
   }
 
+  /// Restaura un `/comando` en el composer tras un rechazo definitivo — el
+  /// mismo trato que un mensaje normal que el transporte no aceptó. Solo si
+  /// el usuario no empezó a escribir algo nuevo mientras tanto.
+  void _restoreSlashInvocation(String invocation) {
+    if (!mounted || _textController.text.isNotEmpty) return;
+    setState(
+      () => _textController.value = TextEditingValue(
+        text: invocation,
+        selection: TextSelection.collapsed(offset: invocation.length),
+      ),
+    );
+  }
+
   /// Ejecuta un comando slash conocido sin decidir el foco globalmente. Las
   /// rutas y superficies modales gestionan su propio foco; los errores conservan
   /// la invocación y las acciones aceptadas consumen el composer.
@@ -7570,11 +7583,20 @@ class _ChatScreenState extends State<ChatScreen>
       showReadOnlyNotice(context);
       return;
     }
+    // Se limpia como un mensaje normal en cuanto se envía, sin esperar a que
+    // el RPC vuelva: el composer no debe quedarse enseñando "/comando" el
+    // tiempo que tarde el backend. Si el envío termina fallando de forma
+    // definitiva se restaura, igual que un mensaje normal rechazado.
     final invocation = _textController.text;
+    setState(() {
+      _textController.clear();
+      _slashSuggestions = const [];
+    });
     try {
       final result = await _chat.executeDesktopSlash(cmd.name, arg: arg);
       if (!mounted) return;
       if (result.accepted != DesktopCommandAcceptance.accepted) {
+        _restoreSlashInvocation(invocation);
         HermesNotice.of(context).showSnackBar(
           SnackBar(content: Text(Strings.of(context).chaCommandFailed)),
           kind: HermesNoticeKind.error,
@@ -7587,7 +7609,6 @@ class _ChatScreenState extends State<ChatScreen>
           directedMessage.isNotEmpty &&
           (result.kind == DesktopCommandDispatchKind.send ||
               result.kind == DesktopCommandDispatchKind.skill);
-      _consumeSlashInvocation(invocation);
 
       final notice = result.notice?.trim();
       final output = result.output?.trim();
@@ -7609,6 +7630,7 @@ class _ChatScreenState extends State<ChatScreen>
       }
     } on TuiGatewayRpcError catch (error) {
       if (!mounted) return;
+      _restoreSlashInvocation(invocation);
       final message = error.code == -32601
           ? Strings.of(context).chaCompressionUnsupported
           : Strings.of(context).chaCommandFailed;
@@ -7617,6 +7639,7 @@ class _ChatScreenState extends State<ChatScreen>
       );
     } catch (_) {
       if (!mounted) return;
+      _restoreSlashInvocation(invocation);
       HermesNotice.of(context).showSnackBar(
         SnackBar(content: Text(Strings.of(context).chaCommandFailed)),
         kind: HermesNoticeKind.error,
@@ -7638,13 +7661,20 @@ class _ChatScreenState extends State<ChatScreen>
       return false;
     }
 
-    // La invocación se queda en el composer (de solo lectura) mientras dura,
-    // pero la paleta de comandos se cierra: tapaba la pastilla de actividad.
-    _compressionInvocation = _textController.text;
+    // Se limpia como un mensaje normal en cuanto se envía — la barra
+    // flotante ya es la señal de que sigue en marcha, así que el composer no
+    // debe volver a enseñar "/compress" el tiempo que dure. Solo se restaura
+    // ante un rechazo definitivo, igual que un mensaje normal rechazado; si
+    // queda pendiente de confirmar (resultado tardío), el composer se queda
+    // limpio y `_consumeCompressionInvocation` cierra el resto del estado
+    // cuando por fin se resuelva.
+    final invocation = _textController.text;
+    _compressionInvocation = invocation;
     setState(() {
       _compressionCommandInFlight = true;
       _compressionDraftFocusRetained = false;
       _slashSuggestions = const [];
+      _textController.clear();
     });
     _syncCompaction();
     try {
@@ -7677,14 +7707,19 @@ class _ChatScreenState extends State<ChatScreen>
       final succeeded = _compressionSucceeded(result);
       _finishCompactionBar(result);
       if (!succeeded) {
-        _restoreComposerFocusAfterCompression(
-          retainWhileFenced: result.compressionStatus == null,
-        );
+        final fenced = result.compressionStatus == null;
+        _restoreComposerFocusAfterCompression(retainWhileFenced: fenced);
+        // Un resultado definitivo (no pendiente de confirmar) es un rechazo
+        // real — aborted, lock_held, etc. — y se restaura igual que un
+        // mensaje normal rechazado. Uno que queda fenced sigue en marcha de
+        // verdad; el composer se queda limpio, como el resto del turno.
+        if (!fenced) _restoreSlashInvocation(invocation);
       }
       return succeeded;
     } on TuiGatewayRpcError catch (error) {
       if (!mounted) return false;
       _restoreComposerFocusAfterCompression();
+      _restoreSlashInvocation(invocation);
       final strings = Strings.of(context);
       final message = _chat.desktopCompressionTransportUncertain
           ? strings.chaCompressionReconciling
@@ -7696,6 +7731,7 @@ class _ChatScreenState extends State<ChatScreen>
     } catch (_) {
       if (!mounted) return false;
       _restoreComposerFocusAfterCompression();
+      _restoreSlashInvocation(invocation);
       HermesNotice.of(context).showSnackBar(
         SnackBar(
           content: Text(Strings.of(context).chaCompressionUnknown),
