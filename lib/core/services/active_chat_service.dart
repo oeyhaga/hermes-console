@@ -13519,6 +13519,11 @@ class ActiveChat {
     final remainingMs = record.reconcileUntilMs - _wallClockMs();
     if (remainingMs <= 0) {
       _desktopCompressionReconciliationTimer = null;
+      // Giving up polling silently (the previous behavior here) left the UI
+      // saying "still working" forever once the deadline passed — including
+      // right after reopening the app on a session whose fence had already
+      // expired while it was closed. Say so instead.
+      _abandonDurableCompressionFence(record);
       return;
     }
     final delayMs = math.min(
@@ -13536,6 +13541,22 @@ class ActiveChat {
         _scheduleDurableCompressionReconciliation(record);
       },
     );
+  }
+
+  /// A durable fence restored from a previous process (or reconciled across
+  /// several) whose deadline has run out with no proof of settlement.
+  /// Mirrors [_abandonPendingDesktopCompression]: it does not delete the
+  /// fence record (nothing here proves it is actually done), only stops
+  /// polling and surfaces the same honest "can't confirm" state.
+  void _abandonDurableCompressionFence(DesktopCompressionFenceRecord record) {
+    if (_durableCompressionFence?.scope.key != record.scope.key ||
+        _durableCompressionFence?.attemptId != record.attemptId) {
+      return;
+    }
+    _desktopCompressionReconciliationTimer?.cancel();
+    _desktopCompressionReconciliationTimer = null;
+    _desktopCompressionUnconfirmable = true;
+    if (!_disposed) _emit(ActiveChatEvent.sessionInfo);
   }
 
   /// Comprime mediante `session.compress`, el contrato autoritativo actual de

@@ -5341,6 +5341,53 @@ void main() {
   );
 
   test(
+    'REGRESSION_COMP_STUCK_FOREVER durable fence already expired on restore '
+    'surfaces the unconfirmed warning instead of polling silently forever',
+    () async {
+      // Real case: a manual /compress whose reply never reached this device
+      // (server-side it aborted almost instantly), then the app was closed
+      // and reopened hours later. Restoring a fence whose deadline already
+      // ran out must not just quietly stop polling and leave the UI saying
+      // "still working" with nothing to ever change that.
+      final storage = _MemoryCompressionFenceStorage();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'stuck-forever',
+        profile: 'default',
+        logicalSessionId: 'root-stuck-forever',
+      );
+      await DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'stuck-forever-attempt',
+      ).arm(
+        scope,
+        tipAtStart: 'tip-stuck-forever',
+        compressionsAtStart: 1,
+        createdAtMs: now - 800000,
+        reconcileUntilMs: now - 100,
+      );
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-stuck-forever',
+          'session_key': 'tip-stuck-forever',
+        });
+      final chat = _chat(
+        'stuck-forever',
+        gateway,
+        logicalSessionId: 'root-stuck-forever',
+        compressionFenceStore: DesktopCompressionFenceStore(storage: storage),
+        client: MockClient((_) async => http.Response('not found', 404)),
+        desktopCompressionReconciliationDelay: const Duration(milliseconds: 1),
+      );
+      addTearDown(chat.dispose);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(chat.desktopCompressionNeedsConfirmation, isTrue);
+    },
+  );
+
+  test(
     'pending solo acepta usage.compressions creciente con un root exacto',
     () async {
       final gateway = _NativeCompressionGateway()
