@@ -69,12 +69,17 @@ Hermes backend.
   the text becomes an editable field in place, no modal sheet — and the field
   now opens with room for several lines from the start instead of a single
   cramped line.
-- Compacting a conversation, automatic or manual, shows a slim, honest
-  indicator docked above the composer: an indeterminate moving line with the
-  real facts the backend reports (message/token counts, elapsed time) and the
-  real result once it finishes — never an invented percentage, since the
-  backend does not report compaction progress. The composer never shows a
-  spinner while this runs.
+- Compacting a conversation, automatic or manual, shows a floating card above
+  the composer (never embedded inside it, never overlapping it or the turn's
+  own activity pill): an indeterminate moving line with the real facts the
+  backend reports (message/token counts, elapsed time) and the real result
+  once it finishes — never an invented percentage, since the backend does not
+  report compaction progress. The composer never shows a spinner while this
+  runs, and clears its leftover "/compress" text as soon as the result settles
+  — including the honest cases where it never gets confirmed (a lost reply, or
+  a compute-host compaction that stays unconfirmed past its own reconciliation
+  window): the card then says so with a plain warning instead of either
+  hanging on "Compactando" forever or silently going quiet.
 - Stop's confirmation is a small, discreet single line above the composer that
   clears itself a few seconds after a clean stop and disappears the moment a
   new turn starts; it only stays on screen while something still needs your
