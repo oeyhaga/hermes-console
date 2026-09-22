@@ -395,22 +395,14 @@ class _SessionContextPopoverButtonState
         valueListenable: widget.metrics,
         builder: (context, value, _) {
           final percent = value.percent;
-          final cumulative = value.cumulativeTotal;
-          final cumulativeLabel = cumulative != null && cumulative > 0
-              ? '${compactSessionContextTokens(cumulative)} tok'
-              : null;
           final semanticValue = percent == null
-              ? cumulativeLabel == null
-                    ? strings.chaContextWindowUnavailable
-                    : '${compactSessionContextTokens(cumulative!)} '
-                          '${strings.chaContextTotal}'
+              ? strings.chaContextWindowUnavailable
               : strings.chaContextUsagePercent(percent);
           final modeLabel = widget.modeLabel;
           return Semantics(
             button: true,
             onTap: _open,
-            label: strings.chaContextUsageOpen,
-            value: modeLabel == null
+            label: modeLabel == null
                 ? semanticValue
                 : '$semanticValue · $modeLabel',
             excludeSemantics: true,
@@ -449,9 +441,7 @@ class _SessionContextPopoverButtonState
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          percent == null
-                              ? (cumulativeLabel ?? '—')
-                              : '$percent%',
+                          percent == null ? '—' : '$percent%',
                           style: TextStyle(
                             color: colors.textPrimary,
                             fontSize: 10.5,
@@ -517,21 +507,13 @@ class SessionContextTrigger extends StatelessWidget {
       builder: (context, value, _) {
         final strings = Strings.of(context);
         final percent = value.percent;
-        final cumulative = value.cumulativeTotal;
-        final cumulativeLabel = cumulative != null && cumulative > 0
-            ? '${compactSessionContextTokens(cumulative)} tok'
-            : null;
         final semanticValue = percent == null
-            ? cumulativeLabel == null
-                  ? strings.chaContextWindowUnavailable
-                  : '${compactSessionContextTokens(cumulative!)} '
-                        '${strings.chaContextTotal}'
+            ? strings.chaContextWindowUnavailable
             : strings.chaContextUsagePercent(percent);
         return Semantics(
           button: true,
           onTap: onPressed,
-          label: strings.chaContextUsageOpen,
-          value: semanticValue,
+          label: semanticValue,
           excludeSemantics: true,
           child: Tooltip(
             message: strings.chaContextUsageOpen,
@@ -572,9 +554,7 @@ class SessionContextTrigger extends StatelessWidget {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            percent == null
-                                ? cumulativeLabel ?? '—'
-                                : '$percent%',
+                            percent == null ? '—' : '$percent%',
                             style: TextStyle(
                               color: Theme.of(context).hermes.textPrimary,
                               fontSize: 11.5,
@@ -829,6 +809,7 @@ class SessionContextPerformance extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final strings = Strings.of(context);
+    final cumulative = metrics.cumulativeTotal;
     final read = metrics.cacheReadTokens;
     final write = metrics.cacheWriteTokens;
     final latency = metrics.observedFirstTokenLatencyMs;
@@ -838,6 +819,11 @@ class SessionContextPerformance extends StatelessWidget {
       child: Column(
         key: const ValueKey('session-context-performance'),
         children: [
+          if (cumulative != null)
+            _PerformanceRow(
+              label: strings.chaContextTotal,
+              value: compactSessionContextTokens(cumulative),
+            ),
           _PerformanceRow(
             label: strings.chaContextObservedTtft,
             value: latency == null

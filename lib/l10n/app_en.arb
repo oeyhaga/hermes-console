@@ -328,7 +328,7 @@
   "chaContextCalls": "calls",
   "chaContextInput": "input",
   "chaContextOutput": "output",
-  "chaContextTotal": "total tokens",
+  "chaContextTotal": "Session total tokens",
   "chaContextCost": "cost",
   "chaContextCategorySystem": "System prompt",
   "chaContextCategoryTools": "Tool definitions",

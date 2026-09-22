@@ -147,7 +147,7 @@ void main() {
     expect(compactSessionContextTokens(1500000), '1.5M');
   });
 
-  testWidgets('el notifier reconstruye solo el trigger y conserva Semantics', (
+  testWidgets('una ventana conocida muestra y anuncia la ocupación', (
     tester,
   ) async {
     final metrics = ValueNotifier(
@@ -177,9 +177,10 @@ void main() {
 
     expect(find.text('31%'), findsOneWidget);
     expect(hostBuilds, 1);
-    final semantics = tester.getSemantics(
+    var semantics = tester.getSemantics(
       find.byKey(const ValueKey('desktop-context-usage-status')),
     );
+    expect(semantics.getSemanticsData().label, '31% used');
     expect(semantics.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
 
     metrics.value = const SessionContextMetrics(
@@ -192,18 +193,74 @@ void main() {
     expect(find.text('52%'), findsOneWidget);
     expect(find.text('31%'), findsNothing);
     expect(hostBuilds, 1);
-
-    metrics.value = const SessionContextMetrics(cumulativeTotal: 99000);
-    await tester.pump();
-
-    expect(find.text('99k tok'), findsOneWidget);
-    expect(find.text('52%'), findsNothing);
-    expect(hostBuilds, 1);
+    semantics = tester.getSemantics(
+      find.byKey(const ValueKey('desktop-context-usage-status')),
+    );
+    expect(semantics.getSemanticsData().label, '52% used');
 
     await tester.tap(
       find.byKey(const ValueKey('desktop-context-usage-status')),
     );
     expect(taps, 1);
+  });
+
+  testWidgets('sin ventana muestra un marcador y no tokens acumulados', (
+    tester,
+  ) async {
+    final metrics = ValueNotifier(
+      const SessionContextMetrics(cumulativeTotal: 99000),
+    );
+    addTearDown(metrics.dispose);
+
+    await tester.pumpWidget(
+      _TestApp(
+        child: SessionContextTrigger(metrics: metrics, onPressed: () {}),
+      ),
+    );
+
+    expect(find.text('—'), findsOneWidget);
+    expect(find.text('99k tok'), findsNothing);
+    final semantics = tester.getSemantics(
+      find.byKey(const ValueKey('desktop-context-usage-status')),
+    );
+    expect(
+      semantics.getSemanticsData().label,
+      'Hermes has not published this session\'s context window yet.',
+    );
+  });
+
+  testWidgets('el panel etiqueta los tokens acumulados en inglés y español', (
+    tester,
+  ) async {
+    final metrics = ValueNotifier(
+      const SessionContextMetrics(cumulativeTotal: 99000),
+    );
+    addTearDown(metrics.dispose);
+
+    for (final (locale, label) in [
+      (const Locale('en'), 'Session total tokens'),
+      (const Locale('es'), 'Tokens acumulados de la sesión'),
+    ]) {
+      await tester.pumpWidget(
+        _TestApp(
+          locale: locale,
+          child: SessionContextFloatingPanel(
+            key: ValueKey(locale.languageCode),
+            width: 296,
+            maxHeight: 440,
+            metrics: metrics,
+            loadBreakdown: () async => null,
+            onMetricsSnapshot: (value) => metrics.value = value,
+            onClose: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text(label), findsOneWidget);
+      expect(find.text('99k'), findsOneWidget);
+      expect(find.text('99k tok'), findsNothing);
+    }
   });
 
   testWidgets('el panel flotante carga una vez y cabe a 320 dp al 200 %', (
@@ -389,16 +446,22 @@ void main() {
 }
 
 class _TestApp extends StatelessWidget {
-  const _TestApp({required this.child, this.textScale = 1, this.theme});
+  const _TestApp({
+    required this.child,
+    this.textScale = 1,
+    this.theme,
+    this.locale = const Locale('en'),
+  });
 
   final Widget child;
   final double textScale;
   final ThemeData? theme;
+  final Locale locale;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      locale: const Locale('en'),
+      locale: locale,
       localizationsDelegates: Strings.localizationsDelegates,
       supportedLocales: Strings.supportedLocales,
       theme: theme ?? AppTheme.fromId('amber'),
