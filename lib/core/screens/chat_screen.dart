@@ -4480,34 +4480,52 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  ActivityPanelActions? _activityActions;
+  (bool, bool, bool)? _activityActionCapabilities;
+
   /// Las acciones por elemento del panel: los mismos controladores que tenían
   /// las hojas de segundo plano y de subagentes.
-  ActivityPanelActions _buildActivityActions() => ActivityPanelActions(
-    canStopProcesses: _chat.canStopBackgroundProcesses,
-    stopProcess: (id) =>
-        _runBackgroundAction(() => _chat.stopBackgroundProcess(id)),
-    canControlSchedules: _chat.canControlSessionActivity,
-    scheduleAction: (schedule, action) {
-      final isLoop = schedule.kind == SessionActivityScheduleKind.loop;
-      final name = switch (action) {
-        ActivityScheduleAction.pause =>
-          isLoop ? 'loop.pause' : 'heartbeat.pause',
-        ActivityScheduleAction.resume =>
-          isLoop ? 'loop.resume' : 'heartbeat.resume',
-        ActivityScheduleAction.stop => isLoop ? 'loop.stop' : 'heartbeat.clear',
-      };
-      return _runBackgroundAction(() => _chat.sendSessionControlAction(name));
-    },
-    canControlGoal: _chat.canControlGoal,
-    goalAction: (action) =>
-        _runBackgroundAction(() => _chat.sendGoalAction(action)),
-    goalDetails: () {
-      final snapshot = _chat.goal;
-      if (snapshot != null) unawaited(_showGoalSheet(snapshot));
-    },
-    openSubagent: _subagentController.open,
-    dismissSubagents: _dismissSubagentPill,
-  );
+  ActivityPanelActions _buildActivityActions() {
+    final capabilities = (
+      _chat.canStopBackgroundProcesses,
+      _chat.canControlSessionActivity,
+      _chat.canControlGoal,
+    );
+    final cached = _activityActions;
+    if (cached != null && _activityActionCapabilities == capabilities) {
+      return cached;
+    }
+    // Mantén estables los callbacks: el panel abierto compara esta identidad.
+    final actions = ActivityPanelActions(
+      canStopProcesses: capabilities.$1,
+      stopProcess: (id) =>
+          _runBackgroundAction(() => _chat.stopBackgroundProcess(id)),
+      canControlSchedules: capabilities.$2,
+      scheduleAction: (schedule, action) {
+        final isLoop = schedule.kind == SessionActivityScheduleKind.loop;
+        final name = switch (action) {
+          ActivityScheduleAction.pause =>
+            isLoop ? 'loop.pause' : 'heartbeat.pause',
+          ActivityScheduleAction.resume =>
+            isLoop ? 'loop.resume' : 'heartbeat.resume',
+          ActivityScheduleAction.stop =>
+            isLoop ? 'loop.stop' : 'heartbeat.clear',
+        };
+        return _runBackgroundAction(() => _chat.sendSessionControlAction(name));
+      },
+      canControlGoal: capabilities.$3,
+      goalAction: (action) =>
+          _runBackgroundAction(() => _chat.sendGoalAction(action)),
+      goalDetails: () {
+        final snapshot = _chat.goal;
+        if (snapshot != null) unawaited(_showGoalSheet(snapshot));
+      },
+      openSubagent: _subagentController.open,
+      dismissSubagents: _dismissSubagentPill,
+    );
+    _activityActionCapabilities = capabilities;
+    return _activityActions = actions;
+  }
 
   /// Sincroniza el seguimiento de compactación con el servicio. Barato e
   /// idempotente: se llama en cada evento del chat.

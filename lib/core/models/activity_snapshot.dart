@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show listEquals;
+
 import 'agent_task_list.dart';
 import 'desktop_control_center.dart' show safeCommandProjection;
 import 'session_activity.dart';
@@ -265,6 +267,49 @@ final class ActivitySnapshot {
 
   bool get isLive => turnActive || showTasks || hasNonTurnActivity;
 
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ActivitySnapshot &&
+          turnActive == other.turnActive &&
+          tasksActive == other.tasksActive &&
+          turnStartedAt == other.turnStartedAt &&
+          headline == other.headline &&
+          waitingForUser == other.waitingForUser &&
+          noActivityHint == other.noActivityHint &&
+          _stepEquals(current, other.current) &&
+          _listEqualsBy(done, other.done, _stepEquals) &&
+          _taskListEquals(tasks, other.tasks) &&
+          _listEqualsBy(processes, other.processes, _processEquals) &&
+          _listEqualsBy(schedules, other.schedules, _scheduleEquals) &&
+          _goalEquals(goal, other.goal) &&
+          processesStale == other.processesStale &&
+          backgroundStartedAt == other.backgroundStartedAt &&
+          _listEqualsBy(subagents, other.subagents, _subagentEquals) &&
+          subagentGenericCount == other.subagentGenericCount &&
+          passiveRemote == other.passiveRemote;
+
+  @override
+  int get hashCode => Object.hashAll([
+    turnActive,
+    tasksActive,
+    turnStartedAt,
+    headline,
+    waitingForUser,
+    noActivityHint,
+    _stepHash(current),
+    _listHashBy(done, _stepHash),
+    _taskListHash(tasks),
+    _listHashBy(processes, _processHash),
+    _listHashBy(schedules, _scheduleHash),
+    _goalHash(goal),
+    processesStale,
+    backgroundStartedAt,
+    _listHashBy(subagents, _subagentHash),
+    subagentGenericCount,
+    passiveRemote,
+  ]);
+
   ActivitySnapshot withTasksActive(bool value) => ActivitySnapshot(
     turnActive: turnActive,
     tasksActive: value,
@@ -344,3 +389,186 @@ final class ActivitySnapshot {
     return (current: current, done: done);
   }
 }
+
+bool _listEqualsBy<T>(
+  List<T> left,
+  List<T> right,
+  bool Function(T left, T right) equals,
+) {
+  if (identical(left, right)) return true;
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    if (!equals(left[index], right[index])) return false;
+  }
+  return true;
+}
+
+int _listHashBy<T>(List<T> values, int Function(T value) hash) =>
+    Object.hashAll(values.map(hash));
+
+bool _stepEquals(ActivityStep? left, ActivityStep? right) =>
+    identical(left, right) ||
+    left != null &&
+        right != null &&
+        left.id == right.id &&
+        left.kind == right.kind &&
+        left.label == right.label &&
+        left.status == right.status &&
+        left.detail == right.detail &&
+        left.startedAt == right.startedAt &&
+        left.duration == right.duration &&
+        left.text == right.text;
+
+int _stepHash(ActivityStep? step) => step == null
+    ? 0
+    : Object.hash(
+        step.id,
+        step.kind,
+        step.label,
+        step.status,
+        step.detail,
+        step.startedAt,
+        step.duration,
+        step.text,
+      );
+
+bool _taskListEquals(AgentTaskList? left, AgentTaskList? right) =>
+    identical(left, right) ||
+    left != null &&
+        right != null &&
+        left.revision == right.revision &&
+        left.omitted == right.omitted &&
+        listEquals(left.items, right.items);
+
+int _taskListHash(AgentTaskList? tasks) => tasks == null
+    ? 0
+    : Object.hash(tasks.revision, tasks.omitted, Object.hashAll(tasks.items));
+
+bool _processEquals(
+  SessionActivityProcess left,
+  SessionActivityProcess right,
+) =>
+    identical(left, right) ||
+    left.id == right.id &&
+        left.command == right.command &&
+        left.notifyOnComplete == right.notifyOnComplete &&
+        left.startedAt == right.startedAt &&
+        left.watchHit == right.watchHit &&
+        listEquals(left.watchPatterns, right.watchPatterns);
+
+int _processHash(SessionActivityProcess process) => Object.hash(
+  process.id,
+  process.command,
+  process.notifyOnComplete,
+  process.startedAt,
+  process.watchHit,
+  Object.hashAll(process.watchPatterns),
+);
+
+bool _scheduleEquals(
+  SessionActivitySchedule left,
+  SessionActivitySchedule right,
+) =>
+    identical(left, right) ||
+    left.kind == right.kind &&
+        left.status == right.status &&
+        left.interval == right.interval &&
+        left.lastRunAt == right.lastRunAt &&
+        left.nextDueAt == right.nextDueAt &&
+        left.runCount == right.runCount &&
+        left.awaitingResponse == right.awaitingResponse &&
+        left.deferredByGoal == right.deferredByGoal;
+
+int _scheduleHash(SessionActivitySchedule schedule) => Object.hash(
+  schedule.kind,
+  schedule.status,
+  schedule.interval,
+  schedule.lastRunAt,
+  schedule.nextDueAt,
+  schedule.runCount,
+  schedule.awaitingResponse,
+  schedule.deferredByGoal,
+);
+
+bool _goalEquals(SessionActivityGoal? left, SessionActivityGoal? right) =>
+    identical(left, right) ||
+    left != null &&
+        right != null &&
+        left.title == right.title &&
+        left.status == right.status;
+
+int _goalHash(SessionActivityGoal? goal) =>
+    goal == null ? 0 : Object.hash(goal.title, goal.status);
+
+bool _subagentEquals(SubagentActivity left, SubagentActivity right) =>
+    identical(left, right) ||
+    left.key == right.key &&
+        left.source == right.source &&
+        left.phase == right.phase &&
+        left.subagentId == right.subagentId &&
+        left.delegationId == right.delegationId &&
+        left.childSessionId == right.childSessionId &&
+        left.legacyToolCallId == right.legacyToolCallId &&
+        left.eventRevision == right.eventRevision &&
+        listEquals(left.seenEventIds, right.seenEventIds) &&
+        _subagentDetailsEquals(left.details, right.details);
+
+int _subagentHash(SubagentActivity activity) => Object.hash(
+  activity.key,
+  activity.source,
+  activity.phase,
+  activity.subagentId,
+  activity.delegationId,
+  activity.childSessionId,
+  activity.legacyToolCallId,
+  activity.eventRevision,
+  Object.hashAll(activity.seenEventIds),
+  _subagentDetailsHash(activity.details),
+);
+
+bool _subagentDetailsEquals(
+  SubagentActivityDetails left,
+  SubagentActivityDetails right,
+) =>
+    identical(left, right) ||
+    left.goalPreview == right.goalPreview &&
+        left.detailPreview == right.detailPreview &&
+        left.summaryPreview == right.summaryPreview &&
+        left.outputTailPreview == right.outputTailPreview &&
+        left.parentId == right.parentId &&
+        left.depth == right.depth &&
+        left.model == right.model &&
+        left.progress == right.progress &&
+        left.toolCount == right.toolCount &&
+        listEquals(left.toolsets, right.toolsets) &&
+        left.filesReadCount == right.filesReadCount &&
+        left.filesWrittenCount == right.filesWrittenCount &&
+        left.activeToolName == right.activeToolName &&
+        left.activeToolPreview == right.activeToolPreview &&
+        left.acceptingSteer == right.acceptingSteer &&
+        left.usage == right.usage &&
+        left.durationSeconds == right.durationSeconds &&
+        left.startedAt == right.startedAt &&
+        left.completedAt == right.completedAt;
+
+int _subagentDetailsHash(SubagentActivityDetails details) => Object.hashAll([
+  details.goalPreview,
+  details.detailPreview,
+  details.summaryPreview,
+  details.outputTailPreview,
+  details.parentId,
+  details.depth,
+  details.model,
+  details.progress,
+  details.toolCount,
+  Object.hashAll(details.toolsets),
+  details.filesReadCount,
+  details.filesWrittenCount,
+  details.activeToolName,
+  details.activeToolPreview,
+  details.acceptingSteer,
+  details.usage,
+  details.durationSeconds,
+  details.startedAt,
+  details.completedAt,
+]);

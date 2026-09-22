@@ -293,6 +293,56 @@ void main() {
     });
 
     testWidgets(
+      'el panel abierto omite snapshots iguales y actualiza cambios reales',
+      (tester) async {
+        ActivitySnapshot snapshot(String headline) => ActivitySnapshot(
+          turnActive: true,
+          turnStartedAt: _t0,
+          headline: headline,
+          schedules: const [
+            SessionActivitySchedule(
+              kind: SessionActivityScheduleKind.heartbeat,
+              status: 'running',
+              interval: Duration(minutes: 5),
+              lastRunAt: null,
+              nextDueAt: null,
+              runCount: 2,
+            ),
+          ],
+        );
+        final harness = await _pump(tester, snapshot('Conectando'));
+        await _openPanel(tester);
+
+        final panelBody = tester.widget<ActivityPanelBody>(
+          find.byType(ActivityPanelBody),
+        );
+        harness.currentState!.set(snapshot('Conectando'));
+        await tester.pump();
+        await tester.pump();
+        expect(
+          identical(
+            tester.widget<ActivityPanelBody>(find.byType(ActivityPanelBody)),
+            panelBody,
+          ),
+          isTrue,
+          reason: 'un snapshot equivalente no debe reconstruir el panel',
+        );
+
+        harness.currentState!.set(snapshot('Respondiendo'));
+        await tester.pump();
+        await tester.pump();
+        expect(
+          identical(
+            tester.widget<ActivityPanelBody>(find.byType(ActivityPanelBody)),
+            panelBody,
+          ),
+          isFalse,
+        );
+        expect(find.textContaining('Respondiendo'), findsWidgets);
+      },
+    );
+
+    testWidgets(
       'la última tarea completada permanece cuatro segundos y luego se oculta',
       (tester) async {
         final harness = await _pump(
