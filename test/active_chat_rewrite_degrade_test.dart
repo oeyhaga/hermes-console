@@ -42,6 +42,9 @@ class _RewriteGateway
   final List<DesktopSessionSnapshot> resumeSnapshots;
   final durableEntered = Completer<void>();
   Completer<void>? durableGate;
+  Completer<void>? interruptGate;
+  bool emitInterruptTerminal = true;
+  int interruptCalls = 0;
 
   final _events = StreamController<TuiGatewayEvent>.broadcast();
   final List<String> plainPrompts = [];
@@ -119,7 +122,11 @@ class _RewriteGateway
 
   @override
   Future<void> interrupt(String runtimeSessionId) async {
-    emit('message.complete', const {'text': 'Operation interrupted.'});
+    interruptCalls++;
+    await interruptGate?.future;
+    if (emitInterruptTerminal) {
+      emit('message.complete', const {'text': 'Operation interrupted.'});
+    }
   }
 
   @override
@@ -702,6 +709,85 @@ void main() {
     expect(ack.survivorRowIdMap, {11: 111, 22: null});
     expect(ack.survivorUserRowIds, isNull);
   });
+
+  test(
+    'cambio de turno durante admisión restaura la edición optimista',
+    () async {
+      final gateway = _RewriteGateway(resolvedRowId: 73)
+        ..interruptGate = Completer<void>()
+        ..emitInterruptTerminal = false;
+      final attached = _attach(gateway);
+      addTearDown(attached.service.dispose);
+      final chat = attached.chat;
+
+      expect(
+        await chat.send(
+          fullText: 'turno vivo',
+          model: 'hermes-agent',
+          history: const [],
+        ),
+        isTrue,
+      );
+      expect(chat.enqueue('pendiente'), isTrue);
+      final stop = chat.cancel();
+      for (var tick = 0; tick < 20 && gateway.interruptCalls == 0; tick++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(gateway.interruptCalls, 1);
+      expect(chat.queueParked, isTrue);
+
+      final originalMessages = <Map<String, dynamic>>[
+        {'role': 'assistant', 'content': 'respuesta posterior'},
+        {'role': 'user', 'content': 'pregunta posterior', '_desktopRowId': 99},
+        {'role': 'assistant', 'content': 'respuesta original'},
+        {'role': 'user', 'content': 'pregunta original', '_desktopRowId': 73},
+        {'role': 'assistant', 'content': 'respuesta anterior'},
+        {'role': 'user', 'content': 'pregunta anterior', '_desktopRowId': 11},
+      ];
+      final rollbackMessages = originalMessages
+          .map((message) => Map<String, dynamic>.from(message))
+          .toList(growable: false);
+      chat.internalMessagesForTesting = originalMessages;
+      chat.state = ChatPipelineState.completed;
+      final events = <ActiveChatEvent>[];
+      final subscription = chat.changes.listen(events.add);
+      addTearDown(subscription.cancel);
+
+      final rewrite = chat.rewrite(
+        userOrdinal: 1,
+        text: 'pregunta corregida',
+        model: 'hermes-agent',
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        chat.internalMessagesForTesting.any(
+          (message) => message['content'] == 'pregunta posterior',
+        ),
+        isFalse,
+      );
+
+      chat.beginExternallyObservedDesktopTurnForTesting(
+        const DesktopSessionSnapshot(
+          runtimeSessionId: 'runtime-1',
+          storedSessionId: 'sess-rewrite',
+          created: false,
+          running: true,
+          status: 'working',
+        ),
+      );
+      gateway.interruptGate!.complete();
+      await stop;
+      await rewrite;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(chat.internalMessagesForTesting, rollbackMessages);
+      expect(chat.state, ChatPipelineState.completed);
+      expect(gateway.durableRewinds, isEmpty);
+      expect(events, contains(ActiveChatEvent.error));
+      expect(chat.takeRewindRestoredOnError(), isTrue);
+      expect(chat.takeRewindRestoredOnError(), isFalse);
+    },
+  );
 
   test('una edición tras Stop no deja la cola suspendida', () async {
     final gateway = _RewriteGateway(resolvedRowId: 73);
