@@ -14874,12 +14874,13 @@ void main() {
       // Ancho máximo de una burbuja normal (400 - 56 - 12), pegada a la derecha.
       expect(editing.width, closeTo(400 - 56 - 12, 0.5));
       expect(editing.right, closeTo(before.right, 0.5));
-      // El campo va sobre la burbuja: sin relleno, sin borde y de una línea.
+      // El campo va sobre la burbuja: sin relleno, sin borde, y con espacio
+      // para varias líneas desde el arranque (no una caja diminuta de una).
       final field = find.byKey(const ValueKey('inline-message-editor-field'));
       final decoration = tester.widget<TextField>(field).decoration!;
       expect(decoration.filled, isFalse);
       expect(decoration.border, InputBorder.none);
-      expect(tester.getSize(field).height, lessThan(40));
+      expect(tester.getSize(field).height, greaterThan(40));
       // Pencil y copiar ocultos mientras se edita.
       expect(find.byIcon(Icons.edit_outlined), findsNothing);
       expect(
