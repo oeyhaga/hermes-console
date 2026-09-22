@@ -118,10 +118,12 @@ class _InlineMessageEditorState extends State<InlineMessageEditor>
             controller: _controller,
             focusNode: _focusNode,
             autofocus: true,
-            // Alto = contenido: 1 línea como mínimo y ~8 como máximo; a partir
-            // de ahí el campo desplaza.
-            minLines: 1,
-            maxLines: 8,
+            // Alto = contenido: arranca con espacio para varias líneas (no una
+            // caja diminuta de una sola línea) y sube hasta ~10 antes de
+            // desplazar, para que editar se sienta como escribir, no como
+            // rellenar un campo estrecho.
+            minLines: 3,
+            maxLines: 10,
             textCapitalization: TextCapitalization.sentences,
             keyboardType: TextInputType.multiline,
             textInputAction: TextInputAction.newline,
@@ -144,7 +146,7 @@ class _InlineMessageEditorState extends State<InlineMessageEditor>
               // hueco vacío: el alto sale del contenido, no del aviso.
               hintMaxLines: 1,
             ),
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
               color: colors.textPrimary,
               height: 1.4,
             ),

@@ -164,20 +164,21 @@ void main() {
       expect(decoration.contentPadding, EdgeInsets.zero);
       expect(decoration.border, InputBorder.none);
       expect(decoration.focusedBorder, InputBorder.none);
-      // Una línea: alto de UNA línea, no de tres.
-      final oneLine = tester.getSize(field).height;
-      expect(oneLine, lessThan(30));
+      // Arranca con espacio para varias líneas (no una caja diminuta), aunque
+      // el texto original sea corto: minLines es 3, no 1.
+      final threeLines = tester.getSize(field).height;
+      final oneLine = threeLines / 3;
       // Más texto crece con el contenido…
-      await tester.enterText(field, List.filled(4, 'línea').join('\n'));
+      await tester.enterText(field, List.filled(6, 'línea').join('\n'));
       await tester.pump();
-      final four = tester.getSize(field).height;
-      expect(four, closeTo(oneLine * 4, oneLine));
-      // …hasta ~8 líneas, a partir de ahí desplaza.
+      final six = tester.getSize(field).height;
+      expect(six, closeTo(oneLine * 6, oneLine));
+      // …hasta ~10 líneas, a partir de ahí desplaza.
       await tester.enterText(field, List.filled(20, 'línea').join('\n'));
       await tester.pump();
       final capped = tester.getSize(field).height;
-      expect(capped, lessThanOrEqualTo(oneLine * 8 + 2));
-      expect(capped, greaterThan(oneLine * 6));
+      expect(capped, lessThanOrEqualTo(oneLine * 10 + 2));
+      expect(capped, greaterThan(oneLine * 8));
       expect(tester.takeException(), isNull);
     }
   });
