@@ -13414,6 +13414,9 @@ class ActiveChat {
     }
     _durableCompressionFence = record;
     _desktopCompressionInFlight = true;
+    _desktopCompactionStartedAt ??= DateTime.fromMillisecondsSinceEpoch(
+      record.createdAtMs,
+    );
     if (await _reconcileDurableCompressionFence(record)) return;
     _scheduleDurableCompressionReconciliation(
       _durableCompressionFence ?? record,
@@ -13440,6 +13443,9 @@ class ActiveChat {
     _desktopCompressionInFlight = true;
     if (record == null) return true;
     _durableCompressionFence = record;
+    _desktopCompactionStartedAt ??= DateTime.fromMillisecondsSinceEpoch(
+      record.createdAtMs,
+    );
     if (await _reconcileDurableCompressionFence(record)) return false;
     _scheduleDurableCompressionReconciliation(
       _durableCompressionFence ?? record,

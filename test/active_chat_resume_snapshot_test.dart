@@ -5341,6 +5341,57 @@ void main() {
   );
 
   test(
+    'REGRESSION_COMP_CLOCK_RESTART restoring an unresolved durable fence '
+    'reports the real elapsed start time, not a fresh one',
+    () async {
+      // Real case: close the app mid-/compress, reopen minutes later — a
+      // fresh ActiveChatService has no memory of when this attempt actually
+      // started. Without reading the fence's own `createdAtMs`, the dock's
+      // elapsed clock silently restarts at 0 instead of showing the real
+      // elapsed time.
+      final storage = _MemoryCompressionFenceStorage();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final startedAtMs = now - 90000; // 90 s ago
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'clock-restart',
+        profile: 'default',
+        logicalSessionId: 'root-clock-restart',
+      );
+      await DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'clock-restart-attempt',
+      ).arm(
+        scope,
+        tipAtStart: 'tip-clock-restart',
+        compressionsAtStart: 1,
+        createdAtMs: startedAtMs,
+        reconcileUntilMs: now + 600000,
+      );
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-clock-restart',
+          'session_key': 'tip-clock-restart',
+        });
+      final chat = _chat(
+        'clock-restart',
+        gateway,
+        logicalSessionId: 'root-clock-restart',
+        compressionFenceStore: DesktopCompressionFenceStore(storage: storage),
+        client: MockClient((_) async => http.Response('not found', 404)),
+        desktopCompressionReconciliationDelay: const Duration(minutes: 5),
+      );
+      addTearDown(chat.dispose);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(
+        chat.desktopCompactionStartedAt,
+        DateTime.fromMillisecondsSinceEpoch(startedAtMs),
+      );
+    },
+  );
+
+  test(
     'REGRESSION_COMP_STUCK_FOREVER durable fence already expired on restore '
     'surfaces the unconfirmed warning instead of polling silently forever',
     () async {
