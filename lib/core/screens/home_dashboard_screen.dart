@@ -1221,7 +1221,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
                   builder: (_, _) {
                     final localActivity = activeChat.sessionActivity;
                     return recentTile(
-                      localActivity.active ? localActivity.kind : rosterActivity,
+                      localActivity.showsActivity
+                          ? localActivity.kind
+                          : rosterActivity,
                       backgroundCount: localActivity.backgroundItemCount,
                     );
                   },

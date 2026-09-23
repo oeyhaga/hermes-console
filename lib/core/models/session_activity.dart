@@ -89,6 +89,7 @@ final class SessionActivity {
     this.goal,
     this.tasks = const [],
     this.stale = false,
+    this.compacting = false,
   });
 
   const SessionActivity.idle()
@@ -101,7 +102,8 @@ final class SessionActivity {
       tasks = const [],
       foregroundKind = SessionActivityKind.idle,
       observedAt = null,
-      stale = false;
+      stale = false,
+      compacting = false;
 
   final bool foregroundTurn;
   final bool rosterTurn;
@@ -113,6 +115,17 @@ final class SessionActivity {
   final SessionActivityKind foregroundKind;
   final DateTime? observedAt;
   final bool stale;
+
+  /// Hay una compactación de contexto en curso en esta sesión: automática del
+  /// backend, un `/compress` manual (que nunca abre un turno, así que
+  /// [foregroundTurn] sigue en false) o una valla durable restaurada tras
+  /// reabrir la app. Es solo presentación: NO cuenta para [active], porque
+  /// [active] también es la señal de ciclo de vida de `ActiveChatService`
+  /// (retener el chat al soltarlo, `activeIds`, el botón de parar). Una
+  /// compactación ya sobrevive al descarte del chat gracias a su valla
+  /// durable; retener el chat por ella cambiaría ese ciclo de vida, y con el
+  /// almacén de vallas ilegible (fail-closed) lo retendría para siempre.
+  final bool compacting;
 
   List<SessionActivityTask> get pendingTasks =>
       tasks.where((task) => task.pending).toList(growable: false);
@@ -131,9 +144,14 @@ final class SessionActivity {
       backgroundItemCount > 0 ||
       pendingTasks.isNotEmpty;
 
+  /// Lo que las filas de Home/Conversaciones pintan como "vivo": [active] o
+  /// una compactación en curso (ver [compacting]).
+  bool get showsActivity => active || compacting;
+
   bool get willNotifyLater => processes.any((process) => process.notifyOnComplete);
 
   SessionActivityKind get kind {
+    if (compacting) return SessionActivityKind.compacting;
     if (foregroundTurn) return foregroundKind;
     if (subagentCount > 0) return SessionActivityKind.delegated;
     if (backgroundItemCount > 0 || pendingTasks.isNotEmpty) {

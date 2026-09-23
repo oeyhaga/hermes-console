@@ -9,6 +9,7 @@ import 'package:hermes_android/core/models/desktop_compression_outcome.dart';
 import 'package:hermes_android/core/models/desktop_context_breakdown.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
 import 'package:hermes_android/core/models/interactive_prompt.dart';
+import 'package:hermes_android/core/models/session_activity.dart';
 import 'package:hermes_android/core/models/subagent_activity.dart';
 import 'package:hermes_android/core/screens/chat_render_projection.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
@@ -5388,6 +5389,100 @@ void main() {
         chat.desktopCompactionStartedAt,
         DateTime.fromMillisecondsSinceEpoch(startedAtMs),
       );
+    },
+  );
+
+  test(
+    'REGRESSION_COMP_SESSION_ACTIVITY a restored durable /compress fence '
+    'surfaces as compacting in sessionActivity without counting as active',
+    () async {
+      // Real case: reopen the app mid-/compress. The in-chat dock already
+      // showed it (desktopCompressionInFlight), but Home/Conversaciones read
+      // sessionActivity, which only looked at automatic compaction.
+      final storage = _MemoryCompressionFenceStorage();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final scope = DesktopCompressionFenceScope(
+        connectionId: 'activity-restore',
+        profile: 'default',
+        logicalSessionId: 'root-activity-restore',
+      );
+      await DesktopCompressionFenceStore(
+        storage: storage,
+        attemptId: () => 'activity-restore-attempt',
+      ).arm(
+        scope,
+        tipAtStart: 'tip-activity-restore',
+        compressionsAtStart: 1,
+        createdAtMs: now - 30000,
+        reconcileUntilMs: now + 600000,
+      );
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-activity-restore',
+          'session_key': 'tip-activity-restore',
+        });
+      final chat = _chat(
+        'activity-restore',
+        gateway,
+        logicalSessionId: 'root-activity-restore',
+        compressionFenceStore: DesktopCompressionFenceStore(storage: storage),
+        client: MockClient((_) async => http.Response('not found', 404)),
+        desktopCompressionReconciliationDelay: const Duration(minutes: 5),
+      );
+      addTearDown(chat.dispose);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(chat.desktopAutoCompacting, isFalse);
+      final activity = chat.sessionActivity;
+      expect(activity.compacting, isTrue);
+      expect(activity.kind, SessionActivityKind.compacting);
+      expect(activity.showsActivity, isTrue);
+      // Presentation only: `active` is ActiveChatService's retention signal
+      // (release/unused/settle), so a compaction must not pin the chat.
+      expect(activity.active, isFalse);
+    },
+  );
+
+  test(
+    'REGRESSION_COMP_SESSION_ACTIVITY a manual /compress in flight surfaces '
+    'as compacting in sessionActivity, and clears when it settles',
+    () async {
+      final compressionGate = Completer<DesktopCompressionResult>();
+      final gateway = _NativeCompressionGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-activity-manual',
+          'session_key': 'stored-chat',
+          'messages': const <Map<String, dynamic>>[],
+        })
+        ..compressionResult = _nativeCompressionResult()
+        ..nativeCompressionGate = compressionGate;
+      final chat = _chat('activity-manual', gateway);
+      addTearDown(chat.dispose);
+      await chat.loadMessages();
+      expect(chat.sessionActivity.compacting, isFalse);
+      expect(chat.sessionActivity.kind, SessionActivityKind.idle);
+
+      final compression = chat.compressDesktopSession();
+      while (gateway.compressSessionCalls == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      // Manual /compress never opens a turn, so foregroundTurn stays false:
+      // the old `_desktopAutoCompacting`-only check could not see it at all.
+      expect(chat.isStreaming, isFalse);
+      expect(chat.desktopAutoCompacting, isFalse);
+      expect(chat.sessionActivity.foregroundTurn, isFalse);
+      expect(chat.sessionActivity.kind, SessionActivityKind.compacting);
+      expect(chat.sessionActivity.showsActivity, isTrue);
+      expect(chat.sessionActivity.active, isFalse);
+
+      compressionGate.complete(gateway.compressionResult);
+      await compression;
+
+      expect(chat.desktopCompressionInFlight, isFalse);
+      expect(chat.sessionActivity.compacting, isFalse);
+      expect(chat.sessionActivity.kind, SessionActivityKind.idle);
     },
   );
 

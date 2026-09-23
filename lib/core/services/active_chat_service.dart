@@ -5328,6 +5328,12 @@ class ActiveChat {
           : SessionActivityGoal(title: _goal!.title, status: _goal!.status),
       tasks: _sessionTasks,
       foregroundKind: foregroundKind,
+      // Misma señal combinada que el CompactionDock del chat: un `/compress`
+      // manual o una valla durable restaurada no tocan
+      // `_desktopAutoCompacting` ni abren turno, así que solo por aquí llegan
+      // a Home/Conversaciones. Es de presentación y no entra en `active`
+      // (ver SessionActivity.compacting).
+      compacting: desktopCompressionInFlight,
       observedAt: _backgroundProcessesObservedAt ?? _desktopTurnStartedAt,
       stale: _backgroundProcessesStale || _sessionControlStale,
     );

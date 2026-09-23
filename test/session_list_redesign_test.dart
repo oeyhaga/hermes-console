@@ -12,11 +12,13 @@ import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/global_activity_aggregate.dart';
 import 'package:hermes_android/core/services/chat_draft_store.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
+import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 import 'package:hermes_android/core/services/desktop_control_gateway.dart';
 import 'package:hermes_android/core/services/dock_preferences_store.dart';
 import 'package:hermes_android/core/services/session_repository.dart';
 import 'package:hermes_android/core/services/tui_gateway_client.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
+import 'package:hermes_android/core/widgets/session_row_stop_control.dart';
 import 'package:hermes_android/l10n/app_localizations.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -589,6 +591,58 @@ void main() {
   );
 
   testWidgets(
+    'una compactación sin turno enciende la fila con "Compactando" y sin '
+    'Detener',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      // Almacén de vallas ilegible: el chat queda en fail-closed
+      // (`desktopCompressionInFlight`) sin turno ni gateway, igual que un
+      // `/compress` manual o una valla restaurada al reabrir la app.
+      final activeChats = ActiveChatService(
+        compressionFenceStore: DesktopCompressionFenceStore(
+          storage: _UnreadableFenceStorage(),
+        ),
+      );
+      addTearDown(activeChats.dispose);
+      final chat = activeChats.attach(
+        connection: _connection(),
+        sessionId: 'compacting-1',
+        sessionTitle: 'Sesión compactando',
+        disableForegroundKeepAlive: true,
+      );
+      await tester.pump();
+      expect(chat.desktopCompressionInFlight, isTrue);
+      expect(chat.sessionActivity.active, isFalse);
+
+      await pump(
+        tester,
+        [
+          _row(
+            'compacting-1',
+            title: 'Sesión compactando',
+            lastActive: nowSeconds(),
+          ),
+        ],
+        activeChats: activeChats,
+      );
+      await _pumpUntil(tester, find.text('Sesión compactando'));
+
+      final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
+      expect(
+        find.byKey(const ValueKey('session-running-compacting-1')),
+        findsOneWidget,
+      );
+      expect(find.text(strings.slActivityCompacting), findsOneWidget);
+      expect(find.byType(SessionRowStopControl), findsNothing);
+      await tester.pump(const Duration(seconds: 10));
+    },
+  );
+
+  testWidgets(
     'inicio pinta el roster frío por id durable, nunca por título',
     (tester) async {
       tester.view.physicalSize = const Size(1170, 2532);
@@ -1070,4 +1124,13 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+}
+
+final class _UnreadableFenceStorage implements DesktopCompressionFenceStorage {
+  @override
+  Future<String?> read() async => throw StateError('keystore unavailable');
+
+  @override
+  Future<void> write(String value) async =>
+      throw StateError('keystore unavailable');
 }

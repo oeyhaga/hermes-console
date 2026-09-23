@@ -1982,7 +1982,9 @@ class _SessionListScreenState extends State<SessionListScreen>
         pinned: pinned,
         activity: _globalForSession(session),
         localActivity: localActivity,
-        streamActive: streamActive,
+        // Una compactación enciende la fila (punto + "Compactando") pero no
+        // ofrece "Detener": no es un turno que se pueda parar.
+        streamActive: streamActive || localActivity?.compacting == true,
         onStop: streamActive ? () => _stopSession(session) : null,
         onTap: () => _openChat(session),
         onLongPress: () => _showSessionContextMenu(session),
@@ -2635,7 +2637,7 @@ class _SessionTile extends StatelessWidget {
     final strings = Strings.of(context);
     final preview =
         sessionListPreview(session) ?? strings.sessionPreviewUnavailable;
-    final activityLabel = localActivity?.active == true
+    final activityLabel = localActivity?.showsActivity == true
         ? _sessionActivityLabel(strings, localActivity!)
         : activity != null
         ? _globalActivityLabel(strings, activity!)

@@ -24,6 +24,7 @@ import 'package:hermes_android/core/models/desktop_control_center.dart';
 import 'package:hermes_android/core/models/prepared_turn.dart';
 import 'package:hermes_android/core/models/desktop_active_session.dart';
 import 'package:hermes_android/core/models/desktop_session_snapshot.dart';
+import 'package:hermes_android/core/models/session_activity.dart';
 import 'package:hermes_android/core/services/active_chat_service.dart';
 import 'package:hermes_android/core/services/approval_policy.dart';
 import 'package:hermes_android/core/services/session_reconciler.dart';
@@ -31,6 +32,7 @@ import 'package:hermes_android/core/services/attachment_uploader.dart';
 import 'package:hermes_android/core/services/bridge_client.dart';
 import 'package:hermes_android/core/services/connection_manager.dart';
 import 'package:hermes_android/core/services/desktop_control_gateway.dart';
+import 'package:hermes_android/core/services/desktop_compression_fence_store.dart';
 import 'package:hermes_android/core/services/desktop_gateway_capabilities.dart';
 import 'package:hermes_android/core/services/home_widget_publisher.dart';
 import 'package:hermes_android/core/services/notifications/notification_service.dart';
@@ -5293,6 +5295,72 @@ void main() {
         expect(replacement.messages.toString(), isNot(contains('Stale')));
       },
     );
+
+    test(
+      'a compaction shown in sessionActivity does not keep a released chat '
+      'alive',
+      () async {
+        // Fence storage that cannot be read makes the chat fail closed
+        // (`_desktopCompressionInFlight = true` with no record) — the same
+        // state the default secure-storage store produces in the test VM and
+        // on a device whose keystore read fails. The row must say
+        // "Compactando", but release() must still dispose the chat: if the
+        // compaction counted toward `SessionActivity.active`, release()
+        // would keep it forever and the next attach() would silently reuse
+        // it (this is what hung 'a disposed invalidation cannot overwrite a
+        // replacement chat').
+        final service = ActiveChatService(
+          compressionFenceStore: DesktopCompressionFenceStore(
+            storage: _UnreadableFenceStorage(),
+          ),
+        );
+        addTearDown(service.dispose);
+        final connection = _conn(id: 'compacting-release-conn');
+        ActiveChat attach() => service.attach(
+          connection: connection,
+          sessionId: 'compacting-release-session',
+          logicalSessionId: 'compacting-release-root',
+          sessionTitle: 'Compacting',
+          sessionProfile: 'default',
+          api: ApiClient(
+            baseUrl: 'http://hermes.local:8642',
+            apiKey: 'k',
+            httpClient: MockClient(
+              (_) async => http.Response('not found', 404),
+            ),
+          ),
+          storedMessageLoader: (_, _) async => <Map<String, dynamic>>[],
+          disableForegroundKeepAlive: true,
+        );
+        final first = attach();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(first.desktopCompressionInFlight, isTrue);
+        expect(first.sessionActivity.kind, SessionActivityKind.compacting);
+        expect(first.sessionActivity.showsActivity, isTrue);
+        expect(first.sessionActivity.active, isFalse);
+        expect(
+          service.isActive(
+            connection.id,
+            'compacting-release-session',
+            profile: 'default',
+          ),
+          isFalse,
+        );
+
+        service.release(
+          connection.id,
+          'compacting-release-session',
+          profile: 'default',
+        );
+        expect(
+          service.of(connection.id, 'compacting-release-session'),
+          isNull,
+        );
+        final second = attach();
+        expect(second, isNot(same(first)));
+      },
+    );
   });
 
   test('redacta errores de socket persistidos antes de proyectarlos en chat', () {
@@ -5392,4 +5460,13 @@ void main() {
       expect(history, original);
     });
   });
+}
+
+final class _UnreadableFenceStorage implements DesktopCompressionFenceStorage {
+  @override
+  Future<String?> read() async => throw StateError('keystore unavailable');
+
+  @override
+  Future<void> write(String value) async =>
+      throw StateError('keystore unavailable');
 }
