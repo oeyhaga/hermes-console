@@ -961,7 +961,8 @@ void main() {
     );
 
     testWidgets(
-      'REGRESSION_COMP_FIX3 /compress preserves ambiguous legacy draft and focus',
+      'REGRESSION_COMP_FIX3 /compress clears on send for an ambiguous legacy '
+      'result and stays busy, not read-only-with-old-text',
       (tester) async {
         final gateway = _SlashGateway()
           ..slashResult = DesktopCommandRpcResult.fromJson({
@@ -985,17 +986,30 @@ void main() {
         final field = tester.widget<TextField>(composer);
         await _submitSlash(tester);
         expect(gateway.slashCalls, ['compress release decisions']);
-        expect(field.controller?.text, '/compress release decisions');
+        // Clears like a normal message on send; a genuinely ambiguous
+        // outcome (still working per the backend) is not a rejection, so
+        // nothing restores the old text — the floating dock is the signal
+        // now, not stale text sitting read-only in the composer.
+        expect(field.controller?.text, isEmpty);
         expect(field.focusNode?.hasFocus, isTrue);
         expect(chat.desktopCompressionInFlight, isTrue);
         expect(tester.widget<TextField>(composer).readOnly, isTrue);
         expect(find.byKey(const ValueKey('send')), findsOneWidget);
+        // Since the compaction dock became the one live signal while
+        // compacting (no separate spinner on the send button), the button
+        // itself stays mounted as a plain arrow — just disabled, not
+        // removed. `busy` is deliberately false during a compression per
+        // `_buildComposerPrimaryAction`.
         expect(
-          find.descendant(
-            of: find.byKey(const ValueKey('send')),
-            matching: find.byType(HermesTactileAction),
-          ),
-          findsNothing,
+          tester
+              .widget<HermesTactileAction>(
+                find.descendant(
+                  of: find.byKey(const ValueKey('send')),
+                  matching: find.byType(HermesTactileAction),
+                ),
+              )
+              .onPressed,
+          isNull,
           reason: 'busy send surface has no invokable action',
         );
         await expectLater(
@@ -1097,7 +1111,13 @@ void main() {
       await tester.enterText(composer, '/compress retry me');
       await tester.pump(const Duration(milliseconds: 250));
       await _submitSlash(tester);
-      expect(field.controller?.text, '/compress retry me');
+      // A legacy transport failure that still lets a durable fence arm
+      // (`desktopCompressionAwaitingReconciliation` is true here, same as
+      // the structured "pending" case in REGRESSION_COMP_FIX3) is genuinely
+      // uncertain, not a rejection — the composer clears like the rest of a
+      // sent command and the floating dock/late `compacted` event below is
+      // the signal, not stale text sitting in the field.
+      expect(field.controller?.text, isEmpty);
       gateway._events.add(
         const TuiGatewayEvent(
           type: 'status.update',
@@ -1117,7 +1137,11 @@ void main() {
       await tester.enterText(composer, '/compress no runtime');
       await tester.pump(const Duration(milliseconds: 250));
       await _submitSlash(tester);
-      expect(field.controller?.text, '/compress no runtime');
+      // The still-set slashError/dispatchError from the previous attempt
+      // (never reset) means this also resolves ambiguous rather than a
+      // clean rejection — same as the case just above, the composer stays
+      // cleared rather than restoring stale text.
+      expect(field.controller?.text, isEmpty);
     });
     testWidgets('/compress preserves a late draft', (tester) async {
       final gate = Completer<DesktopCommandRpcResult>();

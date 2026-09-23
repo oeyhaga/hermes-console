@@ -3036,6 +3036,14 @@ class DesktopCompressionProjection {
   bool get isCurrent =>
       _valid = _valid && !_expected.disposed && _expected == _read();
 
+  /// Whether the attempt this projection tracks ever reached the gateway
+  /// (the RPC call itself started), regardless of its outcome. Distinguishes
+  /// "went stale before we even tried" from "went stale after we already
+  /// asked the backend" — both surface as `!isCurrent` to a caller racing a
+  /// concurrent refresh, but only the latter means the command is genuinely
+  /// out there; the former never left this device.
+  bool dispatchAttempted = false;
+
   // The destination is fixed BEFORE application can notify external listeners.
   // Acceptance compares against it; it never captures post-callback authority.
   void _beginOwnTransition(_CompressionProjectionAuthority expected) {
@@ -13849,6 +13857,7 @@ class ActiveChat {
       );
     }
     _desktopCompressionRpcInFlight = true;
+    presentationProjection?.dispatchAttempted = true;
     try {
       final dispatch = await CompressionDispatcher(gateway).dispatch(
         runtimeId,

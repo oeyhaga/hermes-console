@@ -7682,7 +7682,19 @@ class _ChatScreenState extends State<ChatScreen>
         focusTopic: focusTopic.trim(),
       );
       if (!mounted) return false;
-      if (!presentation.projection.isCurrent) return false;
+      if (!presentation.projection.isCurrent) {
+        // Superseded before we ever reached the gateway (e.g. a concurrent
+        // refresh invalidated the read while still preparing): nothing was
+        // actually sent, so — unlike a dispatched attempt that later went
+        // stale, where the floating dock is already the live signal — the
+        // user's typed command comes back, same as any other locally
+        // abandoned send.
+        if (!presentation.projection.dispatchAttempted) {
+          _restoreComposerFocusAfterCompression();
+          _restoreSlashInvocation(invocation);
+        }
+        return false;
+      }
       if (presentation.failure case final failure?) throw failure;
       final result = presentation.command!;
       final strings = Strings.of(context);
@@ -7707,12 +7719,23 @@ class _ChatScreenState extends State<ChatScreen>
       final succeeded = _compressionSucceeded(result);
       _finishCompactionBar(result);
       if (!succeeded) {
-        final fenced = result.compressionStatus == null;
-        _restoreComposerFocusAfterCompression(retainWhileFenced: fenced);
-        // Un resultado definitivo (no pendiente de confirmar) es un rechazo
-        // real — aborted, lock_held, etc. — y se restaura igual que un
-        // mensaje normal rechazado. Uno que queda fenced sigue en marcha de
-        // verdad; el composer se queda limpio, como el resto del turno.
+        // Dos preguntas distintas, no una: si el composer se desbloquea
+        // (`retainWhileFenced`, sin cambios: solo la ruta legacy —
+        // `compressionStatus` null — se desbloquea; un `pending` nativo
+        // fiable se queda bloqueado, igual que antes de esta noche) y si el
+        // texto se restaura. Para esto último, `compressionStatus` es la
+        // señal fiable en la ruta nativa (`pending` es lo único genuinamente
+        // incierto; aborted/lock_held son un rechazo real). La ruta legacy
+        // nunca la toca — ahí `accepted` es la señal: unknown == genuinamente
+        // pendiente/incierto (pending, o un fallo de transporte donde no se
+        // sabe si el backend llegó a aceptarlo), rejected == rechazo
+        // definitivo, igual que un mensaje normal rechazado.
+        final fenced = result.compressionStatus != null
+            ? result.compressionStatus == DesktopCompressionStatus.pending
+            : result.accepted != DesktopCommandAcceptance.rejected;
+        _restoreComposerFocusAfterCompression(
+          retainWhileFenced: result.compressionStatus == null,
+        );
         if (!fenced) _restoreSlashInvocation(invocation);
       }
       return succeeded;
